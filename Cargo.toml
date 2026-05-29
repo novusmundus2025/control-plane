@@ -1,0 +1,5 @@
+[workspace]
+members = [
+    "apps/control-plane",
+]
+resolver = "2"
