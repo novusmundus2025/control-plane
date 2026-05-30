@@ -2,7 +2,7 @@ use crate::contracts::{
     AgentRegistration, CreditsLedgerRecord, Heartbeat, JobCompletion, JobEventRecord, JobRecord,
     NodeRecord,
 };
-use crate::state::ControlPlaneState;
+use crate::state::{evaluate_policy, ControlPlaneState};
 use serde_json::json;
 use std::collections::HashSet;
 use std::env;
@@ -84,7 +84,15 @@ impl SupabaseMirror {
 
     pub fn record_heartbeat(&self, heartbeat: &Heartbeat) -> Result<(), String> {
         let now = parse_epoch(&heartbeat.updated_at).unwrap_or_else(now_epoch);
-        let source_heartbeat_key = heartbeat_sync_key(heartbeat, now);
+        let (policy_allowed, policy_reason) = evaluate_policy(
+            heartbeat.agent_state,
+            heartbeat.power_source.as_str(),
+            heartbeat.on_battery,
+            heartbeat.battery_percent,
+            &heartbeat.worker_health,
+        );
+        let source_heartbeat_key =
+            heartbeat_sync_key(heartbeat, now, policy_allowed, policy_reason.as_deref());
         let payload = json!({
             "source_heartbeat_key": source_heartbeat_key,
             "node_id": heartbeat.node_id,
@@ -98,8 +106,8 @@ impl SupabaseMirror {
             "power_source": heartbeat.power_source,
             "on_battery": heartbeat.on_battery,
             "battery_percent": heartbeat.battery_percent,
-            "policy_allowed": heartbeat.policy_allowed,
-            "policy_reason": heartbeat.policy_reason,
+            "policy_allowed": policy_allowed,
+            "policy_reason": policy_reason,
             "last_seen_at_epoch": now,
             "updated_at_epoch": now,
         });
@@ -124,8 +132,8 @@ impl SupabaseMirror {
             "power_source": heartbeat.power_source,
             "on_battery": heartbeat.on_battery,
             "battery_percent": heartbeat.battery_percent,
-            "policy_allowed": heartbeat.policy_allowed,
-            "policy_reason": heartbeat.policy_reason,
+            "policy_allowed": policy_allowed,
+            "policy_reason": policy_reason,
             "observed_at_epoch": now,
         });
 
@@ -426,16 +434,17 @@ fn job_event_dedupe_key(event: &JobEventRecord) -> String {
     }
 }
 
-fn heartbeat_sync_key(heartbeat: &Heartbeat, observed_at: i64) -> String {
+fn heartbeat_sync_key(
+    heartbeat: &Heartbeat,
+    observed_at: i64,
+    policy_allowed: bool,
+    policy_reason: Option<&str>,
+) -> String {
     let battery_percent = heartbeat
         .battery_percent
         .map(|value| value.to_string())
         .unwrap_or_else(|| "none".to_string());
-    let policy_reason = heartbeat
-        .policy_reason
-        .as_deref()
-        .unwrap_or_default()
-        .replace('|', "/");
+    let policy_reason = policy_reason.unwrap_or_default().replace('|', "/");
 
     format!(
         "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
@@ -451,7 +460,7 @@ fn heartbeat_sync_key(heartbeat: &Heartbeat, observed_at: i64) -> String {
         heartbeat.power_source,
         heartbeat.on_battery,
         battery_percent,
-        heartbeat.policy_allowed,
+        policy_allowed,
         policy_reason
     )
 }

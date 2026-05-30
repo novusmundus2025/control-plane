@@ -1,7 +1,7 @@
 use crate::contracts::{
     is_trusted_identity_path, AgentRegistration, AgentState, Backend, ControlPlaneSnapshot,
     CreditsLedgerRecord, Heartbeat, JobClaimResponse, JobCompletion, JobEventRecord, JobRecord,
-    JobRequest, JobStatus, NodeRecord,
+    JobRequest, JobStatus, NodeRecord, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -349,6 +349,13 @@ impl ControlPlaneState {
     }
 
     pub fn heartbeat(&mut self, heartbeat: Heartbeat, updated_at: String) -> NodeRecord {
+        let (policy_allowed, policy_reason) = evaluate_policy(
+            heartbeat.agent_state,
+            heartbeat.power_source.as_str(),
+            heartbeat.on_battery,
+            heartbeat.battery_percent,
+            &heartbeat.worker_health,
+        );
         let record = NodeRecord {
             node_id: heartbeat.node_id.clone(),
             public_key_fingerprint: self
@@ -380,8 +387,8 @@ impl ControlPlaneState {
             power_source: heartbeat.power_source,
             on_battery: heartbeat.on_battery,
             battery_percent: heartbeat.battery_percent,
-            policy_allowed: heartbeat.policy_allowed,
-            policy_reason: heartbeat.policy_reason,
+            policy_allowed,
+            policy_reason,
             worker_health: Some(heartbeat.worker_health),
             updated_at: updated_at.clone(),
         };
@@ -397,6 +404,80 @@ fn normalize_amount(value: f64) -> f64 {
         0.0
     } else {
         rounded
+    }
+}
+
+pub fn evaluate_policy(
+    agent_state: AgentState,
+    power_source: &str,
+    on_battery: bool,
+    battery_percent: Option<u8>,
+    worker_health: &WorkerHealthReport,
+) -> (bool, Option<String>) {
+    let mut reasons = Vec::new();
+
+    match agent_state {
+        AgentState::Ready | AgentState::Busy => {}
+        AgentState::Starting => reasons.push("agent is still starting".to_string()),
+        AgentState::Paused => reasons.push("agent is paused".to_string()),
+        AgentState::Stopped => reasons.push("agent is stopped".to_string()),
+    }
+
+    let normalized_power_source = power_source.trim();
+    if normalized_power_source.is_empty() || normalized_power_source.eq_ignore_ascii_case("unknown")
+    {
+        reasons.push("power source is unknown".to_string());
+    }
+
+    if on_battery {
+        let battery_detail = battery_percent
+            .map(|value| format!("{value}%"))
+            .unwrap_or_else(|| "unknown battery level".to_string());
+        reasons.push(format!(
+            "node is running on battery power ({battery_detail})"
+        ));
+    }
+
+    if !worker_health.healthy {
+        reasons.push("worker health probe reported unhealthy".to_string());
+    }
+
+    if !worker_health.llama_cli_available {
+        reasons.push("llama-cli is unavailable".to_string());
+    }
+
+    if !worker_health.blas_device_available {
+        reasons.push("BLAS device acceleration is unavailable".to_string());
+    }
+
+    if worker_health
+        .model_name
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        reasons.push("model name is missing".to_string());
+    }
+
+    if worker_health
+        .model_path
+        .as_deref()
+        .unwrap_or("")
+        .trim()
+        .is_empty()
+    {
+        reasons.push("model path is missing".to_string());
+    }
+
+    if worker_health.runtime_mode.trim().is_empty() {
+        reasons.push("runtime mode is missing".to_string());
+    }
+
+    if reasons.is_empty() {
+        (true, None)
+    } else {
+        (false, Some(reasons.join("; ")))
     }
 }
 
@@ -524,6 +605,48 @@ mod tests {
         );
         assert!(worker_health.llama_cli_available);
         assert!(worker_health.blas_device_available);
+    }
+
+    #[test]
+    fn computes_policy_server_side_for_healthy_node() {
+        let mut state = ready_state();
+        state.heartbeat(
+            Heartbeat {
+                node_id: "node-1".to_string(),
+                backend: Backend::M,
+                agent_state: AgentState::Ready,
+                available_memory_mb: 16_000,
+                available_gpu_percent: 50,
+                updated_at: "2".to_string(),
+                contribution_percent: 50,
+                hostname: "host-1".to_string(),
+                identity_trust_path: "local-encrypted-fallback".to_string(),
+                power_source: "AC Power".to_string(),
+                on_battery: false,
+                battery_percent: Some(90),
+                policy_allowed: false,
+                policy_reason: Some("client says blocked".to_string()),
+                worker_health: WorkerHealthReport {
+                    healthy: true,
+                    model_dir: "/tmp/models".to_string(),
+                    model_name: Some("demo".to_string()),
+                    model_path: Some("/tmp/models/demo.gguf".to_string()),
+                    llama_cli_available: true,
+                    blas_device_available: true,
+                    power_source: "AC Power".to_string(),
+                    on_battery: false,
+                    battery_percent: Some(90),
+                    runtime_mode: "batch".to_string(),
+                    checked_at: "2".to_string(),
+                    notes: vec![],
+                },
+            },
+            "2".to_string(),
+        );
+
+        let node = state.nodes.get("node-1").expect("node exists");
+        assert!(node.policy_allowed);
+        assert_eq!(node.policy_reason, None);
     }
 
     #[test]
