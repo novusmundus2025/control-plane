@@ -1,10 +1,10 @@
 import { createServer } from "node:http";
 
-const controlPlaneUrl = process.env.OPENGPU_CONTROL_PLANE_URL ?? "http://127.0.0.1:8787";
+const controlPlaneUrl = process.env.MUNDUSX_CONTROL_PLANE_URL ?? "http://127.0.0.1:8787";
 const port = Number(process.env.PORT ?? "3001");
 const appUrl = `http://127.0.0.1:${port}`;
 const installReleaseBaseUrl =
-  process.env.OPENGPU_INSTALL_RELEASE_BASE_URL ?? "http://127.0.0.1:8788/releases/latest/download";
+  process.env.MUNDUSX_INSTALL_RELEASE_BASE_URL ?? "http://127.0.0.1:8788/releases/latest/download";
 const installCommand = `RELEASE_BASE_URL=${installReleaseBaseUrl} bash install.sh`;
 
 const sampleCompletedJobs = [
@@ -117,17 +117,17 @@ function badge(label, tone = "neutral") {
 function installManifest(installPath = "/install") {
   return {
     kind: "install-manifest",
-    app: "opengpu",
+    app: "mundusx",
     environment: "localhost-preview",
     release_base_url: installReleaseBaseUrl,
     install_command: installCommand,
-    binary_name: "opengpu-aarch64-apple-darwin",
-    checksum_name: "opengpu-aarch64-apple-darwin.sha256",
+    binary_name: "mundusx-aarch64-apple-darwin",
+    checksum_name: "mundusx-aarch64-apple-darwin.sha256",
     landing_page: `${appUrl}${installPath}`,
     docs_page: `${appUrl}/docs/install`,
-    onboarding_command: "opengpu onboarding",
-    cap_command: "opengpu cap",
-    start_command: "opengpu start",
+    onboarding_command: "mundusx onboarding",
+    cap_command: "mundusx cap",
+    start_command: "mundusx start",
     preview_note: "local preview only; public domain comes later",
   };
 }
@@ -726,7 +726,7 @@ function renderContributorPortal() {
     worker_health: {
       healthy: true,
       model_name: "HuggingFaceTB/SmolLM2-135M-Instruct",
-      model_path: "/Users/DBATALL/.opengpu/models/...",
+      model_path: "/Users/DBATALL/.mundusx/models/...",
       llama_cli_available: true,
       blas_device_available: true,
       notes: ["ready for local jobs", "Mac-first preview"],
@@ -1652,7 +1652,7 @@ function renderInstallPage(installPath = "/install") {
               <div class="num">3</div>
               <div>
                 <strong>Start</strong>
-                <p>Review onboarding, set your cap, and then run <code>opengpu start</code>.</p>
+                <p>Review onboarding, set your cap, and then run <code>mundusx start</code>.</p>
               </div>
             </div>
           </div>
@@ -1691,9 +1691,9 @@ function renderInstallPage(installPath = "/install") {
           const installCommand = String(manifest.install_command ?? "");
           const docsPage = String(manifest.docs_page ?? "/docs/install");
           const releaseBaseUrl = String(manifest.release_base_url ?? "");
-          const onboardingCommand = String(manifest.onboarding_command ?? "opengpu onboarding");
-          const capCommand = String(manifest.cap_command ?? "opengpu cap");
-          const startCommand = String(manifest.start_command ?? "opengpu start");
+          const onboardingCommand = String(manifest.onboarding_command ?? "mundusx onboarding");
+          const capCommand = String(manifest.cap_command ?? "mundusx cap");
+          const startCommand = String(manifest.start_command ?? "mundusx start");
 
           if (commandEl) {
             commandEl.textContent = installCommand;
@@ -2379,7 +2379,7 @@ function renderDocsInstall(basePath = "/docs") {
   return docsShell({
     title: "Install NovusX",
     subtitle:
-      "The install page is the first touch for contributors. For now it stays localhost-only, keeps the command identical everywhere, and points to onboarding and cap selection immediately after install.",
+      "The install page is the first touch for contributors. It stays localhost-only, keeps the command identical everywhere, and points to onboarding, identity trust, and cap selection immediately after install.",
     active: "install",
     basePath,
     body: `
@@ -2394,9 +2394,10 @@ function renderDocsInstall(basePath = "/docs") {
           <ol>
             <li>Download the Mac-first release binary.</li>
             <li>Verify checksum when available.</li>
-            <li>Run <code>opengpu onboarding</code>.</li>
-            <li>Choose a contribution cap with <code>opengpu cap</code>.</li>
-            <li>Start with <code>opengpu start</code>.</li>
+            <li>Review device identity and trust path.</li>
+            <li>Run <code>mundusx onboarding</code>.</li>
+            <li>Choose a contribution cap with <code>mundusx cap</code>.</li>
+            <li>Start with <code>mundusx start</code>.</li>
           </ol>
         </div>
       </div>
@@ -2408,7 +2409,7 @@ function renderDocsIdentity(basePath = "/docs") {
   return docsShell({
     title: "Device Identity",
     subtitle:
-      "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall should reuse identity as long as the NovusX data directory remains intact.",
+      "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall should reuse identity as long as the data directory remains intact or the keychain secret is still available.",
     active: "identity",
     basePath,
     body: `
@@ -2427,7 +2428,14 @@ function renderDocsIdentity(basePath = "/docs") {
           <ul>
             <li>raw private key bytes</li>
             <li>exportable app-visible secret</li>
-            <li>hostname as identity proof</li>
+          </ul>
+        </div>
+        <div class="card">
+          <h2>Trust path</h2>
+          <ul>
+            <li><code>keychain</code> means the machine secret was recovered from macOS keychain.</li>
+            <li><code>local-encrypted-fallback</code> means the node is using encrypted-at-rest identity storage.</li>
+            <li>The trust path should be visible in the dashboard so operators can diagnose recovery.</li>
           </ul>
         </div>
       </div>
@@ -2439,7 +2447,7 @@ function renderDocsOnboarding(basePath = "/docs") {
   return docsShell({
     title: "Onboarding",
     subtitle:
-      "The first-run checklist keeps the Mac-first path understandable: review identity, choose a cap, confirm the model, and only then go live.",
+      "The first-run checklist keeps the Mac-first path understandable: review identity, confirm trust path, choose a cap, and only then go live.",
     active: "onboarding",
     basePath,
     body: `
@@ -2448,14 +2456,15 @@ function renderDocsOnboarding(basePath = "/docs") {
           <h2>Checklist</h2>
           <ol>
             <li>Review device identity.</li>
+            <li>Confirm the trust path.</li>
             <li>Choose the contribution cap.</li>
             <li>Confirm the active model.</li>
-            <li>Run <code>opengpu start</code>.</li>
+            <li>Run <code>mundusx start</code>.</li>
           </ol>
         </div>
         <div class="card">
           <h2>Policy note</h2>
-          <p>The node should remain paused until the cap is set and the policy allows work.</p>
+          <p>The node should remain paused until identity is present, the cap is set, and the policy allows work.</p>
         </div>
       </div>
     `,
