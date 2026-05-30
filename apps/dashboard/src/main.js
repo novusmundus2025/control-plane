@@ -1346,6 +1346,7 @@ function renderContributorPortal() {
 }
 
 function renderInstallPage(installPath = "/install") {
+  const expectedManifest = installManifest(installPath);
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -1583,6 +1584,38 @@ function renderInstallPage(installPath = "/install") {
         letter-spacing: 0.06em;
         text-transform: uppercase;
       }
+      .manifest-status[data-tone="ok"] {
+        color: #067647;
+      }
+      .manifest-status[data-tone="warn"] {
+        color: #b45309;
+      }
+      .manifest-status[data-tone="error"] {
+        color: #b42318;
+      }
+      .manifest-details {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+      }
+      .manifest-detail {
+        display: grid;
+        gap: 4px;
+      }
+      .manifest-detail strong {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      .manifest-detail code {
+        white-space: normal;
+        word-break: break-word;
+      }
       @media (max-width: 900px) {
         .hero {
           grid-template-columns: 1fr;
@@ -1645,7 +1678,7 @@ function renderInstallPage(installPath = "/install") {
               <div class="num">2</div>
               <div>
                 <strong>Verify</strong>
-                <p>Checksum verification happens when the release artifact publishes one.</p>
+                <p>Verify the binary name, checksum file, and release base URL before copying the command.</p>
               </div>
             </div>
             <div class="install-step">
@@ -1656,7 +1689,28 @@ function renderInstallPage(installPath = "/install") {
               </div>
             </div>
           </div>
-          <div class="manifest-status" id="manifest-status">Fetching ./install.json…</div>
+          <div
+            class="manifest-details"
+            id="manifest-details"
+            data-expected-release-base-url="${escapeHtml(expectedManifest.release_base_url)}"
+            data-expected-binary-name="${escapeHtml(expectedManifest.binary_name)}"
+            data-expected-checksum-name="${escapeHtml(expectedManifest.checksum_name)}"
+            data-expected-install-command="${escapeHtml(expectedManifest.install_command)}"
+          >
+            <div class="manifest-detail">
+              <strong>Release base</strong>
+              <code id="release-base-url">${escapeHtml(expectedManifest.release_base_url)}</code>
+            </div>
+            <div class="manifest-detail">
+              <strong>Binary name</strong>
+              <code id="binary-name">${escapeHtml(expectedManifest.binary_name)}</code>
+            </div>
+            <div class="manifest-detail">
+              <strong>Checksum file</strong>
+              <code id="checksum-name">${escapeHtml(expectedManifest.checksum_name)}</code>
+            </div>
+          </div>
+          <div class="manifest-status" id="manifest-status" data-tone="info">Fetching ./install.json…</div>
           <div class="manifest-note">
             The install page is now a shell that reads the command and release metadata from
             <strong>./install.json</strong> so the HTML, installer, and release preview stay in
@@ -1679,7 +1733,15 @@ function renderInstallPage(installPath = "/install") {
         const commandEl = document.getElementById("install-command");
         const copyButton = document.getElementById("copy-button");
         const copyStatus = document.getElementById("copy-status");
+        const detailsEl = document.getElementById("manifest-details");
+        const releaseBaseEl = document.getElementById("release-base-url");
+        const binaryNameEl = document.getElementById("binary-name");
+        const checksumNameEl = document.getElementById("checksum-name");
         const manifestUrl = new URL("./install.json", window.location.href);
+        const expectedReleaseBaseUrl = String(detailsEl?.dataset.expectedReleaseBaseUrl ?? "");
+        const expectedBinaryName = String(detailsEl?.dataset.expectedBinaryName ?? "");
+        const expectedChecksumName = String(detailsEl?.dataset.expectedChecksumName ?? "");
+        const expectedInstallCommand = String(detailsEl?.dataset.expectedInstallCommand ?? "");
 
         try {
           const response = await fetch(manifestUrl, { headers: { Accept: "application/json" } });
@@ -1694,9 +1756,37 @@ function renderInstallPage(installPath = "/install") {
           const onboardingCommand = String(manifest.onboarding_command ?? "mundusx onboarding");
           const capCommand = String(manifest.cap_command ?? "mundusx cap");
           const startCommand = String(manifest.start_command ?? "mundusx start");
+          const binaryName = String(manifest.binary_name ?? "");
+          const checksumName = String(manifest.checksum_name ?? "");
+          const mismatches = [];
+
+          if (releaseBaseUrl !== expectedReleaseBaseUrl) {
+            mismatches.push("Release base URL changed after the page was rendered.");
+          }
+          if (binaryName !== expectedBinaryName) {
+            mismatches.push("Binary name should be " + expectedBinaryName + ".");
+          }
+          if (checksumName !== expectedChecksumName) {
+            mismatches.push("Checksum file should be " + expectedChecksumName + ".");
+          }
+          if (installCommand !== expectedInstallCommand) {
+            mismatches.push("Install command no longer matches the release base URL.");
+          }
+          if (!docsPage.endsWith("/docs/install")) {
+            mismatches.push("Docs page should point at /docs/install.");
+          }
 
           if (commandEl) {
             commandEl.textContent = installCommand;
+          }
+          if (releaseBaseEl) {
+            releaseBaseEl.textContent = releaseBaseUrl;
+          }
+          if (binaryNameEl) {
+            binaryNameEl.textContent = binaryName;
+          }
+          if (checksumNameEl) {
+            checksumNameEl.textContent = checksumName;
           }
           if (copyButton) {
             copyButton.disabled = false;
@@ -1714,7 +1804,13 @@ function renderInstallPage(installPath = "/install") {
             });
           }
           if (statusEl) {
-            statusEl.textContent = "Manifest loaded from ./install.json";
+            if (mismatches.length) {
+              statusEl.dataset.tone = "warn";
+              statusEl.textContent = "Manifest loaded with release sync warnings";
+            } else {
+              statusEl.dataset.tone = "ok";
+              statusEl.textContent = "Manifest loaded and verified from ./install.json";
+            }
           }
 
           const footer = document.querySelector(".manifest-note");
@@ -1722,6 +1818,7 @@ function renderInstallPage(installPath = "/install") {
             footer.innerHTML =
               "The install page is now a shell that reads the command and release metadata from " +
               "<strong>./install.json</strong> so the HTML, installer, and release preview stay in sync. " +
+              "It verifies the binary name and checksum file against the page expectations before showing the command. " +
               "Follow up with <code>" +
               onboardingCommand +
               "</code>, <code>" +
@@ -1733,9 +1830,14 @@ function renderInstallPage(installPath = "/install") {
               "</code>. Release source: <code>" +
               releaseBaseUrl +
               "</code>.";
+            if (mismatches.length) {
+              footer.innerHTML +=
+                " Verification notes: " + mismatches.map((item) => "<code>" + item + "</code>").join(" ");
+            }
           }
         } catch (error) {
           if (statusEl) {
+            statusEl.dataset.tone = "error";
             statusEl.textContent = "Manifest load failed";
           }
           if (commandEl) {
@@ -2513,6 +2615,7 @@ function renderDocsReleases(basePath = "/docs") {
         <div class="card">
           <h2>Review rule</h2>
           <p>Any release-page copy change should be checked against the installer script and release docs.</p>
+          <p>The install preview now verifies the binary name and checksum file against the rendered manifest before it shows the command.</p>
         </div>
       </div>
     `,
