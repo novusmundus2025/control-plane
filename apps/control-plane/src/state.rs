@@ -1,7 +1,6 @@
 use crate::contracts::{
-    AgentRegistration, AgentState, Backend, ControlPlaneSnapshot, Heartbeat, JobClaimResponse,
-    JobCompletion, JobEventRecord, JobRecord, JobRequest, JobStatus, NodeRecord,
-    CreditsLedgerRecord,
+    AgentRegistration, AgentState, Backend, ControlPlaneSnapshot, CreditsLedgerRecord, Heartbeat,
+    JobClaimResponse, JobCompletion, JobEventRecord, JobRecord, JobRequest, JobStatus, NodeRecord,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -32,10 +31,7 @@ impl ControlPlaneState {
             .iter()
             .filter(|node| node.state == AgentState::Paused)
             .count();
-        let policy_blocked_count = nodes
-            .iter()
-            .filter(|node| !node.policy_allowed)
-            .count();
+        let policy_blocked_count = nodes.iter().filter(|node| !node.policy_allowed).count();
         let stopped_count = nodes
             .iter()
             .filter(|node| node.state == AgentState::Stopped)
@@ -78,13 +74,11 @@ impl ControlPlaneState {
     }
 
     pub fn nodes_snapshot(&self) -> serde_json::Value {
-        serde_json::to_value(self.nodes.values().cloned().collect::<Vec<_>>())
-            .expect("nodes json")
+        serde_json::to_value(self.nodes.values().cloned().collect::<Vec<_>>()).expect("nodes json")
     }
 
     pub fn jobs_snapshot(&self) -> serde_json::Value {
-        serde_json::to_value(self.jobs.values().cloned().collect::<Vec<_>>())
-            .expect("jobs json")
+        serde_json::to_value(self.jobs.values().cloned().collect::<Vec<_>>()).expect("jobs json")
     }
 
     pub fn job_events_snapshot(&self) -> serde_json::Value {
@@ -109,6 +103,7 @@ impl ControlPlaneState {
     ) -> JobEventRecord {
         let record = JobEventRecord {
             id: self.job_events.len() as u64 + 1,
+            source_event_id: Some(self.job_events.len() as u64 + 1),
             node_id,
             job_id,
             event_type: event_type.into(),
@@ -153,7 +148,11 @@ impl ControlPlaneState {
     }
 
     pub fn credits_total(&self) -> f64 {
-        let total = self.credits_ledger.iter().map(|entry| entry.amount).sum::<f64>();
+        let total = self
+            .credits_ledger
+            .iter()
+            .map(|entry| entry.amount)
+            .sum::<f64>();
         normalize_amount(total)
     }
 
@@ -178,7 +177,11 @@ impl ControlPlaneState {
         let node_id = job.assigned_node_id.clone()?;
         let node = self.nodes.get(&node_id)?;
         let prompt_chars = job.prompt.chars().count() as f64;
-        let output_chars = job.output.as_ref().map(|output| output.chars().count() as f64).unwrap_or(0.0);
+        let output_chars = job
+            .output
+            .as_ref()
+            .map(|output| output.chars().count() as f64)
+            .unwrap_or(0.0);
         let work_units = ((prompt_chars + output_chars) / 400.0).ceil().max(1.0);
         let contribution_multiplier = 1.0 + (node.contribution_percent as f64 / 100.0);
         let amount = ((work_units * contribution_multiplier) * 100.0).round() / 100.0;
@@ -308,7 +311,11 @@ impl ControlPlaneState {
         JobClaimResponse { job: None }
     }
 
-    pub fn complete_job(&mut self, completion: JobCompletion, completed_at: String) -> Option<JobRecord> {
+    pub fn complete_job(
+        &mut self,
+        completion: JobCompletion,
+        completed_at: String,
+    ) -> Option<JobRecord> {
         let updated_job = {
             let job = self.jobs.get_mut(&completion.job_id)?;
             if job.assigned_node_id.as_deref() != Some(completion.node_id.as_str()) {
@@ -388,11 +395,11 @@ fn normalize_amount(value: f64) -> f64 {
 }
 
 pub fn state_path() -> PathBuf {
-    std::env::var_os("OPENGPU_CONTROL_PLANE_HOME")
+    std::env::var_os("MUNDUSX_CONTROL_PLANE_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("OPENGPU_HOME").map(PathBuf::from))
-        .or_else(|| dirs::home_dir().map(|dir| dir.join(".opengpu-control-plane")))
-        .unwrap_or_else(|| PathBuf::from(".opengpu-control-plane"))
+        .or_else(|| std::env::var_os("MUNDUSX_HOME").map(PathBuf::from))
+        .or_else(|| dirs::home_dir().map(|dir| dir.join(".mundusx-control-plane")))
+        .unwrap_or_else(|| PathBuf::from(".mundusx-control-plane"))
         .join("state.json")
 }
 
@@ -505,7 +512,10 @@ mod tests {
         let worker_health = node.worker_health.as_ref().expect("worker health present");
         assert!(worker_health.healthy);
         assert_eq!(worker_health.model_name.as_deref(), Some("demo"));
-        assert_eq!(worker_health.model_path.as_deref(), Some("/tmp/models/demo.gguf"));
+        assert_eq!(
+            worker_health.model_path.as_deref(),
+            Some("/tmp/models/demo.gguf")
+        );
         assert!(worker_health.llama_cli_available);
         assert!(worker_health.blas_device_available);
     }
@@ -529,19 +539,20 @@ mod tests {
         );
 
         let _ = state.claim_job("node-1", "3".to_string());
-        let completed = state.complete_job(
-            JobCompletion {
-                job_id: "job-1".to_string(),
-                node_id: "node-1".to_string(),
-                worker_id: "worker-1".to_string(),
-                backend: Backend::M,
-                status: JobStatus::Completed,
-                output: Some("done".to_string()),
-                error: None,
-            },
-            "4".to_string(),
-        )
-        .expect("completed job");
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("done".to_string()),
+                    error: None,
+                },
+                "4".to_string(),
+            )
+            .expect("completed job");
 
         assert_eq!(completed.status, JobStatus::Completed);
         assert_eq!(completed.output.as_deref(), Some("done"));

@@ -4,6 +4,7 @@ use crate::contracts::{
 };
 use crate::state::ControlPlaneState;
 use serde_json::json;
+use std::collections::HashSet;
 use std::env;
 use std::io::Write;
 use std::process::{Command, Stdio};
@@ -18,9 +19,11 @@ pub struct SupabaseMirror {
 impl SupabaseMirror {
     pub fn from_env() -> Option<Self> {
         let api_key = env::var("SUPABASE_SERVICE_ROLE_KEY").ok()?;
-        let base_url = env::var("SUPABASE_URL")
-            .ok()
-            .or_else(|| env::var("DATABASE_URL").ok().and_then(|url| derive_supabase_url(&url)))?;
+        let base_url = env::var("SUPABASE_URL").ok().or_else(|| {
+            env::var("DATABASE_URL")
+                .ok()
+                .and_then(|url| derive_supabase_url(&url))
+        })?;
 
         Some(Self {
             base_url: trim_trailing_slash(&base_url),
@@ -28,17 +31,11 @@ impl SupabaseMirror {
         })
     }
 
-    pub fn startup_status() -> String {
-        match Self::from_env() {
-            Some(mirror) => format!("enabled ({})", mirror.base_url),
-            None => "disabled".to_string(),
-        }
-    }
-
     pub fn restore_state(&self) -> Result<ControlPlaneState, String> {
         let devices: Vec<NodeRecord> = self.fetch_json("devices?select=*")?;
         let jobs: Vec<JobRecord> = self.fetch_json("jobs?select=*")?;
-        let job_events: Vec<JobEventRecord> = self.fetch_json("job_events?select=*&order=id.asc")?;
+        let job_events: Vec<JobEventRecord> =
+            self.fetch_json("job_events?select=*&order=source_event_id.asc.nullslast,id.asc")?;
         let credits_ledger: Vec<CreditsLedgerRecord> =
             self.fetch_json("credits_ledger?select=*&order=created_at.asc")?;
 
@@ -49,8 +46,8 @@ impl SupabaseMirror {
         for job in jobs {
             state.jobs.insert(job.job_id.clone(), job);
         }
-        state.job_events = job_events;
-        state.credits_ledger = credits_ledger;
+        state.job_events = dedupe_job_events(job_events);
+        state.credits_ledger = dedupe_credits_ledger(credits_ledger);
         Ok(state)
     }
 
@@ -87,7 +84,9 @@ impl SupabaseMirror {
 
     pub fn record_heartbeat(&self, heartbeat: &Heartbeat) -> Result<(), String> {
         let now = parse_epoch(&heartbeat.updated_at).unwrap_or_else(now_epoch);
+        let source_heartbeat_key = heartbeat_sync_key(heartbeat, now);
         let payload = json!({
+            "source_heartbeat_key": source_heartbeat_key,
             "node_id": heartbeat.node_id,
             "backend": heartbeat.backend,
             "state": heartbeat.agent_state,
@@ -113,6 +112,7 @@ impl SupabaseMirror {
         )?;
 
         let heartbeat_row = json!({
+            "source_heartbeat_key": source_heartbeat_key,
             "node_id": heartbeat.node_id,
             "backend": heartbeat.backend,
             "agent_state": heartbeat.agent_state,
@@ -131,29 +131,12 @@ impl SupabaseMirror {
 
         self.post_json(
             "heartbeats",
-            None,
-            "return=minimal",
+            Some("source_heartbeat_key"),
+            "resolution=merge-duplicates,return=minimal",
             heartbeat_row,
         )?;
 
-        let heartbeat_payload = json!({
-            "node_id": heartbeat.node_id,
-            "backend": heartbeat.backend,
-            "agent_state": heartbeat.agent_state,
-            "available_memory_mb": heartbeat.available_memory_mb,
-            "available_gpu_percent": heartbeat.available_gpu_percent,
-            "contribution_percent": heartbeat.contribution_percent,
-            "hostname": heartbeat.hostname,
-            "identity_trust_path": heartbeat.identity_trust_path,
-            "power_source": heartbeat.power_source,
-            "on_battery": heartbeat.on_battery,
-            "battery_percent": heartbeat.battery_percent,
-            "policy_allowed": heartbeat.policy_allowed,
-            "policy_reason": heartbeat.policy_reason,
-            "observed_at_epoch": now,
-        });
-
-        self.insert_event(Some(&heartbeat.node_id), None, "heartbeat", heartbeat_payload)
+        Ok(())
     }
 
     pub fn record_job(&self, job: &JobRecord) -> Result<(), String> {
@@ -165,12 +148,7 @@ impl SupabaseMirror {
             payload,
         )?;
 
-        self.insert_event(
-            job.assigned_node_id.as_deref(),
-            Some(&job.job_id),
-            "job_submitted",
-            serde_json::to_value(job).map_err(|error| error.to_string())?,
-        )
+        Ok(())
     }
 
     pub fn record_job_completion(
@@ -208,17 +186,7 @@ impl SupabaseMirror {
             payload,
         )?;
 
-        let event_type = if matches!(completion.status, crate::contracts::JobStatus::Completed) {
-            "job_completed"
-        } else {
-            "job_failed"
-        };
-        self.insert_event(
-            Some(&completion.node_id),
-            Some(&completion.job_id),
-            event_type,
-            serde_json::to_value(completion).map_err(|error| error.to_string())?,
-        )
+        Ok(())
     }
 
     pub fn record_credit_award(&self, entry: &CreditsLedgerRecord) -> Result<(), String> {
@@ -242,14 +210,14 @@ impl SupabaseMirror {
         )
     }
 
-    pub fn record_job_event(
-        &self,
-        node_id: Option<&str>,
-        job_id: Option<&str>,
-        event_type: &str,
-        payload: serde_json::Value,
-    ) -> Result<(), String> {
-        self.insert_event(node_id, job_id, event_type, payload)
+    pub fn record_job_event(&self, event: &JobEventRecord) -> Result<(), String> {
+        self.insert_event(
+            event.node_id.as_deref(),
+            event.job_id.as_deref(),
+            &event.event_type,
+            event.payload.clone(),
+            event.source_event_id.unwrap_or(event.id),
+        )
     }
 
     fn job_payload(&self, job: &JobRecord) -> serde_json::Value {
@@ -283,15 +251,22 @@ impl SupabaseMirror {
         job_id: Option<&str>,
         event_type: &str,
         payload: serde_json::Value,
+        source_event_id: u64,
     ) -> Result<(), String> {
         let body = json!({
+            "source_event_id": source_event_id,
             "node_id": node_id,
             "job_id": job_id,
             "event_type": event_type,
             "payload": payload,
         });
 
-        self.post_json("job_events", None, "return=minimal", body)
+        self.post_json(
+            "job_events",
+            Some("source_event_id"),
+            "resolution=merge-duplicates,return=minimal",
+            body,
+        )
     }
 
     fn post_json(
@@ -409,6 +384,76 @@ impl SupabaseMirror {
         serde_json::from_slice(&output.stdout)
             .map_err(|error| format!("failed to parse supabase response: {error}"))
     }
+}
+
+fn dedupe_job_events(job_events: Vec<JobEventRecord>) -> Vec<JobEventRecord> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::with_capacity(job_events.len());
+
+    for event in job_events {
+        let key = job_event_dedupe_key(&event);
+        if seen.insert(key) {
+            deduped.push(event);
+        }
+    }
+
+    deduped
+}
+
+fn dedupe_credits_ledger(credits_ledger: Vec<CreditsLedgerRecord>) -> Vec<CreditsLedgerRecord> {
+    let mut seen = HashSet::new();
+    let mut deduped = Vec::with_capacity(credits_ledger.len());
+
+    for entry in credits_ledger {
+        if seen.insert(entry.id.clone()) {
+            deduped.push(entry);
+        }
+    }
+
+    deduped
+}
+
+fn job_event_dedupe_key(event: &JobEventRecord) -> String {
+    match event.source_event_id {
+        Some(source_event_id) => format!("source_event_id:{source_event_id}"),
+        None => format!(
+            "legacy:{}:{}:{}:{}",
+            event.node_id.as_deref().unwrap_or_default(),
+            event.job_id.as_deref().unwrap_or_default(),
+            event.event_type,
+            event.payload
+        ),
+    }
+}
+
+fn heartbeat_sync_key(heartbeat: &Heartbeat, observed_at: i64) -> String {
+    let battery_percent = heartbeat
+        .battery_percent
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "none".to_string());
+    let policy_reason = heartbeat
+        .policy_reason
+        .as_deref()
+        .unwrap_or_default()
+        .replace('|', "/");
+
+    format!(
+        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
+        heartbeat.node_id,
+        observed_at,
+        heartbeat.backend,
+        heartbeat.agent_state,
+        heartbeat.available_memory_mb,
+        heartbeat.available_gpu_percent,
+        heartbeat.contribution_percent,
+        heartbeat.hostname,
+        heartbeat.identity_trust_path,
+        heartbeat.power_source,
+        heartbeat.on_battery,
+        battery_percent,
+        heartbeat.policy_allowed,
+        policy_reason
+    )
 }
 
 fn trim_trailing_slash(input: &str) -> String {

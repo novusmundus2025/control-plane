@@ -31,13 +31,16 @@ on:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: write
+  projects: write
 
 jobs:
   sync-status:
     runs-on: ubuntu-latest
 
     env:
-      GH_TOKEN: ${{ secrets.PROJECT_TOKEN }}
+      GH_TOKEN: ${{ github.token }}
       PROJECT_OWNER: novusmundus2025
       PROJECT_NUMBER: "2"
 
