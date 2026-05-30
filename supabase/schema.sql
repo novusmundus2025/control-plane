@@ -1,4 +1,4 @@
--- OpenGPU Supabase schema
+-- MundusX Supabase schema
 -- Apply this in the Supabase SQL editor.
 
 create extension if not exists pgcrypto;
@@ -48,6 +48,7 @@ create table if not exists public.devices (
 
 create table if not exists public.heartbeats (
   id bigint generated always as identity primary key,
+  source_heartbeat_key text unique,
   node_id text not null references public.devices(node_id) on delete cascade,
   backend text not null,
   agent_state text not null,
@@ -92,6 +93,7 @@ create table if not exists public.jobs (
 
 create table if not exists public.job_events (
   id bigint generated always as identity primary key,
+  source_event_id bigint unique,
   node_id text references public.devices(node_id) on delete set null,
   job_id text references public.jobs(job_id) on delete cascade,
   event_type text not null,
@@ -138,7 +140,9 @@ before update on public.policy_rules
 for each row execute function public.set_updated_at();
 
 create index if not exists heartbeats_node_id_idx on public.heartbeats(node_id);
+create index if not exists heartbeats_source_heartbeat_key_idx on public.heartbeats(source_heartbeat_key);
 create index if not exists jobs_status_idx on public.jobs(status);
 create index if not exists jobs_assigned_node_id_idx on public.jobs(assigned_node_id);
 create index if not exists job_events_node_id_idx on public.job_events(node_id);
 create index if not exists job_events_job_id_idx on public.job_events(job_id);
+create index if not exists job_events_source_event_id_idx on public.job_events(source_event_id);
