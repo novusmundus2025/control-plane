@@ -265,7 +265,7 @@ impl ControlPlaneState {
             return JobClaimResponse { job: None };
         };
 
-        if !(node.state == AgentState::Ready || node.state == AgentState::Busy) {
+        if node.state != AgentState::Ready {
             return JobClaimResponse { job: None };
         }
 
@@ -508,6 +508,62 @@ mod tests {
         assert_eq!(worker_health.model_path.as_deref(), Some("/tmp/models/demo.gguf"));
         assert!(worker_health.llama_cli_available);
         assert!(worker_health.blas_device_available);
+    }
+
+    #[test]
+    fn does_not_claim_job_for_busy_node() {
+        let mut state = ready_state();
+        state.heartbeat(
+            Heartbeat {
+                node_id: "node-1".to_string(),
+                backend: Backend::M,
+                agent_state: AgentState::Busy,
+                available_memory_mb: 16_000,
+                available_gpu_percent: 50,
+                updated_at: "2".to_string(),
+                contribution_percent: 50,
+                hostname: "host-1".to_string(),
+                identity_trust_path: "local-encrypted-fallback".to_string(),
+                power_source: "AC Power".to_string(),
+                on_battery: false,
+                battery_percent: Some(90),
+                policy_allowed: true,
+                policy_reason: None,
+                worker_health: WorkerHealthReport {
+                    healthy: true,
+                    model_dir: "/tmp/models".to_string(),
+                    model_name: Some("demo".to_string()),
+                    model_path: Some("/tmp/models/demo.gguf".to_string()),
+                    llama_cli_available: true,
+                    blas_device_available: true,
+                    power_source: "AC Power".to_string(),
+                    on_battery: false,
+                    battery_percent: Some(90),
+                    runtime_mode: "batch".to_string(),
+                    checked_at: "2".to_string(),
+                    notes: vec![],
+                },
+            },
+            "2".to_string(),
+        );
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "hello world".to_string(),
+                preferred_backend: Backend::Auto,
+                model: None,
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "3".to_string(),
+        );
+
+        let claim = state.claim_job("node-1", "4".to_string());
+        assert!(claim.job.is_none());
+        assert_eq!(state.jobs.get("job-1").map(|job| job.status), Some(JobStatus::Queued));
     }
 
     #[test]
