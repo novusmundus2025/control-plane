@@ -166,7 +166,7 @@ pub struct ChatCompletionChoice {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChatCompletionOpenGpu {
+pub struct ChatCompletionMundusX {
     pub job_id: String,
     pub request_id: String,
     pub status: String,
@@ -179,7 +179,7 @@ pub struct ChatCompletionResponse {
     pub created: u64,
     pub model: String,
     pub choices: Vec<ChatCompletionChoice>,
-    pub opengpu: ChatCompletionOpenGpu,
+    pub mundusx: ChatCompletionMundusX,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -240,6 +240,8 @@ pub struct WorkerHealthReport {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobEventRecord {
     pub id: u64,
+    #[serde(default)]
+    pub source_event_id: Option<u64>,
     pub node_id: Option<String>,
     pub job_id: Option<String>,
     pub event_type: String,

@@ -4,11 +4,12 @@ mod state;
 mod supabase;
 
 use contracts::{
-    AgentRegistration, ChatCompletionChoice, ChatCompletionChoiceMessage, ChatCompletionOpenGpu,
+    AgentRegistration, ChatCompletionChoice, ChatCompletionChoiceMessage, ChatCompletionMundusX,
     ChatCompletionRequest, ChatCompletionResponse, Heartbeat, JobCompletion, JobRequest,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::{applied_migrations, apply_migrations};
+use serde::Serialize;
 use state::{load_state, save_state, state_path, ControlPlaneState};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -36,6 +37,67 @@ impl StorageSource {
             Self::Supabase => "supabase",
             Self::LocalJsonFallback => "local-json-fallback",
             Self::LocalJsonOnly => "local-json-only",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct SupabaseSyncStatus {
+    enabled: bool,
+    restore_source: String,
+    degraded: bool,
+    failure_count: u64,
+    last_error: Option<String>,
+    last_error_at: Option<String>,
+}
+
+impl SupabaseSyncStatus {
+    fn enabled(restore_source: StorageSource) -> Self {
+        Self {
+            enabled: true,
+            restore_source: restore_source.as_str().to_string(),
+            degraded: false,
+            failure_count: 0,
+            last_error: None,
+            last_error_at: None,
+        }
+    }
+
+    fn disabled(restore_source: StorageSource) -> Self {
+        Self {
+            enabled: false,
+            restore_source: restore_source.as_str().to_string(),
+            degraded: false,
+            failure_count: 0,
+            last_error: None,
+            last_error_at: None,
+        }
+    }
+
+    fn note_failure(&mut self, error: String) {
+        self.degraded = true;
+        self.failure_count = self.failure_count.saturating_add(1);
+        self.last_error = Some(error);
+        self.last_error_at = Some(now_unix_seconds());
+    }
+
+    fn summary(&self) -> String {
+        if !self.enabled {
+            format!("disabled ({})", self.restore_source)
+        } else if self.degraded {
+            format!("enabled (degraded, {})", self.restore_source)
+        } else {
+            format!("enabled ({})", self.restore_source)
+        }
+    }
+
+    fn tone(&self) -> &'static str {
+        if !self.enabled {
+            "red"
+        } else if self.degraded {
+            "amber"
+        } else {
+            "green"
         }
     }
 }
@@ -293,7 +355,11 @@ fn render_nodes(state: &ControlPlaneState) -> String {
     html
 }
 
-fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) -> String {
+fn control_plane_home(
+    state: &ControlPlaneState,
+    storage_source: StorageSource,
+    sync_status: &SupabaseSyncStatus,
+) -> String {
     let snapshot = state.snapshot(storage_source.as_str());
     let nodes = snapshot["online_count"].as_u64().unwrap_or(0);
     let paused = snapshot["paused_count"].as_u64().unwrap_or(0);
@@ -311,12 +377,8 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
     } else {
         "amber"
     };
-    let supabase = SupabaseMirror::startup_status();
-    let supabase_tone = if supabase.as_str().starts_with("enabled") {
-        "green"
-    } else {
-        "red"
-    };
+    let supabase = sync_status.summary();
+    let supabase_tone = sync_status.tone();
 
     format!(
         r#"<!doctype html>
@@ -619,7 +681,8 @@ fn control_plane_home(state: &ControlPlaneState, storage_source: StorageSource) 
         <div class="error">
           Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.
           Current startup storage source: <code>{storage_source}</code>. Credits are accrued through the
-          append-only ledger and exposed at <code>/v1/credits</code>.
+          append-only ledger and exposed at <code>/v1/credits</code>. Supabase sync is
+          <code>{supabase}</code>.
         </div>
       </div>
 
@@ -751,7 +814,7 @@ fn verify_signature(
         let storage_dir = state_path()
             .parent()
             .map(PathBuf::from)
-            .unwrap_or_else(|| PathBuf::from(".opengpu-control-plane"));
+            .unwrap_or_else(|| PathBuf::from(".mundusx-control-plane"));
         let verified = macos_identity::verify_message(
             &storage_dir,
             public_key_hex,
@@ -789,16 +852,16 @@ fn authorize_device_request(
         return Ok(());
     }
 
-    let node_id = header_value(headers, "x-opengpu-node-id")
-        .ok_or_else(|| "missing x-opengpu-node-id".to_string())?;
-    let timestamp = header_value(headers, "x-opengpu-timestamp")
-        .ok_or_else(|| "missing x-opengpu-timestamp".to_string())?;
-    let signature = header_value(headers, "x-opengpu-signature")
-        .ok_or_else(|| "missing x-opengpu-signature".to_string())?;
+    let node_id = header_value(headers, "x-mundusx-node-id")
+        .ok_or_else(|| "missing x-mundusx-node-id".to_string())?;
+    let timestamp = header_value(headers, "x-mundusx-timestamp")
+        .ok_or_else(|| "missing x-mundusx-timestamp".to_string())?;
+    let signature = header_value(headers, "x-mundusx-signature")
+        .ok_or_else(|| "missing x-mundusx-signature".to_string())?;
 
     let timestamp_value = timestamp
         .parse::<i64>()
-        .map_err(|_| "invalid x-opengpu-timestamp".to_string())?;
+        .map_err(|_| "invalid x-mundusx-timestamp".to_string())?;
     let current = now_unix_seconds()
         .parse::<i64>()
         .map_err(|_| "invalid current timestamp".to_string())?;
@@ -828,7 +891,7 @@ fn authorize_device_request(
 }
 
 fn operator_auth_token() -> Option<String> {
-    std::env::var("OPENGPU_OPERATOR_TOKEN")
+    std::env::var("MUNDUSX_OPERATOR_TOKEN")
         .ok()
         .map(|token| token.trim().to_string())
         .filter(|token| !token.is_empty())
@@ -848,7 +911,7 @@ fn authorize_operator_request(
     };
 
     let authorization = header_value(headers, "authorization")
-        .or_else(|| header_value(headers, "x-opengpu-operator-token"))
+        .or_else(|| header_value(headers, "x-mundusx-operator-token"))
         .ok_or_else(|| "missing operator authorization".to_string())?;
 
     let presented = authorization
@@ -864,9 +927,16 @@ fn authorize_operator_request(
     Ok(())
 }
 
+fn note_supabase_failure(sync_status: &Arc<Mutex<SupabaseSyncStatus>>, error: String) {
+    if let Ok(mut guard) = sync_status.lock() {
+        guard.note_failure(error);
+    }
+}
+
 fn handle_connection(
     mut stream: TcpStream,
     state: Arc<Mutex<ControlPlaneState>>,
+    sync_status: Arc<Mutex<SupabaseSyncStatus>>,
     supabase: Option<&SupabaseMirror>,
     storage_source: StorageSource,
 ) {
@@ -909,19 +979,25 @@ fn handle_connection(
     let response = match (request.method.as_str(), clean_path) {
         ("GET", "/") => {
             let snapshot = state.lock().expect("state lock");
-            html_response("200 OK", &control_plane_home(&snapshot, storage_source))
+            let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
+            html_response(
+                "200 OK",
+                &control_plane_home(&snapshot, storage_source, &sync_snapshot),
+            )
         }
         ("GET", "/health") => {
             let snapshot = state
                 .lock()
                 .expect("state lock")
                 .snapshot(storage_source.as_str());
+            let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
             json_response(
                 "200 OK",
                 serde_json::json!({
                     "status": "ok",
                     "storage_source": storage_source.as_str(),
-                    "supabase": SupabaseMirror::startup_status(),
+                    "supabase": sync_snapshot.summary(),
+                    "supabase_sync": sync_snapshot,
                     "snapshot": snapshot,
                 }),
             )
@@ -962,13 +1038,9 @@ fn handle_connection(
                         now_unix_seconds(),
                     );
                     if let Some(db) = supabase.as_ref() {
-                        if let Err(error) = db.record_job_event(
-                            event.node_id.as_deref(),
-                            event.job_id.as_deref(),
-                            &event.event_type,
-                            event.payload.clone(),
-                        ) {
+                        if let Err(error) = db.record_job_event(&event) {
                             eprintln!("database claim sync skipped: {error}");
+                            note_supabase_failure(&sync_status, error);
                         }
                     }
                 }
@@ -999,14 +1071,11 @@ fn handle_connection(
                     if let Some(db) = supabase.as_ref() {
                         if let Err(error) = db.record_registration(&registration_clone) {
                             eprintln!("database registration sync skipped: {error}");
+                            note_supabase_failure(&sync_status, error);
                         }
-                        if let Err(error) = db.record_job_event(
-                            event.node_id.as_deref(),
-                            event.job_id.as_deref(),
-                            &event.event_type,
-                            event.payload.clone(),
-                        ) {
+                        if let Err(error) = db.record_job_event(&event) {
                             eprintln!("database registration event skipped: {error}");
+                            note_supabase_failure(&sync_status, error);
                         }
                     }
                     json_response("200 OK", serde_json::to_value(record).expect("json"))
@@ -1035,14 +1104,11 @@ fn handle_connection(
                 if let Some(db) = supabase.as_ref() {
                     if let Err(error) = db.record_heartbeat(&heartbeat_clone) {
                         eprintln!("database heartbeat sync skipped: {error}");
+                        note_supabase_failure(&sync_status, error);
                     }
-                    if let Err(error) = db.record_job_event(
-                        event.node_id.as_deref(),
-                        event.job_id.as_deref(),
-                        &event.event_type,
-                        event.payload.clone(),
-                    ) {
+                    if let Err(error) = db.record_job_event(&event) {
                         eprintln!("database heartbeat event skipped: {error}");
+                        note_supabase_failure(&sync_status, error);
                     }
                 }
                 json_response("200 OK", serde_json::to_value(record).expect("json"))
@@ -1069,14 +1135,11 @@ fn handle_connection(
                 if let Some(db) = supabase.as_ref() {
                     if let Err(error) = db.record_job(&record) {
                         eprintln!("database job sync skipped: {error}");
+                        note_supabase_failure(&sync_status, error);
                     }
-                    if let Err(error) = db.record_job_event(
-                        event.node_id.as_deref(),
-                        event.job_id.as_deref(),
-                        &event.event_type,
-                        event.payload.clone(),
-                    ) {
+                    if let Err(error) = db.record_job_event(&event) {
                         eprintln!("database job event skipped: {error}");
+                        note_supabase_failure(&sync_status, error);
                     }
                 }
                 json_response("200 OK", serde_json::to_value(record).expect("json"))
@@ -1132,14 +1195,11 @@ fn handle_connection(
                     if let Some(db) = supabase.as_ref() {
                         if let Err(error) = db.record_job(&record) {
                             eprintln!("database chat completion sync skipped: {error}");
+                            note_supabase_failure(&sync_status, error);
                         }
-                        if let Err(error) = db.record_job_event(
-                            event.node_id.as_deref(),
-                            event.job_id.as_deref(),
-                            &event.event_type,
-                            event.payload.clone(),
-                        ) {
+                        if let Err(error) = db.record_job_event(&event) {
                             eprintln!("database chat completion event skipped: {error}");
+                            note_supabase_failure(&sync_status, error);
                         }
                     }
 
@@ -1156,7 +1216,7 @@ fn handle_connection(
                             },
                             finish_reason: "queued".to_string(),
                         }],
-                        opengpu: ChatCompletionOpenGpu {
+                        mundusx: ChatCompletionMundusX {
                             job_id: record.job_id.clone(),
                             request_id: record.request_id.clone(),
                             status: record.status.to_string(),
@@ -1185,13 +1245,19 @@ fn handle_connection(
                     } else {
                         "job_failed"
                     };
-                    guard.record_job_event(
+                    let event = guard.record_job_event(
                         job.assigned_node_id.clone(),
                         Some(job.job_id.clone()),
                         event_type,
                         serde_json::to_value(job).expect("json"),
                         now_unix_seconds(),
                     );
+                    if let Some(db) = supabase.as_ref() {
+                        if let Err(error) = db.record_job_event(&event) {
+                            eprintln!("database completion event skipped: {error}");
+                            note_supabase_failure(&sync_status, error);
+                        }
+                    }
                     if matches!(job.status, crate::contracts::JobStatus::Completed) {
                         if let Some(award) = guard.award_job_reward(job, completed_at) {
                             let award_event = guard.record_job_event(
@@ -1204,14 +1270,11 @@ fn handle_connection(
                             if let Some(db) = supabase.as_ref() {
                                 if let Err(error) = db.record_credit_award(&award) {
                                     eprintln!("database credit sync skipped: {error}");
+                                    note_supabase_failure(&sync_status, error);
                                 }
-                                if let Err(error) = db.record_job_event(
-                                    award_event.node_id.as_deref(),
-                                    award_event.job_id.as_deref(),
-                                    &award_event.event_type,
-                                    award_event.payload.clone(),
-                                ) {
+                                if let Err(error) = db.record_job_event(&award_event) {
                                     eprintln!("database credit event skipped: {error}");
+                                    note_supabase_failure(&sync_status, error);
                                 }
                             }
                         }
@@ -1224,6 +1287,7 @@ fn handle_connection(
                     if let Some(job) = record.as_ref() {
                         if let Err(error) = db.record_job_completion(&completion_clone, job) {
                             eprintln!("database completion sync skipped: {error}");
+                            note_supabase_failure(&sync_status, error);
                         }
                     }
                 }
@@ -1283,17 +1347,24 @@ fn main() {
 
     let supabase = SupabaseMirror::from_env();
     let listener = TcpListener::bind("127.0.0.1:8787").expect("bind control plane");
-    let (restored_state, storage_source) = match supabase.as_ref() {
+    let (restored_state, storage_source, sync_status) = match supabase.as_ref() {
         Some(db) => match db.restore_state() {
             Ok(state) => {
                 println!("restore: supabase");
-                (state, StorageSource::Supabase)
+                (
+                    state,
+                    StorageSource::Supabase,
+                    SupabaseSyncStatus::enabled(StorageSource::Supabase),
+                )
             }
             Err(error) => {
                 eprintln!("supabase restore skipped: {error}");
+                let mut status = SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback);
+                status.note_failure(format!("restore failed: {error}"));
                 (
                     load_state().ok().flatten().unwrap_or_default(),
                     StorageSource::LocalJsonFallback,
+                    status,
                 )
             }
         },
@@ -1302,13 +1373,18 @@ fn main() {
             (
                 load_state().ok().flatten().unwrap_or_default(),
                 StorageSource::LocalJsonOnly,
+                SupabaseSyncStatus::disabled(StorageSource::LocalJsonOnly),
             )
         }
     };
     let state = Arc::new(Mutex::new(restored_state));
+    let sync_status = Arc::new(Mutex::new(sync_status));
 
     println!("NovusX control plane listening on http://127.0.0.1:8787");
-    println!("supabase: {}", SupabaseMirror::startup_status());
+    println!(
+        "supabase: {}",
+        sync_status.lock().expect("sync status lock").summary()
+    );
     println!("storage_source: {}", storage_source.as_str());
     if let Ok(database_url) = std::env::var("DATABASE_URL") {
         match applied_migrations(&database_url) {
@@ -1339,7 +1415,14 @@ fn main() {
         match incoming {
             Ok(stream) => {
                 let state = Arc::clone(&state);
-                handle_connection(stream, state, supabase.as_ref(), storage_source);
+                let sync_status = Arc::clone(&sync_status);
+                handle_connection(
+                    stream,
+                    state,
+                    sync_status,
+                    supabase.as_ref(),
+                    storage_source,
+                );
             }
             Err(error) => eprintln!("incoming connection error: {error}"),
         }
