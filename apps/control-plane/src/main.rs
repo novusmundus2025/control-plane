@@ -284,18 +284,24 @@ fn render_nodes(state: &ControlPlaneState) -> String {
             .worker_health
             .as_ref()
             .map(|health| {
+                let model_dir = health.model_dir.as_str();
                 let model_name = health.model_name.as_deref().unwrap_or("none");
                 let model_path = health.model_path.as_deref().unwrap_or("missing");
+                let runtime_mode = health.runtime_mode.as_str();
+                let checked_at = health.checked_at.as_str();
                 let notes = if health.notes.is_empty() {
                     "no notes".to_string()
                 } else {
                     health.notes.join(" • ")
                 };
                 format!(
-                    r#"<div class="meta">worker: {} • model {} • {} • llama-cli {} • BLAS {}</div><div class="meta">{}</div>"#,
+                    r#"<div class="meta">worker: {} • model dir {} • model {} • {} • runtime {} • checked {} • llama-cli {} • BLAS {}</div><div class="meta">{}</div>"#,
                     if health.healthy { "healthy" } else { "degraded" },
+                    escape_html(model_dir),
                     escape_html(model_name),
                     escape_html(model_path),
+                    escape_html(runtime_mode),
+                    escape_html(checked_at),
                     if health.llama_cli_available { "yes" } else { "no" },
                     if health.blas_device_available { "yes" } else { "no" },
                     escape_html(&notes)
