@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { pathToFileURL } from "node:url";
 
 const controlPlaneUrl = process.env.MUNDUSX_CONTROL_PLANE_URL ?? "http://127.0.0.1:8787";
 const port = Number(process.env.PORT ?? "3001");
@@ -154,6 +155,190 @@ function renderCounts(snapshot = {}) {
         </div>`,
     )
     .join("");
+}
+
+function runtimeReadiness(node = {}) {
+  const workerHealth = node.worker_health ?? null;
+  if (!workerHealth) {
+    return {
+      ready: false,
+      tone: "red",
+      label: "worker unknown",
+      detail: "No worker health report has been recorded yet.",
+    };
+  }
+
+  const runtimeMode = String(workerHealth.runtime_mode ?? "").trim().toLowerCase();
+  const hasRuntimeMode = runtimeMode === "local" || runtimeMode === "interactive";
+  const modelDir = String(workerHealth.model_dir ?? "").trim();
+  const modelName = String(workerHealth.model_name ?? "").trim();
+  const modelPath = String(workerHealth.model_path ?? "").trim();
+
+  const reasons = [];
+  if (!workerHealth.healthy) reasons.push("worker probe unhealthy");
+  if (!workerHealth.llama_cli_available) reasons.push("llama-cli missing");
+  if (!workerHealth.blas_device_available) reasons.push("Metal/BLAS unavailable");
+  if (!modelDir) reasons.push("model dir missing");
+  if (!modelName) reasons.push("model missing");
+  if (!modelPath) reasons.push("model path missing");
+  if (!hasRuntimeMode) reasons.push(`runtime ${runtimeMode || "unknown"}`);
+
+  if (!reasons.length) {
+    return {
+      ready: true,
+      tone: "green",
+      label: "runtime ready",
+      detail: `${workerHealth.runtime_mode ?? "local"} execution is ready to accept local jobs.`,
+    };
+  }
+
+  return {
+    ready: false,
+    tone: "red",
+    label: "runtime blocked",
+    detail: reasons.join(" • "),
+  };
+}
+
+function summarizeMSeries(snapshot = {}) {
+  const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
+  const mNodes = nodes.filter((node) => String(node.backend ?? "").toLowerCase() === "m");
+  const runtimeReadyCount = mNodes.filter((node) => runtimeReadiness(node).ready).length;
+  const trustedCount = mNodes.filter((node) => String(node.identity_trust_path ?? "") === "keychain").length;
+  const policyBlockedCount = mNodes.filter((node) => !node.policy_allowed).length;
+  const claimReadyCount = mNodes.filter((node) => {
+    const state = String(node.state ?? "").toLowerCase();
+    return state === "ready" && node.policy_allowed && runtimeReadiness(node).ready;
+  }).length;
+  const queuedMJobs = (Array.isArray(snapshot.jobs) ? snapshot.jobs : []).filter((job) => {
+    if (String(job.status ?? "").toLowerCase() !== "queued") {
+      return false;
+    }
+
+    const backend = String(job.preferred_backend ?? "auto").toLowerCase();
+    return backend === "m" || backend === "auto";
+  }).length;
+
+  let routingRisk = {
+    tone: "neutral",
+    label: "no M-series nodes",
+    detail: "Register an Apple Silicon node before expecting local M-series routing.",
+  };
+
+  if (mNodes.length) {
+    if (!claimReadyCount) {
+      routingRisk = {
+        tone: "red",
+        label: "high routing risk",
+        detail: "No M-series node can safely claim queued work right now.",
+      };
+    } else if (policyBlockedCount > 0 || runtimeReadyCount < mNodes.length || queuedMJobs > claimReadyCount) {
+      routingRisk = {
+        tone: "amber",
+        label: "watch routing risk",
+        detail: "Some M-series capacity is blocked, degraded, or thinner than the queued workload.",
+      };
+    } else {
+      routingRisk = {
+        tone: "green",
+        label: "routing looks healthy",
+        detail: "At least one M-series node is ready, trusted, and eligible for claims.",
+      };
+    }
+  }
+
+  return {
+    mNodes,
+    runtimeReadyCount,
+    trustedCount,
+    policyBlockedCount,
+    claimReadyCount,
+    queuedMJobs,
+    routingRisk,
+  };
+}
+
+function renderMSeriesOperatorSummary(snapshot = {}) {
+  const { mNodes, runtimeReadyCount, trustedCount, policyBlockedCount, claimReadyCount, queuedMJobs, routingRisk } =
+    summarizeMSeries(snapshot);
+
+  if (!mNodes.length) {
+    return `
+      <div class="empty">
+        No Apple Silicon nodes are registered yet. Trust path, policy state, runtime readiness, and routing risk
+        will appear here as soon as an M-series worker reports in.
+      </div>`;
+  }
+
+  const cards = [
+    ["Trust path", `${trustedCount}/${mNodes.length}`, trustedCount === mNodes.length ? "green" : "amber", "trusted via keychain"],
+    ["Policy blocked", String(policyBlockedCount), policyBlockedCount ? "red" : "green", "nodes excluded by server policy"],
+    ["Runtime readiness", `${runtimeReadyCount}/${mNodes.length}`, runtimeReadyCount === mNodes.length ? "green" : "amber", "worker can run local jobs"],
+    ["Routing risk", routingRisk.label, routingRisk.tone, routingRisk.detail],
+  ];
+
+  return `
+    <div class="meta" style="margin-bottom: 16px;">
+      This M-series operator view separates identity trust, policy state, and runtime readiness so routing risk is obvious before jobs queue up.
+    </div>
+    <div class="m-series-grid">
+      ${cards
+        .map(
+          ([label, value, tone, detail]) => `
+            <div class="card">
+              <div class="card-label">${escapeHtml(label)}</div>
+              <div class="card-value">${escapeHtml(value)}</div>
+              <div>${badge(tone === "neutral" ? "info" : tone, tone)}</div>
+              <div class="meta" style="margin-top: 10px;">${escapeHtml(detail)}</div>
+            </div>`,
+        )
+        .join("")}
+    </div>
+    <div class="panel-list" style="margin-top: 18px;">
+      ${mNodes
+        .map((node) => {
+          const readiness = runtimeReadiness(node);
+          const trustTone = String(node.identity_trust_path ?? "") === "keychain" ? "green" : "amber";
+          const policyTone = node.policy_allowed ? "green" : "red";
+          const stateTone =
+            String(node.state ?? "").toLowerCase() === "ready"
+              ? "green"
+              : String(node.state ?? "").toLowerCase() === "busy"
+                ? "amber"
+                : "red";
+          const battery = node.battery_percent == null ? "unknown" : `${node.battery_percent}%`;
+          const power = `${node.power_source ?? "unknown"} • ${node.on_battery ? "battery" : "AC"} • ${battery}`;
+          const claimability =
+            String(node.state ?? "").toLowerCase() === "ready" && node.policy_allowed && readiness.ready
+              ? "eligible for routing"
+              : "held out of routing";
+          return `
+            <div class="panel">
+              <div class="panel-top">
+                <div>
+                  <strong>${escapeHtml(node.node_id ?? "unknown node")}</strong>
+                  <div class="meta">${escapeHtml(node.hostname ?? "unknown host")} • cap ${escapeHtml(node.contribution_percent ?? 0)}%</div>
+                </div>
+                <div class="job-badges">
+                  ${badge(`trust: ${String(node.identity_trust_path ?? "unknown")}`, trustTone)}
+                  ${badge(`policy: ${node.policy_allowed ? "allowed" : "blocked"}`, policyTone)}
+                  ${badge(`runtime: ${readiness.label}`, readiness.tone)}
+                  ${badge(`state: ${String(node.state ?? "unknown")}`, stateTone)}
+                </div>
+              </div>
+              <p style="margin-top: 10px;">
+                ${escapeHtml(claimability)} • ${escapeHtml(power)} • ${escapeHtml(readiness.detail)}
+              </p>
+              <p style="margin-top: 8px;">
+                ${escapeHtml(node.policy_reason ?? "Policy currently allows local work.")}
+              </p>
+            </div>`;
+        })
+        .join("")}
+    </div>
+    <div class="meta" style="margin-top: 16px;">
+      ${escapeHtml(`${claimReadyCount} claim-ready M-series node(s) for ${queuedMJobs} queued auto/M-series job(s).`)}
+    </div>`;
 }
 
 function renderNodes(nodes = []) {
@@ -1937,7 +2122,7 @@ function renderInstallPage(installPath = "/install") {
 </html>`;
 }
 
-function page({ health, status, events, credits, error }) {
+export function page({ health, status, events, credits, error }) {
   const snapshot = status ?? health?.snapshot ?? {};
   const storageSource = health?.storage_source ?? snapshot.storage_source ?? "unknown";
   const supabase = health?.supabase ?? "unknown";
@@ -2035,6 +2220,11 @@ function page({ health, status, events, credits, error }) {
         gap: 14px;
         margin: 18px 0 24px;
       }
+      .m-series-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+      }
       .card {
         border: 1px solid var(--line);
         background: var(--surface);
@@ -2114,6 +2304,23 @@ function page({ health, status, events, credits, error }) {
       .empty {
         color: var(--muted);
         padding: 28px 0;
+      }
+      .panel-list {
+        display: grid;
+        gap: 12px;
+      }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+        padding: 14px 16px;
+      }
+      .panel-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: start;
+        flex-wrap: wrap;
       }
       .events {
         display: grid;
@@ -2242,12 +2449,14 @@ function page({ health, status, events, credits, error }) {
       }
       @media (max-width: 1200px) {
         .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .m-series-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .table .thead,
         .table .row { grid-template-columns: 1.1fr 0.9fr 0.7fr 0.7fr 1fr 1fr 0.7fr; }
         .job-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
       @media (max-width: 820px) {
         .grid { grid-template-columns: 1fr; }
+        .m-series-grid { grid-template-columns: 1fr; }
         .table .thead { display: none; }
         .table .row {
           grid-template-columns: 1fr;
@@ -2286,6 +2495,14 @@ function page({ health, status, events, credits, error }) {
         </div>
 
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
+      </div>
+
+      <div class="section">
+        <div class="section-head">
+          <h2 class="section-title">M-series operator view</h2>
+          <div class="meta">${formatCount(summarizeMSeries(snapshot).mNodes.length)} Apple Silicon node(s)</div>
+        </div>
+        <div class="section-body">${renderMSeriesOperatorSummary(snapshot)}</div>
       </div>
 
       <div class="section">
@@ -2767,7 +2984,8 @@ async function collectData() {
   return { health, status, events, credits, error: null };
 }
 
-createServer(async (req, res) => {
+export function createAppServer() {
+  return createServer(async (req, res) => {
   const requestUrl = new URL(req.url ?? "/", appUrl);
   if (requestUrl.pathname === "/install") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -2904,8 +3122,16 @@ createServer(async (req, res) => {
 
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(page(data));
-}).listen(port, "127.0.0.1", () => {
-  process.stdout.write(
-    `NovusX dashboard listening on http://127.0.0.1:${port} (proxying ${controlPlaneUrl})\n`,
-  );
-});
+  });
+}
+
+const isEntrypoint =
+  process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isEntrypoint) {
+  createAppServer().listen(port, "127.0.0.1", () => {
+    process.stdout.write(
+      `NovusX dashboard listening on http://127.0.0.1:${port} (proxying ${controlPlaneUrl})\n`,
+    );
+  });
+}
