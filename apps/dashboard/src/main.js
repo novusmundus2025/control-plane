@@ -212,6 +212,90 @@ function renderNodes(nodes = []) {
     </div>`;
 }
 
+function backendTone(backend) {
+  switch (String(backend ?? "").toLowerCase()) {
+    case "m":
+      return "green";
+    case "cuda":
+      return "amber";
+    case "auto":
+      return "blue";
+    default:
+      return "neutral";
+  }
+}
+
+function jobStatusTone(status) {
+  switch (String(status ?? "").toLowerCase()) {
+    case "completed":
+      return "green";
+    case "assigned":
+      return "amber";
+    case "failed":
+      return "red";
+    case "queued":
+      return "blue";
+    default:
+      return "neutral";
+  }
+}
+
+function renderJobs(jobs = []) {
+  if (!jobs.length) {
+    return `<div class="empty">No jobs have been recorded yet.</div>`;
+  }
+
+  return `
+    <div class="jobs">
+      ${jobs
+        .slice()
+        .reverse()
+        .map((job) => {
+          const preferredBackend = String(job.preferred_backend ?? "auto");
+          const assignedBackend = job.backend == null ? "pending" : String(job.backend);
+          const assignedNode = job.assigned_node_id ?? "unassigned";
+          const submittedAt = job.submitted_at ?? "unknown";
+          const assignedAt = job.assigned_at ?? "pending";
+          const completedAt = job.completed_at ?? "pending";
+          const prompt = String(job.prompt ?? "").trim();
+          return `
+            <article class="job-card">
+              <div class="job-head">
+                <div>
+                  <strong>${escapeHtml(job.job_id ?? job.request_id ?? "unknown job")}</strong>
+                  <div class="meta">${escapeHtml(job.model ?? "no model specified")}</div>
+                </div>
+                <div class="job-badges">
+                  ${badge(String(job.status ?? "unknown"), jobStatusTone(job.status))}
+                  ${badge(`preferred ${preferredBackend}`, backendTone(preferredBackend))}
+                  ${badge(`assigned ${assignedBackend}`, backendTone(assignedBackend))}
+                </div>
+              </div>
+              <div class="job-prompt">${escapeHtml(prompt || "No prompt recorded.")}</div>
+              <div class="job-grid">
+                <div class="meta-box">
+                  <div class="meta-label">Assigned node</div>
+                  <div class="meta-value">${escapeHtml(assignedNode)}</div>
+                </div>
+                <div class="meta-box">
+                  <div class="meta-label">Submitted</div>
+                  <div class="meta-value">${escapeHtml(submittedAt)}</div>
+                </div>
+                <div class="meta-box">
+                  <div class="meta-label">Assigned</div>
+                  <div class="meta-value">${escapeHtml(assignedAt)}</div>
+                </div>
+                <div class="meta-box">
+                  <div class="meta-label">Completed</div>
+                  <div class="meta-value">${escapeHtml(completedAt)}</div>
+                </div>
+              </div>
+            </article>`;
+        })
+        .join("")}
+    </div>`;
+}
+
 function renderEvents(events = []) {
   if (!events.length) {
     return `<div class="empty">No job events yet.</div>`;
@@ -2035,6 +2119,10 @@ function page({ health, status, events, credits, error }) {
         display: grid;
         gap: 12px;
       }
+      .jobs {
+        display: grid;
+        gap: 12px;
+      }
       .balance-grid {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
@@ -2059,6 +2147,39 @@ function page({ health, status, events, credits, error }) {
         border-radius: 14px;
         background: var(--surface);
         padding: 14px 16px;
+      }
+      .job-card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+        padding: 16px;
+      }
+      .job-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: start;
+      }
+      .job-head strong {
+        font-size: 14px;
+      }
+      .job-badges {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .job-prompt {
+        margin-top: 12px;
+        line-height: 1.6;
+        color: var(--text);
+      }
+      .job-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
       }
       .event-top {
         display: flex;
@@ -2123,6 +2244,7 @@ function page({ health, status, events, credits, error }) {
         .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .table .thead,
         .table .row { grid-template-columns: 1.1fr 0.9fr 0.7fr 0.7fr 1fr 1fr 0.7fr; }
+        .job-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
       @media (max-width: 820px) {
         .grid { grid-template-columns: 1fr; }
@@ -2132,6 +2254,7 @@ function page({ health, status, events, credits, error }) {
           gap: 10px;
           padding: 16px 0;
         }
+        .job-grid { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -2171,6 +2294,14 @@ function page({ health, status, events, credits, error }) {
           <div class="meta">${formatCount(snapshot.nodes?.length ?? 0)} registered</div>
         </div>
         <div class="section-body">${renderNodes(snapshot.nodes ?? [])}</div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
+          <h2 class="section-title">Jobs</h2>
+          <div class="meta">${formatCount(snapshot.jobs?.length ?? 0)} tracked</div>
+        </div>
+        <div class="section-body">${renderJobs(snapshot.jobs ?? [])}</div>
       </div>
 
       <div class="section">

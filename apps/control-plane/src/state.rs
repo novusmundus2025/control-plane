@@ -264,10 +264,37 @@ impl ControlPlaneState {
         record
     }
 
-    fn node_backend_matches(job: &JobRecord, node_backend: Backend) -> bool {
-        job.preferred_backend == Backend::Auto
-            || node_backend == Backend::Auto
-            || job.preferred_backend == node_backend
+    fn node_backend_matches(
+        job: &JobRecord,
+        node_backend: Backend,
+        ready_m_exists: bool,
+        ready_cuda_exists: bool,
+    ) -> bool {
+        match job.preferred_backend {
+            Backend::Auto => {
+                if ready_m_exists {
+                    node_backend == Backend::M
+                } else if ready_cuda_exists {
+                    node_backend == Backend::Cuda
+                } else {
+                    node_backend == Backend::Auto
+                }
+            }
+            Backend::M => {
+                if ready_m_exists {
+                    node_backend == Backend::M
+                } else {
+                    node_backend == Backend::Auto
+                }
+            }
+            Backend::Cuda => {
+                if ready_cuda_exists {
+                    node_backend == Backend::Cuda
+                } else {
+                    node_backend == Backend::Auto
+                }
+            }
+        }
     }
 
     pub fn claim_job(&mut self, node_id: &str, claimed_at: String) -> JobClaimResponse {
@@ -284,11 +311,27 @@ impl ControlPlaneState {
         }
 
         let node_backend = node.backend;
+        let ready_m_exists = self.nodes.values().any(|candidate| {
+            candidate.state == AgentState::Ready
+                && candidate.policy_allowed
+                && candidate.backend == Backend::M
+        });
+        let ready_cuda_exists = self.nodes.values().any(|candidate| {
+            candidate.state == AgentState::Ready
+                && candidate.policy_allowed
+                && candidate.backend == Backend::Cuda
+        });
         let job_id = self
             .jobs
             .iter()
             .find(|(_, job)| {
-                job.status == JobStatus::Queued && Self::node_backend_matches(job, node_backend)
+                job.status == JobStatus::Queued
+                    && Self::node_backend_matches(
+                        job,
+                        node_backend,
+                        ready_m_exists,
+                        ready_cuda_exists,
+                    )
             })
             .map(|(job_id, _)| job_id.clone());
 
@@ -609,6 +652,81 @@ mod tests {
         let job = claim.job.expect("claimed job");
         assert_eq!(job.job_id, "job-1");
         assert_eq!(job.status, JobStatus::Assigned);
+        assert_eq!(job.assigned_node_id.as_deref(), Some("node-1"));
+    }
+
+    #[test]
+    fn prefers_m_series_nodes_for_auto_jobs_when_available() {
+        let mut state = ready_state();
+        state.register(AgentRegistration {
+            node_id: "node-2".to_string(),
+            public_key_fingerprint: "fingerprint-2".to_string(),
+            public_key_hex: "ddeeff".to_string(),
+            hostname: "host-2".to_string(),
+            identity_trust_path: "local-encrypted-fallback".to_string(),
+            backend: Backend::Cuda,
+            contribution_percent: 40,
+            agent_version: "0.1.0".to_string(),
+        });
+        state.heartbeat(
+            Heartbeat {
+                node_id: "node-2".to_string(),
+                backend: Backend::Cuda,
+                agent_state: AgentState::Ready,
+                available_memory_mb: 16_000,
+                available_gpu_percent: 50,
+                updated_at: "2".to_string(),
+                contribution_percent: 40,
+                hostname: "host-2".to_string(),
+                identity_trust_path: "local-encrypted-fallback".to_string(),
+                power_source: "AC Power".to_string(),
+                on_battery: false,
+                battery_percent: Some(90),
+                policy_allowed: true,
+                policy_reason: None,
+                worker_health: WorkerHealthReport {
+                    healthy: true,
+                    model_dir: "/tmp/models".to_string(),
+                    model_name: Some("demo".to_string()),
+                    model_path: Some("/tmp/models/demo.gguf".to_string()),
+                    llama_cli_available: true,
+                    blas_device_available: true,
+                    power_source: "AC Power".to_string(),
+                    on_battery: false,
+                    battery_percent: Some(90),
+                    runtime_mode: "local".to_string(),
+                    checked_at: "2".to_string(),
+                    notes: vec![],
+                },
+            },
+            "2".to_string(),
+        );
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "hello world".to_string(),
+                preferred_backend: Backend::Auto,
+                model: None,
+                system_prompt: Some("You are a terse assistant.".to_string()),
+                max_tokens: Some(32),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                seed: Some(42),
+            },
+            "3".to_string(),
+        );
+
+        let cuda_claim = state.claim_job("node-2", "4".to_string());
+        assert!(cuda_claim.job.is_none());
+        assert_eq!(
+            state.jobs.get("job-1").map(|job| job.status),
+            Some(JobStatus::Queued)
+        );
+
+        let m_claim = state.claim_job("node-1", "5".to_string());
+        let job = m_claim.job.expect("claimed job");
+        assert_eq!(job.job_id, "job-1");
+        assert_eq!(job.backend, Some(Backend::M));
         assert_eq!(job.assigned_node_id.as_deref(), Some("node-1"));
     }
 
