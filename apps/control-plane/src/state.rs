@@ -579,55 +579,190 @@ pub fn save_state(state: &ControlPlaneState) -> std::io::Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contracts::WorkerHealthReport;
+    use crate::contracts::{WorkerHealthReport, IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK};
 
-    fn ready_state() -> ControlPlaneState {
-        let mut state = ControlPlaneState::default();
-        let registration = AgentRegistration {
-            node_id: "node-1".to_string(),
-            public_key_fingerprint: "fingerprint".to_string(),
-            public_key_hex: "aabbcc".to_string(),
-            hostname: "host-1".to_string(),
-            identity_trust_path: "local-encrypted-fallback".to_string(),
+    fn m_series_registration(node_id: &str) -> AgentRegistration {
+        AgentRegistration {
+            node_id: node_id.to_string(),
+            public_key_fingerprint: format!("fingerprint-{node_id}"),
+            public_key_hex: format!("hex-{node_id}"),
+            hostname: format!("host-{node_id}"),
+            identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
             backend: Backend::M,
             contribution_percent: 50,
             agent_version: "0.1.0".to_string(),
-        };
-        state.register(registration);
-        state.heartbeat(
-            Heartbeat {
-                node_id: "node-1".to_string(),
-                backend: Backend::M,
-                agent_state: AgentState::Ready,
-                available_memory_mb: 16_000,
-                available_gpu_percent: 50,
-                updated_at: "1".to_string(),
-                contribution_percent: 50,
-                hostname: "host-1".to_string(),
-                identity_trust_path: "local-encrypted-fallback".to_string(),
-                power_source: "AC Power".to_string(),
-                on_battery: false,
-                battery_percent: Some(90),
-                policy_allowed: true,
-                policy_reason: None,
-                worker_health: WorkerHealthReport {
-                    healthy: true,
-                    model_dir: "/tmp/models".to_string(),
-                    model_name: Some("demo".to_string()),
-                    model_path: Some("/tmp/models/demo.gguf".to_string()),
-                    llama_cli_available: true,
-                    blas_device_available: true,
-                    power_source: "AC Power".to_string(),
-                    on_battery: false,
-                    battery_percent: Some(90),
-                    runtime_mode: "local".to_string(),
-                    checked_at: "1".to_string(),
-                    notes: vec![],
-                },
-            },
-            "1".to_string(),
-        );
+        }
+    }
+
+    fn healthy_worker_health(checked_at: &str) -> WorkerHealthReport {
+        WorkerHealthReport {
+            healthy: true,
+            model_dir: "/tmp/models".to_string(),
+            model_name: Some("demo".to_string()),
+            model_path: Some("/tmp/models/demo.gguf".to_string()),
+            llama_cli_available: true,
+            blas_device_available: true,
+            power_source: "AC Power".to_string(),
+            on_battery: false,
+            battery_percent: Some(90),
+            runtime_mode: "local".to_string(),
+            checked_at: checked_at.to_string(),
+            notes: vec!["m-series ready".to_string()],
+        }
+    }
+
+    fn ready_heartbeat(node_id: &str, updated_at: &str) -> Heartbeat {
+        Heartbeat {
+            node_id: node_id.to_string(),
+            backend: Backend::M,
+            agent_state: AgentState::Ready,
+            available_memory_mb: 16_000,
+            available_gpu_percent: 50,
+            updated_at: updated_at.to_string(),
+            contribution_percent: 50,
+            hostname: format!("host-{node_id}"),
+            identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
+            power_source: "AC Power".to_string(),
+            on_battery: false,
+            battery_percent: Some(90),
+            policy_allowed: true,
+            policy_reason: None,
+            worker_health: healthy_worker_health(updated_at),
+        }
+    }
+
+    fn ready_state() -> ControlPlaneState {
+        let mut state = ControlPlaneState::default();
+        state.register(m_series_registration("node-1"));
+        state.heartbeat(ready_heartbeat("node-1", "1"), "1".to_string());
         state
+    }
+
+    #[test]
+    fn covers_m_series_registration_through_completion_lifecycle() {
+        let mut state = ControlPlaneState::default();
+        let registration = m_series_registration("node-1");
+        let registered = state.register(registration);
+        assert_eq!(registered.state, AgentState::Starting);
+        assert_eq!(registered.backend, Backend::M);
+
+        let heartbeat = ready_heartbeat("node-1", "1");
+        let node = state.heartbeat(heartbeat, "1".to_string());
+        assert!(node.policy_allowed);
+        assert_eq!(node.state, AgentState::Ready);
+        assert_eq!(
+            node.worker_health
+                .as_ref()
+                .and_then(|health| health.model_name.as_deref()),
+            Some("demo")
+        );
+
+        let queued = state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "hello world".to_string(),
+                preferred_backend: Backend::M,
+                model: Some("demo".to_string()),
+                system_prompt: Some("You are a terse assistant.".to_string()),
+                max_tokens: Some(32),
+                temperature: Some(0.2),
+                top_p: Some(0.9),
+                seed: Some(42),
+            },
+            "2".to_string(),
+        );
+        assert_eq!(queued.status, JobStatus::Queued);
+
+        let claim = state.claim_job("node-1", "3".to_string());
+        let claimed = claim.job.expect("claimed job");
+        assert_eq!(claimed.backend, Some(Backend::M));
+        assert_eq!(claimed.assigned_node_id.as_deref(), Some("node-1"));
+        assert_eq!(
+            state.nodes.get("node-1").map(|node| node.state),
+            Some(AgentState::Busy)
+        );
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("done".to_string()),
+                    error: None,
+                },
+                "4".to_string(),
+            )
+            .expect("completed job");
+        assert_eq!(completed.status, JobStatus::Completed);
+        assert_eq!(completed.worker_id.as_deref(), Some("worker-1"));
+        assert_eq!(
+            state.nodes.get("node-1").map(|node| node.state),
+            Some(AgentState::Ready)
+        );
+
+        let job_json = serde_json::to_value(&completed).expect("job json");
+        assert_eq!(job_json["backend"], "m");
+        assert_eq!(job_json["status"], "completed");
+        assert_eq!(job_json["output"], "done");
+
+        let node_json =
+            serde_json::to_value(state.nodes.get("node-1").expect("node")).expect("node json");
+        assert_eq!(node_json["backend"], "m");
+        assert_eq!(node_json["state"], "ready");
+        assert_eq!(node_json["worker_health"]["runtime_mode"], "local");
+
+        let snapshot = state.snapshot("local-json-only");
+        assert_eq!(snapshot["online_count"].as_u64(), Some(1));
+        assert_eq!(snapshot["completed_job_count"].as_u64(), Some(1));
+        assert_eq!(snapshot["assigned_job_count"].as_u64(), Some(0));
+        assert_eq!(snapshot["policy_blocked_count"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn blocks_unhealthy_m_series_node_from_claiming_jobs() {
+        let mut state = ControlPlaneState::default();
+        state.register(m_series_registration("node-1"));
+        let mut heartbeat = ready_heartbeat("node-1", "1");
+        heartbeat.worker_health.healthy = false;
+        heartbeat.worker_health.llama_cli_available = false;
+        heartbeat.worker_health.runtime_mode = "batch".to_string();
+        state.heartbeat(heartbeat, "1".to_string());
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "hello world".to_string(),
+                preferred_backend: Backend::M,
+                model: Some("demo".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        let claim = state.claim_job("node-1", "3".to_string());
+        assert!(claim.job.is_none());
+        assert_eq!(
+            state.jobs.get("job-1").map(|job| job.status),
+            Some(JobStatus::Queued)
+        );
+
+        let node = state.nodes.get("node-1").expect("node exists");
+        assert!(!node.policy_allowed);
+        let reason = node.policy_reason.as_deref().expect("policy reason");
+        assert!(reason.contains("worker health probe reported unhealthy"));
+        assert!(reason.contains("llama-cli is unavailable"));
+        assert!(reason.contains("runtime mode batch is not ready for local execution"));
+
+        let snapshot = state.snapshot("local-json-only");
+        assert_eq!(snapshot["policy_blocked_count"].as_u64(), Some(1));
+        assert_eq!(snapshot["queued_job_count"].as_u64(), Some(1));
+        assert_eq!(snapshot["assigned_job_count"].as_u64(), Some(0));
     }
 
     #[test]
