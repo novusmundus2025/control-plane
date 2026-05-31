@@ -178,7 +178,7 @@ function renderNodes(nodes = []) {
           const power = `${node.power_source ?? "unknown"} • ${node.on_battery ? "battery" : "AC"} • ${battery}`;
           const workerHealth = node.worker_health ?? null;
           const workerLine = workerHealth
-            ? `<div class="meta">worker: ${escapeHtml(workerHealth.healthy ? "healthy" : "degraded")} • model ${escapeHtml(workerHealth.model_name ?? "none")} • ${escapeHtml(workerHealth.model_path ?? "missing")} • llama-cli ${workerHealth.llama_cli_available ? "yes" : "no"} • BLAS ${workerHealth.blas_device_available ? "yes" : "no"}</div><div class="meta">${escapeHtml((workerHealth.notes ?? []).length ? workerHealth.notes.join(" • ") : "no notes")}</div>`
+            ? `<div class="meta">worker: ${escapeHtml(workerHealth.healthy ? "healthy" : "degraded")} • model dir ${escapeHtml(workerHealth.model_dir ?? "missing")} • model ${escapeHtml(workerHealth.model_name ?? "none")} • ${escapeHtml(workerHealth.model_path ?? "missing")} • runtime ${escapeHtml(workerHealth.runtime_mode ?? "unknown")} • checked ${escapeHtml(workerHealth.checked_at ?? "unknown")} • llama-cli ${workerHealth.llama_cli_available ? "yes" : "no"} • BLAS ${workerHealth.blas_device_available ? "yes" : "no"}</div><div class="meta">${escapeHtml((workerHealth.notes ?? []).length ? workerHealth.notes.join(" • ") : "no notes")}</div>`
             : `<div class="meta">worker: unknown</div>`;
           const policyTone = node.policy_allowed ? "green" : "red";
           const stateTone =
@@ -725,10 +725,13 @@ function renderContributorPortal() {
     policy_reason: null,
     worker_health: {
       healthy: true,
+      model_dir: "/Users/DBATALL/.mundusx/models",
       model_name: "HuggingFaceTB/SmolLM2-135M-Instruct",
       model_path: "/Users/DBATALL/.mundusx/models/...",
       llama_cli_available: true,
       blas_device_available: true,
+      runtime_mode: "local",
+      checked_at: "just now",
       notes: ["ready for local jobs", "Mac-first preview"],
     },
   };

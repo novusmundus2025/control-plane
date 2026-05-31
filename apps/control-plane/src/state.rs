@@ -6,6 +6,7 @@ use crate::contracts::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -450,6 +451,10 @@ pub fn evaluate_policy(
         reasons.push("BLAS device acceleration is unavailable".to_string());
     }
 
+    if worker_health.model_dir.trim().is_empty() {
+        reasons.push("model directory is missing".to_string());
+    }
+
     if worker_health
         .model_name
         .as_deref()
@@ -468,10 +473,25 @@ pub fn evaluate_policy(
         .is_empty()
     {
         reasons.push("model path is missing".to_string());
+    } else {
+        let model_dir = worker_health.model_dir.trim();
+        let model_path = worker_health.model_path.as_deref().unwrap_or("").trim();
+        if !model_dir.is_empty() && !Path::new(model_path).starts_with(Path::new(model_dir)) {
+            reasons.push(format!(
+                "model path {model_path} is outside model directory {model_dir}"
+            ));
+        }
     }
 
-    if worker_health.runtime_mode.trim().is_empty() {
+    let runtime_mode = worker_health.runtime_mode.trim();
+    if runtime_mode.is_empty() {
         reasons.push("runtime mode is missing".to_string());
+    } else if !runtime_mode.eq_ignore_ascii_case("local")
+        && !runtime_mode.eq_ignore_ascii_case("interactive")
+    {
+        reasons.push(format!(
+            "runtime mode {runtime_mode} is not ready for local execution"
+        ));
     }
 
     if reasons.is_empty() {
@@ -557,7 +577,7 @@ mod tests {
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
-                    runtime_mode: "batch".to_string(),
+                    runtime_mode: "local".to_string(),
                     checked_at: "1".to_string(),
                     notes: vec![],
                 },
@@ -636,7 +656,7 @@ mod tests {
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
-                    runtime_mode: "batch".to_string(),
+                    runtime_mode: "local".to_string(),
                     checked_at: "2".to_string(),
                     notes: vec![],
                 },
@@ -647,6 +667,62 @@ mod tests {
         let node = state.nodes.get("node-1").expect("node exists");
         assert!(node.policy_allowed);
         assert_eq!(node.policy_reason, None);
+    }
+
+    #[test]
+    fn blocks_nodes_that_are_not_ready_for_local_execution() {
+        let mut state = ControlPlaneState::default();
+        state.register(AgentRegistration {
+            node_id: "node-2".to_string(),
+            public_key_fingerprint: "fingerprint-2".to_string(),
+            public_key_hex: "ddeeff".to_string(),
+            hostname: "host-2".to_string(),
+            identity_trust_path: "local-encrypted-fallback".to_string(),
+            backend: Backend::M,
+            contribution_percent: 20,
+            agent_version: "0.1.0".to_string(),
+        });
+
+        state.heartbeat(
+            Heartbeat {
+                node_id: "node-2".to_string(),
+                backend: Backend::M,
+                agent_state: AgentState::Ready,
+                available_memory_mb: 16_000,
+                available_gpu_percent: 50,
+                updated_at: "2".to_string(),
+                contribution_percent: 20,
+                hostname: "host-2".to_string(),
+                identity_trust_path: "local-encrypted-fallback".to_string(),
+                power_source: "AC Power".to_string(),
+                on_battery: false,
+                battery_percent: Some(90),
+                policy_allowed: true,
+                policy_reason: None,
+                worker_health: WorkerHealthReport {
+                    healthy: true,
+                    model_dir: "/tmp/models".to_string(),
+                    model_name: Some("demo".to_string()),
+                    model_path: Some("/opt/models/demo.gguf".to_string()),
+                    llama_cli_available: true,
+                    blas_device_available: true,
+                    power_source: "AC Power".to_string(),
+                    on_battery: false,
+                    battery_percent: Some(90),
+                    runtime_mode: "batch".to_string(),
+                    checked_at: "2".to_string(),
+                    notes: vec![],
+                },
+            },
+            "2".to_string(),
+        );
+
+        let node = state.nodes.get("node-2").expect("node exists");
+        assert!(!node.policy_allowed);
+        let reason = node.policy_reason.as_deref().expect("policy reason");
+        assert!(reason
+            .contains("model path /opt/models/demo.gguf is outside model directory /tmp/models"));
+        assert!(reason.contains("runtime mode batch is not ready for local execution"));
     }
 
     #[test]
@@ -698,7 +774,7 @@ mod tests {
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
-                    runtime_mode: "batch".to_string(),
+                    runtime_mode: "local".to_string(),
                     checked_at: "2".to_string(),
                     notes: vec![],
                 },
