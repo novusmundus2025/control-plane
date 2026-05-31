@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node src/main.js",
-    "check": "node --check src/main.js"
+    "check": "node --check src/main.js",
+    "test": "node --test test/*.test.js"
   }
 }
