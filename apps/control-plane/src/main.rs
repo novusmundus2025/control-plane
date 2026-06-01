@@ -218,6 +218,37 @@ fn control_plane_bind_addr() -> Result<String, String> {
     )
 }
 
+fn deploy_fingerprint_from_env(
+    explicit: Option<&str>,
+    railway_git_commit_sha: Option<&str>,
+    source_version: Option<&str>,
+    git_commit_sha: Option<&str>,
+    railway_deployment_id: Option<&str>,
+) -> Option<String> {
+    [
+        explicit,
+        railway_git_commit_sha,
+        source_version,
+        git_commit_sha,
+        railway_deployment_id,
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|value| !value.is_empty())
+    .map(str::to_string)
+}
+
+fn deploy_fingerprint() -> Option<String> {
+    deploy_fingerprint_from_env(
+        std::env::var("MUNDUSX_DEPLOY_FINGERPRINT").ok().as_deref(),
+        std::env::var("RAILWAY_GIT_COMMIT_SHA").ok().as_deref(),
+        std::env::var("SOURCE_VERSION").ok().as_deref(),
+        std::env::var("GIT_COMMIT_SHA").ok().as_deref(),
+        std::env::var("RAILWAY_DEPLOYMENT_ID").ok().as_deref(),
+    )
+}
+
 fn load_local_env() {
     let mut current = match std::env::current_dir() {
         Ok(dir) => dir,
@@ -1059,6 +1090,7 @@ fn handle_connection(
                 .expect("state lock")
                 .snapshot(storage_source.as_str());
             let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
+            let deploy_fingerprint = deploy_fingerprint();
             json_response(
                 "200 OK",
                 serde_json::json!({
@@ -1066,6 +1098,7 @@ fn handle_connection(
                     "storage_source": storage_source.as_str(),
                     "supabase": sync_snapshot.summary(),
                     "supabase_sync": sync_snapshot,
+                    "deploy_fingerprint": deploy_fingerprint,
                     "snapshot": snapshot,
                 }),
             )
@@ -1633,7 +1666,9 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{control_plane_bind_addr_from_env, requires_operator_auth};
+    use super::{
+        control_plane_bind_addr_from_env, deploy_fingerprint_from_env, requires_operator_auth,
+    };
 
     #[test]
     fn defaults_to_localhost_when_port_is_missing() {
@@ -1652,6 +1687,34 @@ mod tests {
         let bind_addr =
             control_plane_bind_addr_from_env(Some("8787"), Some("127.0.0.1")).expect("bind addr");
         assert_eq!(bind_addr, "127.0.0.1:8787");
+    }
+
+    #[test]
+    fn prefers_explicit_deploy_fingerprint_over_host_metadata() {
+        let fingerprint = deploy_fingerprint_from_env(
+            Some("manual-fingerprint"),
+            Some("railway-sha"),
+            Some("source-version"),
+            Some("git-sha"),
+            Some("deploy-id"),
+        );
+
+        assert_eq!(fingerprint.as_deref(), Some("manual-fingerprint"));
+    }
+
+    #[test]
+    fn falls_back_to_railway_commit_sha_for_deploy_fingerprint() {
+        let fingerprint =
+            deploy_fingerprint_from_env(None, Some("abcdef1234567890"), None, None, None);
+
+        assert_eq!(fingerprint.as_deref(), Some("abcdef1234567890"));
+    }
+
+    #[test]
+    fn returns_none_when_no_deploy_fingerprint_metadata_is_available() {
+        let fingerprint = deploy_fingerprint_from_env(None, None, None, None, None);
+
+        assert_eq!(fingerprint, None);
     }
 
     #[test]
