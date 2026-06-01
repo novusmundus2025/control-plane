@@ -4,8 +4,10 @@ mod state;
 mod supabase;
 
 use contracts::{
-    AgentRegistration, ChatCompletionChoice, ChatCompletionChoiceMessage, ChatCompletionMundusX,
-    ChatCompletionRequest, ChatCompletionResponse, Heartbeat, JobCompletion, JobRequest,
+    is_trusted_identity_path, trust_path_label, AgentRegistration, ChatCompletionChoice,
+    ChatCompletionChoiceMessage, ChatCompletionMundusX, ChatCompletionRequest,
+    ChatCompletionResponse, Heartbeat, JobCompletion, JobRequest,
+    OperatorContributionPercentUpdate, RuntimeMode,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::{applied_migrations, apply_migrations};
@@ -174,6 +176,47 @@ fn now_unix_seconds_u64() -> u64 {
     now_unix_seconds().parse::<u64>().unwrap_or(0)
 }
 
+fn control_plane_bind_addr_from_env(
+    port: Option<&str>,
+    host: Option<&str>,
+) -> Result<String, String> {
+    let trimmed_host = host
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("");
+    let trimmed_port = port
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("");
+
+    if trimmed_port.is_empty() {
+        let bind_host = if trimmed_host.is_empty() {
+            "127.0.0.1"
+        } else {
+            trimmed_host
+        };
+        return Ok(format!("{bind_host}:8787"));
+    }
+
+    let parsed_port = trimmed_port
+        .parse::<u16>()
+        .map_err(|_| format!("invalid PORT value: {trimmed_port}"))?;
+    let bind_host = if trimmed_host.is_empty() {
+        "0.0.0.0"
+    } else {
+        trimmed_host
+    };
+
+    Ok(format!("{bind_host}:{parsed_port}"))
+}
+
+fn control_plane_bind_addr() -> Result<String, String> {
+    control_plane_bind_addr_from_env(
+        std::env::var("PORT").ok().as_deref(),
+        std::env::var("MUNDUSX_CONTROL_PLANE_HOST").ok().as_deref(),
+    )
+}
+
 fn load_local_env() {
     let mut current = match std::env::current_dir() {
         Ok(dir) => dir,
@@ -235,6 +278,16 @@ fn policy_badge(allowed: bool) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+fn trust_badge(trust_path: &str) -> (&'static str, &'static str, &'static str) {
+    if is_trusted_identity_path(trust_path) {
+        ("#12351f", "#8ef0aa", trust_path_label(trust_path))
+    } else if trust_path == contracts::IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK {
+        ("#3a2610", "#ffbf7a", trust_path_label(trust_path))
+    } else {
+        ("#22304c", "#b8c7e8", trust_path_label(trust_path))
+    }
+}
+
 fn render_nodes(state: &ControlPlaneState) -> String {
     let nodes: Vec<_> = state.nodes.values().cloned().collect();
     if nodes.is_empty() {
@@ -257,6 +310,7 @@ fn render_nodes(state: &ControlPlaneState) -> String {
 
     for node in nodes {
         let (state_bg, state_fg) = state_badge(node.state.as_str());
+        let (trust_bg, trust_fg, trust_label) = trust_badge(&node.identity_trust_path);
         let (policy_bg, policy_fg, policy_label) = policy_badge(node.policy_allowed);
         let battery = node
             .battery_percent
@@ -272,18 +326,24 @@ fn render_nodes(state: &ControlPlaneState) -> String {
             .worker_health
             .as_ref()
             .map(|health| {
+                let model_dir = health.model_dir.as_str();
                 let model_name = health.model_name.as_deref().unwrap_or("none");
                 let model_path = health.model_path.as_deref().unwrap_or("missing");
+                let runtime_mode = health.runtime_mode.as_str();
+                let checked_at = health.checked_at.as_str();
                 let notes = if health.notes.is_empty() {
                     "no notes".to_string()
                 } else {
                     health.notes.join(" • ")
                 };
                 format!(
-                    r#"<div class="meta">worker: {} • model {} • {} • llama-cli {} • BLAS {}</div><div class="meta">{}</div>"#,
+                    r#"<div class="meta">worker: {} • model dir {} • model {} • {} • runtime {} • checked {} • llama-cli {} • BLAS {}</div><div class="meta">{}</div>"#,
                     if health.healthy { "healthy" } else { "degraded" },
+                    escape_html(model_dir),
                     escape_html(model_name),
                     escape_html(model_path),
+                    escape_html(runtime_mode),
+                    escape_html(checked_at),
                     if health.llama_cli_available { "yes" } else { "no" },
                     if health.blas_device_available { "yes" } else { "no" },
                     escape_html(&notes)
@@ -308,8 +368,8 @@ fn render_nodes(state: &ControlPlaneState) -> String {
                 <div class="meta">signed device</div>
               </div>
               <div>
-                <div>{}</div>
-                <div class="meta">identity path</div>
+                <span class="pill" style="background:{};color:{};">{}</span>
+                <div class="meta">{}</div>
               </div>
               <div><span class="pill" style="background:{};color:{};">{}</span></div>
               <div>
@@ -332,6 +392,9 @@ fn render_nodes(state: &ControlPlaneState) -> String {
             node.contribution_percent,
             node.available_gpu_percent,
             escape_html(&node.hostname),
+            trust_bg,
+            trust_fg,
+            escape_html(trust_label),
             escape_html(&node.identity_trust_path),
             escape_html(&node.backend.to_string()),
             state_bg,
@@ -362,6 +425,7 @@ fn control_plane_home(
 ) -> String {
     let snapshot = state.snapshot(storage_source.as_str());
     let nodes = snapshot["online_count"].as_u64().unwrap_or(0);
+    let trusted = snapshot["trusted_count"].as_u64().unwrap_or(0);
     let paused = snapshot["paused_count"].as_u64().unwrap_or(0);
     let policy_blocked = snapshot["policy_blocked_count"].as_u64().unwrap_or(0);
     let job_events = snapshot["job_events"].as_u64().unwrap_or(0);
@@ -667,6 +731,7 @@ fn control_plane_home(
 
         <div class="grid">
           <div class="card"><div class="card-label">Online nodes</div><div class="card-value">{nodes}</div></div>
+          <div class="card"><div class="card-label">Trusted nodes</div><div class="card-value">{trusted}</div></div>
           <div class="card"><div class="card-label">Paused nodes</div><div class="card-value">{paused}</div></div>
           <div class="card"><div class="card-label">Policy blocked</div><div class="card-value">{policy_blocked}</div></div>
           <div class="card"><div class="card-label">Job events</div><div class="card-value">{job_events}</div></div>
@@ -786,6 +851,7 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
             | ("GET", "/v1/credits")
             | ("POST", "/v1/jobs")
             | ("POST", "/v1/chat/completions")
+            | ("POST", "/v1/nodes/contribution-cap")
     )
 }
 
@@ -1013,6 +1079,50 @@ fn handle_connection(
             let snapshot = state.lock().expect("state lock").nodes_snapshot();
             json_response("200 OK", snapshot)
         }
+        ("POST", "/v1/nodes/contribution-cap") => {
+            match serde_json::from_str::<OperatorContributionPercentUpdate>(&request.body) {
+                Ok(update) => {
+                    let mut guard = state.lock().expect("state lock");
+                    match guard.set_operator_contribution_percent(
+                        &update.node_id,
+                        update.contribution_percent,
+                    ) {
+                        Ok(record) => {
+                            let event = guard.record_job_event(
+                                Some(record.node_id.clone()),
+                                None,
+                                "operator_contribution_percent_updated",
+                                serde_json::json!({
+                                    "node_id": record.node_id,
+                                    "contribution_percent": record.contribution_percent,
+                                    "reported_contribution_percent": record.reported_contribution_percent,
+                                    "operator_contribution_percent": record.operator_contribution_percent,
+                                }),
+                                now_unix_seconds(),
+                            );
+                            if let Err(error) = save_state(&guard) {
+                                eprintln!("failed to save control-plane state: {error}");
+                            }
+                            if let Some(db) = supabase.as_ref() {
+                                if let Err(error) = db.record_job_event(&event) {
+                                    eprintln!("database operator cap event skipped: {error}");
+                                    note_supabase_failure(&sync_status, error);
+                                }
+                            }
+                            json_response("200 OK", serde_json::to_value(record).expect("json"))
+                        }
+                        Err(error) => json_response(
+                            "400 Bad Request",
+                            serde_json::json!({ "error": error }),
+                        ),
+                    }
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+            }
+        }
         ("GET", "/v1/jobs") => {
             let snapshot = state.lock().expect("state lock").jobs_snapshot();
             json_response("200 OK", snapshot)
@@ -1172,6 +1282,8 @@ fn handle_connection(
                         request_id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
                         prompt,
                         preferred_backend: crate::contracts::Backend::Auto,
+                        runtime_mode: RuntimeMode::Interactive,
+                        stream: false,
                         model: Some(request_body.model.clone()),
                         system_prompt,
                         max_tokens: request_body.max_tokens,
@@ -1346,7 +1458,8 @@ fn main() {
     }
 
     let supabase = SupabaseMirror::from_env();
-    let listener = TcpListener::bind("127.0.0.1:8787").expect("bind control plane");
+    let bind_addr = control_plane_bind_addr().expect("resolve bind address");
+    let listener = TcpListener::bind(&bind_addr).expect("bind control plane");
     let (restored_state, storage_source, sync_status) = match supabase.as_ref() {
         Some(db) => match db.restore_state() {
             Ok(state) => {
@@ -1380,7 +1493,7 @@ fn main() {
     let state = Arc::new(Mutex::new(restored_state));
     let sync_status = Arc::new(Mutex::new(sync_status));
 
-    println!("NovusX control plane listening on http://127.0.0.1:8787");
+    println!("NovusX control plane listening on http://{bind_addr}");
     println!(
         "supabase: {}",
         sync_status.lock().expect("sync status lock").summary()
@@ -1404,6 +1517,7 @@ fn main() {
     println!("health: GET /health");
     println!("status: GET /v1/status");
     println!("nodes: GET /v1/nodes");
+    println!("update cap: POST /v1/nodes/contribution-cap");
     println!("jobs: GET /v1/jobs");
     println!("register: POST /v1/register");
     println!("heartbeat: POST /v1/heartbeat");
@@ -1426,5 +1540,40 @@ fn main() {
             }
             Err(error) => eprintln!("incoming connection error: {error}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{control_plane_bind_addr_from_env, requires_operator_auth};
+
+    #[test]
+    fn defaults_to_localhost_when_port_is_missing() {
+        let bind_addr = control_plane_bind_addr_from_env(None, None).expect("bind addr");
+        assert_eq!(bind_addr, "127.0.0.1:8787");
+    }
+
+    #[test]
+    fn uses_railway_friendly_bind_when_port_is_present() {
+        let bind_addr = control_plane_bind_addr_from_env(Some("3000"), None).expect("bind addr");
+        assert_eq!(bind_addr, "0.0.0.0:3000");
+    }
+
+    #[test]
+    fn honors_explicit_host_override() {
+        let bind_addr =
+            control_plane_bind_addr_from_env(Some("8787"), Some("127.0.0.1")).expect("bind addr");
+        assert_eq!(bind_addr, "127.0.0.1:8787");
+    }
+
+    #[test]
+    fn rejects_invalid_port_values() {
+        let error = control_plane_bind_addr_from_env(Some("abc"), None).expect_err("invalid");
+        assert_eq!(error, "invalid PORT value: abc");
+    }
+
+    #[test]
+    fn protects_operator_cap_update_route() {
+        assert!(requires_operator_auth("POST", "/v1/nodes/contribution-cap"));
     }
 }

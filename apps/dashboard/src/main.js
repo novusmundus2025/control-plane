@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { pathToFileURL } from "node:url";
 
 const controlPlaneUrl = process.env.MUNDUSX_CONTROL_PLANE_URL ?? "http://127.0.0.1:8787";
 const port = Number(process.env.PORT ?? "3001");
@@ -156,6 +157,218 @@ function renderCounts(snapshot = {}) {
     .join("");
 }
 
+function runtimeReadiness(node = {}) {
+  const workerHealth = node.worker_health ?? null;
+  if (!workerHealth) {
+    return {
+      ready: false,
+      tone: "red",
+      label: "worker unknown",
+      detail: "No worker health report has been recorded yet.",
+    };
+  }
+
+  const runtimeMode = String(workerHealth.runtime_mode ?? "").trim().toLowerCase();
+  const hasRuntimeMode = runtimeMode === "local" || runtimeMode === "interactive";
+  const modelDir = String(workerHealth.model_dir ?? "").trim();
+  const modelName = String(workerHealth.model_name ?? "").trim();
+  const modelPath = String(workerHealth.model_path ?? "").trim();
+
+  const reasons = [];
+  if (!workerHealth.healthy) reasons.push("worker probe unhealthy");
+  if (!workerHealth.llama_cli_available) reasons.push("llama-cli missing");
+  if (!workerHealth.blas_device_available) reasons.push("Metal/BLAS unavailable");
+  if (!modelDir) reasons.push("model dir missing");
+  if (!modelName) reasons.push("model missing");
+  if (!modelPath) reasons.push("model path missing");
+  if (!hasRuntimeMode) reasons.push(`runtime ${runtimeMode || "unknown"}`);
+
+  if (!reasons.length) {
+    return {
+      ready: true,
+      tone: "green",
+      label: "runtime ready",
+      detail: `${workerHealth.runtime_mode ?? "local"} execution is ready to accept local jobs.`,
+    };
+  }
+
+  return {
+    ready: false,
+    tone: "red",
+    label: "runtime blocked",
+    detail: reasons.join(" • "),
+  };
+}
+
+function capStatus(node = {}) {
+  const effective = Number(node.contribution_percent ?? 0);
+  const reported = Number(node.reported_contribution_percent ?? effective);
+  const operator = node.operator_contribution_percent;
+  const operatorDefined = operator != null;
+
+  if (operatorDefined && Number(operator) !== reported) {
+    return {
+      summary: `operator cap ${operator}%`,
+      detail: `agent reported ${reported}%`,
+    };
+  }
+
+  if (operatorDefined) {
+    return {
+      summary: `operator cap ${operator}%`,
+      detail: "agent matches operator cap",
+    };
+  }
+
+  return {
+    summary: `cap ${effective}%`,
+    detail: `agent reported ${reported}%`,
+  };
+}
+
+function summarizeMSeries(snapshot = {}) {
+  const nodes = Array.isArray(snapshot.nodes) ? snapshot.nodes : [];
+  const mNodes = nodes.filter((node) => String(node.backend ?? "").toLowerCase() === "m");
+  const runtimeReadyCount = mNodes.filter((node) => runtimeReadiness(node).ready).length;
+  const trustedCount = mNodes.filter((node) => String(node.identity_trust_path ?? "") === "keychain").length;
+  const policyBlockedCount = mNodes.filter((node) => !node.policy_allowed).length;
+  const claimReadyCount = mNodes.filter((node) => {
+    const state = String(node.state ?? "").toLowerCase();
+    return state === "ready" && node.policy_allowed && runtimeReadiness(node).ready;
+  }).length;
+  const queuedMJobs = (Array.isArray(snapshot.jobs) ? snapshot.jobs : []).filter((job) => {
+    if (String(job.status ?? "").toLowerCase() !== "queued") {
+      return false;
+    }
+
+    const backend = String(job.preferred_backend ?? "auto").toLowerCase();
+    return backend === "m" || backend === "auto";
+  }).length;
+
+  let routingRisk = {
+    tone: "neutral",
+    label: "no M-series nodes",
+    detail: "Register an Apple Silicon node before expecting local M-series routing.",
+  };
+
+  if (mNodes.length) {
+    if (!claimReadyCount) {
+      routingRisk = {
+        tone: "red",
+        label: "high routing risk",
+        detail: "No M-series node can safely claim queued work right now.",
+      };
+    } else if (policyBlockedCount > 0 || runtimeReadyCount < mNodes.length || queuedMJobs > claimReadyCount) {
+      routingRisk = {
+        tone: "amber",
+        label: "watch routing risk",
+        detail: "Some M-series capacity is blocked, degraded, or thinner than the queued workload.",
+      };
+    } else {
+      routingRisk = {
+        tone: "green",
+        label: "routing looks healthy",
+        detail: "At least one M-series node is ready, trusted, and eligible for claims.",
+      };
+    }
+  }
+
+  return {
+    mNodes,
+    runtimeReadyCount,
+    trustedCount,
+    policyBlockedCount,
+    claimReadyCount,
+    queuedMJobs,
+    routingRisk,
+  };
+}
+
+function renderMSeriesOperatorSummary(snapshot = {}) {
+  const { mNodes, runtimeReadyCount, trustedCount, policyBlockedCount, claimReadyCount, queuedMJobs, routingRisk } =
+    summarizeMSeries(snapshot);
+
+  if (!mNodes.length) {
+    return `
+      <div class="empty">
+        No Apple Silicon nodes are registered yet. Trust path, policy state, runtime readiness, and routing risk
+        will appear here as soon as an M-series worker reports in.
+      </div>`;
+  }
+
+  const cards = [
+    ["Trust path", `${trustedCount}/${mNodes.length}`, trustedCount === mNodes.length ? "green" : "amber", "trusted via keychain"],
+    ["Policy blocked", String(policyBlockedCount), policyBlockedCount ? "red" : "green", "nodes excluded by server policy"],
+    ["Runtime readiness", `${runtimeReadyCount}/${mNodes.length}`, runtimeReadyCount === mNodes.length ? "green" : "amber", "worker can run local jobs"],
+    ["Routing risk", routingRisk.label, routingRisk.tone, routingRisk.detail],
+  ];
+
+  return `
+    <div class="meta" style="margin-bottom: 16px;">
+      This M-series operator view separates identity trust, policy state, and runtime readiness so routing risk is obvious before jobs queue up.
+    </div>
+    <div class="m-series-grid">
+      ${cards
+        .map(
+          ([label, value, tone, detail]) => `
+            <div class="card">
+              <div class="card-label">${escapeHtml(label)}</div>
+              <div class="card-value">${escapeHtml(value)}</div>
+              <div>${badge(tone === "neutral" ? "info" : tone, tone)}</div>
+              <div class="meta" style="margin-top: 10px;">${escapeHtml(detail)}</div>
+            </div>`,
+        )
+        .join("")}
+    </div>
+    <div class="panel-list" style="margin-top: 18px;">
+      ${mNodes
+        .map((node) => {
+          const readiness = runtimeReadiness(node);
+          const cap = capStatus(node);
+          const trustTone = String(node.identity_trust_path ?? "") === "keychain" ? "green" : "amber";
+          const policyTone = node.policy_allowed ? "green" : "red";
+          const stateTone =
+            String(node.state ?? "").toLowerCase() === "ready"
+              ? "green"
+              : String(node.state ?? "").toLowerCase() === "busy"
+                ? "amber"
+                : "red";
+          const battery = node.battery_percent == null ? "unknown" : `${node.battery_percent}%`;
+          const power = `${node.power_source ?? "unknown"} • ${node.on_battery ? "battery" : "AC"} • ${battery}`;
+          const claimability =
+            String(node.state ?? "").toLowerCase() === "ready" && node.policy_allowed && readiness.ready
+              ? "eligible for routing"
+              : "held out of routing";
+          return `
+            <div class="panel">
+              <div class="panel-top">
+                <div>
+                  <strong>${escapeHtml(node.node_id ?? "unknown node")}</strong>
+                  <div class="meta">${escapeHtml(node.hostname ?? "unknown host")} • ${escapeHtml(cap.summary)}</div>
+                  <div class="meta">${escapeHtml(cap.detail)}</div>
+                </div>
+                <div class="job-badges">
+                  ${badge(`trust: ${String(node.identity_trust_path ?? "unknown")}`, trustTone)}
+                  ${badge(`policy: ${node.policy_allowed ? "allowed" : "blocked"}`, policyTone)}
+                  ${badge(`runtime: ${readiness.label}`, readiness.tone)}
+                  ${badge(`state: ${String(node.state ?? "unknown")}`, stateTone)}
+                </div>
+              </div>
+              <p style="margin-top: 10px;">
+                ${escapeHtml(claimability)} • ${escapeHtml(power)} • ${escapeHtml(readiness.detail)}
+              </p>
+              <p style="margin-top: 8px;">
+                ${escapeHtml(node.policy_reason ?? "Policy currently allows local work.")}
+              </p>
+            </div>`;
+        })
+        .join("")}
+    </div>
+    <div class="meta" style="margin-top: 16px;">
+      ${escapeHtml(`${claimReadyCount} claim-ready M-series node(s) for ${queuedMJobs} queued auto/M-series job(s).`)}
+    </div>`;
+}
+
 function renderNodes(nodes = []) {
   if (!nodes.length) {
     return `<div class="empty">No nodes are registered yet.</div>`;
@@ -174,11 +387,12 @@ function renderNodes(nodes = []) {
       </div>
       ${nodes
         .map((node) => {
+          const cap = capStatus(node);
           const battery = node.battery_percent == null ? "unknown" : `${node.battery_percent}%`;
           const power = `${node.power_source ?? "unknown"} • ${node.on_battery ? "battery" : "AC"} • ${battery}`;
           const workerHealth = node.worker_health ?? null;
           const workerLine = workerHealth
-            ? `<div class="meta">worker: ${escapeHtml(workerHealth.healthy ? "healthy" : "degraded")} • model ${escapeHtml(workerHealth.model_name ?? "none")} • ${escapeHtml(workerHealth.model_path ?? "missing")} • llama-cli ${workerHealth.llama_cli_available ? "yes" : "no"} • BLAS ${workerHealth.blas_device_available ? "yes" : "no"}</div><div class="meta">${escapeHtml((workerHealth.notes ?? []).length ? workerHealth.notes.join(" • ") : "no notes")}</div>`
+            ? `<div class="meta">worker: ${escapeHtml(workerHealth.healthy ? "healthy" : "degraded")} • model dir ${escapeHtml(workerHealth.model_dir ?? "missing")} • model ${escapeHtml(workerHealth.model_name ?? "none")} • ${escapeHtml(workerHealth.model_path ?? "missing")} • runtime ${escapeHtml(workerHealth.runtime_mode ?? "unknown")} • checked ${escapeHtml(workerHealth.checked_at ?? "unknown")} • llama-cli ${workerHealth.llama_cli_available ? "yes" : "no"} • BLAS ${workerHealth.blas_device_available ? "yes" : "no"}</div><div class="meta">${escapeHtml((workerHealth.notes ?? []).length ? workerHealth.notes.join(" • ") : "no notes")}</div>`
             : `<div class="meta">worker: unknown</div>`;
           const policyTone = node.policy_allowed ? "green" : "red";
           const stateTone =
@@ -188,7 +402,8 @@ function renderNodes(nodes = []) {
               <div>
                 <strong>${escapeHtml(node.node_id)}</strong>
                 <div class="meta">fingerprint ${escapeHtml(node.public_key_fingerprint ?? "unknown")}</div>
-                <div class="meta">cap ${escapeHtml(node.contribution_percent ?? 0)}%</div>
+                <div class="meta">${escapeHtml(cap.summary)}</div>
+                <div class="meta">${escapeHtml(cap.detail)}</div>
               </div>
               <div>
                 <div>${escapeHtml(node.hostname ?? "unknown")}</div>
@@ -207,6 +422,90 @@ function renderNodes(nodes = []) {
               </div>
               <div>${escapeHtml(node.updated_at ?? "unknown")}</div>
             </div>`;
+        })
+        .join("")}
+    </div>`;
+}
+
+function backendTone(backend) {
+  switch (String(backend ?? "").toLowerCase()) {
+    case "m":
+      return "green";
+    case "cuda":
+      return "amber";
+    case "auto":
+      return "blue";
+    default:
+      return "neutral";
+  }
+}
+
+function jobStatusTone(status) {
+  switch (String(status ?? "").toLowerCase()) {
+    case "completed":
+      return "green";
+    case "assigned":
+      return "amber";
+    case "failed":
+      return "red";
+    case "queued":
+      return "blue";
+    default:
+      return "neutral";
+  }
+}
+
+function renderJobs(jobs = []) {
+  if (!jobs.length) {
+    return `<div class="empty">No jobs have been recorded yet.</div>`;
+  }
+
+  return `
+    <div class="jobs">
+      ${jobs
+        .slice()
+        .reverse()
+        .map((job) => {
+          const preferredBackend = String(job.preferred_backend ?? "auto");
+          const assignedBackend = job.backend == null ? "pending" : String(job.backend);
+          const assignedNode = job.assigned_node_id ?? "unassigned";
+          const submittedAt = job.submitted_at ?? "unknown";
+          const assignedAt = job.assigned_at ?? "pending";
+          const completedAt = job.completed_at ?? "pending";
+          const prompt = String(job.prompt ?? "").trim();
+          return `
+            <article class="job-card">
+              <div class="job-head">
+                <div>
+                  <strong>${escapeHtml(job.job_id ?? job.request_id ?? "unknown job")}</strong>
+                  <div class="meta">${escapeHtml(job.model ?? "no model specified")}</div>
+                </div>
+                <div class="job-badges">
+                  ${badge(String(job.status ?? "unknown"), jobStatusTone(job.status))}
+                  ${badge(`preferred ${preferredBackend}`, backendTone(preferredBackend))}
+                  ${badge(`assigned ${assignedBackend}`, backendTone(assignedBackend))}
+                </div>
+              </div>
+              <div class="job-prompt">${escapeHtml(prompt || "No prompt recorded.")}</div>
+              <div class="job-grid">
+                <div class="meta-box">
+                  <div class="meta-label">Assigned node</div>
+                  <div class="meta-value">${escapeHtml(assignedNode)}</div>
+                </div>
+                <div class="meta-box">
+                  <div class="meta-label">Submitted</div>
+                  <div class="meta-value">${escapeHtml(submittedAt)}</div>
+                </div>
+                <div class="meta-box">
+                  <div class="meta-label">Assigned</div>
+                  <div class="meta-value">${escapeHtml(assignedAt)}</div>
+                </div>
+                <div class="meta-box">
+                  <div class="meta-label">Completed</div>
+                  <div class="meta-value">${escapeHtml(completedAt)}</div>
+                </div>
+              </div>
+            </article>`;
         })
         .join("")}
     </div>`;
@@ -725,10 +1024,13 @@ function renderContributorPortal() {
     policy_reason: null,
     worker_health: {
       healthy: true,
+      model_dir: "/Users/DBATALL/.mundusx/models",
       model_name: "HuggingFaceTB/SmolLM2-135M-Instruct",
       model_path: "/Users/DBATALL/.mundusx/models/...",
       llama_cli_available: true,
       blas_device_available: true,
+      runtime_mode: "local",
+      checked_at: "just now",
       notes: ["ready for local jobs", "Mac-first preview"],
     },
   };
@@ -1346,6 +1648,7 @@ function renderContributorPortal() {
 }
 
 function renderInstallPage(installPath = "/install") {
+  const expectedManifest = installManifest(installPath);
   return `<!doctype html>
 <html lang="en">
   <head>
@@ -1583,6 +1886,38 @@ function renderInstallPage(installPath = "/install") {
         letter-spacing: 0.06em;
         text-transform: uppercase;
       }
+      .manifest-status[data-tone="ok"] {
+        color: #067647;
+      }
+      .manifest-status[data-tone="warn"] {
+        color: #b45309;
+      }
+      .manifest-status[data-tone="error"] {
+        color: #b42318;
+      }
+      .manifest-details {
+        display: grid;
+        gap: 10px;
+        margin-top: 14px;
+        padding: 14px;
+        border-radius: 16px;
+        border: 1px solid var(--line);
+        background: var(--surface-2);
+      }
+      .manifest-detail {
+        display: grid;
+        gap: 4px;
+      }
+      .manifest-detail strong {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.08em;
+        color: var(--muted);
+      }
+      .manifest-detail code {
+        white-space: normal;
+        word-break: break-word;
+      }
       @media (max-width: 900px) {
         .hero {
           grid-template-columns: 1fr;
@@ -1645,7 +1980,7 @@ function renderInstallPage(installPath = "/install") {
               <div class="num">2</div>
               <div>
                 <strong>Verify</strong>
-                <p>Checksum verification happens when the release artifact publishes one.</p>
+                <p>Verify the binary name, checksum file, and release base URL before copying the command.</p>
               </div>
             </div>
             <div class="install-step">
@@ -1656,7 +1991,28 @@ function renderInstallPage(installPath = "/install") {
               </div>
             </div>
           </div>
-          <div class="manifest-status" id="manifest-status">Fetching ./install.json…</div>
+          <div
+            class="manifest-details"
+            id="manifest-details"
+            data-expected-release-base-url="${escapeHtml(expectedManifest.release_base_url)}"
+            data-expected-binary-name="${escapeHtml(expectedManifest.binary_name)}"
+            data-expected-checksum-name="${escapeHtml(expectedManifest.checksum_name)}"
+            data-expected-install-command="${escapeHtml(expectedManifest.install_command)}"
+          >
+            <div class="manifest-detail">
+              <strong>Release base</strong>
+              <code id="release-base-url">${escapeHtml(expectedManifest.release_base_url)}</code>
+            </div>
+            <div class="manifest-detail">
+              <strong>Binary name</strong>
+              <code id="binary-name">${escapeHtml(expectedManifest.binary_name)}</code>
+            </div>
+            <div class="manifest-detail">
+              <strong>Checksum file</strong>
+              <code id="checksum-name">${escapeHtml(expectedManifest.checksum_name)}</code>
+            </div>
+          </div>
+          <div class="manifest-status" id="manifest-status" data-tone="info">Fetching ./install.json…</div>
           <div class="manifest-note">
             The install page is now a shell that reads the command and release metadata from
             <strong>./install.json</strong> so the HTML, installer, and release preview stay in
@@ -1679,7 +2035,15 @@ function renderInstallPage(installPath = "/install") {
         const commandEl = document.getElementById("install-command");
         const copyButton = document.getElementById("copy-button");
         const copyStatus = document.getElementById("copy-status");
+        const detailsEl = document.getElementById("manifest-details");
+        const releaseBaseEl = document.getElementById("release-base-url");
+        const binaryNameEl = document.getElementById("binary-name");
+        const checksumNameEl = document.getElementById("checksum-name");
         const manifestUrl = new URL("./install.json", window.location.href);
+        const expectedReleaseBaseUrl = String(detailsEl?.dataset.expectedReleaseBaseUrl ?? "");
+        const expectedBinaryName = String(detailsEl?.dataset.expectedBinaryName ?? "");
+        const expectedChecksumName = String(detailsEl?.dataset.expectedChecksumName ?? "");
+        const expectedInstallCommand = String(detailsEl?.dataset.expectedInstallCommand ?? "");
 
         try {
           const response = await fetch(manifestUrl, { headers: { Accept: "application/json" } });
@@ -1694,9 +2058,37 @@ function renderInstallPage(installPath = "/install") {
           const onboardingCommand = String(manifest.onboarding_command ?? "mundusx onboarding");
           const capCommand = String(manifest.cap_command ?? "mundusx cap");
           const startCommand = String(manifest.start_command ?? "mundusx start");
+          const binaryName = String(manifest.binary_name ?? "");
+          const checksumName = String(manifest.checksum_name ?? "");
+          const mismatches = [];
+
+          if (releaseBaseUrl !== expectedReleaseBaseUrl) {
+            mismatches.push("Release base URL changed after the page was rendered.");
+          }
+          if (binaryName !== expectedBinaryName) {
+            mismatches.push("Binary name should be " + expectedBinaryName + ".");
+          }
+          if (checksumName !== expectedChecksumName) {
+            mismatches.push("Checksum file should be " + expectedChecksumName + ".");
+          }
+          if (installCommand !== expectedInstallCommand) {
+            mismatches.push("Install command no longer matches the release base URL.");
+          }
+          if (!docsPage.endsWith("/docs/install")) {
+            mismatches.push("Docs page should point at /docs/install.");
+          }
 
           if (commandEl) {
             commandEl.textContent = installCommand;
+          }
+          if (releaseBaseEl) {
+            releaseBaseEl.textContent = releaseBaseUrl;
+          }
+          if (binaryNameEl) {
+            binaryNameEl.textContent = binaryName;
+          }
+          if (checksumNameEl) {
+            checksumNameEl.textContent = checksumName;
           }
           if (copyButton) {
             copyButton.disabled = false;
@@ -1714,7 +2106,13 @@ function renderInstallPage(installPath = "/install") {
             });
           }
           if (statusEl) {
-            statusEl.textContent = "Manifest loaded from ./install.json";
+            if (mismatches.length) {
+              statusEl.dataset.tone = "warn";
+              statusEl.textContent = "Manifest loaded with release sync warnings";
+            } else {
+              statusEl.dataset.tone = "ok";
+              statusEl.textContent = "Manifest loaded and verified from ./install.json";
+            }
           }
 
           const footer = document.querySelector(".manifest-note");
@@ -1722,6 +2120,7 @@ function renderInstallPage(installPath = "/install") {
             footer.innerHTML =
               "The install page is now a shell that reads the command and release metadata from " +
               "<strong>./install.json</strong> so the HTML, installer, and release preview stay in sync. " +
+              "It verifies the binary name and checksum file against the page expectations before showing the command. " +
               "Follow up with <code>" +
               onboardingCommand +
               "</code>, <code>" +
@@ -1733,9 +2132,14 @@ function renderInstallPage(installPath = "/install") {
               "</code>. Release source: <code>" +
               releaseBaseUrl +
               "</code>.";
+            if (mismatches.length) {
+              footer.innerHTML +=
+                " Verification notes: " + mismatches.map((item) => "<code>" + item + "</code>").join(" ");
+            }
           }
         } catch (error) {
           if (statusEl) {
+            statusEl.dataset.tone = "error";
             statusEl.textContent = "Manifest load failed";
           }
           if (commandEl) {
@@ -1748,7 +2152,7 @@ function renderInstallPage(installPath = "/install") {
 </html>`;
 }
 
-function page({ health, status, events, credits, error }) {
+export function page({ health, status, events, credits, error }) {
   const snapshot = status ?? health?.snapshot ?? {};
   const storageSource = health?.storage_source ?? snapshot.storage_source ?? "unknown";
   const supabase = health?.supabase ?? "unknown";
@@ -1846,6 +2250,11 @@ function page({ health, status, events, credits, error }) {
         gap: 14px;
         margin: 18px 0 24px;
       }
+      .m-series-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 14px;
+      }
       .card {
         border: 1px solid var(--line);
         background: var(--surface);
@@ -1926,7 +2335,28 @@ function page({ health, status, events, credits, error }) {
         color: var(--muted);
         padding: 28px 0;
       }
+      .panel-list {
+        display: grid;
+        gap: 12px;
+      }
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+        padding: 14px 16px;
+      }
+      .panel-top {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        align-items: start;
+        flex-wrap: wrap;
+      }
       .events {
+        display: grid;
+        gap: 12px;
+      }
+      .jobs {
         display: grid;
         gap: 12px;
       }
@@ -1954,6 +2384,39 @@ function page({ health, status, events, credits, error }) {
         border-radius: 14px;
         background: var(--surface);
         padding: 14px 16px;
+      }
+      .job-card {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        background: var(--surface);
+        padding: 16px;
+      }
+      .job-head {
+        display: flex;
+        justify-content: space-between;
+        gap: 12px;
+        flex-wrap: wrap;
+        align-items: start;
+      }
+      .job-head strong {
+        font-size: 14px;
+      }
+      .job-badges {
+        display: flex;
+        gap: 8px;
+        flex-wrap: wrap;
+        justify-content: flex-end;
+      }
+      .job-prompt {
+        margin-top: 12px;
+        line-height: 1.6;
+        color: var(--text);
+      }
+      .job-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+        margin-top: 14px;
       }
       .event-top {
         display: flex;
@@ -2016,17 +2479,21 @@ function page({ health, status, events, credits, error }) {
       }
       @media (max-width: 1200px) {
         .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .m-series-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .table .thead,
         .table .row { grid-template-columns: 1.1fr 0.9fr 0.7fr 0.7fr 1fr 1fr 0.7fr; }
+        .job-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       }
       @media (max-width: 820px) {
         .grid { grid-template-columns: 1fr; }
+        .m-series-grid { grid-template-columns: 1fr; }
         .table .thead { display: none; }
         .table .row {
           grid-template-columns: 1fr;
           gap: 10px;
           padding: 16px 0;
         }
+        .job-grid { grid-template-columns: 1fr; }
       }
     </style>
   </head>
@@ -2062,10 +2529,26 @@ function page({ health, status, events, credits, error }) {
 
       <div class="section">
         <div class="section-head">
+          <h2 class="section-title">M-series operator view</h2>
+          <div class="meta">${formatCount(summarizeMSeries(snapshot).mNodes.length)} Apple Silicon node(s)</div>
+        </div>
+        <div class="section-body">${renderMSeriesOperatorSummary(snapshot)}</div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
           <h2 class="section-title">Nodes</h2>
           <div class="meta">${formatCount(snapshot.nodes?.length ?? 0)} registered</div>
         </div>
         <div class="section-body">${renderNodes(snapshot.nodes ?? [])}</div>
+      </div>
+
+      <div class="section">
+        <div class="section-head">
+          <h2 class="section-title">Jobs</h2>
+          <div class="meta">${formatCount(snapshot.jobs?.length ?? 0)} tracked</div>
+        </div>
+        <div class="section-body">${renderJobs(snapshot.jobs ?? [])}</div>
       </div>
 
       <div class="section">
@@ -2513,6 +2996,7 @@ function renderDocsReleases(basePath = "/docs") {
         <div class="card">
           <h2>Review rule</h2>
           <p>Any release-page copy change should be checked against the installer script and release docs.</p>
+          <p>The install preview now verifies the binary name and checksum file against the rendered manifest before it shows the command.</p>
         </div>
       </div>
     `,
@@ -2530,7 +3014,8 @@ async function collectData() {
   return { health, status, events, credits, error: null };
 }
 
-createServer(async (req, res) => {
+export function createAppServer() {
+  return createServer(async (req, res) => {
   const requestUrl = new URL(req.url ?? "/", appUrl);
   if (requestUrl.pathname === "/install") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -2667,8 +3152,16 @@ createServer(async (req, res) => {
 
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   res.end(page(data));
-}).listen(port, "127.0.0.1", () => {
-  process.stdout.write(
-    `NovusX dashboard listening on http://127.0.0.1:${port} (proxying ${controlPlaneUrl})\n`,
-  );
-});
+  });
+}
+
+const isEntrypoint =
+  process.argv[1] != null && import.meta.url === pathToFileURL(process.argv[1]).href;
+
+if (isEntrypoint) {
+  createAppServer().listen(port, "127.0.0.1", () => {
+    process.stdout.write(
+      `NovusX dashboard listening on http://127.0.0.1:${port} (proxying ${controlPlaneUrl})\n`,
+    );
+  });
+}
