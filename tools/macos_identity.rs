@@ -46,6 +46,8 @@ pub struct SecureIdentity {
 pub fn ensure_identity(storage_dir: &Path) -> io::Result<SecureIdentity> {
     if let Some(existing) = load_stored_identity(storage_dir)? {
         if !existing.encrypted_private_key_hex.is_empty() && !existing.nonce_hex.is_empty() {
+            let secret = recovery_secret_key()?;
+            recover_signing_key(&existing, &secret)?;
             return Ok(SecureIdentity {
                 public_key_hex: existing.public_key_hex,
                 fingerprint: existing.fingerprint,
@@ -58,6 +60,8 @@ pub fn ensure_identity(storage_dir: &Path) -> io::Result<SecureIdentity> {
             });
         }
     }
+
+    validate_identity_recovery_state(None, load_machine_secret_from_keychain()?.is_some())?;
 
     let mut private_key = [0u8; 32];
     OsRng.fill_bytes(&mut private_key);
@@ -101,26 +105,9 @@ pub fn sign_message(storage_dir: &Path, message: &[u8]) -> io::Result<String> {
         )
     })?;
 
-    let secret = machine_secret_key()?;
-    let nonce = hex::decode(&stored.nonce_hex).map_err(invalid_identity)?;
-    if nonce.len() != 12 {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "nonce must be 12 bytes",
-        ));
-    }
-
-    let encrypted_private =
-        hex::decode(&stored.encrypted_private_key_hex).map_err(invalid_identity)?;
-    let private_key_bytes_vec = xor_crypt(&encrypted_private, &secret, nonce.as_slice());
-    let private_bytes: [u8; 32] = private_key_bytes_vec
-        .clone()
-        .try_into()
-        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "private key must be 32 bytes"))?;
-    let signing_key = SigningKey::from_bytes(&private_bytes);
+    let secret = recovery_secret_key()?;
+    let signing_key = recover_signing_key(&stored, &secret)?;
     let signature = signing_key.sign(message);
-    let mut private_key_bytes = private_key_bytes_vec;
-    private_key_bytes.fill(0);
     Ok(hex::encode(signature.to_bytes()))
 }
 
@@ -176,6 +163,62 @@ fn save_stored_identity(storage_dir: &Path, identity: &PersistedIdentity) -> io:
 
 fn identity_path(storage_dir: &Path) -> PathBuf {
     storage_dir.join("identity.json")
+}
+
+fn validate_identity_recovery_state(
+    existing: Option<&StoredIdentity>,
+    keychain_secret_exists: bool,
+) -> io::Result<()> {
+    let has_complete_identity = existing
+        .map(|identity| {
+            !identity.encrypted_private_key_hex.is_empty() && !identity.nonce_hex.is_empty()
+        })
+        .unwrap_or(false);
+    if !has_complete_identity && keychain_secret_exists {
+        return Err(io::Error::new(
+            io::ErrorKind::NotFound,
+            "macOS identity recovery requires the original identity.json; restore identity.json from backup or intentionally reset the device identity before re-enrolling",
+        ));
+    }
+    Ok(())
+}
+
+fn recovery_secret_key() -> io::Result<[u8; 32]> {
+    if let Some(secret) = load_machine_secret_from_keychain()? {
+        return Ok(secret);
+    }
+
+    fallback_machine_secret_key()
+}
+
+fn recover_signing_key(stored: &StoredIdentity, secret: &[u8; 32]) -> io::Result<SigningKey> {
+    let nonce = hex::decode(&stored.nonce_hex).map_err(invalid_identity)?;
+    if nonce.len() != 12 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "nonce must be 12 bytes",
+        ));
+    }
+
+    let encrypted_private =
+        hex::decode(&stored.encrypted_private_key_hex).map_err(invalid_identity)?;
+    let mut private_key_bytes = xor_crypt(&encrypted_private, secret, nonce.as_slice());
+    let private_bytes: [u8; 32] =
+        private_key_bytes.clone().try_into().map_err(|_| {
+            io::Error::new(io::ErrorKind::InvalidData, "private key must be 32 bytes")
+        })?;
+    let signing_key = SigningKey::from_bytes(&private_bytes);
+    private_key_bytes.fill(0);
+
+    let recovered_public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
+    if recovered_public_key_hex != stored.public_key_hex {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "stored macOS identity cannot be recovered on this machine; restore the original Keychain item or re-enroll with a new identity",
+        ));
+    }
+
+    Ok(signing_key)
 }
 
 fn machine_secret_key() -> io::Result<[u8; 32]> {
@@ -354,6 +397,22 @@ fn invalid_identity(error: impl std::fmt::Display) -> io::Error {
 mod tests {
     use super::*;
 
+    fn stored_identity_for_secret(secret: [u8; 32]) -> StoredIdentity {
+        let private_key = [7u8; 32];
+        let signing_key = SigningKey::from_bytes(&private_key);
+        let verifying_key = signing_key.verifying_key();
+        let nonce = [9u8; 12];
+        let encrypted_private_key_hex = hex::encode(xor_crypt(&private_key, &secret, &nonce));
+
+        StoredIdentity {
+            public_key_hex: hex::encode(verifying_key.to_bytes()),
+            fingerprint: fingerprint_from_public_key(verifying_key.as_bytes()),
+            encrypted_private_key_hex,
+            nonce_hex: hex::encode(nonce),
+            keychain_label_hex: Some("machine-label".to_string()),
+        }
+    }
+
     #[test]
     fn fallback_machine_secret_key_is_deterministic_per_machine_id() {
         let first = fallback_machine_secret_key_from_machine_id("machine-a");
@@ -363,5 +422,26 @@ mod tests {
         assert_eq!(first, second);
         assert_ne!(first, other);
         assert_eq!(first.len(), 32);
+    }
+
+    #[test]
+    fn reports_recovery_instructions_when_identity_file_is_missing_but_secret_exists() {
+        let err = validate_identity_recovery_state(None, true).expect_err("recovery should block");
+
+        assert_eq!(err.kind(), io::ErrorKind::NotFound);
+        assert!(err
+            .to_string()
+            .contains("restore identity.json from backup or intentionally reset the device identity"));
+    }
+
+    #[test]
+    fn rejects_machine_secret_that_cannot_decrypt_stored_identity() {
+        let stored = stored_identity_for_secret([3u8; 32]);
+        let err = recover_signing_key(&stored, &[4u8; 32]).expect_err("secret mismatch");
+
+        assert_eq!(err.kind(), io::ErrorKind::InvalidData);
+        assert!(err
+            .to_string()
+            .contains("stored macOS identity cannot be recovered on this machine"));
     }
 }

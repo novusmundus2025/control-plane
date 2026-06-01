@@ -1615,8 +1615,8 @@ function renderContributorPortal() {
                   <span class="pill pill-blue">signed</span>
                 </div>
                 <p>
-                  The node identity is sign-only and survives reinstall through the local
-                  encrypted fallback.
+                  The node identity is sign-only, but reinstall only preserves it when the
+                  original identity record and a matching machine secret are both still available.
                 </p>
               </div>
               <div class="panel">
@@ -2817,8 +2817,8 @@ function renderDocsHome(basePath = "/docs") {
         <div class="card">
           <h2>Device identity</h2>
           <p>
-            Explain how the Mac identity survives reinstall, why the private key is not
-            exportable, and what metadata is signed.
+            Explain the real recovery path for Mac identity, why the private key is not
+            exportable, and when a device must be re-enrolled.
           </p>
           <p><a href="${escapeHtml(docsRoute(basePath, "/identity"))}">Open identity page</a></p>
         </div>
@@ -2892,7 +2892,7 @@ function renderDocsIdentity(basePath = "/docs") {
   return docsShell({
     title: "Device Identity",
     subtitle:
-      "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall should reuse identity as long as the data directory remains intact or the keychain secret is still available.",
+      "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall only preserves identity when the original identity record is still present and the machine can still unlock it.",
     active: "identity",
     basePath,
     body: `
@@ -2905,6 +2905,7 @@ function renderDocsIdentity(basePath = "/docs") {
             <li>fingerprint</li>
             <li>hostname metadata</li>
           </ul>
+          <p>If <code>identity.json</code> is missing, the node cannot recreate the same signing identity from Keychain state alone.</p>
         </div>
         <div class="card">
           <h2>What is not exposed</h2>
@@ -2912,13 +2913,15 @@ function renderDocsIdentity(basePath = "/docs") {
             <li>raw private key bytes</li>
             <li>exportable app-visible secret</li>
           </ul>
+          <p>If the Keychain item is gone or no longer matches the stored identity record, the safest path is to re-enroll the device with a fresh identity.</p>
         </div>
         <div class="card">
-          <h2>Trust path</h2>
+          <h2>Recovery guidance</h2>
           <ul>
-            <li><code>keychain</code> means the machine secret was recovered from macOS keychain.</li>
-            <li><code>local-encrypted-fallback</code> means the node is using encrypted-at-rest identity storage.</li>
-            <li>The trust path should be visible in the dashboard so operators can diagnose recovery.</li>
+            <li>Restore <code>identity.json</code> from backup before reinstall recovery.</li>
+            <li><code>keychain</code> means the machine secret was recovered from macOS Keychain.</li>
+            <li><code>local-encrypted-fallback</code> means the node is using the deterministic machine fallback instead.</li>
+            <li>The trust path should stay visible in the dashboard so operators can diagnose recovery failures.</li>
           </ul>
         </div>
       </div>
