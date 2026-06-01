@@ -172,3 +172,25 @@ test("renders node policy override details separately from computed policy", () 
   assert.match(html, /automation/i);
   assert.match(html, /computed policy allows work/i);
 });
+
+test("renders the live deploy fingerprint from health", () => {
+  const html = page({
+    health: {
+      status: "ok",
+      storage_source: "supabase",
+      supabase: "enabled",
+      deploy_fingerprint: "abcdef1234567890",
+    },
+    status: {
+      storage_source: "supabase",
+      queued_job_count: 0,
+      nodes: [],
+      jobs: [],
+    },
+    events: [],
+    credits: {},
+    error: null,
+  });
+
+  assert.match(html, /deploy:\s*abcdef1234567890/i);
+});

@@ -2213,6 +2213,7 @@ export function page({ health, status, events, credits, error }) {
   const snapshot = status ?? health?.snapshot ?? {};
   const storageSource = health?.storage_source ?? snapshot.storage_source ?? "unknown";
   const supabase = health?.supabase ?? "unknown";
+  const deployFingerprint = health?.deploy_fingerprint ?? null;
   const isHealthy = health?.status === "ok";
   const title = "NovusX Dashboard";
 
@@ -2565,6 +2566,7 @@ export function page({ health, status, events, credits, error }) {
               ${badge(isHealthy ? "healthy" : "degraded", isHealthy ? "green" : "red")}
               ${badge(`storage: ${storageSource}`, storageSource === "supabase" ? "green" : "amber")}
               ${badge(`supabase: ${supabase}`, supabase.startsWith("enabled") ? "green" : "red")}
+              ${deployFingerprint ? badge(`deploy: ${deployFingerprint}`, "neutral") : ""}
             </div>
           </div>
           <div class="links">
