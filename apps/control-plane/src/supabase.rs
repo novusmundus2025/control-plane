@@ -93,6 +93,8 @@ impl SupabaseMirror {
         );
         let source_heartbeat_key =
             heartbeat_sync_key(heartbeat, now, policy_allowed, policy_reason.as_deref());
+        let wh = &heartbeat.worker_health;
+        let worker_health_json = serde_json::to_value(wh).ok();
         let payload = json!({
             "source_heartbeat_key": source_heartbeat_key,
             "node_id": heartbeat.node_id,
@@ -108,6 +110,12 @@ impl SupabaseMirror {
             "battery_percent": heartbeat.battery_percent,
             "policy_allowed": policy_allowed,
             "policy_reason": policy_reason,
+            "worker_healthy": wh.healthy,
+            "worker_runtime_ready": wh.runtime_ready,
+            "worker_model_name": wh.model_name.as_deref(),
+            "worker_runtime_mode": wh.runtime_mode.as_str(),
+            "worker_streaming": wh.streaming_supported,
+            "worker_health_json": worker_health_json,
             "last_seen_at_epoch": now,
             "updated_at_epoch": now,
         });
@@ -134,6 +142,12 @@ impl SupabaseMirror {
             "battery_percent": heartbeat.battery_percent,
             "policy_allowed": policy_allowed,
             "policy_reason": policy_reason,
+            "worker_healthy": wh.healthy,
+            "worker_runtime_ready": wh.runtime_ready,
+            "worker_model_name": wh.model_name.as_deref(),
+            "worker_runtime_mode": wh.runtime_mode.as_str(),
+            "worker_streaming": wh.streaming_supported,
+            "worker_health_json": serde_json::to_value(wh).ok(),
             "observed_at_epoch": now,
         });
 
