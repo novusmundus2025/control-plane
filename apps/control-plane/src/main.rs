@@ -10,6 +10,7 @@ use contracts::{
     OperatorContributionPercentUpdate, RuntimeMode,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+use subtle::ConstantTimeEq;
 use migrations::{applied_migrations, apply_migrations};
 use serde::Serialize;
 use state::{load_state, save_state, state_path, ControlPlaneState};
@@ -986,7 +987,7 @@ fn authorize_operator_request(
         .unwrap_or(authorization)
         .trim();
 
-    if presented != expected_token {
+    if presented.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 0 {
         return Err("invalid operator token".to_string());
     }
 
