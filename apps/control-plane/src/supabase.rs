@@ -91,6 +91,19 @@ impl SupabaseMirror {
 
     pub fn record_node_snapshot(&self, node: &NodeRecord) -> Result<(), String> {
         let policy_override = node.operator_policy_override.as_ref();
+        let (wh_healthy, wh_runtime_ready, wh_model_name, wh_runtime_mode, wh_streaming, wh_json) =
+            if let Some(wh) = node.worker_health.as_ref() {
+                (
+                    Some(wh.healthy),
+                    Some(wh.runtime_ready),
+                    wh.model_name.clone(),
+                    Some(wh.runtime_mode.clone()),
+                    Some(wh.streaming_supported),
+                    serde_json::to_value(wh).ok(),
+                )
+            } else {
+                (None, None, None, None, None, None)
+            };
         let payload = json!({
             "node_id": node.node_id,
             "public_key_fingerprint": node.public_key_fingerprint,
@@ -115,6 +128,12 @@ impl SupabaseMirror {
             "operator_policy_override_reason": policy_override.map(|value| value.reason.clone()),
             "operator_policy_override_actor": policy_override.map(|value| value.actor.clone()),
             "operator_policy_override_updated_at": policy_override.map(|value| value.updated_at.clone()),
+            "worker_healthy": wh_healthy,
+            "worker_runtime_ready": wh_runtime_ready,
+            "worker_model_name": wh_model_name,
+            "worker_runtime_mode": wh_runtime_mode,
+            "worker_streaming": wh_streaming,
+            "worker_health_json": wh_json,
             "last_seen_at_epoch": parse_epoch(&node.updated_at).unwrap_or_else(now_epoch),
             "updated_at_epoch": parse_epoch(&node.updated_at).unwrap_or_else(now_epoch),
         });
@@ -157,6 +176,12 @@ impl SupabaseMirror {
             "operator_policy_override_reason": policy_override.map(|value| value.reason.clone()),
             "operator_policy_override_actor": policy_override.map(|value| value.actor.clone()),
             "operator_policy_override_updated_at": policy_override.map(|value| value.updated_at.clone()),
+            "worker_healthy": heartbeat.worker_health.healthy,
+            "worker_runtime_ready": heartbeat.worker_health.runtime_ready,
+            "worker_model_name": heartbeat.worker_health.model_name.as_deref(),
+            "worker_runtime_mode": heartbeat.worker_health.runtime_mode.as_str(),
+            "worker_streaming": heartbeat.worker_health.streaming_supported,
+            "worker_health_json": serde_json::to_value(&heartbeat.worker_health).ok(),
             "observed_at_epoch": now,
         });
 

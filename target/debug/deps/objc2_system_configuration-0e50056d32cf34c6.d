@@ -1,0 +1,8 @@
+/private/tmp/mundusx-control-plane/target/debug/deps/objc2_system_configuration-0e50056d32cf34c6.d: /Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/lib.rs /Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/generated/mod.rs /Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/generated/SCDynamicStore.rs /Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/generated/SCDynamicStoreCopySpecific.rs
+
+/private/tmp/mundusx-control-plane/target/debug/deps/libobjc2_system_configuration-0e50056d32cf34c6.rmeta: /Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/lib.rs /Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/generated/mod.rs /Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/generated/SCDynamicStore.rs /Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/generated/SCDynamicStoreCopySpecific.rs
+
+/Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/lib.rs:
+/Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/generated/mod.rs:
+/Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/generated/SCDynamicStore.rs:
+/Users/DBATALL/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-system-configuration-0.3.2/src/generated/SCDynamicStoreCopySpecific.rs:
