@@ -258,6 +258,71 @@ impl Default for JobPlan {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobGraphStatus {
+    Created,
+    InProgress,
+    Completed,
+    Failed,
+}
+
+impl Default for JobGraphStatus {
+    fn default() -> Self {
+        Self::Created
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobGraphNodeStatus {
+    Ready,
+    Waiting,
+    Running,
+    Completed,
+    Failed,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JobGraphNode {
+    pub id: String,
+    pub name: String,
+    pub responsibility: String,
+    pub depends_on: Vec<String>,
+    pub required_output: String,
+    pub status: JobGraphNodeStatus,
+    pub blocked_by: Vec<String>,
+    pub output: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JobGraph {
+    pub graph_id: String,
+    pub request_id: String,
+    pub plan_id: String,
+    pub status: JobGraphStatus,
+    pub nodes: Vec<JobGraphNode>,
+    pub final_node_id: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl Default for JobGraph {
+    fn default() -> Self {
+        Self {
+            graph_id: "legacy-single-job-graph".to_string(),
+            request_id: String::new(),
+            plan_id: "legacy-single-job".to_string(),
+            status: JobGraphStatus::Created,
+            nodes: Vec::new(),
+            final_node_id: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentRegistration {
     pub node_id: String,
@@ -378,6 +443,8 @@ pub struct JobRecord {
     pub classification: RequestClassification,
     #[serde(default)]
     pub plan: JobPlan,
+    #[serde(default)]
+    pub graph: JobGraph,
     pub status: JobStatus,
     pub submitted_at: String,
     pub assigned_node_id: Option<String>,
