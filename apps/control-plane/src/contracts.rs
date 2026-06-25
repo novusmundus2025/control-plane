@@ -297,12 +297,31 @@ pub struct JobGraphNode {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JobResultRecord {
+    pub node_id: String,
+    pub name: String,
+    pub responsibility: String,
+    pub status: JobGraphNodeStatus,
+    pub output: Option<String>,
+    pub error: Option<String>,
+    pub source_worker_id: Option<String>,
+    pub source_node_id: Option<String>,
+    pub latency_ms: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct JobGraph {
     pub graph_id: String,
     pub request_id: String,
     pub plan_id: String,
     pub status: JobGraphStatus,
     pub nodes: Vec<JobGraphNode>,
+    #[serde(default)]
+    pub results: Vec<JobResultRecord>,
+    #[serde(default)]
+    pub final_output: Option<String>,
+    #[serde(default)]
+    pub merge_error: Option<String>,
     pub final_node_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -316,6 +335,9 @@ impl Default for JobGraph {
             plan_id: "legacy-single-job".to_string(),
             status: JobGraphStatus::Created,
             nodes: Vec::new(),
+            results: Vec::new(),
+            final_output: None,
+            merge_error: None,
             final_node_id: None,
             created_at: String::new(),
             updated_at: String::new(),
@@ -470,6 +492,8 @@ pub struct JobCompletion {
     pub status: JobStatus,
     pub output: Option<String>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
