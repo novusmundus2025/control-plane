@@ -148,8 +148,12 @@ impl SupabaseMirror {
 
     pub fn record_heartbeat(&self, heartbeat: &Heartbeat, node: &NodeRecord) -> Result<(), String> {
         let now = parse_epoch(&heartbeat.updated_at).unwrap_or_else(now_epoch);
-        let source_heartbeat_key =
-            heartbeat_sync_key(heartbeat, now, node.policy_allowed, node.policy_reason.as_deref());
+        let source_heartbeat_key = heartbeat_sync_key(
+            heartbeat,
+            now,
+            node.policy_allowed,
+            node.policy_reason.as_deref(),
+        );
 
         self.record_node_snapshot(node)?;
 
@@ -223,6 +227,8 @@ impl SupabaseMirror {
             "temperature": job.temperature,
             "top_p": job.top_p,
             "seed": job.seed,
+            "classification": job.classification,
+            "plan": job.plan,
             "status": completion.status,
             "assigned_node_id": job.assigned_node_id,
             "worker_id": completion.worker_id,
@@ -288,6 +294,8 @@ impl SupabaseMirror {
             "temperature": job.temperature,
             "top_p": job.top_p,
             "seed": job.seed,
+            "classification": job.classification,
+            "plan": job.plan,
             "status": job.status,
             "assigned_node_id": job.assigned_node_id,
             "worker_id": job.worker_id,
