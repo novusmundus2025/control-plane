@@ -1,8 +1,9 @@
 use crate::contracts::{
-    is_trusted_identity_path, AgentRegistration, AgentState, Backend, ControlPlaneSnapshot,
-    CreditsLedgerRecord, Heartbeat, JobClaimResponse, JobCompletion, JobEventRecord, JobRecord,
-    JobRequest, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
-    NodePolicyOverrideTarget, NodeRecord, RuntimeMode, WorkerHealthReport,
+    is_trusted_identity_path, AgentRegistration, AgentState, Backend, ContextSize,
+    ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, Heartbeat, JobClaimResponse,
+    JobCompletion, JobEventRecord, JobRecord, JobRequest, JobStatus, NodePolicyOverride,
+    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, PrivacyLevel,
+    RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -267,6 +268,7 @@ impl ControlPlaneState {
 
     pub fn submit_job(&mut self, request: JobRequest, submitted_at: String) -> JobRecord {
         let job_id = request.request_id.clone();
+        let classification = classify_job_request(&request);
         let record = JobRecord {
             job_id: job_id.clone(),
             request_id: request.request_id,
@@ -280,6 +282,7 @@ impl ControlPlaneState {
             temperature: request.temperature,
             top_p: request.top_p,
             seed: request.seed,
+            classification,
             status: JobStatus::Queued,
             submitted_at,
             assigned_node_id: None,
@@ -312,7 +315,8 @@ impl ControlPlaneState {
         }
 
         node.operator_contribution_percent = contribution_percent;
-        node.contribution_percent = contribution_percent.unwrap_or(node.reported_contribution_percent);
+        node.contribution_percent =
+            contribution_percent.unwrap_or(node.reported_contribution_percent);
         Ok(node.clone())
     }
 
@@ -590,6 +594,175 @@ fn normalize_amount(value: f64) -> f64 {
     }
 }
 
+pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
+    let combined = format!(
+        "{}\n{}\n{}",
+        request.system_prompt.as_deref().unwrap_or(""),
+        request.prompt,
+        request.model.as_deref().unwrap_or("")
+    );
+    let lower = combined.to_ascii_lowercase();
+    let prompt_chars = request.prompt.chars().count();
+
+    let task_type = if contains_any(
+        &lower,
+        &[
+            "code",
+            "bug",
+            "test",
+            "rust",
+            "javascript",
+            "typescript",
+            "python",
+            "function",
+            "api",
+            "stack trace",
+            "compile",
+        ],
+    ) {
+        RequestTaskType::Coding
+    } else if contains_any(
+        &lower,
+        &[
+            "document",
+            "draft",
+            "memo",
+            "report",
+            "proposal",
+            "contract",
+            "article",
+            "summarize",
+            "markdown",
+        ],
+    ) {
+        RequestTaskType::Document
+    } else if request.runtime_mode == RuntimeMode::Interactive
+        || contains_any(&lower, &["chat", "conversation", "assistant", "reply"])
+    {
+        RequestTaskType::Chat
+    } else {
+        RequestTaskType::Inference
+    };
+
+    let complexity = if prompt_chars > 4_000
+        || contains_any(
+            &lower,
+            &[
+                "architecture",
+                "multi-step",
+                "end-to-end",
+                "refactor",
+                "security review",
+                "migration",
+            ],
+        ) {
+        RequestComplexity::High
+    } else if prompt_chars > 800
+        || contains_any(
+            &lower,
+            &["analyze", "compare", "implement", "plan", "debug", "design"],
+        )
+    {
+        RequestComplexity::Medium
+    } else {
+        RequestComplexity::Low
+    };
+
+    let privacy_level = if contains_any(
+        &lower,
+        &[
+            "secret",
+            "token",
+            "password",
+            "private key",
+            "credential",
+            "ssn",
+            "passport",
+            "payment",
+            "medical",
+        ],
+    ) {
+        PrivacyLevel::Sensitive
+    } else if contains_any(
+        &lower,
+        &[
+            "internal",
+            "customer",
+            "confidential",
+            "proprietary",
+            "company",
+            "roadmap",
+        ],
+    ) {
+        PrivacyLevel::Internal
+    } else {
+        PrivacyLevel::Public
+    };
+
+    let output_format = if contains_any(&lower, &["json", "schema", "object"]) {
+        ExpectedOutputFormat::Json
+    } else if task_type == RequestTaskType::Coding
+        || contains_any(&lower, &["code block", "patch", "diff"])
+    {
+        ExpectedOutputFormat::Code
+    } else if contains_any(
+        &lower,
+        &[
+            "markdown",
+            "table",
+            "bullets",
+            "checklist",
+            "report",
+            "memo",
+        ],
+    ) {
+        ExpectedOutputFormat::Markdown
+    } else {
+        ExpectedOutputFormat::Text
+    };
+
+    let context_size = if prompt_chars > 4_000 || request.max_tokens.unwrap_or_default() > 4_096 {
+        ContextSize::Large
+    } else if prompt_chars > 800 || request.max_tokens.unwrap_or_default() > 1_024 {
+        ContextSize::Medium
+    } else {
+        ContextSize::Small
+    };
+
+    let mut execution_constraints = vec![
+        format!("backend:{}", request.preferred_backend),
+        format!("runtime:{}", request.runtime_mode),
+    ];
+    if request.stream {
+        execution_constraints.push("requires_streaming".to_string());
+    }
+    if matches!(privacy_level, PrivacyLevel::Sensitive) {
+        execution_constraints.push("sensitive_data".to_string());
+    }
+    if matches!(complexity, RequestComplexity::High) {
+        execution_constraints.push("planner_recommended".to_string());
+    }
+
+    RequestClassification {
+        task_type,
+        complexity,
+        privacy_level,
+        output_format,
+        context_size,
+        execution_constraints,
+        reason: format!(
+            "deterministic classifier matched {} task with {:?} complexity and {:?} context",
+            task_type.as_str(),
+            complexity,
+            context_size
+        ),
+    }
+}
+
+fn contains_any(input: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| input.contains(needle))
+}
+
 pub fn evaluate_policy(
     agent_state: AgentState,
     power_source: &str,
@@ -784,6 +957,96 @@ mod tests {
         state.register(m_series_registration("node-1"));
         state.heartbeat(ready_heartbeat("node-1", "1"), "1".to_string());
         state
+    }
+
+    fn classification_request(prompt: &str) -> JobRequest {
+        JobRequest {
+            request_id: "job-1".to_string(),
+            prompt: prompt.to_string(),
+            preferred_backend: Backend::Auto,
+            runtime_mode: RuntimeMode::Local,
+            stream: false,
+            model: Some("demo".to_string()),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            seed: None,
+        }
+    }
+
+    #[test]
+    fn classifies_interactive_chat_requests() {
+        let mut request = classification_request("Reply to the user in a short conversation.");
+        request.runtime_mode = RuntimeMode::Interactive;
+
+        let classification = classify_job_request(&request);
+
+        assert_eq!(classification.task_type, RequestTaskType::Chat);
+        assert_eq!(classification.output_format, ExpectedOutputFormat::Text);
+        assert_eq!(classification.context_size, ContextSize::Small);
+        assert!(classification
+            .execution_constraints
+            .contains(&"runtime:interactive".to_string()));
+    }
+
+    #[test]
+    fn classifies_coding_requests() {
+        let request = classification_request(
+            "Debug this Rust API bug and return a patch with tests for the failing function.",
+        );
+
+        let classification = classify_job_request(&request);
+
+        assert_eq!(classification.task_type, RequestTaskType::Coding);
+        assert_eq!(classification.complexity, RequestComplexity::Medium);
+        assert_eq!(classification.output_format, ExpectedOutputFormat::Code);
+    }
+
+    #[test]
+    fn classifies_document_style_requests() {
+        let request = classification_request(
+            "Draft a customer-facing implementation report in markdown with a checklist.",
+        );
+
+        let classification = classify_job_request(&request);
+
+        assert_eq!(classification.task_type, RequestTaskType::Document);
+        assert_eq!(classification.privacy_level, PrivacyLevel::Internal);
+        assert_eq!(classification.output_format, ExpectedOutputFormat::Markdown);
+    }
+
+    #[test]
+    fn classifies_generic_inference_requests() {
+        let request = classification_request("Estimate the next number in this sequence: 2, 4, 8.");
+
+        let classification = classify_job_request(&request);
+
+        assert_eq!(classification.task_type, RequestTaskType::Inference);
+        assert_eq!(classification.complexity, RequestComplexity::Low);
+        assert_eq!(classification.privacy_level, PrivacyLevel::Public);
+    }
+
+    #[test]
+    fn stores_classification_before_scheduling() {
+        let mut state = ControlPlaneState::default();
+        let record = state.submit_job(
+            classification_request("Return JSON for this public inference request."),
+            "1".to_string(),
+        );
+
+        assert_eq!(record.status, JobStatus::Queued);
+        assert_eq!(
+            record.classification.output_format,
+            ExpectedOutputFormat::Json
+        );
+        assert_eq!(
+            state
+                .jobs
+                .get("job-1")
+                .map(|job| job.classification.output_format),
+            Some(ExpectedOutputFormat::Json)
+        );
     }
 
     #[test]
@@ -1354,9 +1617,17 @@ mod tests {
         assert_eq!(job.assigned_node_id.as_deref(), Some("node-1"));
 
         let node = state.nodes.get("node-1").expect("node exists");
-        assert_eq!(node.operator_policy_override.as_ref().map(|value| value.target), Some(NodePolicyOverrideTarget::Allowed));
+        assert_eq!(
+            node.operator_policy_override
+                .as_ref()
+                .map(|value| value.target),
+            Some(NodePolicyOverrideTarget::Allowed)
+        );
         assert!(node.policy_allowed);
-        assert_eq!(node.policy_reason.as_deref(), Some("operator override: operator verified local recovery"));
+        assert_eq!(
+            node.policy_reason.as_deref(),
+            Some("operator override: operator verified local recovery")
+        );
         assert!(!node.computed_policy_allowed);
     }
 
