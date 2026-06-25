@@ -2,9 +2,9 @@ use crate::contracts::{
     is_trusted_identity_path, AgentRegistration, AgentState, Backend, ContextSize,
     ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, Heartbeat, JobClaimResponse,
     JobCompletion, JobEventRecord, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus,
-    JobPlan, JobRecord, JobRequest, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
-    NodePolicyOverrideTarget, NodeRecord, PlannedJob, PrivacyLevel, RequestClassification,
-    RequestComplexity, RequestTaskType, RuntimeMode, WorkerHealthReport,
+    JobPlan, JobRecord, JobRequest, JobResultRecord, JobStatus, NodePolicyOverride,
+    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, PlannedJob, PrivacyLevel,
+    RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -506,16 +506,12 @@ impl ControlPlaneState {
             }
 
             job.status = completion.status;
-            job.worker_id = Some(completion.worker_id);
+            job.worker_id = Some(completion.worker_id.clone());
             job.backend = Some(completion.backend);
-            job.output = completion.output;
-            job.error = completion.error;
+            job.output = completion.output.clone();
+            job.error = completion.error.clone();
             job.completed_at = Some(completed_at.clone());
-            job.graph.status = match job.status {
-                JobStatus::Completed => JobGraphStatus::Completed,
-                JobStatus::Failed => JobGraphStatus::Failed,
-                _ => job.graph.status,
-            };
+            apply_job_completion_to_graph(job, &completion);
             job.graph.updated_at = completed_at.clone();
             job.clone()
         };
@@ -566,6 +562,7 @@ impl ControlPlaneState {
         node.error = error;
         job.graph.updated_at = updated_at;
         refresh_job_graph(&mut job.graph);
+        refresh_graph_results(&mut job.graph, None, None, None);
         Ok(job.graph.clone())
     }
 
@@ -993,10 +990,14 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
             .find(|job| job.responsibility == "merge")
             .map(|job| job.id.clone())
             .or_else(|| plan.jobs.last().map(|job| job.id.clone())),
+        results: Vec::new(),
+        final_output: None,
+        merge_error: None,
         created_at: created_at.to_string(),
         updated_at: created_at.to_string(),
     };
     refresh_job_graph(&mut graph);
+    refresh_graph_results(&mut graph, None, None, None);
     graph
 }
 
@@ -1057,6 +1058,148 @@ fn refresh_job_graph(graph: &mut JobGraph) {
     } else {
         JobGraphStatus::Created
     };
+}
+
+fn apply_job_completion_to_graph(job: &mut JobRecord, completion: &JobCompletion) {
+    match completion.status {
+        JobStatus::Completed => {
+            if let Some(final_node_id) = job.graph.final_node_id.clone() {
+                if let Some(final_node) = job
+                    .graph
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == final_node_id)
+                {
+                    final_node.status = JobGraphNodeStatus::Completed;
+                    final_node.output = completion.output.clone();
+                    final_node.error = None;
+                }
+            }
+        }
+        JobStatus::Failed => {
+            if let Some(final_node_id) = job.graph.final_node_id.clone() {
+                if let Some(final_node) = job
+                    .graph
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == final_node_id)
+                {
+                    final_node.status = JobGraphNodeStatus::Failed;
+                    final_node.output = completion.output.clone();
+                    final_node.error = completion.error.clone();
+                }
+            }
+        }
+        _ => {}
+    }
+
+    refresh_job_graph(&mut job.graph);
+    if completion.status == JobStatus::Completed && job.graph.status != JobGraphStatus::Failed {
+        job.graph.status = JobGraphStatus::Completed;
+    } else if completion.status == JobStatus::Failed {
+        job.graph.status = JobGraphStatus::Failed;
+    }
+    refresh_graph_results(
+        &mut job.graph,
+        Some(completion.worker_id.as_str()),
+        Some(completion.node_id.as_str()),
+        completion.latency_ms,
+    );
+    job.output = job
+        .graph
+        .final_output
+        .clone()
+        .or_else(|| completion.output.clone());
+    if job.graph.merge_error.is_some() && job.error.is_none() {
+        job.error = job.graph.merge_error.clone();
+    }
+}
+
+fn refresh_graph_results(
+    graph: &mut JobGraph,
+    source_worker_id: Option<&str>,
+    source_node_id: Option<&str>,
+    latency_ms: Option<u64>,
+) {
+    graph.results = graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.status,
+                JobGraphNodeStatus::Completed | JobGraphNodeStatus::Failed
+            )
+        })
+        .map(|node| JobResultRecord {
+            node_id: node.id.clone(),
+            name: node.name.clone(),
+            responsibility: node.responsibility.clone(),
+            status: node.status,
+            output: node.output.clone(),
+            error: node.error.clone(),
+            source_worker_id: source_worker_id.map(str::to_string),
+            source_node_id: source_node_id.map(str::to_string),
+            latency_ms,
+        })
+        .collect();
+
+    graph.final_output = merge_completed_graph_outputs(graph);
+    graph.merge_error = merge_graph_error(graph);
+}
+
+fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
+    if let Some(final_node_id) = graph.final_node_id.as_deref() {
+        if let Some(output) = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == final_node_id)
+            .and_then(|node| node.output.as_ref())
+            .map(|value| value.trim())
+            .filter(|value| !value.is_empty())
+        {
+            return Some(output.to_string());
+        }
+    }
+
+    let mut parts = Vec::new();
+    for node in graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == JobGraphNodeStatus::Completed)
+    {
+        let Some(output) = node.output.as_ref().map(|value| value.trim()) else {
+            continue;
+        };
+        if output.is_empty() {
+            continue;
+        }
+        parts.push(format!("## {}\n{}", node.name, output));
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join("\n\n"))
+    }
+}
+
+fn merge_graph_error(graph: &JobGraph) -> Option<String> {
+    let errors = graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == JobGraphNodeStatus::Failed)
+        .filter_map(|node| {
+            node.error
+                .as_ref()
+                .map(|error| format!("{}: {}", node.name, error))
+        })
+        .collect::<Vec<_>>();
+
+    if errors.is_empty() {
+        None
+    } else {
+        Some(errors.join("; "))
+    }
 }
 
 fn push_planned_job(
@@ -1561,6 +1704,105 @@ mod tests {
     }
 
     #[test]
+    fn collects_graph_results_and_merges_final_response() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            classification_request(
+                "Design and implement a backend API plus frontend dashboard and add tests.",
+            ),
+            "1".to_string(),
+        );
+
+        for (node_id, output, updated_at) in [
+            ("job.scope", "scope accepted", "2"),
+            ("job.backend", "backend complete", "3"),
+            ("job.frontend", "frontend complete", "4"),
+            ("job.tests", "tests complete", "5"),
+        ] {
+            state
+                .update_graph_node(
+                    "job-1",
+                    node_id,
+                    JobGraphNodeStatus::Completed,
+                    Some(output.to_string()),
+                    None,
+                    updated_at.to_string(),
+                )
+                .expect("complete graph node");
+        }
+
+        let graph = state
+            .update_graph_node(
+                "job-1",
+                "job.final_merge",
+                JobGraphNodeStatus::Completed,
+                Some("final coherent response".to_string()),
+                None,
+                "6".to_string(),
+            )
+            .expect("complete final merge");
+
+        assert_eq!(graph.status, JobGraphStatus::Completed);
+        assert_eq!(graph.results.len(), 5);
+        assert_eq!(
+            graph.final_output.as_deref(),
+            Some("final coherent response")
+        );
+        assert_eq!(graph.merge_error, None);
+        assert!(graph
+            .results
+            .iter()
+            .any(|result| result.node_id == "job.backend"
+                && result.output.as_deref() == Some("backend complete")));
+    }
+
+    #[test]
+    fn preserves_failed_result_metadata_for_partial_failures() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            classification_request("Implement a Rust API change with tests and documentation."),
+            "1".to_string(),
+        );
+
+        state
+            .update_graph_node(
+                "job-1",
+                "job.scope",
+                JobGraphNodeStatus::Completed,
+                Some("scope complete".to_string()),
+                None,
+                "2".to_string(),
+            )
+            .expect("scope complete");
+        let graph = state
+            .update_graph_node(
+                "job-1",
+                "job.backend",
+                JobGraphNodeStatus::Failed,
+                None,
+                Some("backend failed validation".to_string()),
+                "3".to_string(),
+            )
+            .expect("backend failure");
+
+        assert_eq!(graph.status, JobGraphStatus::Failed);
+        assert_eq!(
+            graph.merge_error.as_deref(),
+            Some("Backend implementation: backend failed validation")
+        );
+        let failed_result = graph
+            .results
+            .iter()
+            .find(|result| result.node_id == "job.backend")
+            .expect("failed result");
+        assert_eq!(failed_result.status, JobGraphNodeStatus::Failed);
+        assert_eq!(
+            failed_result.error.as_deref(),
+            Some("backend failed validation")
+        );
+    }
+
+    #[test]
     fn covers_m_series_registration_through_completion_lifecycle() {
         let mut state = ControlPlaneState::default();
         let registration = m_series_registration("node-1");
@@ -1616,6 +1858,7 @@ mod tests {
                     status: JobStatus::Completed,
                     output: Some("done".to_string()),
                     error: None,
+                    latency_ms: Some(125),
                 },
                 "4".to_string(),
             )
@@ -2032,6 +2275,7 @@ mod tests {
                     status: JobStatus::Completed,
                     output: Some("done".to_string()),
                     error: None,
+                    latency_ms: Some(125),
                 },
                 "4".to_string(),
             )
