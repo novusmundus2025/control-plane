@@ -1,9 +1,10 @@
 use crate::contracts::{
     is_trusted_identity_path, AgentRegistration, AgentState, Backend, ContextSize,
     ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, Heartbeat, JobClaimResponse,
-    JobCompletion, JobEventRecord, JobPlan, JobRecord, JobRequest, JobStatus, NodePolicyOverride,
-    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, PlannedJob, PrivacyLevel,
-    RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode, WorkerHealthReport,
+    JobCompletion, JobEventRecord, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus,
+    JobPlan, JobRecord, JobRequest, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
+    NodePolicyOverrideTarget, NodeRecord, PlannedJob, PrivacyLevel, RequestClassification,
+    RequestComplexity, RequestTaskType, RuntimeMode, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -270,6 +271,7 @@ impl ControlPlaneState {
         let job_id = request.request_id.clone();
         let classification = classify_job_request(&request);
         let plan = plan_job_request(&request, &classification);
+        let graph = build_job_graph(&request.request_id, &plan, &submitted_at);
         let record = JobRecord {
             job_id: job_id.clone(),
             request_id: request.request_id,
@@ -285,6 +287,7 @@ impl ControlPlaneState {
             seed: request.seed,
             classification,
             plan,
+            graph,
             status: JobStatus::Queued,
             submitted_at,
             assigned_node_id: None,
@@ -474,6 +477,8 @@ impl ControlPlaneState {
             job.worker_id = None;
             job.output = None;
             job.error = None;
+            job.graph.status = JobGraphStatus::InProgress;
+            job.graph.updated_at = job.assigned_at.clone().unwrap_or_default();
 
             if let Some(node) = self.nodes.get_mut(node_id) {
                 node.reported_state = AgentState::Busy;
@@ -506,6 +511,12 @@ impl ControlPlaneState {
             job.output = completion.output;
             job.error = completion.error;
             job.completed_at = Some(completed_at.clone());
+            job.graph.status = match job.status {
+                JobStatus::Completed => JobGraphStatus::Completed,
+                JobStatus::Failed => JobGraphStatus::Failed,
+                _ => job.graph.status,
+            };
+            job.graph.updated_at = completed_at.clone();
             job.clone()
         };
 
@@ -519,6 +530,43 @@ impl ControlPlaneState {
         }
 
         Some(updated_job)
+    }
+
+    pub fn update_graph_node(
+        &mut self,
+        job_id: &str,
+        node_id: &str,
+        status: JobGraphNodeStatus,
+        output: Option<String>,
+        error: Option<String>,
+        updated_at: String,
+    ) -> Result<JobGraph, String> {
+        let job = self
+            .jobs
+            .get_mut(job_id)
+            .ok_or_else(|| "unknown job".to_string())?;
+        let node = job
+            .graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == node_id)
+            .ok_or_else(|| "unknown graph node".to_string())?;
+
+        if matches!(status, JobGraphNodeStatus::Running)
+            && !matches!(
+                node.status,
+                JobGraphNodeStatus::Ready | JobGraphNodeStatus::Running
+            )
+        {
+            return Err("graph node dependencies are not satisfied".to_string());
+        }
+
+        node.status = status;
+        node.output = output;
+        node.error = error;
+        job.graph.updated_at = updated_at;
+        refresh_job_graph(&mut job.graph);
+        Ok(job.graph.clone())
     }
 
     pub fn heartbeat(&mut self, heartbeat: Heartbeat, updated_at: String) -> NodeRecord {
@@ -918,6 +966,99 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
     }
 }
 
+pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> JobGraph {
+    let mut graph = JobGraph {
+        graph_id: format!("graph-{request_id}"),
+        request_id: request_id.to_string(),
+        plan_id: plan.plan_id.clone(),
+        status: JobGraphStatus::Created,
+        nodes: plan
+            .jobs
+            .iter()
+            .map(|job| JobGraphNode {
+                id: job.id.clone(),
+                name: job.name.clone(),
+                responsibility: job.responsibility.clone(),
+                depends_on: job.depends_on.clone(),
+                required_output: job.required_output.clone(),
+                status: JobGraphNodeStatus::Waiting,
+                blocked_by: job.depends_on.clone(),
+                output: None,
+                error: None,
+            })
+            .collect(),
+        final_node_id: plan
+            .jobs
+            .iter()
+            .find(|job| job.responsibility == "merge")
+            .map(|job| job.id.clone())
+            .or_else(|| plan.jobs.last().map(|job| job.id.clone())),
+        created_at: created_at.to_string(),
+        updated_at: created_at.to_string(),
+    };
+    refresh_job_graph(&mut graph);
+    graph
+}
+
+fn refresh_job_graph(graph: &mut JobGraph) {
+    let failed_ids = graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == JobGraphNodeStatus::Failed)
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    let completed_ids = graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == JobGraphNodeStatus::Completed)
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+
+    for node in &mut graph.nodes {
+        if matches!(
+            node.status,
+            JobGraphNodeStatus::Running
+                | JobGraphNodeStatus::Completed
+                | JobGraphNodeStatus::Failed
+        ) {
+            continue;
+        }
+
+        let blocked_by = node
+            .depends_on
+            .iter()
+            .filter(|dependency| !completed_ids.contains(dependency))
+            .cloned()
+            .collect::<Vec<_>>();
+        node.blocked_by = blocked_by;
+        node.status = if node.blocked_by.is_empty() {
+            JobGraphNodeStatus::Ready
+        } else {
+            JobGraphNodeStatus::Waiting
+        };
+    }
+
+    graph.status = if !failed_ids.is_empty() {
+        JobGraphStatus::Failed
+    } else if graph.nodes.is_empty()
+        || graph
+            .nodes
+            .iter()
+            .all(|node| node.status == JobGraphNodeStatus::Completed)
+    {
+        JobGraphStatus::Completed
+    } else if graph.nodes.iter().any(|node| {
+        matches!(
+            node.status,
+            JobGraphNodeStatus::Running | JobGraphNodeStatus::Completed
+        )
+    }) {
+        JobGraphStatus::InProgress
+    } else {
+        JobGraphStatus::Created
+    };
+}
+
 fn push_planned_job(
     jobs: &mut Vec<PlannedJob>,
     id: &str,
@@ -1290,6 +1431,133 @@ mod tests {
                 .map(|job| job.plan.strategy.as_str()),
             Some("responsibility_based")
         );
+    }
+
+    #[test]
+    fn creates_job_graph_with_parallel_ready_nodes() {
+        let mut state = ControlPlaneState::default();
+        let record = state.submit_job(
+            classification_request(
+                "Design and implement a backend API plus frontend dashboard and add tests.",
+            ),
+            "1".to_string(),
+        );
+
+        assert_eq!(record.graph.status, JobGraphStatus::Created);
+        let scope = record
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "job.scope")
+            .expect("scope node");
+        assert_eq!(scope.status, JobGraphNodeStatus::Ready);
+
+        let backend = record
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "job.backend")
+            .expect("backend node");
+        assert_eq!(backend.status, JobGraphNodeStatus::Waiting);
+        assert_eq!(backend.blocked_by, vec!["job.scope".to_string()]);
+
+        state
+            .update_graph_node(
+                "job-1",
+                "job.scope",
+                JobGraphNodeStatus::Completed,
+                Some("scope complete".to_string()),
+                None,
+                "2".to_string(),
+            )
+            .expect("complete scope");
+
+        let graph = &state.jobs.get("job-1").expect("job").graph;
+        let ready_ids = graph
+            .nodes
+            .iter()
+            .filter(|node| node.status == JobGraphNodeStatus::Ready)
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
+        assert!(ready_ids.contains(&"job.backend"));
+        assert!(ready_ids.contains(&"job.frontend"));
+    }
+
+    #[test]
+    fn keeps_sequential_graph_nodes_waiting_until_dependencies_complete() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            classification_request(
+                "Design and implement a backend API plus frontend dashboard and add tests.",
+            ),
+            "1".to_string(),
+        );
+
+        let error = state
+            .update_graph_node(
+                "job-1",
+                "job.tests",
+                JobGraphNodeStatus::Running,
+                None,
+                None,
+                "2".to_string(),
+            )
+            .expect_err("tests are blocked");
+        assert_eq!(error, "graph node dependencies are not satisfied");
+
+        state
+            .update_graph_node(
+                "job-1",
+                "job.scope",
+                JobGraphNodeStatus::Completed,
+                Some("scope complete".to_string()),
+                None,
+                "3".to_string(),
+            )
+            .expect("scope complete");
+
+        let tests_node = state
+            .jobs
+            .get("job-1")
+            .expect("job")
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "job.tests")
+            .expect("tests node");
+        assert_eq!(tests_node.status, JobGraphNodeStatus::Waiting);
+        assert!(tests_node.blocked_by.contains(&"job.backend".to_string()));
+        assert!(tests_node.blocked_by.contains(&"job.frontend".to_string()));
+    }
+
+    #[test]
+    fn marks_graph_failed_when_a_dependency_fails() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            classification_request("Implement a Rust API change with tests and documentation."),
+            "1".to_string(),
+        );
+
+        state
+            .update_graph_node(
+                "job-1",
+                "job.scope",
+                JobGraphNodeStatus::Failed,
+                None,
+                Some("scope rejected".to_string()),
+                "2".to_string(),
+            )
+            .expect("fail scope");
+
+        let graph = &state.jobs.get("job-1").expect("job").graph;
+        assert_eq!(graph.status, JobGraphStatus::Failed);
+        let backend_node = graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "job.backend")
+            .expect("backend node");
+        assert_eq!(backend_node.status, JobGraphNodeStatus::Waiting);
+        assert!(backend_node.blocked_by.contains(&"job.scope".to_string()));
     }
 
     #[test]
