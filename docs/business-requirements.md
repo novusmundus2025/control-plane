@@ -22,6 +22,7 @@ The MundusX control plane provides the company-owned operator surface for coordi
 4. Support OpenAI-compatible queued chat completion requests for consumer-facing integrations.
 5. Persist operational state through Supabase, with local JSON fallback when external persistence is degraded.
 6. Protect operator-facing endpoints and private operational data through token-based access controls.
+7. Evolve from single-job queueing into a distributed AI execution brain that can classify, plan, chunk, route, verify, and merge multi-step work.
 
 ## Stakeholders
 
@@ -46,14 +47,17 @@ The MundusX control plane provides the company-owned operator surface for coordi
 - Supabase-backed persistence with local fallback.
 - Health and status endpoints for deployment monitoring.
 - Token protection for operator and consumer-facing endpoints.
+- Target control-plane planning capabilities, including request classification, planner-driven task breakdown, responsibility-based chunking, job graph construction, result collection, verification, and final response synthesis.
+- Target node matching capabilities based on model, runtime, context size, task type, language, latency, reliability, cost, load, privacy level, and trust level.
 
 ### Out of Scope For Initial BRD
 
 - Public contributor-facing code and onboarding surfaces outside this private repository.
 - Real-time streaming responses for chat completions.
 - Push callbacks or webhooks for job completion.
-- Advanced scheduling features such as pricing optimization, affinity, priority lanes, or load-aware routing.
-- Billing, invoicing, and external customer account management.
+- Fully optimized scheduling features such as pricing optimization, affinity, priority lanes, or market-based routing.
+- Billing, invoicing, token rewards, marketplace mechanics, and external customer account management.
+- Blockchain settlement or reward systems.
 
 ## Business Requirements
 
@@ -74,6 +78,14 @@ The MundusX control plane provides the company-owned operator surface for coordi
 | BR-013 | The system should make persistence degradation visible through health and dashboard surfaces. | Should |
 | BR-014 | The system could support streaming responses after worker and control-plane streaming contracts are implemented. | Could |
 | BR-015 | The system could support callbacks or webhooks for job completion notifications. | Could |
+| BR-016 | The system should classify incoming AI requests by task type, complexity, privacy level, expected output format, and execution needs. | Should |
+| BR-017 | The system should use a planner to break complex requests into responsibility-based jobs rather than splitting work only by token count. | Should |
+| BR-018 | The system should build job graphs that capture dependencies between planned jobs. | Should |
+| BR-019 | The system should collect job outputs and merge valid partial results into a final client response. | Should |
+| BR-020 | The system should verify job outputs for correctness, format, safety, and quality before final synthesis. | Should |
+| BR-021 | The system should match jobs to nodes using model capability, runtime type, context size, task support, language support, load, latency, reliability, cost, availability, and trust level. | Should |
+| BR-022 | The system could fall back to cloud or stronger models when local nodes cannot satisfy a request's quality, context, latency, or availability requirements. | Could |
+| BR-023 | The system could expose distinct admin-console capabilities for configuration, policy management, node approvals, and operational controls beyond the observer dashboard. | Could |
 
 ## Functional Requirements
 
@@ -92,11 +104,32 @@ The MundusX control plane provides the company-owned operator surface for coordi
 - Mark jobs completed or failed with output or error details.
 - Maintain job event history for operator inspection.
 
+### Request Planning
+
+- Classify inbound requests before scheduling.
+- Break complex requests into responsibility-based units such as backend implementation, frontend implementation, test generation, security review, documentation, and final merge.
+- Build job graphs that identify ordering, dependency, and merge requirements.
+- Avoid treating token-count chunking as the primary decomposition strategy.
+
 ### Routing
 
 - Match jobs to nodes by backend preference.
 - Match jobs to nodes by runtime mode and streaming capability.
 - Preserve first-available pull behavior until advanced scheduling is introduced.
+- Expand scheduling inputs to include model name, runtime type, context window, supported task types, supported languages, current load, latency, reliability, cost, availability, privacy level, and trust level.
+
+### Result Handling
+
+- Collect outputs from worker nodes.
+- Track result status, latency, errors, and source node metadata.
+- Verify result correctness, format, safety, and quality before final delivery where the request requires synthesis.
+- Merge approved partial outputs into one coherent final response for multi-job requests.
+
+### Policy And Administration
+
+- Enforce system-level routing, privacy, security, and fallback policies.
+- Support node approval and operational policy controls.
+- Separate read-only operational visibility from administrative actions as the dashboard and admin console mature.
 
 ### Operator Experience
 
@@ -121,6 +154,8 @@ The MundusX control plane provides the company-owned operator surface for coordi
 | Compatibility | The API should preserve OpenAI-compatible request shapes where practical for chat completion integrations. |
 | Deployability | The service must run on Railway with explicit environment variables for port, database, Supabase, and operator token configuration. |
 | Maintainability | Runtime contracts should remain explicit in code and documentation so node agents and control-plane behavior evolve together. |
+| Quality | Multi-job responses should be verified and synthesized before delivery when the control plane decomposes requests into partial work. |
+| Scalability | Scheduling should evolve from backend compatibility to capability, reliability, load, context, latency, and cost-aware matching. |
 
 ## Key Metrics
 
@@ -132,6 +167,11 @@ The MundusX control plane provides the company-owned operator surface for coordi
 - Failure rate by backend and model.
 - Supabase sync degradation frequency.
 - Credits issued per node and per time period.
+- Planner success rate for decomposed requests.
+- Job graph completion rate.
+- Verification failure rate by task type and node.
+- Final response merge success rate.
+- Scheduler match quality by latency, cost, reliability, and context fit.
 
 ## Assumptions
 
@@ -140,6 +180,8 @@ The MundusX control plane provides the company-owned operator surface for coordi
 - Nodes poll for work instead of receiving pushed assignments.
 - Operator authentication is required for any production deployment.
 - Supabase is the preferred shared persistence layer, but local fallback remains necessary for resilience.
+- The first MVP should prioritize a working distributed AI execution loop before blockchain, token rewards, complex billing, or marketplace features.
+- Planning and verification capabilities may start simple and become more sophisticated as node diversity and request complexity grow.
 
 ## Known Gaps
 
@@ -150,6 +192,11 @@ The MundusX control plane provides the company-owned operator surface for coordi
 | No webhook or callback mechanism | Consumers must poll once job lookup exists; event-driven integrations are not yet supported. |
 | First-come-first-served assignment | The system cannot yet optimize for priority, cost, load, region, or node affinity. |
 | Operator token can be unset | Misconfigured deployments may expose operator endpoints without authentication. |
+| No request classifier or planner | Complex AI requests cannot yet be decomposed into coordinated sub-jobs. |
+| No job graph model | The system cannot represent dependencies between parallel or sequential pieces of work. |
+| No result verifier or merger | Multi-node execution cannot yet produce a quality-checked final response. |
+| Limited node matching data | Scheduling cannot yet optimize for model quality, context size, task type, language, latency, reliability, cost, load, privacy, or trust. |
+| No cloud or stronger-model fallback | Requests may fail or wait when local nodes cannot satisfy capability, quality, latency, or availability requirements. |
 
 ## Acceptance Criteria
 
@@ -160,6 +207,8 @@ The MundusX control plane provides the company-owned operator surface for coordi
 - Health endpoints identify degraded persistence state.
 - Production deployments set `MUNDUSX_OPERATOR_TOKEN`.
 - The missing individual job lookup endpoint is tracked as a business requirement for API consumer usability.
+- Target architecture requirements identify the classifier, planner, chunker, job graph builder, scheduler, router, result collector, verifier, merger, policy engine, billing or credit engine, observability dashboard, and admin console responsibilities.
+- MVP scope remains focused on the working distributed AI execution loop before marketplace, blockchain, or complex billing features.
 
 ## Open Questions
 
@@ -168,3 +217,7 @@ The MundusX control plane provides the company-owned operator surface for coordi
 3. What service-level targets should apply to job assignment and completion time?
 4. Should API consumers be separated from operators with distinct authentication and rate limits?
 5. What data retention policy should apply to prompts, outputs, job events, and heartbeat history?
+6. Which request types should the first planner support: coding, document analysis, chat, tool use, or general inference?
+7. What verification standard is required before partial worker outputs are merged into a final response?
+8. Which cloud or stronger-model providers are allowed as fallback options?
+9. Should admin-console permissions be role-based, and which roles are required for MVP?
