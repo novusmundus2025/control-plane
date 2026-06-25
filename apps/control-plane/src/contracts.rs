@@ -135,6 +135,100 @@ impl fmt::Display for JobStatus {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestTaskType {
+    Chat,
+    Coding,
+    Document,
+    Inference,
+}
+
+impl RequestTaskType {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Chat => "chat",
+            Self::Coding => "coding",
+            Self::Document => "document",
+            Self::Inference => "inference",
+        }
+    }
+}
+
+impl Default for RequestTaskType {
+    fn default() -> Self {
+        Self::Inference
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RequestComplexity {
+    Low,
+    Medium,
+    High,
+}
+
+impl Default for RequestComplexity {
+    fn default() -> Self {
+        Self::Low
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PrivacyLevel {
+    Public,
+    Internal,
+    Sensitive,
+}
+
+impl Default for PrivacyLevel {
+    fn default() -> Self {
+        Self::Internal
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExpectedOutputFormat {
+    Text,
+    Markdown,
+    Json,
+    Code,
+}
+
+impl Default for ExpectedOutputFormat {
+    fn default() -> Self {
+        Self::Text
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextSize {
+    Small,
+    Medium,
+    Large,
+}
+
+impl Default for ContextSize {
+    fn default() -> Self {
+        Self::Small
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+pub struct RequestClassification {
+    pub task_type: RequestTaskType,
+    pub complexity: RequestComplexity,
+    pub privacy_level: PrivacyLevel,
+    pub output_format: ExpectedOutputFormat,
+    pub context_size: ContextSize,
+    pub execution_constraints: Vec<String>,
+    pub reason: String,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentRegistration {
     pub node_id: String,
@@ -251,6 +345,8 @@ pub struct JobRecord {
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub seed: Option<u64>,
+    #[serde(default)]
+    pub classification: RequestClassification,
     pub status: JobStatus,
     pub submitted_at: String,
     pub assigned_node_id: Option<String>,
