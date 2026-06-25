@@ -229,6 +229,35 @@ pub struct RequestClassification {
     pub reason: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PlannedJob {
+    pub id: String,
+    pub name: String,
+    pub responsibility: String,
+    pub depends_on: Vec<String>,
+    pub required_output: String,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JobPlan {
+    pub plan_id: String,
+    pub strategy: String,
+    pub summary: String,
+    pub jobs: Vec<PlannedJob>,
+}
+
+impl Default for JobPlan {
+    fn default() -> Self {
+        Self {
+            plan_id: "legacy-single-job".to_string(),
+            strategy: "single_job".to_string(),
+            summary: "Legacy job without an explicit planner result.".to_string(),
+            jobs: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct AgentRegistration {
     pub node_id: String,
@@ -347,6 +376,8 @@ pub struct JobRecord {
     pub seed: Option<u64>,
     #[serde(default)]
     pub classification: RequestClassification,
+    #[serde(default)]
+    pub plan: JobPlan,
     pub status: JobStatus,
     pub submitted_at: String,
     pub assigned_node_id: Option<String>,

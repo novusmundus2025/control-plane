@@ -91,6 +91,8 @@ create table if not exists public.jobs (
   temperature numeric,
   top_p numeric,
   seed bigint,
+  classification jsonb not null default '{}'::jsonb,
+  plan jsonb not null default '{}'::jsonb,
   status text not null,
   assigned_node_id text references public.devices(node_id),
   worker_id text,

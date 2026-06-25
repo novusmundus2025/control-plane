@@ -1,8 +1,8 @@
 use crate::contracts::{
     is_trusted_identity_path, AgentRegistration, AgentState, Backend, ContextSize,
     ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, Heartbeat, JobClaimResponse,
-    JobCompletion, JobEventRecord, JobRecord, JobRequest, JobStatus, NodePolicyOverride,
-    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, PrivacyLevel,
+    JobCompletion, JobEventRecord, JobPlan, JobRecord, JobRequest, JobStatus, NodePolicyOverride,
+    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, PlannedJob, PrivacyLevel,
     RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
@@ -269,6 +269,7 @@ impl ControlPlaneState {
     pub fn submit_job(&mut self, request: JobRequest, submitted_at: String) -> JobRecord {
         let job_id = request.request_id.clone();
         let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
         let record = JobRecord {
             job_id: job_id.clone(),
             request_id: request.request_id,
@@ -283,6 +284,7 @@ impl ControlPlaneState {
             top_p: request.top_p,
             seed: request.seed,
             classification,
+            plan,
             status: JobStatus::Queued,
             submitted_at,
             assigned_node_id: None,
@@ -759,6 +761,182 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
     }
 }
 
+pub fn plan_job_request(request: &JobRequest, classification: &RequestClassification) -> JobPlan {
+    let lower = format!(
+        "{}\n{}",
+        request.system_prompt.as_deref().unwrap_or(""),
+        request.prompt
+    )
+    .to_ascii_lowercase();
+
+    let decomposition_needed = classification.complexity == RequestComplexity::High
+        || contains_any(
+            &lower,
+            &[
+                "frontend",
+                "backend",
+                "tests",
+                "security",
+                "documentation",
+                "docs",
+                "review",
+            ],
+        );
+
+    if !decomposition_needed {
+        return JobPlan {
+            plan_id: format!("plan-{}", request.request_id),
+            strategy: "single_job".to_string(),
+            summary: "Single execution unit is sufficient for this request.".to_string(),
+            jobs: vec![PlannedJob {
+                id: "job.direct_response".to_string(),
+                name: "Direct response".to_string(),
+                responsibility: classification.task_type.as_str().to_string(),
+                depends_on: Vec::new(),
+                required_output: format!(
+                    "Produce the requested {:?} output for the submitted prompt.",
+                    classification.output_format
+                ),
+                reason:
+                    "Request is low or medium complexity without separate responsibility areas."
+                        .to_string(),
+            }],
+        };
+    }
+
+    let mut jobs = Vec::new();
+    push_planned_job(
+        &mut jobs,
+        "job.scope",
+        "Scope and constraints",
+        "analysis",
+        Vec::new(),
+        "Identify request boundaries, constraints, and deliverable shape.",
+        "Every decomposed request needs a shared scope before specialized work starts.",
+    );
+
+    if classification.task_type == RequestTaskType::Coding
+        || contains_any(&lower, &["backend", "api", "rust"])
+    {
+        push_planned_job(
+            &mut jobs,
+            "job.backend",
+            "Backend implementation",
+            "backend",
+            vec!["job.scope".to_string()],
+            "Implement backend or API changes needed by the request.",
+            "The classifier detected coding/backend responsibility.",
+        );
+    }
+
+    if contains_any(&lower, &["frontend", "dashboard", "ui", "client"]) {
+        push_planned_job(
+            &mut jobs,
+            "job.frontend",
+            "Frontend implementation",
+            "frontend",
+            vec!["job.scope".to_string()],
+            "Implement user-facing or dashboard changes needed by the request.",
+            "The prompt references frontend or operator-facing UI work.",
+        );
+    }
+
+    if contains_any(&lower, &["security", "privacy", "policy", "permission"]) {
+        push_planned_job(
+            &mut jobs,
+            "job.security_review",
+            "Security review",
+            "security",
+            vec!["job.scope".to_string()],
+            "Review privacy, policy, and permission risks before final synthesis.",
+            "The request carries security or privacy-sensitive constraints.",
+        );
+    }
+
+    if classification.task_type == RequestTaskType::Document
+        || contains_any(&lower, &["docs", "documentation", "readme"])
+    {
+        push_planned_job(
+            &mut jobs,
+            "job.documentation",
+            "Documentation",
+            "documentation",
+            vec!["job.scope".to_string()],
+            "Update operator or user documentation for the planned change.",
+            "The request includes documentation responsibility.",
+        );
+    }
+
+    if classification.task_type == RequestTaskType::Coding
+        || contains_any(&lower, &["test", "tests", "coverage"])
+    {
+        let implementation_dependencies = jobs
+            .iter()
+            .filter(|job| job.responsibility == "backend" || job.responsibility == "frontend")
+            .map(|job| job.id.clone())
+            .collect::<Vec<_>>();
+        push_planned_job(
+            &mut jobs,
+            "job.tests",
+            "Regression tests",
+            "tests",
+            if implementation_dependencies.is_empty() {
+                vec!["job.scope".to_string()]
+            } else {
+                implementation_dependencies
+            },
+            "Cover the planned behavior with focused regression checks.",
+            "Responsibility-based plans keep validation separate from implementation.",
+        );
+    }
+
+    let final_dependencies = jobs
+        .iter()
+        .map(|job| job.id.clone())
+        .filter(|id| *id != "job.final_merge")
+        .collect::<Vec<_>>();
+    push_planned_job(
+        &mut jobs,
+        "job.final_merge",
+        "Final synthesis",
+        "merge",
+        final_dependencies,
+        "Merge partial outputs into one coherent final response or implementation result.",
+        "Multi-job work needs one final responsibility to combine partial outputs.",
+    );
+
+    JobPlan {
+        plan_id: format!("plan-{}", request.request_id),
+        strategy: "responsibility_based".to_string(),
+        summary: format!(
+            "Planned {} responsibility-based execution units from a {:?} {:?} request.",
+            jobs.len(),
+            classification.complexity,
+            classification.task_type
+        ),
+        jobs,
+    }
+}
+
+fn push_planned_job(
+    jobs: &mut Vec<PlannedJob>,
+    id: &str,
+    name: &str,
+    responsibility: &str,
+    depends_on: Vec<String>,
+    required_output: &str,
+    reason: &str,
+) {
+    jobs.push(PlannedJob {
+        id: id.to_string(),
+        name: name.to_string(),
+        responsibility: responsibility.to_string(),
+        depends_on,
+        required_output: required_output.to_string(),
+        reason: reason.to_string(),
+    });
+}
+
 fn contains_any(input: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| input.contains(needle))
 }
@@ -1046,6 +1224,71 @@ mod tests {
                 .get("job-1")
                 .map(|job| job.classification.output_format),
             Some(ExpectedOutputFormat::Json)
+        );
+    }
+
+    #[test]
+    fn plans_simple_requests_as_single_execution_unit() {
+        let request = classification_request("Estimate the next number in this sequence: 2, 4, 8.");
+        let classification = classify_job_request(&request);
+
+        let plan = plan_job_request(&request, &classification);
+
+        assert_eq!(plan.strategy, "single_job");
+        assert_eq!(plan.jobs.len(), 1);
+        assert_eq!(plan.jobs[0].responsibility, "inference");
+        assert!(plan.jobs[0].depends_on.is_empty());
+    }
+
+    #[test]
+    fn plans_complex_coding_requests_by_responsibility() {
+        let request = classification_request(
+            "Design and implement a backend API plus frontend dashboard, add tests, update docs, and include a security review.",
+        );
+        let classification = classify_job_request(&request);
+
+        let plan = plan_job_request(&request, &classification);
+        let responsibilities = plan
+            .jobs
+            .iter()
+            .map(|job| job.responsibility.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(plan.strategy, "responsibility_based");
+        assert!(responsibilities.contains(&"analysis"));
+        assert!(responsibilities.contains(&"backend"));
+        assert!(responsibilities.contains(&"frontend"));
+        assert!(responsibilities.contains(&"tests"));
+        assert!(responsibilities.contains(&"documentation"));
+        assert!(responsibilities.contains(&"security"));
+        assert!(responsibilities.contains(&"merge"));
+
+        let final_merge = plan
+            .jobs
+            .iter()
+            .find(|job| job.id == "job.final_merge")
+            .expect("final merge job");
+        assert!(final_merge.depends_on.contains(&"job.backend".to_string()));
+        assert!(final_merge.depends_on.contains(&"job.frontend".to_string()));
+        assert!(final_merge.depends_on.contains(&"job.tests".to_string()));
+    }
+
+    #[test]
+    fn stores_plan_before_scheduling() {
+        let mut state = ControlPlaneState::default();
+        let record = state.submit_job(
+            classification_request("Implement a Rust API change with tests and documentation."),
+            "1".to_string(),
+        );
+
+        assert_eq!(record.status, JobStatus::Queued);
+        assert_eq!(record.plan.strategy, "responsibility_based");
+        assert_eq!(
+            state
+                .jobs
+                .get("job-1")
+                .map(|job| job.plan.strategy.as_str()),
+            Some("responsibility_based")
         );
     }
 

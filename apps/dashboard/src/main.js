@@ -530,6 +530,11 @@ function renderJobs(jobs = []) {
           const assignedAt = job.assigned_at ?? "pending";
           const completedAt = job.completed_at ?? "pending";
           const prompt = String(job.prompt ?? "").trim();
+          const classification = job.classification ?? {};
+          const plan = job.plan ?? {};
+          const planJobs = Array.isArray(plan.jobs) ? plan.jobs : [];
+          const planSummary = String(plan.summary ?? "No planner summary recorded.");
+          const planStrategy = String(plan.strategy ?? "unplanned");
           return `
             <article class="job-card">
               <div class="job-head">
@@ -561,6 +566,24 @@ function renderJobs(jobs = []) {
                   <div class="meta-label">Completed</div>
                   <div class="meta-value">${escapeHtml(completedAt)}</div>
                 </div>
+              </div>
+              <div class="job-plan">
+                <div class="meta">
+                  ${escapeHtml(String(classification.task_type ?? "unclassified"))}
+                  - ${escapeHtml(String(classification.complexity ?? "unknown"))}
+                  - ${escapeHtml(planStrategy)}
+                </div>
+                <div>${escapeHtml(planSummary)}</div>
+                ${
+                  planJobs.length
+                    ? `<ol>${planJobs
+                        .map(
+                          (plannedJob) =>
+                            `<li><strong>${escapeHtml(plannedJob.name ?? plannedJob.id ?? "planned job")}</strong><span>${escapeHtml(plannedJob.required_output ?? plannedJob.responsibility ?? "")}</span></li>`,
+                        )
+                        .join("")}</ol>`
+                    : ""
+                }
               </div>
             </article>`;
         })
@@ -2475,6 +2498,27 @@ export function page({ health, status, events, credits, error }) {
         grid-template-columns: repeat(4, minmax(0, 1fr));
         gap: 12px;
         margin-top: 14px;
+      }
+      .job-plan {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        margin-top: 14px;
+        padding: 12px 14px;
+        background: rgba(43, 108, 176, 0.06);
+        color: var(--text);
+        line-height: 1.5;
+      }
+      .job-plan ol {
+        margin: 10px 0 0;
+        padding-left: 20px;
+      }
+      .job-plan li {
+        margin-top: 6px;
+      }
+      .job-plan span {
+        display: block;
+        color: var(--muted);
+        overflow-wrap: anywhere;
       }
       .event-top {
         display: flex;
