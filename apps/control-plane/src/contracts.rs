@@ -283,6 +283,20 @@ pub enum JobGraphNodeStatus {
     Failed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JobResultVerificationStatus {
+    Accepted,
+    Rejected,
+    FallbackNeeded,
+}
+
+impl Default for JobResultVerificationStatus {
+    fn default() -> Self {
+        Self::Accepted
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct JobGraphNode {
     pub id: String,
@@ -307,6 +321,10 @@ pub struct JobResultRecord {
     pub source_worker_id: Option<String>,
     pub source_node_id: Option<String>,
     pub latency_ms: Option<u64>,
+    #[serde(default)]
+    pub verification_status: JobResultVerificationStatus,
+    #[serde(default)]
+    pub verification_reason: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
