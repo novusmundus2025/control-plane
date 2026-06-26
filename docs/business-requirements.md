@@ -8,7 +8,7 @@
 | Repository | `mundusx/control-plane` |
 | Status | Draft |
 | Owner | MundusX operators |
-| Last updated | 2026-06-25 |
+| Last updated | 2026-06-26 |
 
 ## Purpose
 
@@ -28,7 +28,8 @@ The MundusX control plane provides the company-owned operator surface for coordi
 
 | Stakeholder | Needs |
 |---|---|
-| MundusX operators | Monitor system health, nodes, jobs, credits, and queue activity. |
+| MundusX observers | Monitor system health, nodes, jobs, credits, and queue activity without changing production state. |
+| MundusX administrators | Approve nodes, manage operational policy, authorize fallback decisions, and maintain system configuration. |
 | Node contributors | Register nodes, report heartbeat status, receive compatible jobs, and receive credit for completed work. |
 | API consumers | Submit inference work and retrieve completion status or results through predictable API contracts. |
 | Engineering | Maintain secure routing, state persistence, deployment, and observability. |
@@ -85,7 +86,9 @@ The MundusX control plane provides the company-owned operator surface for coordi
 | BR-020 | The system should verify job outputs for correctness, format, safety, and quality before final synthesis. | Should |
 | BR-021 | The system should match jobs to nodes using model capability, runtime type, context size, task support, language support, load, latency, reliability, cost, availability, and trust level. | Should |
 | BR-022 | The system could fall back to cloud or stronger models when local nodes cannot satisfy a request's quality, context, latency, or availability requirements. | Could |
-| BR-023 | The system could expose distinct admin-console capabilities for configuration, policy management, node approvals, and operational controls beyond the observer dashboard. | Could |
+| BR-023 | The system should expose distinct admin-console capabilities for configuration, policy management, node approvals, and operational controls beyond the observer dashboard. | Should |
+| BR-024 | The system should require role-scoped permissions for observer, operator, and administrator actions. | Should |
+| BR-025 | The system must record audit metadata for every administrative action that changes routing, node eligibility, fallback approval, or system configuration. | Must |
 
 ## Functional Requirements
 
@@ -131,6 +134,14 @@ The MundusX control plane provides the company-owned operator surface for coordi
 - Support node approval and operational policy controls.
 - Separate read-only operational visibility from administrative actions as the dashboard and admin console mature.
 
+### Admin Console
+
+- Keep read-only dashboard views separate from mutating administrative actions.
+- Require role-scoped access for observer, operator, and administrator responsibilities.
+- Support MVP administrative actions for node approval or suspension, policy override, fallback approval, contribution-cap adjustment, and operational configuration changes.
+- Require every administrative action to record actor, role, action, target, previous value, new value, reason, and timestamp.
+- Surface the latest administrative reason and audit trail for node policy state, fallback decisions, and configuration changes.
+
 ### Operator Experience
 
 - Provide a dashboard at the operator root route.
@@ -149,8 +160,10 @@ The MundusX control plane provides the company-owned operator surface for coordi
 | Category | Requirement |
 |---|---|
 | Security | Node requests must be signed, operator endpoints must be token protected in production, and service role secrets must never be committed. |
+| Authorization | Administrative actions must be guarded by role-scoped permissions, with read-only observer access separated from mutating operator and administrator workflows. |
 | Reliability | The control plane must continue serving core operations when Supabase sync is degraded, using local fallback state. |
 | Observability | Operators must be able to inspect health, sync status, nodes, jobs, events, and credits through dashboard or API endpoints. |
+| Auditability | Mutating administrative actions must be traceable to an actor, role, target, reason, and timestamp. |
 | Compatibility | The API should preserve OpenAI-compatible request shapes where practical for chat completion integrations. |
 | Deployability | The service must run on Railway with explicit environment variables for port, database, Supabase, and operator token configuration. |
 | Maintainability | Runtime contracts should remain explicit in code and documentation so node agents and control-plane behavior evolve together. |
@@ -197,6 +210,8 @@ The MundusX control plane provides the company-owned operator surface for coordi
 | No result verifier or merger | Multi-node execution cannot yet produce a quality-checked final response. |
 | Limited node matching data | Scheduling cannot yet optimize for model quality, context size, task type, language, latency, reliability, cost, load, privacy, or trust. |
 | No cloud or stronger-model fallback | Requests may fail or wait when local nodes cannot satisfy capability, quality, latency, or availability requirements. |
+| No dedicated admin console | Mutating node, policy, fallback, and configuration controls are not yet separated from read-only operational visibility. |
+| No role-scoped permission model | The current token model cannot distinguish observer, operator, and administrator capabilities. |
 
 ## Acceptance Criteria
 
@@ -208,6 +223,7 @@ The MundusX control plane provides the company-owned operator surface for coordi
 - Production deployments set `MUNDUSX_OPERATOR_TOKEN`.
 - The missing individual job lookup endpoint is tracked as a business requirement for API consumer usability.
 - Target architecture requirements identify the classifier, planner, chunker, job graph builder, scheduler, router, result collector, verifier, merger, policy engine, billing or credit engine, observability dashboard, and admin console responsibilities.
+- Admin console requirements identify read-only dashboard boundaries, MVP administrative actions, role-scoped permissions, and audit metadata requirements.
 - MVP scope remains focused on the working distributed AI execution loop before marketplace, blockchain, or complex billing features.
 
 ## Open Questions
@@ -220,4 +236,4 @@ The MundusX control plane provides the company-owned operator surface for coordi
 6. Which request types should the first planner support: coding, document analysis, chat, tool use, or general inference?
 7. What verification standard is required before partial worker outputs are merged into a final response?
 8. Which cloud or stronger-model providers are allowed as fallback options?
-9. Should admin-console permissions be role-based, and which roles are required for MVP?
+9. Which identity provider should back observer, operator, and administrator roles for MVP?
