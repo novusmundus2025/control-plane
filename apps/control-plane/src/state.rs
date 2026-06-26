@@ -2,9 +2,10 @@ use crate::contracts::{
     is_trusted_identity_path, AgentRegistration, AgentState, Backend, ContextSize,
     ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, Heartbeat, JobClaimResponse,
     JobCompletion, JobEventRecord, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus,
-    JobPlan, JobRecord, JobRequest, JobResultRecord, JobStatus, NodePolicyOverride,
-    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, PlannedJob, PrivacyLevel,
-    RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode, WorkerHealthReport,
+    JobPlan, JobRecord, JobRequest, JobResultRecord, JobResultVerificationStatus, JobStatus,
+    NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, PlannedJob,
+    PrivacyLevel, RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode,
+    WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -562,7 +563,13 @@ impl ControlPlaneState {
         node.error = error;
         job.graph.updated_at = updated_at;
         refresh_job_graph(&mut job.graph);
-        refresh_graph_results(&mut job.graph, None, None, None);
+        refresh_graph_results(
+            &mut job.graph,
+            job.classification.output_format,
+            None,
+            None,
+            None,
+        );
         Ok(job.graph.clone())
     }
 
@@ -997,7 +1004,7 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
         updated_at: created_at.to_string(),
     };
     refresh_job_graph(&mut graph);
-    refresh_graph_results(&mut graph, None, None, None);
+    refresh_graph_results(&mut graph, ExpectedOutputFormat::Text, None, None, None);
     graph
 }
 
@@ -1101,15 +1108,12 @@ fn apply_job_completion_to_graph(job: &mut JobRecord, completion: &JobCompletion
     }
     refresh_graph_results(
         &mut job.graph,
+        job.classification.output_format,
         Some(completion.worker_id.as_str()),
         Some(completion.node_id.as_str()),
         completion.latency_ms,
     );
-    job.output = job
-        .graph
-        .final_output
-        .clone()
-        .or_else(|| completion.output.clone());
+    job.output = job.graph.final_output.clone();
     if job.graph.merge_error.is_some() && job.error.is_none() {
         job.error = job.graph.merge_error.clone();
     }
@@ -1117,6 +1121,7 @@ fn apply_job_completion_to_graph(job: &mut JobRecord, completion: &JobCompletion
 
 fn refresh_graph_results(
     graph: &mut JobGraph,
+    expected_format: ExpectedOutputFormat,
     source_worker_id: Option<&str>,
     source_node_id: Option<&str>,
     latency_ms: Option<u64>,
@@ -1130,30 +1135,43 @@ fn refresh_graph_results(
                 JobGraphNodeStatus::Completed | JobGraphNodeStatus::Failed
             )
         })
-        .map(|node| JobResultRecord {
-            node_id: node.id.clone(),
-            name: node.name.clone(),
-            responsibility: node.responsibility.clone(),
-            status: node.status,
-            output: node.output.clone(),
-            error: node.error.clone(),
-            source_worker_id: source_worker_id.map(str::to_string),
-            source_node_id: source_node_id.map(str::to_string),
-            latency_ms,
+        .map(|node| {
+            let (verification_status, verification_reason) =
+                verify_graph_result(node, expected_format);
+            JobResultRecord {
+                node_id: node.id.clone(),
+                name: node.name.clone(),
+                responsibility: node.responsibility.clone(),
+                status: node.status,
+                output: node.output.clone(),
+                error: node.error.clone(),
+                source_worker_id: source_worker_id.map(str::to_string),
+                source_node_id: source_node_id.map(str::to_string),
+                latency_ms,
+                verification_status,
+                verification_reason,
+            }
         })
         .collect();
 
     graph.final_output = merge_completed_graph_outputs(graph);
     graph.merge_error = merge_graph_error(graph);
+    if graph.merge_error.is_some() {
+        graph.status = JobGraphStatus::Failed;
+    }
 }
 
 fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
     if let Some(final_node_id) = graph.final_node_id.as_deref() {
         if let Some(output) = graph
-            .nodes
+            .results
             .iter()
-            .find(|node| node.id == final_node_id)
-            .and_then(|node| node.output.as_ref())
+            .find(|result| {
+                result.node_id == final_node_id
+                    && result.status == JobGraphNodeStatus::Completed
+                    && result.verification_status == JobResultVerificationStatus::Accepted
+            })
+            .and_then(|result| result.output.as_ref())
             .map(|value| value.trim())
             .filter(|value| !value.is_empty())
         {
@@ -1162,18 +1180,17 @@ fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
     }
 
     let mut parts = Vec::new();
-    for node in graph
-        .nodes
-        .iter()
-        .filter(|node| node.status == JobGraphNodeStatus::Completed)
-    {
-        let Some(output) = node.output.as_ref().map(|value| value.trim()) else {
+    for result in graph.results.iter().filter(|result| {
+        result.status == JobGraphNodeStatus::Completed
+            && result.verification_status == JobResultVerificationStatus::Accepted
+    }) {
+        let Some(output) = result.output.as_ref().map(|value| value.trim()) else {
             continue;
         };
         if output.is_empty() {
             continue;
         }
-        parts.push(format!("## {}\n{}", node.name, output));
+        parts.push(format!("## {}\n{}", result.name, output));
     }
 
     if parts.is_empty() {
@@ -1184,7 +1201,7 @@ fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
 }
 
 fn merge_graph_error(graph: &JobGraph) -> Option<String> {
-    let errors = graph
+    let mut errors = graph
         .nodes
         .iter()
         .filter(|node| node.status == JobGraphNodeStatus::Failed)
@@ -1195,10 +1212,91 @@ fn merge_graph_error(graph: &JobGraph) -> Option<String> {
         })
         .collect::<Vec<_>>();
 
+    errors.extend(
+        graph
+            .results
+            .iter()
+            .filter(|result| {
+                result.status != JobGraphNodeStatus::Failed
+                    && result.verification_status != JobResultVerificationStatus::Accepted
+            })
+            .map(|result| {
+                format!(
+                    "{} verification {}: {}",
+                    result.name,
+                    verification_status_label(result.verification_status),
+                    result
+                        .verification_reason
+                        .as_deref()
+                        .unwrap_or("result did not pass verification")
+                )
+            }),
+    );
+
     if errors.is_empty() {
         None
     } else {
         Some(errors.join("; "))
+    }
+}
+
+fn verify_graph_result(
+    node: &JobGraphNode,
+    expected_format: ExpectedOutputFormat,
+) -> (JobResultVerificationStatus, Option<String>) {
+    if node.status == JobGraphNodeStatus::Failed {
+        return (
+            JobResultVerificationStatus::Rejected,
+            Some(
+                node.error
+                    .as_ref()
+                    .map(|error| format!("worker reported failure: {error}"))
+                    .unwrap_or_else(|| "worker reported failure".to_string()),
+            ),
+        );
+    }
+
+    let Some(output) = node.output.as_ref().map(|value| value.trim()) else {
+        return (
+            JobResultVerificationStatus::Rejected,
+            Some("completed result did not include output".to_string()),
+        );
+    };
+
+    if output.is_empty() {
+        return (
+            JobResultVerificationStatus::Rejected,
+            Some("completed result output was empty".to_string()),
+        );
+    }
+
+    if output
+        .chars()
+        .any(|character| character.is_control() && !matches!(character, '\n' | '\r' | '\t'))
+    {
+        return (
+            JobResultVerificationStatus::Rejected,
+            Some("output contains unsupported control characters".to_string()),
+        );
+    }
+
+    if expected_format == ExpectedOutputFormat::Json
+        && serde_json::from_str::<serde_json::Value>(output).is_err()
+    {
+        return (
+            JobResultVerificationStatus::FallbackNeeded,
+            Some("output is not valid JSON for the expected format".to_string()),
+        );
+    }
+
+    (JobResultVerificationStatus::Accepted, None)
+}
+
+fn verification_status_label(status: JobResultVerificationStatus) -> &'static str {
+    match status {
+        JobResultVerificationStatus::Accepted => "accepted",
+        JobResultVerificationStatus::Rejected => "rejected",
+        JobResultVerificationStatus::FallbackNeeded => "fallback_needed",
     }
 }
 
@@ -1753,7 +1851,8 @@ mod tests {
             .results
             .iter()
             .any(|result| result.node_id == "job.backend"
-                && result.output.as_deref() == Some("backend complete")));
+                && result.output.as_deref() == Some("backend complete")
+                && result.verification_status == JobResultVerificationStatus::Accepted));
     }
 
     #[test]
@@ -1799,6 +1898,76 @@ mod tests {
         assert_eq!(
             failed_result.error.as_deref(),
             Some("backend failed validation")
+        );
+        assert_eq!(
+            failed_result.verification_status,
+            JobResultVerificationStatus::Rejected
+        );
+    }
+
+    #[test]
+    fn rejects_empty_completed_results_before_final_merge() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            classification_request("Summarize this public inference request."),
+            "1".to_string(),
+        );
+
+        let graph = state
+            .update_graph_node(
+                "job-1",
+                "job.direct_response",
+                JobGraphNodeStatus::Completed,
+                Some("   ".to_string()),
+                None,
+                "2".to_string(),
+            )
+            .expect("complete direct response");
+
+        assert_eq!(graph.status, JobGraphStatus::Failed);
+        assert_eq!(graph.final_output, None);
+        assert_eq!(
+            graph.merge_error.as_deref(),
+            Some("Direct response verification rejected: completed result output was empty")
+        );
+        let result = graph.results.first().expect("result");
+        assert_eq!(
+            result.verification_status,
+            JobResultVerificationStatus::Rejected
+        );
+    }
+
+    #[test]
+    fn marks_invalid_json_results_as_fallback_needed() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            classification_request("Return JSON for this public inference request."),
+            "1".to_string(),
+        );
+
+        let graph = state
+            .update_graph_node(
+                "job-1",
+                "job.direct_response",
+                JobGraphNodeStatus::Completed,
+                Some("not json".to_string()),
+                None,
+                "2".to_string(),
+            )
+            .expect("complete direct response");
+
+        assert_eq!(graph.status, JobGraphStatus::Failed);
+        assert_eq!(graph.final_output, None);
+        assert_eq!(
+            graph.merge_error.as_deref(),
+            Some(
+                "Direct response verification fallback_needed: output is not valid JSON for the expected format"
+            )
+        );
+        let result = graph.results.first().expect("result");
+        assert_eq!(
+            result.verification_status,
+            JobResultVerificationStatus::FallbackNeeded
         );
     }
 
