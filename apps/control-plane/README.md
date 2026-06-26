@@ -23,3 +23,23 @@ Fallback is a policy decision recorded on each job, not an automatic cloud dispa
 - Public and internal requests can become fallback candidates, but the default policy requires operator approval and caps a single fallback decision at 25 cents.
 - Sensitive requests are blocked from stronger-model fallback so private prompts and credentials remain on the local execution path unless a future explicit policy changes that rule.
 - Each job stores `fallback_decision` with status, triggers, blocked reasons, provider, approval requirement, max cost, and audit reason so operators can inspect why fallback was allowed, blocked, or unnecessary.
+
+## Admin Console Contract
+
+The dashboard remains the read-only operational surface for health, nodes, jobs, credits, and sync state. Mutating controls belong in a distinct admin console so operators can monitor production without accidentally changing routing or policy.
+
+MVP roles:
+
+- `observer`: read dashboard/status data and audit trails.
+- `operator`: perform bounded operational actions such as pausing a node, setting contribution caps, and approving eligible fallback decisions.
+- `administrator`: manage policy rules, node approval state, role assignments, and system configuration.
+
+MVP administrative actions:
+
+- approve, suspend, or restore a node for routing eligibility
+- set or clear node policy overrides with an operator-visible reason
+- adjust operator-controlled contribution caps within the safe range
+- approve or deny stronger-model fallback decisions when policy requires human approval
+- update routing, privacy, fallback, or retention configuration
+
+Every mutating admin action must emit audit metadata with actor, role, action, target, previous value, new value, reason, and timestamp. Node policy override and fallback records already carry operator-facing reason fields; future admin-console endpoints should preserve those fields instead of replacing them with dashboard-only state.
