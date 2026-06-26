@@ -1,11 +1,12 @@
 use crate::contracts::{
     is_trusted_identity_path, AgentRegistration, AgentState, Backend, ContextSize,
-    ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, Heartbeat, JobClaimResponse,
-    JobCompletion, JobEventRecord, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus,
-    JobPlan, JobRecord, JobRequest, JobResultRecord, JobResultVerificationStatus,
-    JobSchedulingRequirements, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
-    NodePolicyOverrideTarget, NodeRecord, PlannedJob, PrivacyLevel, RequestClassification,
-    RequestComplexity, RequestTaskType, RuntimeMode, SchedulerDecision, WorkerHealthReport,
+    ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, FallbackDecision,
+    FallbackDecisionStatus, FallbackPolicy, Heartbeat, JobClaimResponse, JobCompletion,
+    JobEventRecord, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord,
+    JobRequest, JobResultRecord, JobResultVerificationStatus, JobSchedulingRequirements, JobStatus,
+    NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, PlannedJob,
+    PrivacyLevel, RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode,
+    SchedulerDecision, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -272,6 +273,7 @@ impl ControlPlaneState {
         let job_id = request.request_id.clone();
         let classification = classify_job_request(&request);
         let scheduling_requirements = scheduling_requirements_for(&request, &classification);
+        let fallback_decision = fallback_decision_for(&scheduling_requirements);
         let plan = plan_job_request(&request, &classification);
         let graph = build_job_graph(&request.request_id, &plan, &submitted_at);
         let record = JobRecord {
@@ -290,6 +292,7 @@ impl ControlPlaneState {
             classification,
             scheduling_requirements,
             scheduler_decision: None,
+            fallback_decision,
             plan,
             graph,
             status: JobStatus::Queued,
@@ -1454,6 +1457,102 @@ pub fn scheduling_requirements_for(
     }
 }
 
+pub fn fallback_decision_for(requirements: &JobSchedulingRequirements) -> FallbackDecision {
+    let policy = FallbackPolicy::default();
+    fallback_decision_for_policy(requirements, &policy)
+}
+
+pub fn fallback_decision_for_policy(
+    requirements: &JobSchedulingRequirements,
+    policy: &FallbackPolicy,
+) -> FallbackDecision {
+    let mut triggers = Vec::new();
+
+    if requirements.context_size == ContextSize::Large {
+        triggers.push("large_context".to_string());
+    }
+
+    if requirements.stream {
+        triggers.push("streaming_requested".to_string());
+    }
+
+    if requirements.output_format == ExpectedOutputFormat::Json {
+        triggers.push("quality_or_format_verification_failed".to_string());
+    }
+
+    if requirements.constraints.iter().any(|constraint| {
+        let normalized = constraint.to_ascii_lowercase();
+        normalized.contains("latency")
+            || normalized.contains("availability")
+            || normalized.contains("local capacity")
+    }) {
+        triggers.push("local_capacity_unavailable".to_string());
+    }
+
+    triggers.sort();
+    triggers.dedup();
+
+    if triggers.is_empty() {
+        return FallbackDecision {
+            status: FallbackDecisionStatus::NotNeeded,
+            audit_reason: "Local execution remains the primary route for this request.".to_string(),
+            ..FallbackDecision::default()
+        };
+    }
+
+    let mut blocked_reasons = Vec::new();
+    if !policy
+        .allowed_privacy_levels
+        .contains(&requirements.privacy_level)
+    {
+        blocked_reasons.push(format!(
+            "privacy level {:?} is not eligible for fallback",
+            requirements.privacy_level
+        ));
+    }
+
+    for trigger in &triggers {
+        if !policy.allowed_triggers.contains(trigger) {
+            blocked_reasons.push(format!(
+                "trigger {trigger} is not allowed by fallback policy"
+            ));
+        }
+    }
+
+    if !blocked_reasons.is_empty() {
+        return FallbackDecision {
+            status: FallbackDecisionStatus::Blocked,
+            provider: None,
+            triggers,
+            blocked_reasons,
+            requires_operator_approval: false,
+            max_cost_cents: None,
+            audit_reason: "Fallback is blocked by privacy or policy constraints.".to_string(),
+        };
+    }
+
+    let status = if policy.requires_operator_approval {
+        FallbackDecisionStatus::RequiresApproval
+    } else {
+        FallbackDecisionStatus::Eligible
+    };
+    let audit_reason = if policy.requires_operator_approval {
+        "Fallback is eligible only after an operator approves the stronger-model route."
+    } else {
+        "Fallback is eligible under the configured policy."
+    };
+
+    FallbackDecision {
+        status,
+        provider: Some(policy.provider),
+        triggers,
+        blocked_reasons,
+        requires_operator_approval: policy.requires_operator_approval,
+        max_cost_cents: Some(policy.max_cost_cents),
+        audit_reason: audit_reason.to_string(),
+    }
+}
+
 pub fn evaluate_policy(
     agent_state: AgentState,
     power_source: &str,
@@ -1761,6 +1860,80 @@ mod tests {
             Some("rust")
         );
         assert_eq!(record.scheduler_decision, None);
+    }
+
+    #[test]
+    fn marks_simple_local_requests_as_not_needing_fallback() {
+        let request = classification_request("Estimate the next number in this sequence: 2, 4, 8.");
+        let classification = classify_job_request(&request);
+        let requirements = scheduling_requirements_for(&request, &classification);
+
+        let decision = fallback_decision_for(&requirements);
+
+        assert_eq!(decision.status, FallbackDecisionStatus::NotNeeded);
+        assert_eq!(decision.provider, None);
+        assert!(decision.triggers.is_empty());
+        assert!(decision.blocked_reasons.is_empty());
+    }
+
+    #[test]
+    fn requires_operator_approval_for_public_large_context_fallback() {
+        let mut request = classification_request(
+            "Summarize this public dataset with a very long transcript and return markdown.",
+        );
+        request.max_tokens = Some(16_000);
+        let classification = classify_job_request(&request);
+        let requirements = scheduling_requirements_for(&request, &classification);
+
+        let decision = fallback_decision_for(&requirements);
+
+        assert_eq!(decision.status, FallbackDecisionStatus::RequiresApproval);
+        assert_eq!(
+            decision.provider,
+            Some(crate::contracts::FallbackProvider::OperatorApprovedStrongerModel)
+        );
+        assert!(decision.triggers.contains(&"large_context".to_string()));
+        assert!(decision.requires_operator_approval);
+        assert_eq!(decision.max_cost_cents, Some(25));
+    }
+
+    #[test]
+    fn blocks_sensitive_requests_from_stronger_model_fallback() {
+        let request = classification_request(
+            "Analyze private credentials, secrets, and confidential customer data as JSON.",
+        );
+        let classification = classify_job_request(&request);
+        let requirements = scheduling_requirements_for(&request, &classification);
+
+        let decision = fallback_decision_for(&requirements);
+
+        assert_eq!(decision.status, FallbackDecisionStatus::Blocked);
+        assert_eq!(decision.provider, None);
+        assert!(decision
+            .blocked_reasons
+            .iter()
+            .any(|reason| reason.contains("privacy level Sensitive")));
+    }
+
+    #[test]
+    fn stores_fallback_decision_with_submitted_job() {
+        let mut state = ControlPlaneState::default();
+        let record = state.submit_job(
+            classification_request("Return JSON for this public inference request."),
+            "1".to_string(),
+        );
+
+        assert_eq!(
+            record.fallback_decision.status,
+            FallbackDecisionStatus::RequiresApproval
+        );
+        assert_eq!(
+            state
+                .jobs
+                .get("job-1")
+                .map(|job| job.fallback_decision.status),
+            Some(FallbackDecisionStatus::RequiresApproval)
+        );
     }
 
     #[test]
