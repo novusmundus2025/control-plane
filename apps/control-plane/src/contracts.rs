@@ -265,6 +265,78 @@ pub struct SchedulerDecision {
     pub reasons: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackProvider {
+    OperatorApprovedStrongerModel,
+}
+
+impl FallbackProvider {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::OperatorApprovedStrongerModel => "operator_approved_stronger_model",
+        }
+    }
+}
+
+impl fmt::Display for FallbackProvider {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackDecisionStatus {
+    NotNeeded,
+    Eligible,
+    RequiresApproval,
+    Blocked,
+}
+
+impl Default for FallbackDecisionStatus {
+    fn default() -> Self {
+        Self::NotNeeded
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct FallbackPolicy {
+    pub provider: FallbackProvider,
+    pub max_cost_cents: u32,
+    pub requires_operator_approval: bool,
+    pub allowed_privacy_levels: Vec<PrivacyLevel>,
+    pub allowed_triggers: Vec<String>,
+}
+
+impl Default for FallbackPolicy {
+    fn default() -> Self {
+        Self {
+            provider: FallbackProvider::OperatorApprovedStrongerModel,
+            max_cost_cents: 25,
+            requires_operator_approval: true,
+            allowed_privacy_levels: vec![PrivacyLevel::Public, PrivacyLevel::Internal],
+            allowed_triggers: vec![
+                "large_context".to_string(),
+                "streaming_requested".to_string(),
+                "quality_or_format_verification_failed".to_string(),
+                "local_capacity_unavailable".to_string(),
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+pub struct FallbackDecision {
+    pub status: FallbackDecisionStatus,
+    pub provider: Option<FallbackProvider>,
+    pub triggers: Vec<String>,
+    pub blocked_reasons: Vec<String>,
+    pub requires_operator_approval: bool,
+    pub max_cost_cents: Option<u32>,
+    pub audit_reason: String,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlannedJob {
     pub id: String,
@@ -521,6 +593,8 @@ pub struct JobRecord {
     pub scheduling_requirements: JobSchedulingRequirements,
     #[serde(default)]
     pub scheduler_decision: Option<SchedulerDecision>,
+    #[serde(default)]
+    pub fallback_decision: FallbackDecision,
     #[serde(default)]
     pub plan: JobPlan,
     #[serde(default)]
