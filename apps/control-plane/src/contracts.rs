@@ -230,6 +230,42 @@ pub struct RequestClassification {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct JobSchedulingRequirements {
+    pub task_type: RequestTaskType,
+    pub context_size: ContextSize,
+    pub privacy_level: PrivacyLevel,
+    pub output_format: ExpectedOutputFormat,
+    pub runtime_mode: RuntimeMode,
+    pub stream: bool,
+    pub model: Option<String>,
+    pub language: Option<String>,
+    pub constraints: Vec<String>,
+}
+
+impl Default for JobSchedulingRequirements {
+    fn default() -> Self {
+        Self {
+            task_type: RequestTaskType::Inference,
+            context_size: ContextSize::Small,
+            privacy_level: PrivacyLevel::Internal,
+            output_format: ExpectedOutputFormat::Text,
+            runtime_mode: RuntimeMode::Local,
+            stream: false,
+            model: None,
+            language: None,
+            constraints: Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+pub struct SchedulerDecision {
+    pub node_id: String,
+    pub score: i32,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct PlannedJob {
     pub id: String,
     pub name: String,
@@ -481,6 +517,10 @@ pub struct JobRecord {
     pub seed: Option<u64>,
     #[serde(default)]
     pub classification: RequestClassification,
+    #[serde(default)]
+    pub scheduling_requirements: JobSchedulingRequirements,
+    #[serde(default)]
+    pub scheduler_decision: Option<SchedulerDecision>,
     #[serde(default)]
     pub plan: JobPlan,
     #[serde(default)]

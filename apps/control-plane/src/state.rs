@@ -2,10 +2,10 @@ use crate::contracts::{
     is_trusted_identity_path, AgentRegistration, AgentState, Backend, ContextSize,
     ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, Heartbeat, JobClaimResponse,
     JobCompletion, JobEventRecord, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus,
-    JobPlan, JobRecord, JobRequest, JobResultRecord, JobResultVerificationStatus, JobStatus,
-    NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, PlannedJob,
-    PrivacyLevel, RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode,
-    WorkerHealthReport,
+    JobPlan, JobRecord, JobRequest, JobResultRecord, JobResultVerificationStatus,
+    JobSchedulingRequirements, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
+    NodePolicyOverrideTarget, NodeRecord, PlannedJob, PrivacyLevel, RequestClassification,
+    RequestComplexity, RequestTaskType, RuntimeMode, SchedulerDecision, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -271,6 +271,7 @@ impl ControlPlaneState {
     pub fn submit_job(&mut self, request: JobRequest, submitted_at: String) -> JobRecord {
         let job_id = request.request_id.clone();
         let classification = classify_job_request(&request);
+        let scheduling_requirements = scheduling_requirements_for(&request, &classification);
         let plan = plan_job_request(&request, &classification);
         let graph = build_job_graph(&request.request_id, &plan, &submitted_at);
         let record = JobRecord {
@@ -287,6 +288,8 @@ impl ControlPlaneState {
             top_p: request.top_p,
             seed: request.seed,
             classification,
+            scheduling_requirements,
+            scheduler_decision: None,
             plan,
             graph,
             status: JobStatus::Queued,
@@ -427,6 +430,95 @@ impl ControlPlaneState {
         true
     }
 
+    fn scheduler_score(node: &NodeRecord, job: &JobRecord) -> SchedulerDecision {
+        let mut score = 0;
+        let mut reasons = Vec::new();
+        let requirements = &job.scheduling_requirements;
+
+        match (requirements.task_type, node.backend) {
+            (RequestTaskType::Coding, Backend::Cuda) => {
+                score += 20;
+                reasons.push("task:coding prefers cuda throughput".to_string());
+            }
+            (RequestTaskType::Document | RequestTaskType::Chat, Backend::M) => {
+                score += 15;
+                reasons.push("task favors local M-series interactive execution".to_string());
+            }
+            (_, Backend::M) => {
+                score += 10;
+                reasons.push("M-series node is eligible".to_string());
+            }
+            (_, Backend::Cuda) => {
+                score += 8;
+                reasons.push("CUDA node is eligible".to_string());
+            }
+            (_, Backend::Auto) => {
+                score += 2;
+                reasons.push("auto backend fallback is eligible".to_string());
+            }
+        }
+
+        match requirements.context_size {
+            ContextSize::Large => {
+                score += (node.available_memory_mb / 4096).min(12) as i32;
+                reasons.push(format!("memory:{}MB", node.available_memory_mb));
+            }
+            ContextSize::Medium => {
+                score += (node.available_memory_mb / 8192).min(6) as i32;
+                reasons.push(format!(
+                    "medium-context memory:{}MB",
+                    node.available_memory_mb
+                ));
+            }
+            ContextSize::Small => {
+                score += 3;
+                reasons.push("small context fits baseline capacity".to_string());
+            }
+        }
+
+        score += (node.available_gpu_percent / 10).min(10) as i32;
+        reasons.push(format!("gpu_available:{}%", node.available_gpu_percent));
+
+        if requirements.privacy_level == PrivacyLevel::Sensitive
+            && is_trusted_identity_path(&node.identity_trust_path)
+        {
+            score += 15;
+            reasons.push("sensitive request matched trusted identity path".to_string());
+        } else if requirements.privacy_level != PrivacyLevel::Sensitive {
+            score += 5;
+            reasons.push(format!("privacy:{:?}", requirements.privacy_level));
+        }
+
+        if let Some(worker_health) = node.worker_health.as_ref() {
+            if requirements
+                .model
+                .as_deref()
+                .zip(worker_health.model_name.as_deref())
+                .map(|(required, available)| required.eq_ignore_ascii_case(available))
+                .unwrap_or(false)
+            {
+                score += 20;
+                reasons.push("requested model is already present".to_string());
+            }
+
+            if worker_health.streaming_supported {
+                score += 3;
+                reasons.push("streaming capable".to_string());
+            }
+
+            if worker_health.llama_cli_available && worker_health.blas_device_available {
+                score += 5;
+                reasons.push("local runtime dependencies ready".to_string());
+            }
+        }
+
+        SchedulerDecision {
+            node_id: node.node_id.clone(),
+            score,
+            reasons,
+        }
+    }
+
     pub fn claim_job(&mut self, node_id: &str, claimed_at: String) -> JobClaimResponse {
         let Some(node) = self.nodes.get(node_id) else {
             return JobClaimResponse { job: None };
@@ -451,11 +543,11 @@ impl ControlPlaneState {
                 && candidate.policy_allowed
                 && candidate.backend == Backend::Cuda
         });
-        let job_id = self
+        let selected = self
             .jobs
             .iter()
-            .find(|(_, job)| {
-                job.status == JobStatus::Queued
+            .filter_map(|(job_id, job)| {
+                if job.status == JobStatus::Queued
                     && Self::node_backend_matches(
                         job,
                         node_backend,
@@ -463,10 +555,20 @@ impl ControlPlaneState {
                         ready_cuda_exists,
                     )
                     && Self::node_can_run_job(node, job)
+                {
+                    Some((job_id.clone(), Self::scheduler_score(node, job)))
+                } else {
+                    None
+                }
             })
-            .map(|(job_id, _)| job_id.clone());
+            .max_by(|(left_id, left_decision), (right_id, right_decision)| {
+                left_decision
+                    .score
+                    .cmp(&right_decision.score)
+                    .then_with(|| right_id.cmp(left_id))
+            });
 
-        let Some(job_id) = job_id else {
+        let Some((job_id, scheduler_decision)) = selected else {
             return JobClaimResponse { job: None };
         };
 
@@ -478,6 +580,7 @@ impl ControlPlaneState {
             job.worker_id = None;
             job.output = None;
             job.error = None;
+            job.scheduler_decision = Some(scheduler_decision);
             job.graph.status = JobGraphStatus::InProgress;
             job.graph.updated_at = job.assigned_at.clone().unwrap_or_default();
 
@@ -1323,6 +1426,34 @@ fn contains_any(input: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| input.contains(needle))
 }
 
+pub fn scheduling_requirements_for(
+    request: &JobRequest,
+    classification: &RequestClassification,
+) -> JobSchedulingRequirements {
+    let prompt = request.prompt.to_ascii_lowercase();
+    let language = if contains_any(&prompt, &["rust", "cargo", "crate"]) {
+        Some("rust".to_string())
+    } else if contains_any(&prompt, &["javascript", "typescript", "node", "npm"]) {
+        Some("typescript".to_string())
+    } else if contains_any(&prompt, &["python", "pytest", "django", "fastapi"]) {
+        Some("python".to_string())
+    } else {
+        None
+    };
+
+    JobSchedulingRequirements {
+        task_type: classification.task_type,
+        context_size: classification.context_size,
+        privacy_level: classification.privacy_level,
+        output_format: classification.output_format,
+        runtime_mode: request.runtime_mode,
+        stream: request.stream,
+        model: request.model.clone(),
+        language,
+        constraints: classification.execution_constraints.clone(),
+    }
+}
+
 pub fn evaluate_policy(
     agent_state: AgentState,
     power_source: &str,
@@ -1607,6 +1738,29 @@ mod tests {
                 .map(|job| job.classification.output_format),
             Some(ExpectedOutputFormat::Json)
         );
+    }
+
+    #[test]
+    fn stores_scheduling_requirements_before_claiming() {
+        let mut state = ControlPlaneState::default();
+        let record = state.submit_job(
+            classification_request("Fix this Rust API bug and return markdown docs."),
+            "1".to_string(),
+        );
+
+        assert_eq!(
+            record.scheduling_requirements.task_type,
+            RequestTaskType::Coding
+        );
+        assert_eq!(
+            record.scheduling_requirements.output_format,
+            ExpectedOutputFormat::Code
+        );
+        assert_eq!(
+            record.scheduling_requirements.language.as_deref(),
+            Some("rust")
+        );
+        assert_eq!(record.scheduler_decision, None);
     }
 
     #[test]
@@ -2208,6 +2362,87 @@ mod tests {
         assert_eq!(job.job_id, "job-1");
         assert_eq!(job.backend, Some(Backend::M));
         assert_eq!(job.assigned_node_id.as_deref(), Some("node-1"));
+    }
+
+    #[test]
+    fn claim_uses_capability_score_for_eligible_jobs() {
+        let mut state = ready_state();
+        state.submit_job(
+            JobRequest {
+                request_id: "job-low-score".to_string(),
+                prompt: "Estimate this public sequence: 2, 4, 8.".to_string(),
+                preferred_backend: Backend::M,
+                runtime_mode: RuntimeMode::Local,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        state.submit_job(
+            JobRequest {
+                request_id: "job-high-score".to_string(),
+                prompt: "Draft a markdown operator report for this internal rollout.".to_string(),
+                preferred_backend: Backend::M,
+                runtime_mode: RuntimeMode::Local,
+                stream: false,
+                model: Some("demo".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "3".to_string(),
+        );
+
+        let claim = state.claim_job("node-1", "4".to_string());
+        let job = claim.job.expect("claimed job");
+        let decision = job.scheduler_decision.expect("scheduler decision");
+
+        assert_eq!(job.job_id, "job-high-score");
+        assert_eq!(decision.node_id, "node-1");
+        assert!(decision.score > 0);
+        assert!(decision
+            .reasons
+            .contains(&"requested model is already present".to_string()));
+        assert_eq!(
+            state.jobs.get("job-low-score").map(|job| job.status),
+            Some(JobStatus::Queued)
+        );
+    }
+
+    #[test]
+    fn claim_tie_breaks_matching_jobs_deterministically() {
+        let mut state = ready_state();
+        for request_id in ["job-a", "job-b"] {
+            state.submit_job(
+                JobRequest {
+                    request_id: request_id.to_string(),
+                    prompt: "hello world".to_string(),
+                    preferred_backend: Backend::M,
+                    runtime_mode: RuntimeMode::Local,
+                    stream: false,
+                    model: None,
+                    system_prompt: None,
+                    max_tokens: None,
+                    temperature: None,
+                    top_p: None,
+                    seed: None,
+                },
+                "2".to_string(),
+            );
+        }
+
+        let claim = state.claim_job("node-1", "3".to_string());
+        let job = claim.job.expect("claimed job");
+
+        assert_eq!(job.job_id, "job-a");
+        assert!(job.scheduler_decision.is_some());
     }
 
     #[test]
