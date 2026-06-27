@@ -273,6 +273,21 @@ fn deploy_fingerprint() -> Option<String> {
     )
 }
 
+fn status_snapshot_with_deploy_fingerprint(
+    mut snapshot: serde_json::Value,
+    deploy_fingerprint: Option<String>,
+) -> serde_json::Value {
+    if let serde_json::Value::Object(fields) = &mut snapshot {
+        fields.insert(
+            "deploy_fingerprint".to_string(),
+            deploy_fingerprint
+                .map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    snapshot
+}
+
 fn load_local_env() {
     let mut current = match std::env::current_dir() {
         Ok(dir) => dir,
@@ -499,6 +514,18 @@ fn control_plane_home(
     };
     let supabase = sync_status.summary();
     let supabase_tone = sync_status.tone();
+    let deploy_fingerprint = deploy_fingerprint();
+    let deploy_badge = deploy_fingerprint
+        .as_deref()
+        .map(|value| {
+            format!(
+                r#"<span class="pill pill-blue">deploy: {}</span>"#,
+                escape_html(value)
+            )
+        })
+        .unwrap_or_else(|| {
+            r#"<span class="pill pill-amber">deploy: unavailable</span>"#.to_string()
+        });
 
     format!(
         r#"<!doctype html>
@@ -774,6 +801,7 @@ fn control_plane_home(
               <span class="pill pill-{healthy_tone}">healthy</span>
               <span class="pill pill-{storage_tone}">storage: {storage_source}</span>
               <span class="pill pill-{supabase_tone}">supabase: {supabase}</span>
+              {deploy_badge}
             </div>
           </div>
           <div class="links">
@@ -803,7 +831,8 @@ fn control_plane_home(
           Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.
           Current startup storage source: <code>{storage_source}</code>. Credits are accrued through the
           append-only ledger and exposed at <code>/v1/credits</code>. Supabase sync is
-          <code>{supabase}</code>.
+          <code>{supabase}</code>. Deploy fingerprint is exposed on <code>/health</code> and
+          <code>/v1/status</code> for post-merge verification.
         </div>
       </div>
 
@@ -820,7 +849,8 @@ fn control_plane_home(
   </body>
 </html>"#,
         node_rows = render_nodes(state),
-        storage_source = escape_html(storage_source.as_str())
+        storage_source = escape_html(storage_source.as_str()),
+        deploy_badge = deploy_badge
     )
 }
 
@@ -1141,7 +1171,10 @@ fn handle_connection(
                 .lock()
                 .expect("state lock")
                 .snapshot(storage_source.as_str());
-            json_response("200 OK", snapshot)
+            json_response(
+                "200 OK",
+                status_snapshot_with_deploy_fingerprint(snapshot, deploy_fingerprint()),
+            )
         }
         ("GET", "/v1/nodes") => {
             let snapshot = state.lock().expect("state lock").nodes_snapshot();
@@ -1717,7 +1750,7 @@ fn main() {
 mod tests {
     use super::{
         control_plane_bind_addr_from_env, deploy_fingerprint_from_env, job_async_payload,
-        requires_operator_auth,
+        requires_operator_auth, status_snapshot_with_deploy_fingerprint,
     };
     use crate::contracts::{Backend, JobRequest, RuntimeMode};
     use crate::state::ControlPlaneState;
@@ -1767,6 +1800,20 @@ mod tests {
         let fingerprint = deploy_fingerprint_from_env(None, None, None, None, None);
 
         assert_eq!(fingerprint, None);
+    }
+
+    #[test]
+    fn status_snapshot_exposes_deploy_fingerprint() {
+        let snapshot = status_snapshot_with_deploy_fingerprint(
+            serde_json::json!({
+                "storage_source": "supabase",
+                "queued_job_count": 0
+            }),
+            Some("abcdef1234567890".to_string()),
+        );
+
+        assert_eq!(snapshot["deploy_fingerprint"], "abcdef1234567890");
+        assert_eq!(snapshot["storage_source"], "supabase");
     }
 
     #[test]
