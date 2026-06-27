@@ -38,6 +38,35 @@ enum StorageSource {
     LocalJsonOnly,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OperatorAuthMode {
+    Enforced,
+    ExplicitlyDisabled,
+    MissingTokenDisabled,
+}
+
+impl OperatorAuthMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforced => "enforced",
+            Self::ExplicitlyDisabled => "explicitly-disabled",
+            Self::MissingTokenDisabled => "missing-token-disabled",
+        }
+    }
+
+    fn enforced(self) -> bool {
+        matches!(self, Self::Enforced)
+    }
+
+    fn log_label(self) -> &'static str {
+        match self {
+            Self::Enforced => "enabled (token present)",
+            Self::ExplicitlyDisabled => "disabled (MUNDUSX_AUTH_DISABLED=true)",
+            Self::MissingTokenDisabled => "disabled (MUNDUSX_OPERATOR_TOKEN missing)",
+        }
+    }
+}
+
 impl StorageSource {
     fn as_str(self) -> &'static str {
         match self {
@@ -1054,6 +1083,42 @@ fn operator_auth_token() -> Option<String> {
         .filter(|token| !token.is_empty())
 }
 
+fn auth_disabled_flag_enabled(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .map(|value| {
+            value.eq_ignore_ascii_case("true")
+                || value == "1"
+                || value.eq_ignore_ascii_case("yes")
+                || value.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false)
+}
+
+fn operator_auth_mode_from_env(
+    auth_disabled: Option<&str>,
+    operator_token: Option<&str>,
+) -> OperatorAuthMode {
+    if auth_disabled_flag_enabled(auth_disabled) {
+        return OperatorAuthMode::ExplicitlyDisabled;
+    }
+
+    match operator_token
+        .map(str::trim)
+        .filter(|token| !token.is_empty())
+    {
+        Some(_) => OperatorAuthMode::Enforced,
+        None => OperatorAuthMode::MissingTokenDisabled,
+    }
+}
+
+fn operator_auth_mode() -> OperatorAuthMode {
+    operator_auth_mode_from_env(
+        std::env::var("MUNDUSX_AUTH_DISABLED").ok().as_deref(),
+        std::env::var("MUNDUSX_OPERATOR_TOKEN").ok().as_deref(),
+    )
+}
+
 fn authorize_operator_request(
     method: &str,
     route_path: &str,
@@ -1063,9 +1128,12 @@ fn authorize_operator_request(
         return Ok(());
     }
 
-    let Some(expected_token) = operator_auth_token() else {
+    if !operator_auth_mode().enforced() {
         return Ok(());
-    };
+    }
+
+    let expected_token =
+        operator_auth_token().expect("operator auth mode requires a non-empty token");
 
     let authorization = header_value(headers, "authorization")
         .or_else(|| header_value(headers, "x-mundusx-operator-token"))
@@ -1154,6 +1222,7 @@ fn handle_connection(
                 .snapshot(storage_source.as_str());
             let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
             let deploy_fingerprint = deploy_fingerprint();
+            let auth_mode = operator_auth_mode();
             json_response(
                 "200 OK",
                 serde_json::json!({
@@ -1162,6 +1231,8 @@ fn handle_connection(
                     "supabase": sync_snapshot.summary(),
                     "supabase_sync": sync_snapshot,
                     "deploy_fingerprint": deploy_fingerprint,
+                    "operator_auth_enforced": auth_mode.enforced(),
+                    "operator_auth_mode": auth_mode.as_str(),
                     "snapshot": snapshot,
                 }),
             )
@@ -1708,14 +1779,7 @@ fn main() {
             Err(error) => eprintln!("migration status unavailable: {error}"),
         }
     }
-    println!(
-        "operatorAuth: {}",
-        if operator_auth_token().is_some() {
-            "enabled"
-        } else {
-            "disabled"
-        }
-    );
+    println!("operatorAuth: {}", operator_auth_mode().log_label());
     println!("home: GET /");
     println!("health: GET /health");
     println!("status: GET /v1/status");
@@ -1749,8 +1813,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        control_plane_bind_addr_from_env, deploy_fingerprint_from_env, job_async_payload,
-        requires_operator_auth, status_snapshot_with_deploy_fingerprint,
+        auth_disabled_flag_enabled, control_plane_bind_addr_from_env, deploy_fingerprint_from_env,
+        job_async_payload, operator_auth_mode_from_env, requires_operator_auth,
+        status_snapshot_with_deploy_fingerprint, OperatorAuthMode,
     };
     use crate::contracts::{Backend, JobRequest, RuntimeMode};
     use crate::state::ControlPlaneState;
@@ -1820,6 +1885,41 @@ mod tests {
     fn rejects_invalid_port_values() {
         let error = control_plane_bind_addr_from_env(Some("abc"), None).expect_err("invalid");
         assert_eq!(error, "invalid PORT value: abc");
+    }
+
+    #[test]
+    fn detects_explicit_auth_disabled_flag() {
+        assert!(auth_disabled_flag_enabled(Some("true")));
+        assert!(auth_disabled_flag_enabled(Some("1")));
+        assert!(!auth_disabled_flag_enabled(Some("false")));
+        assert!(!auth_disabled_flag_enabled(None));
+    }
+
+    #[test]
+    fn operator_auth_mode_honors_explicit_disable_over_token() {
+        let mode = operator_auth_mode_from_env(Some("true"), Some("secret"));
+
+        assert_eq!(mode, OperatorAuthMode::ExplicitlyDisabled);
+        assert!(!mode.enforced());
+        assert_eq!(mode.as_str(), "explicitly-disabled");
+    }
+
+    #[test]
+    fn operator_auth_mode_enforces_when_token_is_present() {
+        let mode = operator_auth_mode_from_env(None, Some("secret"));
+
+        assert_eq!(mode, OperatorAuthMode::Enforced);
+        assert!(mode.enforced());
+        assert_eq!(mode.as_str(), "enforced");
+    }
+
+    #[test]
+    fn operator_auth_mode_reports_missing_token_disable() {
+        let mode = operator_auth_mode_from_env(None, None);
+
+        assert_eq!(mode, OperatorAuthMode::MissingTokenDisabled);
+        assert!(!mode.enforced());
+        assert_eq!(mode.as_str(), "missing-token-disabled");
     }
 
     #[test]

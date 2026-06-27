@@ -25,6 +25,7 @@ See the component READMEs for local development details:
 | `SUPABASE_SERVICE_ROLE_KEY` | **Yes** | Supabase service role key. Find it in Supabase → Settings → API → `service_role`. |
 | `SUPABASE_URL` | No | Supabase project URL (e.g. `https://xxx.supabase.co`). Derived automatically from `DATABASE_URL` if omitted. |
 | `MUNDUSX_OPERATOR_TOKEN` | **Strongly recommended** | Bearer token protecting the dashboard (`/`), status, nodes, jobs, credits, and job-submit endpoints. If unset, those endpoints are publicly accessible with no authentication. |
+| `MUNDUSX_AUTH_DISABLED` | Local/UAT only | Set to `true` to deliberately disable operator authentication even when `MUNDUSX_OPERATOR_TOKEN` is present. Never enable this in production. |
 | `MUNDUSX_CONTROL_PLANE_HOST` | No | Override the bind host. Defaults to `0.0.0.0` when `PORT` is set. |
 
 ### Local `.env`
@@ -37,6 +38,8 @@ DATABASE_URL=postgresql://postgres.your-ref:password@aws-0-eu-central-1.pooler.s
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 SUPABASE_URL=https://your-ref.supabase.co
 MUNDUSX_OPERATOR_TOKEN=a-strong-random-secret
+# Local/UAT smoke tests only:
+# MUNDUSX_AUTH_DISABLED=true
 ```
 
 ---
@@ -65,7 +68,7 @@ MUNDUSX_OPERATOR_TOKEN=a-strong-random-secret
 | `GET` | `/v1/jobs/next?node_id=...` | Claim next available job |
 | `POST` | `/v1/jobs/complete` | Mark a job completed or failed |
 
-### Operator endpoints (require `Authorization: Bearer <MUNDUSX_OPERATOR_TOKEN>` if token is set)
+### Operator endpoints (require `Authorization: Bearer <MUNDUSX_OPERATOR_TOKEN>` when auth is enforced)
 
 | Method | Path | Description |
 |---|---|---|
@@ -79,10 +82,13 @@ MUNDUSX_OPERATOR_TOKEN=a-strong-random-secret
 | `POST` | `/v1/jobs` | Submit a job |
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat completion (queued, non-streaming) |
 
+Operator auth is enforced when `MUNDUSX_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH_DISABLED` is not enabled. `/health` includes `operator_auth_enforced` and `operator_auth_mode` so local/UAT smoke tests can verify the effective mode before submitting work.
+
 ---
 
 ## Known gaps
 
 - **No `GET /v1/jobs/:id`** — after submitting a job or chat completion you get a `job_id` back, but there is no endpoint yet to poll individual job status or retrieve the result.
 - **Streaming not supported** — `POST /v1/chat/completions` with `"stream": true` returns `400`.
-- **`operatorAuth: disabled`** in logs means `MUNDUSX_OPERATOR_TOKEN` is not set and the operator endpoints are open.
+- **`operatorAuth: disabled (MUNDUSX_AUTH_DISABLED=true)`** in logs means operator endpoints are deliberately open for local/UAT smoke tests.
+- **`operatorAuth: disabled (MUNDUSX_OPERATOR_TOKEN missing)`** in logs means operator endpoints are open because no token was configured.
