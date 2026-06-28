@@ -11,7 +11,6 @@ use crate::contracts::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
 use std::path::PathBuf;
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -1582,14 +1581,6 @@ pub fn evaluate_policy(
         reasons.push("worker health probe reported unhealthy".to_string());
     }
 
-    if !worker_health.llama_cli_available {
-        reasons.push("llama-cli is unavailable".to_string());
-    }
-
-    if !worker_health.blas_device_available {
-        reasons.push("BLAS device acceleration is unavailable".to_string());
-    }
-
     if !worker_health.runtime_ready {
         reasons.push("runtime capability report is not ready".to_string());
     }
@@ -1619,7 +1610,7 @@ pub fn evaluate_policy(
     } else {
         let model_dir = worker_health.model_dir.trim();
         let model_path = worker_health.model_path.as_deref().unwrap_or("").trim();
-        if !model_dir.is_empty() && !Path::new(model_path).starts_with(Path::new(model_dir)) {
+        if !model_dir.is_empty() && !node_path_starts_with(model_path, model_dir) {
             reasons.push(format!(
                 "model path {model_path} is outside model directory {model_dir}"
             ));
@@ -1636,10 +1627,29 @@ pub fn evaluate_policy(
     } else if !supports_local_execution
         && !runtime_mode.eq_ignore_ascii_case("local")
         && !runtime_mode.eq_ignore_ascii_case("interactive")
+        && !runtime_mode.eq_ignore_ascii_case("cuda")
+        && !runtime_mode.eq_ignore_ascii_case("blas")
     {
         reasons.push(format!(
             "runtime mode {runtime_mode} is not ready for local execution"
         ));
+    }
+
+    if runtime_mode.eq_ignore_ascii_case("cuda") {
+        if !worker_health.cuda_driver_available {
+            reasons.push("CUDA driver is unavailable".to_string());
+        }
+        if !worker_health.cuda_device_available {
+            reasons.push("CUDA device is unavailable".to_string());
+        }
+    } else {
+        if !worker_health.llama_cli_available {
+            reasons.push("llama-cli is unavailable".to_string());
+        }
+
+        if !worker_health.blas_device_available {
+            reasons.push("BLAS device acceleration is unavailable".to_string());
+        }
     }
 
     if reasons.is_empty() {
@@ -1647,6 +1657,25 @@ pub fn evaluate_policy(
     } else {
         (false, Some(reasons.join("; ")))
     }
+}
+
+fn node_path_starts_with(path: &str, base: &str) -> bool {
+    let path = normalize_node_path(path);
+    let base = normalize_node_path(base);
+
+    if base.is_empty() {
+        return true;
+    }
+
+    path == base || path.starts_with(&format!("{base}/"))
+}
+
+fn normalize_node_path(value: &str) -> String {
+    let mut normalized = value.trim().replace('\\', "/");
+    while normalized.ends_with('/') && normalized.len() > 1 {
+        normalized.pop();
+    }
+    normalized.to_ascii_lowercase()
 }
 
 pub fn state_path() -> PathBuf {
@@ -1709,6 +1738,9 @@ mod tests {
             model_path: Some("/tmp/models/demo.gguf".to_string()),
             llama_cli_available: true,
             blas_device_available: true,
+            cuda_device_available: false,
+            cuda_driver_available: false,
+            cuda_device_name: None,
             power_source: "AC Power".to_string(),
             on_battery: false,
             battery_percent: Some(90),
@@ -2493,6 +2525,9 @@ mod tests {
                     model_path: Some("/tmp/models/demo.gguf".to_string()),
                     llama_cli_available: true,
                     blas_device_available: true,
+                    cuda_device_available: false,
+                    cuda_driver_available: false,
+                    cuda_device_name: None,
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
@@ -2659,6 +2694,9 @@ mod tests {
                     model_path: Some("/tmp/models/demo.gguf".to_string()),
                     llama_cli_available: true,
                     blas_device_available: true,
+                    cuda_device_available: false,
+                    cuda_driver_available: false,
+                    cuda_device_name: None,
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
@@ -2693,6 +2731,102 @@ mod tests {
 
         assert!(node.policy_allowed);
         assert_eq!(node.policy_reason, None);
+    }
+
+    #[test]
+    fn allows_windows_cuda_node_with_model_path_inside_model_dir() {
+        let mut state = ControlPlaneState::default();
+        state.register(AgentRegistration {
+            node_id: "node-win".to_string(),
+            public_key_fingerprint: "fingerprint-win".to_string(),
+            public_key_hex: "aabbcc".to_string(),
+            hostname: "dave".to_string(),
+            identity_trust_path: "local-encrypted-fallback".to_string(),
+            backend: Backend::Cuda,
+            contribution_percent: 50,
+            agent_version: "0.1.0".to_string(),
+        });
+
+        let node = state.heartbeat(
+            Heartbeat {
+                node_id: "node-win".to_string(),
+                backend: Backend::Cuda,
+                agent_state: AgentState::Ready,
+                available_memory_mb: 16_000,
+                available_gpu_percent: 50,
+                updated_at: "2".to_string(),
+                contribution_percent: 50,
+                hostname: "dave".to_string(),
+                identity_trust_path: "local-encrypted-fallback".to_string(),
+                power_source: "unknown".to_string(),
+                on_battery: false,
+                battery_percent: None,
+                policy_allowed: true,
+                policy_reason: None,
+                worker_health: WorkerHealthReport {
+                    healthy: true,
+                    model_dir: r"C:\Users\batal\.opengpu\models".to_string(),
+                    model_name: Some("Qwen/Qwen2.5-0.5B-Instruct".to_string()),
+                    model_path: Some(
+                        r"C:\Users\batal\.opengpu\models\qwen_qwen2_5-0_5b-instruct\qwen.gguf"
+                            .to_string(),
+                    ),
+                    llama_cli_available: false,
+                    blas_device_available: false,
+                    cuda_device_available: true,
+                    cuda_driver_available: true,
+                    cuda_device_name: Some("GeForce GTX 1650".to_string()),
+                    power_source: "unknown".to_string(),
+                    on_battery: false,
+                    battery_percent: None,
+                    runtime_ready: true,
+                    runtime_mode: "cuda".to_string(),
+                    supported_runtime_modes: vec![RuntimeMode::Local],
+                    streaming_supported: false,
+                    checked_at: "2".to_string(),
+                    notes: vec![],
+                },
+            },
+            "2".to_string(),
+        );
+
+        assert!(node.policy_allowed);
+        assert_eq!(node.policy_reason, None);
+    }
+
+    #[test]
+    fn still_blocks_non_cuda_node_without_blas_runtime() {
+        let mut health = healthy_worker_health("2");
+        health.llama_cli_available = false;
+        health.blas_device_available = false;
+
+        let (allowed, reason) =
+            evaluate_policy(AgentState::Ready, "AC Power", false, Some(90), &health);
+
+        assert!(!allowed);
+        let reason = reason.expect("policy reason");
+        assert!(reason.contains("llama-cli is unavailable"));
+        assert!(reason.contains("BLAS device acceleration is unavailable"));
+    }
+
+    #[test]
+    fn node_path_prefix_check_supports_windows_macos_and_linux_paths() {
+        assert!(node_path_starts_with(
+            r"C:\Users\batal\.opengpu\models\qwen\model.gguf",
+            r"C:\Users\batal\.opengpu\models",
+        ));
+        assert!(node_path_starts_with(
+            "/Users/batal/.opengpu/models/qwen/model.gguf",
+            "/Users/batal/.opengpu/models",
+        ));
+        assert!(node_path_starts_with(
+            "/home/batal/.opengpu/models/qwen/model.gguf",
+            "/home/batal/.opengpu/models",
+        ));
+        assert!(!node_path_starts_with(
+            "/home/batal/.opengpu/modelshare/qwen.gguf",
+            "/home/batal/.opengpu/models",
+        ));
     }
 
     #[test]
@@ -2732,6 +2866,9 @@ mod tests {
                     model_path: Some("/opt/models/demo.gguf".to_string()),
                     llama_cli_available: true,
                     blas_device_available: true,
+                    cuda_device_available: false,
+                    cuda_driver_available: false,
+                    cuda_device_name: None,
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
@@ -2800,6 +2937,9 @@ mod tests {
                     model_path: Some("/tmp/models/demo.gguf".to_string()),
                     llama_cli_available: true,
                     blas_device_available: true,
+                    cuda_device_available: false,
+                    cuda_driver_available: false,
+                    cuda_device_name: None,
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
