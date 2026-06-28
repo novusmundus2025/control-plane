@@ -20,7 +20,7 @@ use std::net::{TcpListener, TcpStream};
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use supabase::SupabaseMirror;
 use uuid::Uuid;
@@ -890,6 +890,124 @@ struct RequestParts {
     body: String,
 }
 
+const MAX_HEADER_BYTES: usize = 32 * 1024;
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Eq, PartialEq)]
+struct HttpRequestReadError {
+    status: &'static str,
+    message: String,
+}
+
+impl HttpRequestReadError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: "400 Bad Request",
+            message: message.into(),
+        }
+    }
+
+    fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: "413 Payload Too Large",
+            message: message.into(),
+        }
+    }
+}
+
+fn find_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+}
+
+fn content_length_from_header_bytes(headers: &[u8]) -> Result<Option<usize>, HttpRequestReadError> {
+    let header_text = std::str::from_utf8(headers)
+        .map_err(|_| HttpRequestReadError::bad_request("request headers must be utf-8"))?;
+
+    for line in header_text.split("\r\n").skip(1) {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("content-length") {
+            let length = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| HttpRequestReadError::bad_request("invalid Content-Length"))?;
+            if length > MAX_BODY_BYTES {
+                return Err(HttpRequestReadError::payload_too_large(format!(
+                    "request body exceeds {MAX_BODY_BYTES} bytes"
+                )));
+            }
+            return Ok(Some(length));
+        }
+    }
+
+    Ok(None)
+}
+
+fn read_http_request<R: Read>(reader: &mut R) -> Result<String, HttpRequestReadError> {
+    let mut buffer = Vec::with_capacity(16 * 1024);
+    let mut chunk = [0u8; 8192];
+    let header_end = loop {
+        let bytes_read = reader
+            .read(&mut chunk)
+            .map_err(|error| HttpRequestReadError::bad_request(error.to_string()))?;
+        if bytes_read == 0 {
+            return Err(HttpRequestReadError::bad_request("empty request"));
+        }
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+        if buffer.len() > MAX_HEADER_BYTES + MAX_BODY_BYTES {
+            return Err(HttpRequestReadError::payload_too_large(format!(
+                "request exceeds {} bytes",
+                MAX_HEADER_BYTES + MAX_BODY_BYTES
+            )));
+        }
+        if let Some(header_end) = find_header_end(&buffer) {
+            break header_end;
+        }
+        if buffer.len() > MAX_HEADER_BYTES {
+            return Err(HttpRequestReadError::payload_too_large(format!(
+                "request headers exceed {MAX_HEADER_BYTES} bytes"
+            )));
+        }
+    };
+
+    let content_length =
+        content_length_from_header_bytes(&buffer[..header_end])?.unwrap_or_default();
+    let expected_len = header_end
+        .checked_add(content_length)
+        .ok_or_else(|| HttpRequestReadError::payload_too_large("request is too large"))?;
+    if expected_len > MAX_HEADER_BYTES + MAX_BODY_BYTES {
+        return Err(HttpRequestReadError::payload_too_large(format!(
+            "request exceeds {} bytes",
+            MAX_HEADER_BYTES + MAX_BODY_BYTES
+        )));
+    }
+
+    while buffer.len() < expected_len {
+        let bytes_read = reader
+            .read(&mut chunk)
+            .map_err(|error| HttpRequestReadError::bad_request(error.to_string()))?;
+        if bytes_read == 0 {
+            return Err(HttpRequestReadError::bad_request(
+                "request body ended before Content-Length was satisfied",
+            ));
+        }
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+    }
+
+    if content_length == 0 && buffer.len() > header_end {
+        return Err(HttpRequestReadError::bad_request(
+            "request body requires Content-Length",
+        ));
+    }
+
+    String::from_utf8(buffer[..expected_len].to_vec())
+        .map_err(|_| HttpRequestReadError::bad_request("request must be utf-8"))
+}
+
 fn parse_request(request: &str) -> RequestParts {
     let mut lines = request.split("\r\n");
     let request_line = lines.next().unwrap_or_default();
@@ -1170,18 +1288,15 @@ fn handle_connection(
     supabase: Option<&SupabaseMirror>,
     storage_source: StorageSource,
 ) {
-    let mut buffer = vec![0; 16 * 1024];
-    let read_result = stream.read(&mut buffer);
-    let bytes_read = match read_result {
-        Ok(bytes) => bytes,
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let request_text = match read_http_request(&mut stream) {
+        Ok(request_text) => request_text,
         Err(error) => {
-            let _ =
-                stream.write_all(text_response("400 Bad Request", &error.to_string()).as_bytes());
+            let _ = stream.write_all(text_response(error.status, &error.message).as_bytes());
             return;
         }
     };
 
-    let request_text = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
     let request = parse_request(&request_text);
     let (clean_path, query) = split_path_and_query(&request.path);
 
@@ -1814,11 +1929,40 @@ fn main() {
 mod tests {
     use super::{
         auth_disabled_flag_enabled, control_plane_bind_addr_from_env, deploy_fingerprint_from_env,
-        job_async_payload, operator_auth_mode_from_env, requires_operator_auth,
-        status_snapshot_with_deploy_fingerprint, OperatorAuthMode,
+        job_async_payload, operator_auth_mode_from_env, parse_request, read_http_request,
+        requires_operator_auth, status_snapshot_with_deploy_fingerprint, HttpRequestReadError,
+        OperatorAuthMode, MAX_BODY_BYTES,
     };
     use crate::contracts::{Backend, JobRequest, RuntimeMode};
     use crate::state::ControlPlaneState;
+    use std::io::{self, Read};
+
+    struct ChunkedReader {
+        chunks: Vec<Vec<u8>>,
+        index: usize,
+    }
+
+    impl ChunkedReader {
+        fn new(chunks: Vec<&[u8]>) -> Self {
+            Self {
+                chunks: chunks.into_iter().map(|chunk| chunk.to_vec()).collect(),
+                index: 0,
+            }
+        }
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.index >= self.chunks.len() {
+                return Ok(0);
+            }
+            let chunk = &self.chunks[self.index];
+            let len = chunk.len().min(buffer.len());
+            buffer[..len].copy_from_slice(&chunk[..len]);
+            self.index += 1;
+            Ok(len)
+        }
+    }
 
     #[test]
     fn defaults_to_localhost_when_port_is_missing() {
@@ -1935,6 +2079,64 @@ mod tests {
     #[test]
     fn protects_single_job_status_route() {
         assert!(requires_operator_auth("GET", "/v1/jobs/job-1"));
+    }
+
+    #[test]
+    fn request_reader_waits_for_full_content_length_body() {
+        let mut reader = ChunkedReader::new(vec![
+            b"POST /v1/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: 20\r\n\r\n{\"node_id\"",
+            b":\"node-1\"}",
+        ]);
+
+        let request_text = read_http_request(&mut reader).expect("request");
+        let request = parse_request(&request_text);
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/register");
+        assert_eq!(request.body, "{\"node_id\":\"node-1\"}");
+    }
+
+    #[test]
+    fn request_reader_rejects_incomplete_declared_body() {
+        let mut reader = ChunkedReader::new(vec![
+            b"POST /v1/register HTTP/1.1\r\nContent-Length: 25\r\n\r\n{\"node_id\":\"node-1\"}",
+        ]);
+
+        let error = read_http_request(&mut reader).expect_err("incomplete body");
+
+        assert_eq!(
+            error,
+            HttpRequestReadError::bad_request(
+                "request body ended before Content-Length was satisfied"
+            )
+        );
+    }
+
+    #[test]
+    fn request_reader_rejects_invalid_content_length() {
+        let mut reader = ChunkedReader::new(vec![
+            b"POST /v1/register HTTP/1.1\r\nContent-Length: nope\r\n\r\n{}",
+        ]);
+
+        let error = read_http_request(&mut reader).expect_err("invalid length");
+
+        assert_eq!(
+            error,
+            HttpRequestReadError::bad_request("invalid Content-Length")
+        );
+    }
+
+    #[test]
+    fn request_reader_rejects_oversized_declared_body() {
+        let request = format!(
+            "POST /v1/register HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY_BYTES + 1
+        );
+        let mut reader = ChunkedReader::new(vec![request.as_bytes()]);
+
+        let error = read_http_request(&mut reader).expect_err("oversized");
+
+        assert_eq!(error.status, "413 Payload Too Large");
     }
 
     #[test]
