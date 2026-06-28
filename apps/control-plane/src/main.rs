@@ -598,6 +598,9 @@ fn control_plane_home(
         --orange: #f18f3b;
         --amber: #edb73f;
         --red: #ff5c63;
+        --motion-fast: 140ms ease;
+        --motion-medium: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        --focus-ring: 0 0 0 3px rgba(37, 215, 255, 0.28);
       }}
       * {{ box-sizing: border-box; }}
       body {{
@@ -611,6 +614,34 @@ fn control_plane_home(
         font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
       }}
       a {{ color: inherit; text-decoration: none; }}
+      a:focus-visible {{
+        outline: 0;
+        box-shadow: var(--focus-ring);
+      }}
+      .motion-lift {{
+        transition:
+          transform var(--motion-medium),
+          border-color var(--motion-fast),
+          background var(--motion-fast),
+          box-shadow var(--motion-medium),
+          color var(--motion-fast);
+        will-change: transform;
+      }}
+      .motion-lift:hover,
+      .motion-lift:focus-visible {{
+        transform: translateY(-2px);
+        border-color: var(--line-strong);
+        box-shadow: 0 18px 42px rgba(0, 0, 0, 0.28), 0 0 28px rgba(37, 215, 255, 0.15);
+      }}
+      .motion-glow {{
+        transition: transform var(--motion-medium), filter var(--motion-medium), box-shadow var(--motion-medium);
+        will-change: transform;
+      }}
+      .motion-glow:hover,
+      .motion-glow:focus-visible {{
+        transform: scale(1.04);
+        filter: drop-shadow(0 0 22px rgba(37, 215, 255, 0.52));
+      }}
       code {{
         background: rgba(46, 132, 255, 0.16);
         border: 1px solid rgba(46, 132, 255, 0.2);
@@ -641,6 +672,7 @@ fn control_plane_home(
         font-family: Georgia, "Times New Roman", serif;
         font-size: 22px;
         color: #fff;
+        border-radius: 8px;
       }}
       .brand-mark {{
         width: 54px;
@@ -662,6 +694,11 @@ fn control_plane_home(
         border: 1px solid transparent;
         border-radius: 7px;
         color: #b9c5d6;
+      }}
+      .nav-item:hover,
+      .nav-item:focus-visible {{
+        color: #ecf8ff;
+        background: rgba(51, 168, 255, 0.1);
       }}
       .nav-item.active {{
         color: #55bdff;
@@ -747,8 +784,7 @@ fn control_plane_home(
         white-space: nowrap;
       }}
       .endpoint-button,
-      .refresh-button,
-      .filter-button {{
+      .refresh-button {{
         border: 1px solid var(--line);
         border-radius: 8px;
         background: rgba(4, 12, 23, 0.72);
@@ -759,11 +795,18 @@ fn control_plane_home(
         gap: 10px;
         padding: 0 14px;
       }}
-      .refresh-button,
-      .filter-button {{
+      .refresh-button {{
         width: 44px;
         justify-content: center;
         padding: 0;
+      }}
+      .live-dot {{
+        display: inline-block;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--cyan);
+        box-shadow: 0 0 16px rgba(37, 215, 255, 0.75);
       }}
       .statusline {{
         display: flex;
@@ -809,6 +852,13 @@ fn control_plane_home(
         position: relative;
         min-height: 112px;
         overflow: hidden;
+        transition: transform var(--motion-medium), border-color var(--motion-fast), box-shadow var(--motion-medium);
+      }}
+      .card:hover,
+      .card:focus-within {{
+        border-color: var(--line-strong);
+        transform: translateY(-2px);
+        box-shadow: 0 20px 44px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06);
       }}
       .card.compact {{
         min-height: 88px;
@@ -863,6 +913,10 @@ fn control_plane_home(
         border-radius: 8px;
         overflow: hidden;
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+        transition: border-color var(--motion-fast);
+      }}
+      .section:hover {{
+        border-color: rgba(73, 159, 255, 0.34);
       }}
       .section-head {{
         padding: 18px 22px 0;
@@ -933,18 +987,17 @@ fn control_plane_home(
         place-items: center;
         text-align: center;
         box-shadow: 0 0 36px rgba(38, 163, 255, 0.58), inset 0 0 26px rgba(51, 168, 255, 0.28);
+        transition: transform var(--motion-medium), box-shadow var(--motion-medium);
+      }}
+      .topology-center:hover {{
+        transform: translate(-50%, -50%) scale(1.03);
+        box-shadow: 0 0 48px rgba(38, 163, 255, 0.78), inset 0 0 34px rgba(51, 168, 255, 0.34);
       }}
       .center-logo {{
-        width: 62px;
-        height: 62px;
+        width: 76px;
+        height: 76px;
         border-radius: 50%;
         object-fit: contain;
-        margin-bottom: 6px;
-      }}
-      .center-label {{
-        font-size: 11px;
-        font-weight: 800;
-        text-transform: uppercase;
       }}
       .topo-node {{
         position: absolute;
@@ -965,6 +1018,12 @@ fn control_plane_home(
         place-items: center;
         color: #dcecff;
         box-shadow: 0 0 18px rgba(41, 163, 255, 0.26);
+        transition: transform var(--motion-medium), border-color var(--motion-fast), box-shadow var(--motion-medium);
+      }}
+      .topo-node:hover .node-hex {{
+        transform: translateY(-3px) scale(1.04);
+        border-color: rgba(37, 215, 255, 0.95);
+        box-shadow: 0 0 26px rgba(41, 163, 255, 0.48);
       }}
       .legend {{
         display: flex;
@@ -1023,7 +1082,7 @@ fn control_plane_home(
         align-items: center;
         gap: 12px;
       }}
-      .search {{
+      .node-summary {{
         width: 280px;
         min-height: 42px;
         border: 1px solid var(--line);
@@ -1067,6 +1126,11 @@ fn control_plane_home(
       .table .row {{
         padding: 14px 0;
         border-bottom: 1px solid rgba(73, 159, 255, 0.12);
+        transition: background var(--motion-fast), border-color var(--motion-fast);
+      }}
+      .table .row:hover {{
+        background: rgba(51, 168, 255, 0.05);
+        border-color: rgba(73, 159, 255, 0.24);
       }}
       .table .row:last-child {{ border-bottom: 0; }}
       .meta {{
@@ -1086,6 +1150,7 @@ fn control_plane_home(
       .api-link {{
         color: #57adff;
         font-size: 13px;
+        border-radius: 6px;
       }}
       .api-strip {{
         margin-top: 18px;
@@ -1129,7 +1194,7 @@ fn control_plane_home(
         .orbit {{ inset: 90px 20px 58px; }}
         .grid-ring {{ inset: 130px 74px 96px; }}
         .topo-node {{ font-size: 11px; }}
-        .search {{ width: 100%; }}
+        .node-summary {{ width: 100%; }}
         .table .thead {{ display: none; }}
         .table .row {{
           grid-template-columns: 1fr;
@@ -1137,22 +1202,37 @@ fn control_plane_home(
           padding: 16px 0;
         }}
       }}
+      @media (prefers-reduced-motion: reduce) {{
+        *, *::before, *::after {{
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }}
+        .motion-lift:hover,
+        .motion-lift:focus-visible,
+        .motion-glow:hover,
+        .motion-glow:focus-visible,
+        .card:hover,
+        .card:focus-within,
+        .topology-center:hover,
+        .topo-node:hover .node-hex {{
+          transform: none;
+        }}
+      }}
     </style>
   </head>
   <body>
     <div class="app-shell">
       <aside class="sidebar" aria-label="Control plane navigation">
-        <div class="brand"><img class="brand-mark" alt="NovusX control plane logo" src="{logo_path}" /> <span>NovusX</span></div>
+        <a class="brand motion-glow" href="/" aria-label="NovusX control plane home"><img class="brand-mark" alt="NovusX control plane logo" src="{logo_path}" /> <span>NovusX</span></a>
         <nav class="nav">
-          <a class="nav-item active" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>Overview</a>
-          <a class="nav-item" href="/v1/nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>Nodes</a>
-          <a class="nav-item" href="/v1/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>Jobs</a>
-          <a class="nav-item" href="/v1/credits"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>Credits</a>
-          <a class="nav-item" href="/health"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>Policies</a>
-          <a class="nav-item" href="/v1/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>Audit Logs</a>
-          <a class="nav-item" href="/v1/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 8c0 2.2-4 4-9 4S3 10.2 3 8s4-4 9-4 9 1.8 9 4Z"/><path d="M3 8v8c0 2.2 4 4 9 4s9-1.8 9-4V8"/></svg>Storage</a>
-          <a class="nav-item" href="/health"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v4"/><path d="M12 16h.01"/></svg>Security</a>
-          <a class="nav-item" href="/v1/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 15.5A3.5 3.5 0 1 0 12 8a3.5 3.5 0 0 0 0 7.5Z"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 1.55V21a2 2 0 1 1-4 0v-.09A1.7 1.7 0 0 0 9 19.36a1.7 1.7 0 0 0-1.88.34l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.55-1H3a2 2 0 1 1 0-4h.09A1.7 1.7 0 0 0 4.64 9a1.7 1.7 0 0 0-.34-1.88l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-1.55V3a2 2 0 1 1 4 0v.09A1.7 1.7 0 0 0 15 4.64a1.7 1.7 0 0 0 1.88-.34l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.7 1.7 0 0 0 19.4 9c.26.6.85 1 1.55 1H21a2 2 0 1 1 0 4h-.09A1.7 1.7 0 0 0 19.4 15Z"/></svg>Settings</a>
+          <a class="nav-item motion-lift active" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>Overview</a>
+          <a class="nav-item motion-lift" href="/v1/nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>Nodes</a>
+          <a class="nav-item motion-lift" href="/v1/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>Jobs</a>
+          <a class="nav-item motion-lift" href="/v1/credits"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>Credits</a>
+          <a class="nav-item motion-lift" href="/health"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>Policies</a>
+          <a class="nav-item motion-lift" href="/v1/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>Status</a>
         </nav>
         <div class="sidebar-bottom">
           <div class="side-card">
@@ -1177,9 +1257,9 @@ fn control_plane_home(
             <div class="sub">Real-time overview of your compute network, security posture, jobs, storage, and audit trail.</div>
           </div>
           <div class="actions">
-            <a class="endpoint-button" href="/v1/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-3 3 3 3"/><path d="m16 9 3 3-3 3"/><path d="m14 5-4 14"/></svg>API Endpoints</a>
-            <span>Last updated <span style="color:var(--cyan);">●</span> Just now</span>
-            <a class="refresh-button" href="/" aria-label="Refresh"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h-4"/><path d="M6 22v-4h4"/></svg></a>
+            <a class="endpoint-button motion-lift" href="/v1/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-3 3 3 3"/><path d="m16 9 3 3-3 3"/><path d="m14 5-4 14"/></svg>Status API</a>
+            <span>Last updated <span class="live-dot" aria-hidden="true"></span> Just now</span>
+            <a class="refresh-button motion-lift" href="/" aria-label="Refresh"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h-4"/><path d="M6 22v-4h4"/></svg></a>
           </div>
         </header>
 
@@ -1216,7 +1296,7 @@ fn control_plane_home(
               <div class="topology">
                 <div class="orbit"></div><div class="grid-ring"></div>
                 <div class="radial"></div><div class="radial r2"></div><div class="radial r3"></div><div class="radial r4"></div><div class="radial r5"></div><div class="radial r6"></div><div class="radial r7"></div><div class="radial r8"></div>
-                <div class="topology-center"><div><img class="center-logo" alt="NovusX topology logo" src="{logo_path}" /><div class="center-label">NovusX<br/>Control Plane</div></div></div>
+                <div class="topology-center motion-glow"><img class="center-logo" alt="NovusX topology logo" src="{logo_path}" /></div>
                 <div class="topo-node" style="left:50%;top:12%;"><div class="node-hex"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="5" rx="1"/><rect x="5" y="14" width="14" height="5" rx="1"/><path d="M8 7.5h5"/><path d="M8 16.5h5"/></svg></div>No nodes</div>
                 <div class="topo-node" style="left:70%;top:22%;"><div class="node-hex"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="5" rx="1"/><rect x="5" y="14" width="14" height="5" rx="1"/></svg></div>No nodes</div>
                 <div class="topo-node" style="left:85%;top:50%;"><div class="node-hex"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="5" rx="1"/><rect x="5" y="14" width="14" height="5" rx="1"/></svg></div>No nodes</div>
@@ -1252,7 +1332,7 @@ fn control_plane_home(
         <section class="section node-panel">
           <div class="section-head">
             <div class="section-title-row"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><path d="M8 7h7"/><path d="M8 17h7"/></svg><h2 class="section-title">Node Details</h2></div>
-            <div class="node-tools"><span class="meta">{nodes} registered</span><div class="search"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Search nodes...</div><a class="filter-button" href="/v1/nodes" aria-label="Filter nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 5h16"/><path d="M7 12h10"/><path d="M10 19h4"/></svg></a></div>
+            <div class="node-tools"><span class="meta">{nodes} registered</span><div class="node-summary"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Signed registry snapshot</div><a class="endpoint-button motion-lift" href="/v1/nodes">Nodes JSON</a></div>
           </div>
           <div class="section-body">
             <div class="node-details-body">
@@ -2539,13 +2619,19 @@ mod tests {
         assert!(html.contains("NovusX Control Plane"));
         assert!(html.contains("NovusX control plane logo"));
         assert!(html.contains(CONTROL_PLANE_LOGO_PATH));
-        assert!(html.contains("API Endpoints"));
+        assert!(html.contains("Status API"));
         assert!(html.contains("Network Topology"));
         assert!(html.contains("Credits Overview"));
         assert!(html.contains("Node Details"));
-        assert!(html.contains("Search nodes..."));
+        assert!(html.contains("Signed registry snapshot"));
+        assert!(html.contains("Nodes JSON"));
         assert!(html.contains("Assigned jobs"));
         assert!(html.contains("color-scheme: dark"));
+        assert!(html.contains("motion-lift"));
+        assert!(html.contains("motion-glow"));
+        assert!(html.contains("prefers-reduced-motion: reduce"));
+        assert!(!html.contains("Search nodes..."));
+        assert!(!html.contains("Control Plane</div></div></div>"));
     }
 
     #[test]

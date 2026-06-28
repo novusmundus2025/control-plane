@@ -2269,8 +2269,38 @@ export function page({ health, status, events, credits, error }) {
         --amber: #edb73f;
         --red: #ff5c63;
         --blue: #62d3ff;
+        --motion-fast: 140ms ease;
+        --motion-medium: 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        --focus-ring: 0 0 0 3px rgba(98, 211, 255, 0.28);
       }
       * { box-sizing: border-box; }
+      a:focus-visible {
+        outline: 0;
+        box-shadow: var(--focus-ring);
+      }
+      .motion-lift {
+        transition:
+          transform var(--motion-medium),
+          border-color var(--motion-fast),
+          box-shadow var(--motion-medium),
+          background var(--motion-fast);
+        will-change: transform;
+      }
+      .motion-lift:hover,
+      .motion-lift:focus-visible {
+        transform: translateY(-2px);
+        border-color: var(--line-strong);
+        box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
+      }
+      .motion-glow {
+        transition: transform var(--motion-medium), filter var(--motion-medium);
+        will-change: transform;
+      }
+      .motion-glow:hover,
+      .motion-glow:focus-visible {
+        transform: scale(1.04);
+        filter: drop-shadow(0 0 20px rgba(237, 183, 63, 0.34));
+      }
       body {
         margin: 0;
         min-height: 100vh;
@@ -2666,6 +2696,20 @@ export function page({ health, status, events, credits, error }) {
         .job-grid { grid-template-columns: 1fr; }
         .hero-metrics { grid-template-columns: 1fr; }
       }
+      @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after {
+          animation-duration: 0.01ms !important;
+          animation-iteration-count: 1 !important;
+          scroll-behavior: auto !important;
+          transition-duration: 0.01ms !important;
+        }
+        .motion-lift:hover,
+        .motion-lift:focus-visible,
+        .motion-glow:hover,
+        .motion-glow:focus-visible {
+          transform: none;
+        }
+      }
     </style>
   </head>
   <body>
@@ -2673,7 +2717,7 @@ export function page({ health, status, events, credits, error }) {
       <div class="hero">
         <div class="topline command-center">
           <div>
-            <div class="brand"><img class="brand-mark" alt="NovusX control plane logo" src="${escapeHtml(controlPlaneLogoUrl)}" /> NovusX Command Deck</div>
+            <div class="brand motion-glow"><img class="brand-mark" alt="NovusX control plane logo" src="${escapeHtml(controlPlaneLogoUrl)}" /> NovusX Command Deck</div>
             <h1>Control Plane</h1>
             <div class="sub">High-signal operator view for fleet readiness, routing pressure, policy gates, storage source, and audit trail.</div>
             <div class="statusline">
@@ -2683,7 +2727,7 @@ export function page({ health, status, events, credits, error }) {
               ${deployFingerprint ? badge(`deploy: ${deployFingerprint}`, "neutral") : ""}
             </div>
           </div>
-          <div class="hero-panel" aria-label="Control plane command summary">
+          <div class="hero-panel motion-lift" aria-label="Control plane command summary">
             <div class="hero-panel-title">Live command summary</div>
             <div class="hero-metrics">
               <div class="hero-metric"><strong>${formatCount(nodeCount)}</strong><span>nodes</span></div>
