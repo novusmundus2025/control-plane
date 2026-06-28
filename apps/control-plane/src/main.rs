@@ -395,6 +395,15 @@ fn policy_badge(allowed: bool) -> (&'static str, &'static str, &'static str) {
     }
 }
 
+fn backend_badge(backend: &str) -> (&'static str, &'static str) {
+    match backend {
+        "cuda" => ("#12351f", "#8ef0aa"),
+        "m" => ("#173255", "#9bd1ff"),
+        "auto" => ("#22304c", "#b8c7e8"),
+        _ => ("#22304c", "#b8c7e8"),
+    }
+}
+
 fn trust_badge(trust_path: &str) -> (&'static str, &'static str, &'static str) {
     if is_trusted_identity_path(trust_path) {
         ("#12351f", "#8ef0aa", trust_path_label(trust_path))
@@ -429,6 +438,8 @@ fn render_nodes(state: &ControlPlaneState) -> String {
         let (state_bg, state_fg) = state_badge(node.state.as_str());
         let (trust_bg, trust_fg, trust_label) = trust_badge(&node.identity_trust_path);
         let (policy_bg, policy_fg, policy_label) = policy_badge(node.policy_allowed);
+        let backend = node.backend.to_string();
+        let (backend_bg, backend_fg) = backend_badge(&backend);
         let battery = node
             .battery_percent
             .map(|value| format!("{value}%"))
@@ -513,12 +524,12 @@ fn render_nodes(state: &ControlPlaneState) -> String {
             trust_fg,
             escape_html(trust_label),
             escape_html(&node.identity_trust_path),
-            escape_html(&node.backend.to_string()),
+            backend_bg,
+            backend_fg,
+            escape_html(&backend),
             state_bg,
             state_fg,
             escape_html(&node.state.to_string()),
-            state_bg,
-            state_fg,
             escape_html(&node.state.to_string()),
             escape_html(&power),
             escape_html(&node.public_key_fingerprint),
@@ -730,8 +741,13 @@ fn control_plane_operator_page(
       .metric span {{ color:var(--muted); display:block; font-size:13px; text-transform:uppercase; }}
       .metric strong {{ display:block; margin-top:7px; font-size:28px; }}
       .table {{ display:grid; overflow-x:auto; }}
-      .thead,.row {{ display:grid; grid-template-columns:1.1fr 1fr .8fr .9fr .8fr 1fr .8fr .9fr; gap:10px; min-width:980px; padding:12px 0; border-bottom:1px solid var(--line); }}
+      .thead,.row {{ display:grid; grid-template-columns:minmax(210px,1.15fr) minmax(130px,.7fr) minmax(170px,.95fr) minmax(90px,.45fr) minmax(90px,.45fr) minmax(340px,1.8fr) minmax(130px,.7fr) minmax(110px,.55fr); gap:14px; min-width:1280px; padding:14px 0; border-bottom:1px solid var(--line); }}
       .thead {{ color:var(--muted); text-transform:uppercase; font-size:12px; }}
+      .row > div {{ min-width:0; overflow-wrap:anywhere; }}
+      .row strong {{ overflow-wrap:anywhere; }}
+      .row .meta {{ display:block; overflow-wrap:anywhere; word-break:break-word; }}
+      .node-health {{ display:grid; gap:4px; overflow-wrap:anywhere; word-break:break-word; }}
+      .pill {{ display:inline-flex; align-items:center; max-width:100%; min-height:22px; border-radius:4px; padding:2px 6px; overflow-wrap:anywhere; }}
       .empty {{ border:1px dashed var(--line); border-radius:8px; padding:24px; color:var(--muted); }}
       .api-box {{ margin-top:auto; border:1px solid var(--line); border-radius:8px; padding:14px; color:var(--muted); }}
       @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; }} .toolbar,.grid.four,.grid.two {{ grid-template-columns:1fr; }} main {{ padding:22px; }} }}
