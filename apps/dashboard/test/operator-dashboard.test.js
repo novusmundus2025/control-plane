@@ -218,7 +218,7 @@ test("renders the high-impact command deck shell with replacement logo and live 
   assert.match(html, /NovusX Command Deck/i);
   assert.match(html, /Control Plane/i);
   assert.match(html, /NovusX control plane logo/i);
-  assert.match(html, /792dd24e-0253-43ef-9b88-d298189ca568/);
+  assert.match(html, /\/assets\/mundusx-logo\.png/);
   assert.match(html, /Live command summary/i);
   assert.match(html, /<strong>2<\/strong><span>nodes<\/span>/);
   assert.match(html, /<strong>5<\/strong><span>active jobs<\/span>/);

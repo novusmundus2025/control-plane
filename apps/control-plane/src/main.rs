@@ -49,6 +49,8 @@ const OPERATOR_TOKEN_ENV: &str = "MUNDUSX_OPERATOR_TOKEN";
 const LEGACY_OPERATOR_TOKEN_ENV: &str = "OPENGPU_OPERATOR_TOKEN";
 const AUTH_DISABLED_ENV: &str = "MUNDUSX_AUTH_DISABLED";
 const CONTROL_PLANE_ENVIRONMENT_ENV: &str = "MUNDUSX_ENVIRONMENT";
+const CONTROL_PLANE_LOGO_PATH: &str = "/assets/mundusx-logo.png";
+const CONTROL_PLANE_LOGO_PNG: &[u8] = include_bytes!("../assets/mundusx-logo.png");
 
 impl OperatorAuthMode {
     fn as_str(self) -> &'static str {
@@ -173,6 +175,16 @@ fn html_response(status: &str, body: &str) -> String {
         body.len(),
         body
     )
+}
+
+fn png_response(status: &str, body: &[u8]) -> Vec<u8> {
+    let mut response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: image/png\r\nCache-Control: public, max-age=31536000, immutable\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    )
+    .into_bytes();
+    response.extend_from_slice(body);
+    response
 }
 
 fn job_status_path(job_id: &str) -> String {
@@ -1130,7 +1142,7 @@ fn control_plane_home(
   <body>
     <div class="app-shell">
       <aside class="sidebar" aria-label="Control plane navigation">
-        <div class="brand"><img class="brand-mark" alt="NovusX control plane logo" src="https://github.com/user-attachments/assets/792dd24e-0253-43ef-9b88-d298189ca568" /> <span>NovusX</span></div>
+        <div class="brand"><img class="brand-mark" alt="NovusX control plane logo" src="{logo_path}" /> <span>NovusX</span></div>
         <nav class="nav">
           <a class="nav-item active" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>Overview</a>
           <a class="nav-item" href="/v1/nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>Nodes</a>
@@ -1204,7 +1216,7 @@ fn control_plane_home(
               <div class="topology">
                 <div class="orbit"></div><div class="grid-ring"></div>
                 <div class="radial"></div><div class="radial r2"></div><div class="radial r3"></div><div class="radial r4"></div><div class="radial r5"></div><div class="radial r6"></div><div class="radial r7"></div><div class="radial r8"></div>
-                <div class="topology-center"><div><img class="center-logo" alt="NovusX topology logo" src="https://github.com/user-attachments/assets/792dd24e-0253-43ef-9b88-d298189ca568" /><div class="center-label">NovusX<br/>Control Plane</div></div></div>
+                <div class="topology-center"><div><img class="center-logo" alt="NovusX topology logo" src="{logo_path}" /><div class="center-label">NovusX<br/>Control Plane</div></div></div>
                 <div class="topo-node" style="left:50%;top:12%;"><div class="node-hex"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="5" rx="1"/><rect x="5" y="14" width="14" height="5" rx="1"/><path d="M8 7.5h5"/><path d="M8 16.5h5"/></svg></div>No nodes</div>
                 <div class="topo-node" style="left:70%;top:22%;"><div class="node-hex"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="5" rx="1"/><rect x="5" y="14" width="14" height="5" rx="1"/></svg></div>No nodes</div>
                 <div class="topo-node" style="left:85%;top:50%;"><div class="node-hex"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="5" rx="1"/><rect x="5" y="14" width="14" height="5" rx="1"/></svg></div>No nodes</div>
@@ -1257,6 +1269,7 @@ fn control_plane_home(
 </html>"##,
         node_rows = render_nodes(state),
         storage_source = escape_html(storage_source.as_str()),
+        logo_path = CONTROL_PLANE_LOGO_PATH,
         deploy_badge = deploy_badge
     )
 }
@@ -1746,6 +1759,11 @@ fn handle_connection(
 
     let request = parse_request(&request_text);
     let (clean_path, query) = split_path_and_query(&request.path);
+
+    if request.method == "GET" && clean_path == CONTROL_PLANE_LOGO_PATH {
+        let _ = stream.write_all(&png_response("200 OK", CONTROL_PLANE_LOGO_PNG));
+        return;
+    }
 
     if let Err(error) = authorize_device_request(
         &request.method,
@@ -2397,8 +2415,8 @@ mod tests {
         operator_auth_startup_config_error, operator_auth_token_from_env, parse_request,
         read_http_request, requires_operator_auth, status_snapshot_with_deploy_fingerprint,
         HttpRequestReadError, OperatorAuthMode, StorageSource, SupabaseSyncStatus,
-        AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, LEGACY_OPERATOR_TOKEN_ENV,
-        MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
+        AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, CONTROL_PLANE_LOGO_PATH,
+        LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
     use crate::contracts::{Backend, JobRequest, RuntimeMode};
     use crate::state::ControlPlaneState;
@@ -2520,7 +2538,7 @@ mod tests {
 
         assert!(html.contains("NovusX Control Plane"));
         assert!(html.contains("NovusX control plane logo"));
-        assert!(html.contains("792dd24e-0253-43ef-9b88-d298189ca568"));
+        assert!(html.contains(CONTROL_PLANE_LOGO_PATH));
         assert!(html.contains("API Endpoints"));
         assert!(html.contains("Network Topology"));
         assert!(html.contains("Credits Overview"));

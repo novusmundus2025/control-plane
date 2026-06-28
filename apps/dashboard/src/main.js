@@ -11,7 +11,7 @@ const installReleaseBaseUrl =
 const installCommand = `RELEASE_BASE_URL=${installReleaseBaseUrl} bash install.sh`;
 const controlPlaneLogoUrl =
   process.env.MUNDUSX_CONTROL_PLANE_LOGO_URL ??
-  "https://github.com/user-attachments/assets/792dd24e-0253-43ef-9b88-d298189ca568";
+  `${controlPlaneUrl}/assets/mundusx-logo.png`;
 
 const sampleCompletedJobs = [
   {
