@@ -2268,32 +2268,6 @@ fn handle_connection(
             let snapshot = state.lock().expect("state lock").jobs_snapshot();
             json_response("200 OK", snapshot)
         }
-        ("GET", path) if path.starts_with("/v1/jobs/") => {
-            let job_id = path.trim_start_matches("/v1/jobs/");
-            if job_id.is_empty() || job_id.contains('/') {
-                json_response(
-                    "404 Not Found",
-                    serde_json::json!({ "error": "job not found" }),
-                )
-            } else {
-                let record = state.lock().expect("state lock").jobs.get(job_id).cloned();
-                match record {
-                    Some(record) => json_response("200 OK", job_async_payload(&record)),
-                    None => json_response(
-                        "404 Not Found",
-                        serde_json::json!({ "error": "job not found" }),
-                    ),
-                }
-            }
-        }
-        ("GET", "/v1/job-events") => {
-            let snapshot = state.lock().expect("state lock").job_events_snapshot();
-            json_response("200 OK", snapshot)
-        }
-        ("GET", "/v1/credits") => {
-            let snapshot = state.lock().expect("state lock").credits_snapshot();
-            json_response("200 OK", snapshot)
-        }
         ("GET", "/v1/jobs/next") => {
             if let Some(node_id) = query_param(query, "node_id") {
                 let mut guard = state.lock().expect("state lock");
@@ -2320,6 +2294,32 @@ fn handle_connection(
             } else {
                 text_response("400 Bad Request", "missing node_id")
             }
+        }
+        ("GET", path) if path.starts_with("/v1/jobs/") => {
+            let job_id = path.trim_start_matches("/v1/jobs/");
+            if job_id.is_empty() || job_id.contains('/') {
+                json_response(
+                    "404 Not Found",
+                    serde_json::json!({ "error": "job not found" }),
+                )
+            } else {
+                let record = state.lock().expect("state lock").jobs.get(job_id).cloned();
+                match record {
+                    Some(record) => json_response("200 OK", job_async_payload(&record)),
+                    None => json_response(
+                        "404 Not Found",
+                        serde_json::json!({ "error": "job not found" }),
+                    ),
+                }
+            }
+        }
+        ("GET", "/v1/job-events") => {
+            let snapshot = state.lock().expect("state lock").job_events_snapshot();
+            json_response("200 OK", snapshot)
+        }
+        ("GET", "/v1/credits") => {
+            let snapshot = state.lock().expect("state lock").credits_snapshot();
+            json_response("200 OK", snapshot)
         }
         ("POST", "/v1/register") => {
             match serde_json::from_str::<AgentRegistration>(&request.body) {
