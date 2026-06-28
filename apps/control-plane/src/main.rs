@@ -6,32 +6,70 @@ mod supabase;
 use contracts::{
     is_trusted_identity_path, trust_path_label, AgentRegistration, ChatCompletionChoice,
     ChatCompletionChoiceMessage, ChatCompletionMundusX, ChatCompletionRequest,
-    ChatCompletionResponse, Heartbeat, JobCompletion, JobRequest,
-    OperatorContributionPercentUpdate, RuntimeMode,
+    ChatCompletionResponse, Heartbeat, JobCompletion, JobRecord, JobRequest,
+    NodePolicyOverrideInput, OperatorContributionPercentUpdate, OperatorNodePolicyOverrideUpdate,
+    RuntimeMode,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use subtle::ConstantTimeEq;
 use migrations::{applied_migrations, apply_migrations};
 use serde::Serialize;
-use state::{load_state, save_state, state_path, ControlPlaneState};
+use state::{load_state, save_state, ControlPlaneState};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
+#[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use subtle::ConstantTimeEq;
 use supabase::SupabaseMirror;
 use uuid::Uuid;
 
 #[cfg(target_os = "macos")]
 #[path = "../../../tools/macos_identity.rs"]
 mod macos_identity;
+#[cfg(target_os = "macos")]
+use state::state_path;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StorageSource {
     Supabase,
     LocalJsonFallback,
     LocalJsonOnly,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OperatorAuthMode {
+    Enforced,
+    ExplicitlyDisabled,
+    MissingTokenDisabled,
+}
+
+const OPERATOR_TOKEN_ENV: &str = "MUNDUSX_OPERATOR_TOKEN";
+const LEGACY_OPERATOR_TOKEN_ENV: &str = "OPENGPU_OPERATOR_TOKEN";
+const AUTH_DISABLED_ENV: &str = "MUNDUSX_AUTH_DISABLED";
+const CONTROL_PLANE_ENVIRONMENT_ENV: &str = "MUNDUSX_ENVIRONMENT";
+
+impl OperatorAuthMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Enforced => "enforced",
+            Self::ExplicitlyDisabled => "explicitly-disabled",
+            Self::MissingTokenDisabled => "missing-token-disabled",
+        }
+    }
+
+    fn enforced(self) -> bool {
+        matches!(self, Self::Enforced)
+    }
+
+    fn log_label(self) -> &'static str {
+        match self {
+            Self::Enforced => "enabled (token present)",
+            Self::ExplicitlyDisabled => "disabled (MUNDUSX_AUTH_DISABLED=true)",
+            Self::MissingTokenDisabled => "disabled (MUNDUSX_OPERATOR_TOKEN missing)",
+        }
+    }
 }
 
 impl StorageSource {
@@ -137,6 +175,26 @@ fn html_response(status: &str, body: &str) -> String {
     )
 }
 
+fn job_status_path(job_id: &str) -> String {
+    format!("/v1/jobs/{job_id}")
+}
+
+fn job_async_payload(record: &JobRecord) -> serde_json::Value {
+    serde_json::json!({
+        "job_id": record.job_id,
+        "request_id": record.request_id,
+        "status": record.status,
+        "status_url": job_status_path(&record.job_id),
+        "polling": {
+            "method": "GET",
+            "url": job_status_path(&record.job_id),
+            "recommended_interval_seconds": 2,
+            "default_timeout_seconds": 300
+        },
+        "job": record,
+    })
+}
+
 fn chat_messages_to_prompt(messages: &[contracts::ChatMessage]) -> (Option<String>, String) {
     let mut system_messages = Vec::new();
     let mut conversation_lines = Vec::new();
@@ -216,6 +274,52 @@ fn control_plane_bind_addr() -> Result<String, String> {
         std::env::var("PORT").ok().as_deref(),
         std::env::var("MUNDUSX_CONTROL_PLANE_HOST").ok().as_deref(),
     )
+}
+
+fn deploy_fingerprint_from_env(
+    explicit: Option<&str>,
+    railway_git_commit_sha: Option<&str>,
+    source_version: Option<&str>,
+    git_commit_sha: Option<&str>,
+    railway_deployment_id: Option<&str>,
+) -> Option<String> {
+    [
+        explicit,
+        railway_git_commit_sha,
+        source_version,
+        git_commit_sha,
+        railway_deployment_id,
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::trim)
+    .find(|value| !value.is_empty())
+    .map(str::to_string)
+}
+
+fn deploy_fingerprint() -> Option<String> {
+    deploy_fingerprint_from_env(
+        std::env::var("MUNDUSX_DEPLOY_FINGERPRINT").ok().as_deref(),
+        std::env::var("RAILWAY_GIT_COMMIT_SHA").ok().as_deref(),
+        std::env::var("SOURCE_VERSION").ok().as_deref(),
+        std::env::var("GIT_COMMIT_SHA").ok().as_deref(),
+        std::env::var("RAILWAY_DEPLOYMENT_ID").ok().as_deref(),
+    )
+}
+
+fn status_snapshot_with_deploy_fingerprint(
+    mut snapshot: serde_json::Value,
+    deploy_fingerprint: Option<String>,
+) -> serde_json::Value {
+    if let serde_json::Value::Object(fields) = &mut snapshot {
+        fields.insert(
+            "deploy_fingerprint".to_string(),
+            deploy_fingerprint
+                .map(serde_json::Value::String)
+                .unwrap_or(serde_json::Value::Null),
+        );
+    }
+    snapshot
 }
 
 fn load_local_env() {
@@ -444,6 +548,18 @@ fn control_plane_home(
     };
     let supabase = sync_status.summary();
     let supabase_tone = sync_status.tone();
+    let deploy_fingerprint = deploy_fingerprint();
+    let deploy_badge = deploy_fingerprint
+        .as_deref()
+        .map(|value| {
+            format!(
+                r#"<span class="pill pill-blue">deploy: {}</span>"#,
+                escape_html(value)
+            )
+        })
+        .unwrap_or_else(|| {
+            r#"<span class="pill pill-amber">deploy: unavailable</span>"#.to_string()
+        });
 
     format!(
         r#"<!doctype html>
@@ -719,6 +835,7 @@ fn control_plane_home(
               <span class="pill pill-{healthy_tone}">healthy</span>
               <span class="pill pill-{storage_tone}">storage: {storage_source}</span>
               <span class="pill pill-{supabase_tone}">supabase: {supabase}</span>
+              {deploy_badge}
             </div>
           </div>
           <div class="links">
@@ -748,7 +865,8 @@ fn control_plane_home(
           Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.
           Current startup storage source: <code>{storage_source}</code>. Credits are accrued through the
           append-only ledger and exposed at <code>/v1/credits</code>. Supabase sync is
-          <code>{supabase}</code>.
+          <code>{supabase}</code>. Deploy fingerprint is exposed on <code>/health</code> and
+          <code>/v1/status</code> for post-merge verification.
         </div>
       </div>
 
@@ -765,7 +883,8 @@ fn control_plane_home(
   </body>
 </html>"#,
         node_rows = render_nodes(state),
-        storage_source = escape_html(storage_source.as_str())
+        storage_source = escape_html(storage_source.as_str()),
+        deploy_badge = deploy_badge
     )
 }
 
@@ -774,6 +893,124 @@ struct RequestParts {
     path: String,
     headers: BTreeMap<String, String>,
     body: String,
+}
+
+const MAX_HEADER_BYTES: usize = 32 * 1024;
+const MAX_BODY_BYTES: usize = 1024 * 1024;
+
+#[derive(Debug, Eq, PartialEq)]
+struct HttpRequestReadError {
+    status: &'static str,
+    message: String,
+}
+
+impl HttpRequestReadError {
+    fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: "400 Bad Request",
+            message: message.into(),
+        }
+    }
+
+    fn payload_too_large(message: impl Into<String>) -> Self {
+        Self {
+            status: "413 Payload Too Large",
+            message: message.into(),
+        }
+    }
+}
+
+fn find_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .map(|position| position + 4)
+}
+
+fn content_length_from_header_bytes(headers: &[u8]) -> Result<Option<usize>, HttpRequestReadError> {
+    let header_text = std::str::from_utf8(headers)
+        .map_err(|_| HttpRequestReadError::bad_request("request headers must be utf-8"))?;
+
+    for line in header_text.split("\r\n").skip(1) {
+        let Some((key, value)) = line.split_once(':') else {
+            continue;
+        };
+        if key.trim().eq_ignore_ascii_case("content-length") {
+            let length = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| HttpRequestReadError::bad_request("invalid Content-Length"))?;
+            if length > MAX_BODY_BYTES {
+                return Err(HttpRequestReadError::payload_too_large(format!(
+                    "request body exceeds {MAX_BODY_BYTES} bytes"
+                )));
+            }
+            return Ok(Some(length));
+        }
+    }
+
+    Ok(None)
+}
+
+fn read_http_request<R: Read>(reader: &mut R) -> Result<String, HttpRequestReadError> {
+    let mut buffer = Vec::with_capacity(16 * 1024);
+    let mut chunk = [0u8; 8192];
+    let header_end = loop {
+        let bytes_read = reader
+            .read(&mut chunk)
+            .map_err(|error| HttpRequestReadError::bad_request(error.to_string()))?;
+        if bytes_read == 0 {
+            return Err(HttpRequestReadError::bad_request("empty request"));
+        }
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+        if buffer.len() > MAX_HEADER_BYTES + MAX_BODY_BYTES {
+            return Err(HttpRequestReadError::payload_too_large(format!(
+                "request exceeds {} bytes",
+                MAX_HEADER_BYTES + MAX_BODY_BYTES
+            )));
+        }
+        if let Some(header_end) = find_header_end(&buffer) {
+            break header_end;
+        }
+        if buffer.len() > MAX_HEADER_BYTES {
+            return Err(HttpRequestReadError::payload_too_large(format!(
+                "request headers exceed {MAX_HEADER_BYTES} bytes"
+            )));
+        }
+    };
+
+    let content_length =
+        content_length_from_header_bytes(&buffer[..header_end])?.unwrap_or_default();
+    let expected_len = header_end
+        .checked_add(content_length)
+        .ok_or_else(|| HttpRequestReadError::payload_too_large("request is too large"))?;
+    if expected_len > MAX_HEADER_BYTES + MAX_BODY_BYTES {
+        return Err(HttpRequestReadError::payload_too_large(format!(
+            "request exceeds {} bytes",
+            MAX_HEADER_BYTES + MAX_BODY_BYTES
+        )));
+    }
+
+    while buffer.len() < expected_len {
+        let bytes_read = reader
+            .read(&mut chunk)
+            .map_err(|error| HttpRequestReadError::bad_request(error.to_string()))?;
+        if bytes_read == 0 {
+            return Err(HttpRequestReadError::bad_request(
+                "request body ended before Content-Length was satisfied",
+            ));
+        }
+        buffer.extend_from_slice(&chunk[..bytes_read]);
+    }
+
+    if content_length == 0 && buffer.len() > header_end {
+        return Err(HttpRequestReadError::bad_request(
+            "request body requires Content-Length",
+        ));
+    }
+
+    String::from_utf8(buffer[..expected_len].to_vec())
+        .map_err(|_| HttpRequestReadError::bad_request("request must be utf-8"))
 }
 
 fn parse_request(request: &str) -> RequestParts {
@@ -842,11 +1079,16 @@ fn requires_device_signature(method: &str, path: &str) -> bool {
 }
 
 fn requires_operator_auth(method: &str, path: &str) -> bool {
+    if method == "GET" && path.starts_with("/v1/jobs/") {
+        return true;
+    }
+
     matches!(
         (method, path),
         ("GET", "/")
             | ("GET", "/v1/status")
             | ("GET", "/v1/nodes")
+            | ("POST", "/v1/nodes/policy-override")
             | ("GET", "/v1/jobs")
             | ("GET", "/v1/job-events")
             | ("GET", "/v1/credits")
@@ -958,10 +1200,115 @@ fn authorize_device_request(
 }
 
 fn operator_auth_token() -> Option<String> {
-    std::env::var("MUNDUSX_OPERATOR_TOKEN")
-        .ok()
-        .map(|token| token.trim().to_string())
+    operator_auth_token_from_env(
+        std::env::var(OPERATOR_TOKEN_ENV).ok().as_deref(),
+        std::env::var(LEGACY_OPERATOR_TOKEN_ENV).ok().as_deref(),
+    )
+}
+
+fn operator_auth_token_from_env(
+    operator_token: Option<&str>,
+    legacy_operator_token: Option<&str>,
+) -> Option<String> {
+    operator_token
+        .or(legacy_operator_token)
+        .map(str::trim)
         .filter(|token| !token.is_empty())
+        .map(str::to_string)
+}
+
+fn auth_disabled_flag_enabled(value: Option<&str>) -> bool {
+    value
+        .map(str::trim)
+        .map(|value| {
+            value.eq_ignore_ascii_case("true")
+                || value == "1"
+                || value.eq_ignore_ascii_case("yes")
+                || value.eq_ignore_ascii_case("on")
+        })
+        .unwrap_or(false)
+}
+
+fn operator_auth_mode_from_env(
+    auth_disabled: Option<&str>,
+    operator_token: Option<&str>,
+    legacy_operator_token: Option<&str>,
+) -> OperatorAuthMode {
+    if auth_disabled_flag_enabled(auth_disabled) {
+        return OperatorAuthMode::ExplicitlyDisabled;
+    }
+
+    match operator_auth_token_from_env(operator_token, legacy_operator_token) {
+        Some(_) => OperatorAuthMode::Enforced,
+        None => OperatorAuthMode::MissingTokenDisabled,
+    }
+}
+
+fn operator_auth_mode() -> OperatorAuthMode {
+    operator_auth_mode_from_env(
+        std::env::var(AUTH_DISABLED_ENV).ok().as_deref(),
+        std::env::var(OPERATOR_TOKEN_ENV).ok().as_deref(),
+        std::env::var(LEGACY_OPERATOR_TOKEN_ENV).ok().as_deref(),
+    )
+}
+
+fn control_plane_environment_from_env(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("local")
+        .to_ascii_lowercase()
+}
+
+fn auth_disabled_allowed_in_environment(environment: &str) -> bool {
+    matches!(
+        environment,
+        "local" | "dev" | "development" | "test" | "uat"
+    )
+}
+
+fn operator_auth_startup_config_error(
+    auth_disabled: Option<&str>,
+    environment: Option<&str>,
+) -> Option<String> {
+    if !auth_disabled_flag_enabled(auth_disabled) {
+        return None;
+    }
+
+    let environment = control_plane_environment_from_env(environment);
+    if auth_disabled_allowed_in_environment(&environment) {
+        return None;
+    }
+
+    Some(format!(
+        "{AUTH_DISABLED_ENV}=true is only allowed when {CONTROL_PLANE_ENVIRONMENT_ENV} is local, dev, development, test, or uat; current environment is {environment}"
+    ))
+}
+
+fn operator_auth_startup_error() -> Option<String> {
+    operator_auth_startup_config_error(
+        std::env::var(AUTH_DISABLED_ENV).ok().as_deref(),
+        std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
+    )
+}
+
+fn legacy_operator_token_warning() -> Option<String> {
+    let canonical_present = std::env::var(OPERATOR_TOKEN_ENV)
+        .ok()
+        .map(|token| !token.trim().is_empty())
+        .unwrap_or(false);
+    let legacy_present = std::env::var(LEGACY_OPERATOR_TOKEN_ENV)
+        .ok()
+        .map(|token| !token.trim().is_empty())
+        .unwrap_or(false);
+
+    if legacy_present && !canonical_present {
+        Some(format!(
+            "{LEGACY_OPERATOR_TOKEN_ENV} is deprecated; set {OPERATOR_TOKEN_ENV} instead. Using the legacy token for this process."
+        ))
+    } else {
+        None
+    }
 }
 
 fn authorize_operator_request(
@@ -973,9 +1320,12 @@ fn authorize_operator_request(
         return Ok(());
     }
 
-    let Some(expected_token) = operator_auth_token() else {
+    if !operator_auth_mode().enforced() {
         return Ok(());
-    };
+    }
+
+    let expected_token =
+        operator_auth_token().expect("operator auth mode requires a non-empty token");
 
     let authorization = header_value(headers, "authorization")
         .or_else(|| header_value(headers, "x-mundusx-operator-token"))
@@ -987,7 +1337,12 @@ fn authorize_operator_request(
         .unwrap_or(authorization)
         .trim();
 
-    if presented.as_bytes().ct_eq(expected_token.as_bytes()).unwrap_u8() == 0 {
+    if presented
+        .as_bytes()
+        .ct_eq(expected_token.as_bytes())
+        .unwrap_u8()
+        == 0
+    {
         return Err("invalid operator token".to_string());
     }
 
@@ -1007,18 +1362,15 @@ fn handle_connection(
     supabase: Option<&SupabaseMirror>,
     storage_source: StorageSource,
 ) {
-    let mut buffer = vec![0; 16 * 1024];
-    let read_result = stream.read(&mut buffer);
-    let bytes_read = match read_result {
-        Ok(bytes) => bytes,
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
+    let request_text = match read_http_request(&mut stream) {
+        Ok(request_text) => request_text,
         Err(error) => {
-            let _ =
-                stream.write_all(text_response("400 Bad Request", &error.to_string()).as_bytes());
+            let _ = stream.write_all(text_response(error.status, &error.message).as_bytes());
             return;
         }
     };
 
-    let request_text = String::from_utf8_lossy(&buffer[..bytes_read]).to_string();
     let request = parse_request(&request_text);
     let (clean_path, query) = split_path_and_query(&request.path);
 
@@ -1058,6 +1410,11 @@ fn handle_connection(
                 .expect("state lock")
                 .snapshot(storage_source.as_str());
             let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
+            let deploy_fingerprint = deploy_fingerprint();
+            let auth_mode = operator_auth_mode();
+            let environment = control_plane_environment_from_env(
+                std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
+            );
             json_response(
                 "200 OK",
                 serde_json::json!({
@@ -1065,6 +1422,10 @@ fn handle_connection(
                     "storage_source": storage_source.as_str(),
                     "supabase": sync_snapshot.summary(),
                     "supabase_sync": sync_snapshot,
+                    "deploy_fingerprint": deploy_fingerprint,
+                    "environment": environment,
+                    "operator_auth_enforced": auth_mode.enforced(),
+                    "operator_auth_mode": auth_mode.as_str(),
                     "snapshot": snapshot,
                 }),
             )
@@ -1074,7 +1435,10 @@ fn handle_connection(
                 .lock()
                 .expect("state lock")
                 .snapshot(storage_source.as_str());
-            json_response("200 OK", snapshot)
+            json_response(
+                "200 OK",
+                status_snapshot_with_deploy_fingerprint(snapshot, deploy_fingerprint()),
+            )
         }
         ("GET", "/v1/nodes") => {
             let snapshot = state.lock().expect("state lock").nodes_snapshot();
@@ -1112,10 +1476,9 @@ fn handle_connection(
                             }
                             json_response("200 OK", serde_json::to_value(record).expect("json"))
                         }
-                        Err(error) => json_response(
-                            "400 Bad Request",
-                            serde_json::json!({ "error": error }),
-                        ),
+                        Err(error) => {
+                            json_response("400 Bad Request", serde_json::json!({ "error": error }))
+                        }
                     }
                 }
                 Err(error) => json_response(
@@ -1127,6 +1490,24 @@ fn handle_connection(
         ("GET", "/v1/jobs") => {
             let snapshot = state.lock().expect("state lock").jobs_snapshot();
             json_response("200 OK", snapshot)
+        }
+        ("GET", path) if path.starts_with("/v1/jobs/") => {
+            let job_id = path.trim_start_matches("/v1/jobs/");
+            if job_id.is_empty() || job_id.contains('/') {
+                json_response(
+                    "404 Not Found",
+                    serde_json::json!({ "error": "job not found" }),
+                )
+            } else {
+                let record = state.lock().expect("state lock").jobs.get(job_id).cloned();
+                match record {
+                    Some(record) => json_response("200 OK", job_async_payload(&record)),
+                    None => json_response(
+                        "404 Not Found",
+                        serde_json::json!({ "error": "job not found" }),
+                    ),
+                }
+            }
         }
         ("GET", "/v1/job-events") => {
             let snapshot = state.lock().expect("state lock").job_events_snapshot();
@@ -1197,6 +1578,91 @@ fn handle_connection(
                 ),
             }
         }
+        ("POST", "/v1/nodes/policy-override") => {
+            match serde_json::from_str::<OperatorNodePolicyOverrideUpdate>(&request.body) {
+                Ok(update) => {
+                    let actor = update
+                        .actor
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("operator")
+                        .to_string();
+                    let reason = update
+                        .reason
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
+                        .map(str::to_string);
+                    let override_input = if let Some(target) = update.target {
+                        if let Some(reason) = reason.clone() {
+                            Some(NodePolicyOverrideInput {
+                                target,
+                                reason,
+                                actor: actor.clone(),
+                                updated_at: now_unix_seconds(),
+                            })
+                        } else {
+                            return stream.write_all(
+                                json_response(
+                                    "400 Bad Request",
+                                    serde_json::json!({ "error": "reason is required when setting a policy override" }),
+                                )
+                                .as_bytes(),
+                            ).unwrap_or(());
+                        }
+                    } else {
+                        None
+                    };
+
+                    let mut guard = state.lock().expect("state lock");
+                    match guard.set_node_policy_override(&update.node_id, override_input) {
+                        Ok(record) => {
+                            let event = guard.record_job_event(
+                                Some(record.node_id.clone()),
+                                None,
+                                "operator_policy_override_updated",
+                                serde_json::json!({
+                                    "node_id": record.node_id,
+                                    "target": record.operator_policy_override.as_ref().map(|value| value.target.as_str()),
+                                    "reason": reason,
+                                    "actor": actor,
+                                    "reported_state": record.reported_state,
+                                    "state": record.state,
+                                    "computed_policy_allowed": record.computed_policy_allowed,
+                                    "computed_policy_reason": record.computed_policy_reason,
+                                    "policy_allowed": record.policy_allowed,
+                                    "policy_reason": record.policy_reason,
+                                    "operator_policy_override": record.operator_policy_override,
+                                }),
+                                now_unix_seconds(),
+                            );
+                            if let Err(error) = save_state(&guard) {
+                                eprintln!("failed to save control-plane state: {error}");
+                            }
+                            if let Some(db) = supabase.as_ref() {
+                                if let Err(error) = db.record_node_snapshot(&record) {
+                                    eprintln!("database node override sync skipped: {error}");
+                                    note_supabase_failure(&sync_status, error);
+                                }
+                                if let Err(error) = db.record_job_event(&event) {
+                                    eprintln!("database node override event skipped: {error}");
+                                    note_supabase_failure(&sync_status, error);
+                                }
+                            }
+                            json_response("200 OK", serde_json::to_value(record).expect("json"))
+                        }
+                        Err(error) => {
+                            json_response("400 Bad Request", serde_json::json!({ "error": error }))
+                        }
+                    }
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+            }
+        }
         ("POST", "/v1/heartbeat") => match serde_json::from_str::<Heartbeat>(&request.body) {
             Ok(heartbeat) => {
                 let heartbeat_clone = heartbeat.clone();
@@ -1213,7 +1679,7 @@ fn handle_connection(
                     eprintln!("failed to save control-plane state: {error}");
                 }
                 if let Some(db) = supabase.as_ref() {
-                    if let Err(error) = db.record_heartbeat(&heartbeat_clone) {
+                    if let Err(error) = db.record_heartbeat(&heartbeat_clone, &record) {
                         eprintln!("database heartbeat sync skipped: {error}");
                         note_supabase_failure(&sync_status, error);
                     }
@@ -1253,7 +1719,7 @@ fn handle_connection(
                         note_supabase_failure(&sync_status, error);
                     }
                 }
-                json_response("200 OK", serde_json::to_value(record).expect("json"))
+                json_response("202 Accepted", job_async_payload(&record))
             }
             Err(error) => json_response(
                 "400 Bad Request",
@@ -1506,14 +1972,20 @@ fn main() {
             Err(error) => eprintln!("migration status unavailable: {error}"),
         }
     }
+    if let Some(error) = operator_auth_startup_error() {
+        eprintln!("operatorAuth error: {error}");
+        std::process::exit(1);
+    }
+    println!("operatorAuth: {}", operator_auth_mode().log_label());
     println!(
-        "operatorAuth: {}",
-        if operator_auth_token().is_some() {
-            "enabled"
-        } else {
-            "disabled"
-        }
+        "environment: {}",
+        control_plane_environment_from_env(
+            std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref()
+        )
     );
+    if let Some(warning) = legacy_operator_token_warning() {
+        eprintln!("operatorAuth warning: {warning}");
+    }
     println!("home: GET /");
     println!("health: GET /health");
     println!("status: GET /v1/status");
@@ -1546,7 +2018,44 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{control_plane_bind_addr_from_env, requires_operator_auth};
+    use super::{
+        auth_disabled_flag_enabled, control_plane_bind_addr_from_env, deploy_fingerprint_from_env,
+        job_async_payload, operator_auth_mode_from_env, operator_auth_startup_config_error,
+        operator_auth_token_from_env, parse_request, read_http_request, requires_operator_auth,
+        status_snapshot_with_deploy_fingerprint, HttpRequestReadError, OperatorAuthMode,
+        AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, LEGACY_OPERATOR_TOKEN_ENV,
+        MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
+    };
+    use crate::contracts::{Backend, JobRequest, RuntimeMode};
+    use crate::state::ControlPlaneState;
+    use std::io::{self, Read};
+
+    struct ChunkedReader {
+        chunks: Vec<Vec<u8>>,
+        index: usize,
+    }
+
+    impl ChunkedReader {
+        fn new(chunks: Vec<&[u8]>) -> Self {
+            Self {
+                chunks: chunks.into_iter().map(|chunk| chunk.to_vec()).collect(),
+                index: 0,
+            }
+        }
+    }
+
+    impl Read for ChunkedReader {
+        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+            if self.index >= self.chunks.len() {
+                return Ok(0);
+            }
+            let chunk = &self.chunks[self.index];
+            let len = chunk.len().min(buffer.len());
+            buffer[..len].copy_from_slice(&chunk[..len]);
+            self.index += 1;
+            Ok(len)
+        }
+    }
 
     #[test]
     fn defaults_to_localhost_when_port_is_missing() {
@@ -1568,13 +2077,248 @@ mod tests {
     }
 
     #[test]
+    fn prefers_explicit_deploy_fingerprint_over_host_metadata() {
+        let fingerprint = deploy_fingerprint_from_env(
+            Some("manual-fingerprint"),
+            Some("railway-sha"),
+            Some("source-version"),
+            Some("git-sha"),
+            Some("deploy-id"),
+        );
+
+        assert_eq!(fingerprint.as_deref(), Some("manual-fingerprint"));
+    }
+
+    #[test]
+    fn falls_back_to_railway_commit_sha_for_deploy_fingerprint() {
+        let fingerprint =
+            deploy_fingerprint_from_env(None, Some("abcdef1234567890"), None, None, None);
+
+        assert_eq!(fingerprint.as_deref(), Some("abcdef1234567890"));
+    }
+
+    #[test]
+    fn returns_none_when_no_deploy_fingerprint_metadata_is_available() {
+        let fingerprint = deploy_fingerprint_from_env(None, None, None, None, None);
+
+        assert_eq!(fingerprint, None);
+    }
+
+    #[test]
+    fn status_snapshot_exposes_deploy_fingerprint() {
+        let snapshot = status_snapshot_with_deploy_fingerprint(
+            serde_json::json!({
+                "storage_source": "supabase",
+                "queued_job_count": 0
+            }),
+            Some("abcdef1234567890".to_string()),
+        );
+
+        assert_eq!(snapshot["deploy_fingerprint"], "abcdef1234567890");
+        assert_eq!(snapshot["storage_source"], "supabase");
+    }
+
+    #[test]
     fn rejects_invalid_port_values() {
         let error = control_plane_bind_addr_from_env(Some("abc"), None).expect_err("invalid");
         assert_eq!(error, "invalid PORT value: abc");
     }
 
     #[test]
+    fn detects_explicit_auth_disabled_flag() {
+        assert!(auth_disabled_flag_enabled(Some("true")));
+        assert!(auth_disabled_flag_enabled(Some("1")));
+        assert!(!auth_disabled_flag_enabled(Some("false")));
+        assert!(!auth_disabled_flag_enabled(None));
+    }
+
+    #[test]
+    fn operator_auth_mode_honors_explicit_disable_over_token() {
+        let mode = operator_auth_mode_from_env(Some("true"), Some("secret"), None);
+
+        assert_eq!(mode, OperatorAuthMode::ExplicitlyDisabled);
+        assert!(!mode.enforced());
+        assert_eq!(mode.as_str(), "explicitly-disabled");
+    }
+
+    #[test]
+    fn operator_auth_mode_enforces_when_token_is_present() {
+        let mode = operator_auth_mode_from_env(None, Some("secret"), None);
+
+        assert_eq!(mode, OperatorAuthMode::Enforced);
+        assert!(mode.enforced());
+        assert_eq!(mode.as_str(), "enforced");
+    }
+
+    #[test]
+    fn operator_auth_mode_enforces_when_legacy_token_is_present() {
+        let mode = operator_auth_mode_from_env(None, None, Some("legacy-secret"));
+
+        assert_eq!(mode, OperatorAuthMode::Enforced);
+        assert!(mode.enforced());
+    }
+
+    #[test]
+    fn operator_auth_token_prefers_canonical_over_legacy() {
+        let token =
+            operator_auth_token_from_env(Some(" canonical "), Some(" legacy ")).expect("token");
+
+        assert_eq!(token, "canonical");
+    }
+
+    #[test]
+    fn operator_auth_token_falls_back_to_legacy() {
+        let token =
+            operator_auth_token_from_env(None, Some(" legacy-secret ")).expect("legacy token");
+
+        assert_eq!(token, "legacy-secret");
+    }
+
+    #[test]
+    fn readme_documents_operator_auth_env_names() {
+        let readme = include_str!("../../../README.md");
+
+        assert!(readme.contains(OPERATOR_TOKEN_ENV));
+        assert!(readme.contains(LEGACY_OPERATOR_TOKEN_ENV));
+        assert!(readme.contains("Deprecated"));
+    }
+
+    #[test]
+    fn operator_auth_mode_reports_missing_token_disable() {
+        let mode = operator_auth_mode_from_env(None, None, None);
+
+        assert_eq!(mode, OperatorAuthMode::MissingTokenDisabled);
+        assert!(!mode.enforced());
+        assert_eq!(mode.as_str(), "missing-token-disabled");
+    }
+
+    #[test]
+    fn auth_disabled_is_rejected_for_production_environment() {
+        let error = operator_auth_startup_config_error(Some("true"), Some("production"))
+            .expect("production should reject auth-disabled mode");
+
+        assert!(error.contains(AUTH_DISABLED_ENV));
+        assert!(error.contains(CONTROL_PLANE_ENVIRONMENT_ENV));
+        assert!(error.contains("production"));
+    }
+
+    #[test]
+    fn auth_disabled_is_allowed_for_local_and_uat() {
+        assert_eq!(
+            operator_auth_startup_config_error(Some("true"), Some("local")),
+            None
+        );
+        assert_eq!(
+            operator_auth_startup_config_error(Some("yes"), Some("uat")),
+            None
+        );
+    }
+
+    #[test]
     fn protects_operator_cap_update_route() {
         assert!(requires_operator_auth("POST", "/v1/nodes/contribution-cap"));
+    }
+
+    #[test]
+    fn protects_operator_policy_override_route() {
+        assert!(requires_operator_auth("POST", "/v1/nodes/policy-override"));
+    }
+
+    #[test]
+    fn protects_single_job_status_route() {
+        assert!(requires_operator_auth("GET", "/v1/jobs/job-1"));
+    }
+
+    #[test]
+    fn request_reader_waits_for_full_content_length_body() {
+        let mut reader = ChunkedReader::new(vec![
+            b"POST /v1/register HTTP/1.1\r\nHost: localhost\r\nContent-Length: 20\r\n\r\n{\"node_id\"",
+            b":\"node-1\"}",
+        ]);
+
+        let request_text = read_http_request(&mut reader).expect("request");
+        let request = parse_request(&request_text);
+
+        assert_eq!(request.method, "POST");
+        assert_eq!(request.path, "/v1/register");
+        assert_eq!(request.body, "{\"node_id\":\"node-1\"}");
+    }
+
+    #[test]
+    fn request_reader_rejects_incomplete_declared_body() {
+        let mut reader = ChunkedReader::new(vec![
+            b"POST /v1/register HTTP/1.1\r\nContent-Length: 25\r\n\r\n{\"node_id\":\"node-1\"}",
+        ]);
+
+        let error = read_http_request(&mut reader).expect_err("incomplete body");
+
+        assert_eq!(
+            error,
+            HttpRequestReadError::bad_request(
+                "request body ended before Content-Length was satisfied"
+            )
+        );
+    }
+
+    #[test]
+    fn request_reader_rejects_invalid_content_length() {
+        let mut reader = ChunkedReader::new(vec![
+            b"POST /v1/register HTTP/1.1\r\nContent-Length: nope\r\n\r\n{}",
+        ]);
+
+        let error = read_http_request(&mut reader).expect_err("invalid length");
+
+        assert_eq!(
+            error,
+            HttpRequestReadError::bad_request("invalid Content-Length")
+        );
+    }
+
+    #[test]
+    fn request_reader_rejects_oversized_declared_body() {
+        let request = format!(
+            "POST /v1/register HTTP/1.1\r\nContent-Length: {}\r\n\r\n",
+            MAX_BODY_BYTES + 1
+        );
+        let mut reader = ChunkedReader::new(vec![request.as_bytes()]);
+
+        let error = read_http_request(&mut reader).expect_err("oversized");
+
+        assert_eq!(error.status, "413 Payload Too Large");
+    }
+
+    #[test]
+    fn async_job_payload_exposes_polling_contract() {
+        let mut state = ControlPlaneState::default();
+        let record = state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "summarize this".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                stream: false,
+                model: Some("demo".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "123".to_string(),
+        );
+
+        let payload = job_async_payload(&record);
+
+        assert_eq!(payload["job_id"], "job-1");
+        assert_eq!(payload["request_id"], "job-1");
+        assert_eq!(payload["status"], "queued");
+        assert_eq!(payload["status_url"], "/v1/jobs/job-1");
+        assert_eq!(payload["polling"]["method"], "GET");
+        assert_eq!(payload["polling"]["url"], "/v1/jobs/job-1");
+        assert_eq!(payload["polling"]["recommended_interval_seconds"], 2);
+        assert_eq!(payload["polling"]["default_timeout_seconds"], 300);
+        assert_eq!(payload["job"]["status"], "queued");
+        assert_eq!(payload["job"]["output"], serde_json::Value::Null);
+        assert_eq!(payload["job"]["error"], serde_json::Value::Null);
     }
 }

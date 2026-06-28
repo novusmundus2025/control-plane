@@ -3,6 +3,8 @@ import { pathToFileURL } from "node:url";
 
 const controlPlaneUrl = process.env.MUNDUSX_CONTROL_PLANE_URL ?? "http://127.0.0.1:8787";
 const port = Number(process.env.PORT ?? "3001");
+const operatorToken =
+  process.env.MUNDUSX_OPERATOR_TOKEN?.trim() || process.env.OPENGPU_OPERATOR_TOKEN?.trim() || "";
 const appUrl = `http://127.0.0.1:${port}`;
 const installReleaseBaseUrl =
   process.env.MUNDUSX_INSTALL_RELEASE_BASE_URL ?? "http://127.0.0.1:8788/releases/latest/download";
@@ -100,6 +102,7 @@ async function fetchJson(path) {
       signal: controller.signal,
       headers: {
         Accept: "application/json",
+        ...(operatorToken ? { Authorization: `Bearer ${operatorToken}` } : {}),
       },
     });
     if (!response.ok) {
@@ -111,8 +114,43 @@ async function fetchJson(path) {
   }
 }
 
+async function postJson(path, body) {
+  const response = await fetch(new URL(path, controlPlaneUrl), {
+    method: "POST",
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      ...(operatorToken ? { Authorization: `Bearer ${operatorToken}` } : {}),
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const payload = await response.text();
+    throw new Error(payload || `HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
 function badge(label, tone = "neutral") {
   return `<span class="pill pill-${tone}">${escapeHtml(label)}</span>`;
+}
+
+function overrideStatus(node = {}) {
+  const policyOverride = node.operator_policy_override ?? null;
+  const computedDetail = node.computed_policy_allowed
+    ? "computed policy allows work"
+    : String(node.computed_policy_reason ?? "computed policy is blocking work");
+  if (!policyOverride) {
+    return {
+      summary: "no operator override",
+      detail: computedDetail,
+    };
+  }
+
+  return {
+    summary: `override ${String(policyOverride.target ?? "unknown")}`,
+    detail: `${String(policyOverride.reason ?? "no reason")} • ${String(policyOverride.actor ?? "unknown actor")} • ${String(policyOverride.updated_at ?? "unknown time")} • ${computedDetail}`,
+  };
 }
 
 function installManifest(installPath = "/install") {
@@ -325,6 +363,7 @@ function renderMSeriesOperatorSummary(snapshot = {}) {
         .map((node) => {
           const readiness = runtimeReadiness(node);
           const cap = capStatus(node);
+          const override = overrideStatus(node);
           const trustTone = String(node.identity_trust_path ?? "") === "keychain" ? "green" : "amber";
           const policyTone = node.policy_allowed ? "green" : "red";
           const stateTone =
@@ -347,19 +386,35 @@ function renderMSeriesOperatorSummary(snapshot = {}) {
                   <div class="meta">${escapeHtml(node.hostname ?? "unknown host")} • ${escapeHtml(cap.summary)}</div>
                   <div class="meta">${escapeHtml(cap.detail)}</div>
                 </div>
-                <div class="job-badges">
-                  ${badge(`trust: ${String(node.identity_trust_path ?? "unknown")}`, trustTone)}
-                  ${badge(`policy: ${node.policy_allowed ? "allowed" : "blocked"}`, policyTone)}
-                  ${badge(`runtime: ${readiness.label}`, readiness.tone)}
-                  ${badge(`state: ${String(node.state ?? "unknown")}`, stateTone)}
-                </div>
-              </div>
+                    <div class="job-badges">
+                      ${badge(`trust: ${String(node.identity_trust_path ?? "unknown")}`, trustTone)}
+                      ${badge(`policy: ${node.policy_allowed ? "allowed" : "blocked"}`, policyTone)}
+                      ${badge(override.summary, node.operator_policy_override ? "blue" : "neutral")}
+                      ${badge(`runtime: ${readiness.label}`, readiness.tone)}
+                      ${badge(`state: ${String(node.state ?? "unknown")}`, stateTone)}
+                    </div>
+                  </div>
               <p style="margin-top: 10px;">
                 ${escapeHtml(claimability)} • ${escapeHtml(power)} • ${escapeHtml(readiness.detail)}
               </p>
               <p style="margin-top: 8px;">
                 ${escapeHtml(node.policy_reason ?? "Policy currently allows local work.")}
               </p>
+              <p class="meta" style="margin-top: 8px;">
+                ${escapeHtml(override.detail)}
+              </p>
+              <form method="post" action="/actions/policy-override" style="margin-top: 12px; display: flex; gap: 8px; flex-wrap: wrap;">
+                <input type="hidden" name="node_id" value="${escapeHtml(node.node_id ?? "")}" />
+                <input type="hidden" name="actor" value="dashboard" />
+                <select name="target">
+                  <option value="allowed">allowed</option>
+                  <option value="paused">paused</option>
+                  <option value="blocked">blocked</option>
+                </select>
+                <input type="text" name="reason" placeholder="override reason" />
+                <button type="submit">Apply override</button>
+                <button type="submit" name="clear" value="1">Clear override</button>
+              </form>
             </div>`;
         })
         .join("")}
@@ -388,6 +443,7 @@ function renderNodes(nodes = []) {
       ${nodes
         .map((node) => {
           const cap = capStatus(node);
+          const override = overrideStatus(node);
           const battery = node.battery_percent == null ? "unknown" : `${node.battery_percent}%`;
           const power = `${node.power_source ?? "unknown"} • ${node.on_battery ? "battery" : "AC"} • ${battery}`;
           const workerHealth = node.worker_health ?? null;
@@ -404,6 +460,8 @@ function renderNodes(nodes = []) {
                 <div class="meta">fingerprint ${escapeHtml(node.public_key_fingerprint ?? "unknown")}</div>
                 <div class="meta">${escapeHtml(cap.summary)}</div>
                 <div class="meta">${escapeHtml(cap.detail)}</div>
+                <div class="meta">${escapeHtml(override.summary)}</div>
+                <div class="meta">${escapeHtml(override.detail)}</div>
               </div>
               <div>
                 <div>${escapeHtml(node.hostname ?? "unknown")}</div>
@@ -473,6 +531,11 @@ function renderJobs(jobs = []) {
           const assignedAt = job.assigned_at ?? "pending";
           const completedAt = job.completed_at ?? "pending";
           const prompt = String(job.prompt ?? "").trim();
+          const classification = job.classification ?? {};
+          const plan = job.plan ?? {};
+          const planJobs = Array.isArray(plan.jobs) ? plan.jobs : [];
+          const planSummary = String(plan.summary ?? "No planner summary recorded.");
+          const planStrategy = String(plan.strategy ?? "unplanned");
           return `
             <article class="job-card">
               <div class="job-head">
@@ -504,6 +567,24 @@ function renderJobs(jobs = []) {
                   <div class="meta-label">Completed</div>
                   <div class="meta-value">${escapeHtml(completedAt)}</div>
                 </div>
+              </div>
+              <div class="job-plan">
+                <div class="meta">
+                  ${escapeHtml(String(classification.task_type ?? "unclassified"))}
+                  - ${escapeHtml(String(classification.complexity ?? "unknown"))}
+                  - ${escapeHtml(planStrategy)}
+                </div>
+                <div>${escapeHtml(planSummary)}</div>
+                ${
+                  planJobs.length
+                    ? `<ol>${planJobs
+                        .map(
+                          (plannedJob) =>
+                            `<li><strong>${escapeHtml(plannedJob.name ?? plannedJob.id ?? "planned job")}</strong><span>${escapeHtml(plannedJob.required_output ?? plannedJob.responsibility ?? "")}</span></li>`,
+                        )
+                        .join("")}</ol>`
+                    : ""
+                }
               </div>
             </article>`;
         })
@@ -1615,8 +1696,8 @@ function renderContributorPortal() {
                   <span class="pill pill-blue">signed</span>
                 </div>
                 <p>
-                  The node identity is sign-only and survives reinstall through the local
-                  encrypted fallback.
+                  The node identity is sign-only, but reinstall only preserves it when the
+                  original identity record and a matching machine secret are both still available.
                 </p>
               </div>
               <div class="panel">
@@ -2156,6 +2237,7 @@ export function page({ health, status, events, credits, error }) {
   const snapshot = status ?? health?.snapshot ?? {};
   const storageSource = health?.storage_source ?? snapshot.storage_source ?? "unknown";
   const supabase = health?.supabase ?? "unknown";
+  const deployFingerprint = health?.deploy_fingerprint ?? null;
   const isHealthy = health?.status === "ok";
   const title = "NovusX Dashboard";
 
@@ -2418,6 +2500,27 @@ export function page({ health, status, events, credits, error }) {
         gap: 12px;
         margin-top: 14px;
       }
+      .job-plan {
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        margin-top: 14px;
+        padding: 12px 14px;
+        background: rgba(43, 108, 176, 0.06);
+        color: var(--text);
+        line-height: 1.5;
+      }
+      .job-plan ol {
+        margin: 10px 0 0;
+        padding-left: 20px;
+      }
+      .job-plan li {
+        margin-top: 6px;
+      }
+      .job-plan span {
+        display: block;
+        color: var(--muted);
+        overflow-wrap: anywhere;
+      }
       .event-top {
         display: flex;
         align-items: center;
@@ -2508,6 +2611,7 @@ export function page({ health, status, events, credits, error }) {
               ${badge(isHealthy ? "healthy" : "degraded", isHealthy ? "green" : "red")}
               ${badge(`storage: ${storageSource}`, storageSource === "supabase" ? "green" : "amber")}
               ${badge(`supabase: ${supabase}`, supabase.startsWith("enabled") ? "green" : "red")}
+              ${deployFingerprint ? badge(`deploy: ${deployFingerprint}`, "neutral") : ""}
             </div>
           </div>
           <div class="links">
@@ -2817,8 +2921,8 @@ function renderDocsHome(basePath = "/docs") {
         <div class="card">
           <h2>Device identity</h2>
           <p>
-            Explain how the Mac identity survives reinstall, why the private key is not
-            exportable, and what metadata is signed.
+            Explain the real recovery path for Mac identity, why the private key is not
+            exportable, and when a device must be re-enrolled.
           </p>
           <p><a href="${escapeHtml(docsRoute(basePath, "/identity"))}">Open identity page</a></p>
         </div>
@@ -2892,7 +2996,7 @@ function renderDocsIdentity(basePath = "/docs") {
   return docsShell({
     title: "Device Identity",
     subtitle:
-      "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall should reuse identity as long as the data directory remains intact or the keychain secret is still available.",
+      "The Mac identity is a sign-only encrypted-at-rest fallback today. The app never reads raw private-key bytes, and reinstall only preserves identity when the original identity record is still present and the machine can still unlock it.",
     active: "identity",
     basePath,
     body: `
@@ -2905,6 +3009,7 @@ function renderDocsIdentity(basePath = "/docs") {
             <li>fingerprint</li>
             <li>hostname metadata</li>
           </ul>
+          <p>If <code>identity.json</code> is missing, the node cannot recreate the same signing identity from Keychain state alone.</p>
         </div>
         <div class="card">
           <h2>What is not exposed</h2>
@@ -2912,13 +3017,15 @@ function renderDocsIdentity(basePath = "/docs") {
             <li>raw private key bytes</li>
             <li>exportable app-visible secret</li>
           </ul>
+          <p>If the Keychain item is gone or no longer matches the stored identity record, the safest path is to re-enroll the device with a fresh identity.</p>
         </div>
         <div class="card">
-          <h2>Trust path</h2>
+          <h2>Recovery guidance</h2>
           <ul>
-            <li><code>keychain</code> means the machine secret was recovered from macOS keychain.</li>
-            <li><code>local-encrypted-fallback</code> means the node is using encrypted-at-rest identity storage.</li>
-            <li>The trust path should be visible in the dashboard so operators can diagnose recovery.</li>
+            <li>Restore <code>identity.json</code> from backup before reinstall recovery.</li>
+            <li><code>keychain</code> means the machine secret was recovered from macOS Keychain.</li>
+            <li><code>local-encrypted-fallback</code> means the node is using the deterministic machine fallback instead.</li>
+            <li>The trust path should stay visible in the dashboard so operators can diagnose recovery failures.</li>
           </ul>
         </div>
       </div>
@@ -3017,6 +3124,29 @@ async function collectData() {
 export function createAppServer() {
   return createServer(async (req, res) => {
   const requestUrl = new URL(req.url ?? "/", appUrl);
+  if (req.method === "POST" && requestUrl.pathname === "/actions/policy-override") {
+    const chunks = [];
+    for await (const chunk of req) {
+      chunks.push(chunk);
+    }
+    const form = new URLSearchParams(Buffer.concat(chunks).toString("utf8"));
+    try {
+      await postJson("/v1/nodes/policy-override", {
+        node_id: form.get("node_id"),
+        target: form.get("clear") === "1" ? null : form.get("target"),
+        reason: form.get("reason"),
+        actor: form.get("actor") || "dashboard",
+      });
+      res.writeHead(303, { Location: "/" });
+    } catch (error) {
+      res.writeHead(303, {
+        Location: `/?error=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`,
+      });
+    }
+    res.end();
+    return;
+  }
+
   if (requestUrl.pathname === "/install") {
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
     res.end(renderInstallPage("/install"));
@@ -3148,6 +3278,10 @@ export function createAppServer() {
       credits: null,
       error: error instanceof Error ? error.message : String(error),
     };
+  }
+
+  if (requestUrl.searchParams.get("error")) {
+    data.error = requestUrl.searchParams.get("error");
   }
 
   res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
