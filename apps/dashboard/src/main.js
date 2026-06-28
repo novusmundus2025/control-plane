@@ -9,6 +9,9 @@ const appUrl = `http://127.0.0.1:${port}`;
 const installReleaseBaseUrl =
   process.env.MUNDUSX_INSTALL_RELEASE_BASE_URL ?? "http://127.0.0.1:8788/releases/latest/download";
 const installCommand = `RELEASE_BASE_URL=${installReleaseBaseUrl} bash install.sh`;
+const controlPlaneLogoUrl =
+  process.env.MUNDUSX_CONTROL_PLANE_LOGO_URL ??
+  "https://github.com/user-attachments/assets/792dd24e-0253-43ef-9b88-d298189ca568";
 
 const sampleCompletedJobs = [
   {
@@ -2239,6 +2242,8 @@ export function page({ health, status, events, credits, error }) {
   const supabase = health?.supabase ?? "unknown";
   const deployFingerprint = health?.deploy_fingerprint ?? null;
   const isHealthy = health?.status === "ok";
+  const activeJobs = Number(snapshot.queued_job_count ?? 0) + Number(snapshot.assigned_job_count ?? 0);
+  const nodeCount = Array.isArray(snapshot.nodes) ? snapshot.nodes.length : 0;
   const title = "NovusX Dashboard";
 
   return `<!doctype html>
@@ -2250,27 +2255,32 @@ export function page({ health, status, events, credits, error }) {
     <title>${title}</title>
     <style>
       :root {
-        color-scheme: light;
-        --bg: #ffffff;
-        --surface: #fbfcff;
-        --surface-2: #f5f7fb;
-        --line: rgba(15, 23, 42, 0.09);
-        --line-strong: rgba(15, 23, 42, 0.14);
-        --text: #0f172a;
-        --muted: #5f6b85;
-        --green: #0f9d58;
-        --orange: #c47f1b;
-        --amber: #d97706;
-        --red: #d14343;
-        --blue: #3452ff;
+        color-scheme: dark;
+        --bg: #080a0f;
+        --surface: #101722;
+        --surface-2: #151f2f;
+        --panel: rgba(12, 18, 28, 0.92);
+        --line: rgba(129, 161, 193, 0.18);
+        --line-strong: rgba(237, 183, 63, 0.34);
+        --text: #f3f7ff;
+        --muted: #9ba9bd;
+        --green: #39d98a;
+        --orange: #f18f3b;
+        --amber: #edb73f;
+        --red: #ff5c63;
+        --blue: #62d3ff;
       }
       * { box-sizing: border-box; }
       body {
         margin: 0;
         min-height: 100vh;
         background:
-          radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 30%),
-          linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
+          linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+          radial-gradient(circle at 20% 0%, rgba(237, 183, 63, 0.18), transparent 34%),
+          radial-gradient(circle at 78% 12%, rgba(98, 211, 255, 0.14), transparent 30%),
+          linear-gradient(135deg, #06080d 0%, #111827 52%, #0a0c12 100%);
+        background-size: 44px 44px, 44px 44px, auto, auto, auto;
         color: var(--text);
         font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
       }
@@ -2280,11 +2290,16 @@ export function page({ health, status, events, credits, error }) {
         padding: 22px 20px 48px;
       }
       .hero {
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.92);
-        border-radius: 22px;
+        border: 1px solid var(--line-strong);
+        background:
+          linear-gradient(135deg, rgba(237, 183, 63, 0.12), transparent 22%),
+          linear-gradient(110deg, rgba(98, 211, 255, 0.09), transparent 44%),
+          var(--panel);
+        border-radius: 8px;
         padding: 24px;
-        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.06);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        overflow: hidden;
+        position: relative;
       }
       .topline {
         display: flex;
@@ -2294,15 +2309,16 @@ export function page({ health, status, events, credits, error }) {
         flex-wrap: wrap;
       }
       h1 {
-        margin: 0;
-        font-size: clamp(40px, 5vw, 64px);
-        line-height: 0.96;
-        letter-spacing: -0.06em;
+        margin: 14px 0 0;
+        font-size: 48px;
+        line-height: 1;
+        letter-spacing: 0;
       }
       .sub {
         margin-top: 12px;
         color: var(--muted);
         line-height: 1.7;
+        max-width: 74ch;
       }
       .statusline {
         display: flex;
@@ -2339,8 +2355,8 @@ export function page({ health, status, events, credits, error }) {
       }
       .card {
         border: 1px solid var(--line);
-        background: var(--surface);
-        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018)), var(--surface);
+        border-radius: 8px;
         padding: 16px;
       }
       .card-label {
@@ -2364,10 +2380,10 @@ export function page({ health, status, events, credits, error }) {
       .section {
         margin-top: 24px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.92);
-        border-radius: 22px;
+        background: rgba(12, 18, 28, 0.9);
+        border-radius: 8px;
         overflow: hidden;
-        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.05);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
       }
       .section-head {
         padding: 16px 20px;
@@ -2423,7 +2439,7 @@ export function page({ health, status, events, credits, error }) {
       }
       .panel {
         border: 1px solid var(--line);
-        border-radius: 16px;
+        border-radius: 8px;
         background: var(--surface);
         padding: 14px 16px;
       }
@@ -2450,7 +2466,7 @@ export function page({ health, status, events, credits, error }) {
       }
       .balance {
         border: 1px solid var(--line);
-        border-radius: 14px;
+        border-radius: 8px;
         background: var(--surface);
         padding: 14px 16px;
       }
@@ -2463,13 +2479,13 @@ export function page({ health, status, events, credits, error }) {
       }
       .event {
         border: 1px solid var(--line);
-        border-radius: 14px;
+        border-radius: 8px;
         background: var(--surface);
         padding: 14px 16px;
       }
       .job-card {
         border: 1px solid var(--line);
-        border-radius: 16px;
+        border-radius: 8px;
         background: var(--surface);
         padding: 16px;
       }
@@ -2502,10 +2518,10 @@ export function page({ health, status, events, credits, error }) {
       }
       .job-plan {
         border: 1px solid var(--line);
-        border-radius: 12px;
+        border-radius: 8px;
         margin-top: 14px;
         padding: 12px 14px;
-        background: rgba(43, 108, 176, 0.06);
+        background: rgba(98, 211, 255, 0.08);
         color: var(--text);
         line-height: 1.5;
       }
@@ -2543,7 +2559,7 @@ export function page({ health, status, events, credits, error }) {
         background: rgba(209, 67, 67, 0.06);
         color: var(--red);
         padding: 14px 16px;
-        border-radius: 14px;
+        border-radius: 8px;
       }
       .links {
         display: flex;
@@ -2558,15 +2574,20 @@ export function page({ health, status, events, credits, error }) {
       .brand {
         display: inline-flex;
         align-items: center;
-        gap: 10px;
+        gap: 12px;
         font-weight: 800;
-        letter-spacing: 0.02em;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
       }
       .brand-mark {
-        width: 14px;
-        height: 14px;
-        border-radius: 4px;
-        background: linear-gradient(135deg, var(--blue), #5a79ff);
+        width: 42px;
+        height: 42px;
+        border-radius: 8px;
+        border: 1px solid rgba(237, 183, 63, 0.42);
+        background: rgba(0, 0, 0, 0.32);
+        object-fit: contain;
+        padding: 4px;
+        box-shadow: 0 0 28px rgba(237, 183, 63, 0.22);
       }
       .badge {
         display: inline-flex;
@@ -2578,7 +2599,51 @@ export function page({ health, status, events, credits, error }) {
         text-transform: uppercase;
         border: 1px solid var(--line);
         color: var(--muted);
-        background: rgba(255, 255, 255, 0.8);
+        background: rgba(255, 255, 255, 0.05);
+      }
+      .command-center {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+        gap: 22px;
+        align-items: center;
+      }
+      .hero-panel {
+        border: 1px solid rgba(237, 183, 63, 0.25);
+        border-radius: 8px;
+        padding: 16px;
+        background:
+          linear-gradient(135deg, rgba(237, 183, 63, 0.16), transparent 58%),
+          rgba(255, 255, 255, 0.04);
+      }
+      .hero-panel-title {
+        color: var(--amber);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .hero-metrics {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }
+      .hero-metric {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: rgba(0, 0, 0, 0.18);
+      }
+      .hero-metric strong {
+        display: block;
+        margin-bottom: 4px;
+        font-size: 24px;
+      }
+      .hero-metric span {
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
       }
       @media (max-width: 1200px) {
         .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2586,10 +2651,12 @@ export function page({ health, status, events, credits, error }) {
         .table .thead,
         .table .row { grid-template-columns: 1.1fr 0.9fr 0.7fr 0.7fr 1fr 1fr 0.7fr; }
         .job-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+        .command-center { grid-template-columns: 1fr; }
       }
       @media (max-width: 820px) {
         .grid { grid-template-columns: 1fr; }
         .m-series-grid { grid-template-columns: 1fr; }
+        h1 { font-size: 40px; }
         .table .thead { display: none; }
         .table .row {
           grid-template-columns: 1fr;
@@ -2597,16 +2664,18 @@ export function page({ health, status, events, credits, error }) {
           padding: 16px 0;
         }
         .job-grid { grid-template-columns: 1fr; }
+        .hero-metrics { grid-template-columns: 1fr; }
       }
     </style>
   </head>
   <body>
     <div class="wrap">
       <div class="hero">
-        <div class="topline">
+        <div class="topline command-center">
           <div>
-            <div class="brand"><span class="brand-mark"></span> NovusX Dashboard</div>
-            <div class="sub">Live operator view for nodes, jobs, storage source, and audit trail.</div>
+            <div class="brand"><img class="brand-mark" alt="NovusX control plane logo" src="${escapeHtml(controlPlaneLogoUrl)}" /> NovusX Command Deck</div>
+            <h1>Control Plane</h1>
+            <div class="sub">High-signal operator view for fleet readiness, routing pressure, policy gates, storage source, and audit trail.</div>
             <div class="statusline">
               ${badge(isHealthy ? "healthy" : "degraded", isHealthy ? "green" : "red")}
               ${badge(`storage: ${storageSource}`, storageSource === "supabase" ? "green" : "amber")}
@@ -2614,13 +2683,21 @@ export function page({ health, status, events, credits, error }) {
               ${deployFingerprint ? badge(`deploy: ${deployFingerprint}`, "neutral") : ""}
             </div>
           </div>
-          <div class="links">
-            <a href="${escapeHtml(appUrl)}/docs" target="_blank" rel="noreferrer">docs</a>
-            <a href="${escapeHtml(appUrl)}/install" target="_blank" rel="noreferrer">install</a>
-            <a href="${escapeHtml(controlPlaneUrl)}" target="_blank" rel="noreferrer">control plane</a>
-            <a href="${escapeHtml(controlPlaneUrl)}/v1/status" target="_blank" rel="noreferrer">status json</a>
-            <a href="${escapeHtml(controlPlaneUrl)}/v1/job-events" target="_blank" rel="noreferrer">job events</a>
-            <a href="${escapeHtml(controlPlaneUrl)}/health" target="_blank" rel="noreferrer">health</a>
+          <div class="hero-panel" aria-label="Control plane command summary">
+            <div class="hero-panel-title">Live command summary</div>
+            <div class="hero-metrics">
+              <div class="hero-metric"><strong>${formatCount(nodeCount)}</strong><span>nodes</span></div>
+              <div class="hero-metric"><strong>${formatCount(activeJobs)}</strong><span>active jobs</span></div>
+              <div class="hero-metric"><strong>${formatCount(snapshot.job_events ?? 0)}</strong><span>events</span></div>
+            </div>
+            <div class="links" style="margin-top: 14px;">
+              <a href="${escapeHtml(appUrl)}/docs" target="_blank" rel="noreferrer">docs</a>
+              <a href="${escapeHtml(appUrl)}/install" target="_blank" rel="noreferrer">install</a>
+              <a href="${escapeHtml(controlPlaneUrl)}" target="_blank" rel="noreferrer">control plane</a>
+              <a href="${escapeHtml(controlPlaneUrl)}/v1/status" target="_blank" rel="noreferrer">status json</a>
+              <a href="${escapeHtml(controlPlaneUrl)}/v1/job-events" target="_blank" rel="noreferrer">job events</a>
+              <a href="${escapeHtml(controlPlaneUrl)}/health" target="_blank" rel="noreferrer">health</a>
+            </div>
           </div>
         </div>
 
