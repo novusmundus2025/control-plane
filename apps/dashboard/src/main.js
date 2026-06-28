@@ -3,7 +3,8 @@ import { pathToFileURL } from "node:url";
 
 const controlPlaneUrl = process.env.MUNDUSX_CONTROL_PLANE_URL ?? "http://127.0.0.1:8787";
 const port = Number(process.env.PORT ?? "3001");
-const operatorToken = process.env.MUNDUSX_OPERATOR_TOKEN?.trim() || "";
+const operatorToken =
+  process.env.MUNDUSX_OPERATOR_TOKEN?.trim() || process.env.OPENGPU_OPERATOR_TOKEN?.trim() || "";
 const appUrl = `http://127.0.0.1:${port}`;
 const installReleaseBaseUrl =
   process.env.MUNDUSX_INSTALL_RELEASE_BASE_URL ?? "http://127.0.0.1:8788/releases/latest/download";

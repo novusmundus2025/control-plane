@@ -25,6 +25,7 @@ See the component READMEs for local development details:
 | `SUPABASE_SERVICE_ROLE_KEY` | **Yes** | Supabase service role key. Find it in Supabase → Settings → API → `service_role`. |
 | `SUPABASE_URL` | No | Supabase project URL (e.g. `https://xxx.supabase.co`). Derived automatically from `DATABASE_URL` if omitted. |
 | `MUNDUSX_OPERATOR_TOKEN` | **Strongly recommended** | Bearer token protecting the dashboard (`/`), status, nodes, jobs, credits, and job-submit endpoints. If unset, those endpoints are publicly accessible with no authentication. |
+| `OPENGPU_OPERATOR_TOKEN` | Deprecated | Legacy alias for `MUNDUSX_OPERATOR_TOKEN`. It still protects operator routes when the canonical variable is absent, but startup logs warn operators to rename it. |
 | `MUNDUSX_AUTH_DISABLED` | Local/UAT only | Set to `true` to deliberately disable operator authentication even when `MUNDUSX_OPERATOR_TOKEN` is present. Never enable this in production. |
 | `MUNDUSX_CONTROL_PLANE_HOST` | No | Override the bind host. Defaults to `0.0.0.0` when `PORT` is set. |
 
@@ -82,7 +83,7 @@ MUNDUSX_OPERATOR_TOKEN=a-strong-random-secret
 | `POST` | `/v1/jobs` | Submit a job |
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat completion (queued, non-streaming) |
 
-Operator auth is enforced when `MUNDUSX_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH_DISABLED` is not enabled. `/health` includes `operator_auth_enforced` and `operator_auth_mode` so local/UAT smoke tests can verify the effective mode before submitting work.
+Operator auth is enforced when `MUNDUSX_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH_DISABLED` is not enabled. The legacy `OPENGPU_OPERATOR_TOKEN` name is accepted only as a deprecated fallback so old deployments fail closed instead of accidentally opening operator routes. `/health` includes `operator_auth_enforced` and `operator_auth_mode` so local/UAT smoke tests can verify the effective mode before submitting work.
 
 ---
 
@@ -92,3 +93,4 @@ Operator auth is enforced when `MUNDUSX_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH
 - **Streaming not supported** — `POST /v1/chat/completions` with `"stream": true` returns `400`.
 - **`operatorAuth: disabled (MUNDUSX_AUTH_DISABLED=true)`** in logs means operator endpoints are deliberately open for local/UAT smoke tests.
 - **`operatorAuth: disabled (MUNDUSX_OPERATOR_TOKEN missing)`** in logs means operator endpoints are open because no token was configured.
+- **`operatorAuth warning: OPENGPU_OPERATOR_TOKEN is deprecated`** in logs means the process is using the old token alias and should be renamed to `MUNDUSX_OPERATOR_TOKEN`.
