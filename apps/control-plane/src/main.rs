@@ -538,6 +538,7 @@ fn control_plane_home(
     let credits_total = snapshot["credits_total"].as_f64().unwrap_or(0.0);
     let queued = snapshot["queued_job_count"].as_u64().unwrap_or(0);
     let assigned = snapshot["assigned_job_count"].as_u64().unwrap_or(0);
+    let active_jobs = queued + assigned;
     let completed = snapshot["completed_job_count"].as_u64().unwrap_or(0);
     let failed = snapshot["failed_job_count"].as_u64().unwrap_or(0);
     let healthy_tone = "green";
@@ -570,27 +571,32 @@ fn control_plane_home(
     <title>NovusX Control Plane</title>
     <style>
       :root {{
-        color-scheme: light;
-        --bg: #ffffff;
-        --surface: #fbfcff;
-        --surface-2: #f5f7fb;
-        --line: rgba(15, 23, 42, 0.09);
-        --line-strong: rgba(15, 23, 42, 0.14);
-        --text: #0f172a;
-        --muted: #5f6b85;
-        --blue: #3452ff;
-        --green: #0f9d58;
-        --orange: #c47f1b;
-        --amber: #d97706;
-        --red: #d14343;
+        color-scheme: dark;
+        --bg: #080a0f;
+        --surface: #101722;
+        --surface-2: #151f2f;
+        --panel: rgba(12, 18, 28, 0.92);
+        --line: rgba(129, 161, 193, 0.18);
+        --line-strong: rgba(237, 183, 63, 0.34);
+        --text: #f3f7ff;
+        --muted: #9ba9bd;
+        --blue: #62d3ff;
+        --green: #39d98a;
+        --orange: #f18f3b;
+        --amber: #edb73f;
+        --red: #ff5c63;
       }}
       * {{ box-sizing: border-box; }}
       body {{
         margin: 0;
         min-height: 100vh;
         background:
-          radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 30%),
-          linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
+          linear-gradient(rgba(255, 255, 255, 0.035) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.028) 1px, transparent 1px),
+          radial-gradient(circle at 20% 0%, rgba(237, 183, 63, 0.18), transparent 34%),
+          radial-gradient(circle at 78% 12%, rgba(98, 211, 255, 0.14), transparent 30%),
+          linear-gradient(135deg, #06080d 0%, #111827 52%, #0a0c12 100%);
+        background-size: 44px 44px, 44px 44px, auto, auto, auto;
         color: var(--text);
         font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
       }}
@@ -600,42 +606,51 @@ fn control_plane_home(
         padding: 22px 20px 48px;
       }}
       .hero {{
-        border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.92);
-        border-radius: 22px;
+        border: 1px solid var(--line-strong);
+        background:
+          linear-gradient(135deg, rgba(237, 183, 63, 0.12), transparent 22%),
+          linear-gradient(110deg, rgba(98, 211, 255, 0.09), transparent 44%),
+          var(--panel);
+        border-radius: 8px;
         padding: 24px;
-        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.06);
+        box-shadow: 0 24px 80px rgba(0, 0, 0, 0.42), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        overflow: hidden;
       }}
       .topline {{
-        display: flex;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 380px);
         align-items: center;
-        justify-content: space-between;
-        gap: 20px;
-        flex-wrap: wrap;
+        gap: 22px;
       }}
       .brand {{
         display: inline-flex;
         align-items: center;
-        gap: 10px;
+        gap: 12px;
         font-weight: 800;
-        letter-spacing: 0.02em;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
       }}
       .brand-mark {{
-        width: 14px;
-        height: 14px;
-        border-radius: 4px;
-        background: linear-gradient(135deg, var(--blue), #5a79ff);
+        width: 42px;
+        height: 42px;
+        border-radius: 8px;
+        border: 1px solid rgba(237, 183, 63, 0.42);
+        background: rgba(0, 0, 0, 0.32);
+        object-fit: contain;
+        padding: 4px;
+        box-shadow: 0 0 28px rgba(237, 183, 63, 0.22);
       }}
       h1 {{
-        margin: 0;
-        font-size: clamp(40px, 5vw, 64px);
-        line-height: 0.96;
-        letter-spacing: -0.06em;
+        margin: 14px 0 0;
+        font-size: 48px;
+        line-height: 1;
+        letter-spacing: 0;
       }}
       .sub {{
         margin-top: 12px;
         color: var(--muted);
         line-height: 1.7;
+        max-width: 74ch;
       }}
       .statusline {{
         display: flex;
@@ -652,6 +667,7 @@ fn control_plane_home(
         letter-spacing: 0.04em;
         text-transform: uppercase;
         border: 1px solid transparent;
+        font-weight: 700;
       }}
       .pill-green {{ background: rgba(15, 157, 88, 0.08); color: var(--green); border-color: rgba(15, 157, 88, 0.16); }}
       .pill-orange {{ background: rgba(196, 127, 27, 0.08); color: var(--orange); border-color: rgba(196, 127, 27, 0.16); }}
@@ -667,8 +683,8 @@ fn control_plane_home(
       }}
       .card {{
         border: 1px solid var(--line);
-        background: var(--surface);
-        border-radius: 18px;
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.045), rgba(255, 255, 255, 0.018)), var(--surface);
+        border-radius: 8px;
         padding: 16px;
       }}
       .card-label {{
@@ -685,10 +701,10 @@ fn control_plane_home(
       .section {{
         margin-top: 24px;
         border: 1px solid var(--line);
-        background: rgba(255, 255, 255, 0.92);
-        border-radius: 22px;
+        background: rgba(12, 18, 28, 0.9);
+        border-radius: 8px;
         overflow: hidden;
-        box-shadow: 0 18px 60px rgba(15, 23, 42, 0.05);
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.28);
       }}
       .section-head {{
         padding: 16px 20px;
@@ -750,7 +766,7 @@ fn control_plane_home(
       }}
       .balance {{
         border: 1px solid var(--line);
-        border-radius: 14px;
+        border-radius: 8px;
         background: var(--surface);
         padding: 14px 16px;
       }}
@@ -763,7 +779,7 @@ fn control_plane_home(
       }}
       .event {{
         border: 1px solid var(--line);
-        border-radius: 14px;
+        border-radius: 8px;
         background: var(--surface);
         padding: 14px 16px;
       }}
@@ -789,7 +805,7 @@ fn control_plane_home(
         background: rgba(209, 67, 67, 0.06);
         color: var(--red);
         padding: 14px 16px;
-        border-radius: 14px;
+        border-radius: 8px;
       }}
       .links {{
         display: flex;
@@ -802,19 +818,60 @@ fn control_plane_home(
       }}
       a:hover {{ text-decoration: underline; }}
       code {{
-        background: rgba(52, 82, 255, 0.06);
-        border: 1px solid rgba(52, 82, 255, 0.1);
+        background: rgba(98, 211, 255, 0.08);
+        border: 1px solid rgba(98, 211, 255, 0.18);
         padding: 2px 6px;
         border-radius: 8px;
         color: var(--text);
       }}
+      .hero-panel {{
+        border: 1px solid rgba(237, 183, 63, 0.25);
+        border-radius: 8px;
+        padding: 16px;
+        background:
+          linear-gradient(135deg, rgba(237, 183, 63, 0.16), transparent 58%),
+          rgba(255, 255, 255, 0.04);
+      }}
+      .hero-panel-title {{
+        color: var(--amber);
+        font-size: 12px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }}
+      .hero-metrics {{
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+        margin-top: 14px;
+      }}
+      .hero-metric {{
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 12px;
+        background: rgba(0, 0, 0, 0.18);
+      }}
+      .hero-metric strong {{
+        display: block;
+        margin-bottom: 4px;
+        font-size: 24px;
+      }}
+      .hero-metric span {{
+        color: var(--muted);
+        font-size: 12px;
+        text-transform: uppercase;
+        letter-spacing: 0.06em;
+      }}
       @media (max-width: 1200px) {{
         .grid {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+        .topline {{ grid-template-columns: 1fr; }}
         .table .thead,
         .table .row {{ grid-template-columns: 1.1fr 0.9fr 0.7fr 0.7fr 1fr 1fr 0.7fr; }}
       }}
       @media (max-width: 820px) {{
         .grid {{ grid-template-columns: 1fr; }}
+        h1 {{ font-size: 40px; }}
+        .hero-metrics {{ grid-template-columns: 1fr; }}
         .table .thead {{ display: none; }}
         .table .row {{
           grid-template-columns: 1fr;
@@ -829,8 +886,9 @@ fn control_plane_home(
       <div class="hero">
         <div class="topline">
             <div>
-            <div class="brand"><span class="brand-mark"></span> NovusX Control Plane</div>
-            <div class="sub">Local operator view for nodes, jobs, storage source, and audit trail.</div>
+            <div class="brand"><img class="brand-mark" alt="NovusX control plane logo" src="https://github.com/user-attachments/assets/792dd24e-0253-43ef-9b88-d298189ca568" /> NovusX Command Deck</div>
+            <h1>Control Plane</h1>
+            <div class="sub">High-signal operator view for fleet readiness, routing pressure, policy gates, storage source, and audit trail.</div>
             <div class="statusline">
               <span class="pill pill-{healthy_tone}">healthy</span>
               <span class="pill pill-{storage_tone}">storage: {storage_source}</span>
@@ -838,12 +896,20 @@ fn control_plane_home(
               {deploy_badge}
             </div>
           </div>
-          <div class="links">
-            <a href="/health">health</a>
-            <a href="/v1/status">status json</a>
-            <a href="/v1/nodes">nodes json</a>
-            <a href="/v1/jobs">jobs json</a>
-            <a href="/v1/credits">credits json</a>
+          <div class="hero-panel" aria-label="Control plane command summary">
+            <div class="hero-panel-title">Live command summary</div>
+            <div class="hero-metrics">
+              <div class="hero-metric"><strong>{nodes}</strong><span>nodes</span></div>
+              <div class="hero-metric"><strong>{active_jobs}</strong><span>active jobs</span></div>
+              <div class="hero-metric"><strong>{job_events}</strong><span>events</span></div>
+            </div>
+            <div class="links" style="margin-top: 14px;">
+              <a href="/health">health</a>
+              <a href="/v1/status">status json</a>
+              <a href="/v1/nodes">nodes json</a>
+              <a href="/v1/jobs">jobs json</a>
+              <a href="/v1/credits">credits json</a>
+            </div>
           </div>
         </div>
 
@@ -883,6 +949,7 @@ fn control_plane_home(
   </body>
 </html>"#,
         node_rows = render_nodes(state),
+        active_jobs = active_jobs,
         storage_source = escape_html(storage_source.as_str()),
         deploy_badge = deploy_badge
     )
@@ -2019,10 +2086,11 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_disabled_flag_enabled, control_plane_bind_addr_from_env, deploy_fingerprint_from_env,
-        job_async_payload, operator_auth_mode_from_env, operator_auth_startup_config_error,
-        operator_auth_token_from_env, parse_request, read_http_request, requires_operator_auth,
-        status_snapshot_with_deploy_fingerprint, HttpRequestReadError, OperatorAuthMode,
+        auth_disabled_flag_enabled, control_plane_bind_addr_from_env, control_plane_home,
+        deploy_fingerprint_from_env, job_async_payload, operator_auth_mode_from_env,
+        operator_auth_startup_config_error, operator_auth_token_from_env, parse_request,
+        read_http_request, requires_operator_auth, status_snapshot_with_deploy_fingerprint,
+        HttpRequestReadError, OperatorAuthMode, StorageSource, SupabaseSyncStatus,
         AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, LEGACY_OPERATOR_TOKEN_ENV,
         MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
@@ -2116,6 +2184,41 @@ mod tests {
 
         assert_eq!(snapshot["deploy_fingerprint"], "abcdef1234567890");
         assert_eq!(snapshot["storage_source"], "supabase");
+    }
+
+    #[test]
+    fn home_page_renders_command_deck_shell() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "Summarize operator state".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                stream: false,
+                model: Some("HuggingFaceTB/SmolLM2-135M-Instruct".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "123".to_string(),
+        );
+
+        let html = control_plane_home(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+        );
+
+        assert!(html.contains("NovusX Command Deck"));
+        assert!(html.contains("Control Plane"));
+        assert!(html.contains("NovusX control plane logo"));
+        assert!(html.contains("792dd24e-0253-43ef-9b88-d298189ca568"));
+        assert!(html.contains("Live command summary"));
+        assert!(html.contains("<strong>1</strong><span>active jobs</span>"));
+        assert!(html.contains("color-scheme: dark"));
     }
 
     #[test]
