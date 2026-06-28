@@ -636,6 +636,12 @@ pub struct WorkerHealthReport {
     pub model_path: Option<String>,
     pub llama_cli_available: bool,
     pub blas_device_available: bool,
+    #[serde(default)]
+    pub cuda_device_available: bool,
+    #[serde(default)]
+    pub cuda_driver_available: bool,
+    #[serde(default)]
+    pub cuda_device_name: Option<String>,
     pub power_source: String,
     pub on_battery: bool,
     pub battery_percent: Option<u8>,
@@ -815,6 +821,9 @@ mod tests {
             model_path: Some("/tmp/models/demo.gguf".to_string()),
             llama_cli_available: true,
             blas_device_available: true,
+            cuda_device_available: false,
+            cuda_driver_available: false,
+            cuda_device_name: None,
             power_source: "AC Power".to_string(),
             on_battery: false,
             battery_percent: Some(90),
