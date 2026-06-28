@@ -47,6 +47,8 @@ enum OperatorAuthMode {
 
 const OPERATOR_TOKEN_ENV: &str = "MUNDUSX_OPERATOR_TOKEN";
 const LEGACY_OPERATOR_TOKEN_ENV: &str = "OPENGPU_OPERATOR_TOKEN";
+const AUTH_DISABLED_ENV: &str = "MUNDUSX_AUTH_DISABLED";
+const CONTROL_PLANE_ENVIRONMENT_ENV: &str = "MUNDUSX_ENVIRONMENT";
 
 impl OperatorAuthMode {
     fn as_str(self) -> &'static str {
@@ -1244,9 +1246,49 @@ fn operator_auth_mode_from_env(
 
 fn operator_auth_mode() -> OperatorAuthMode {
     operator_auth_mode_from_env(
-        std::env::var("MUNDUSX_AUTH_DISABLED").ok().as_deref(),
+        std::env::var(AUTH_DISABLED_ENV).ok().as_deref(),
         std::env::var(OPERATOR_TOKEN_ENV).ok().as_deref(),
         std::env::var(LEGACY_OPERATOR_TOKEN_ENV).ok().as_deref(),
+    )
+}
+
+fn control_plane_environment_from_env(value: Option<&str>) -> String {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("local")
+        .to_ascii_lowercase()
+}
+
+fn auth_disabled_allowed_in_environment(environment: &str) -> bool {
+    matches!(
+        environment,
+        "local" | "dev" | "development" | "test" | "uat"
+    )
+}
+
+fn operator_auth_startup_config_error(
+    auth_disabled: Option<&str>,
+    environment: Option<&str>,
+) -> Option<String> {
+    if !auth_disabled_flag_enabled(auth_disabled) {
+        return None;
+    }
+
+    let environment = control_plane_environment_from_env(environment);
+    if auth_disabled_allowed_in_environment(&environment) {
+        return None;
+    }
+
+    Some(format!(
+        "{AUTH_DISABLED_ENV}=true is only allowed when {CONTROL_PLANE_ENVIRONMENT_ENV} is local, dev, development, test, or uat; current environment is {environment}"
+    ))
+}
+
+fn operator_auth_startup_error() -> Option<String> {
+    operator_auth_startup_config_error(
+        std::env::var(AUTH_DISABLED_ENV).ok().as_deref(),
+        std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
     )
 }
 
@@ -1370,6 +1412,9 @@ fn handle_connection(
             let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
             let deploy_fingerprint = deploy_fingerprint();
             let auth_mode = operator_auth_mode();
+            let environment = control_plane_environment_from_env(
+                std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
+            );
             json_response(
                 "200 OK",
                 serde_json::json!({
@@ -1378,6 +1423,7 @@ fn handle_connection(
                     "supabase": sync_snapshot.summary(),
                     "supabase_sync": sync_snapshot,
                     "deploy_fingerprint": deploy_fingerprint,
+                    "environment": environment,
                     "operator_auth_enforced": auth_mode.enforced(),
                     "operator_auth_mode": auth_mode.as_str(),
                     "snapshot": snapshot,
@@ -1926,7 +1972,17 @@ fn main() {
             Err(error) => eprintln!("migration status unavailable: {error}"),
         }
     }
+    if let Some(error) = operator_auth_startup_error() {
+        eprintln!("operatorAuth error: {error}");
+        std::process::exit(1);
+    }
     println!("operatorAuth: {}", operator_auth_mode().log_label());
+    println!(
+        "environment: {}",
+        control_plane_environment_from_env(
+            std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref()
+        )
+    );
     if let Some(warning) = legacy_operator_token_warning() {
         eprintln!("operatorAuth warning: {warning}");
     }
@@ -1964,10 +2020,11 @@ fn main() {
 mod tests {
     use super::{
         auth_disabled_flag_enabled, control_plane_bind_addr_from_env, deploy_fingerprint_from_env,
-        job_async_payload, operator_auth_mode_from_env, operator_auth_token_from_env,
-        parse_request, read_http_request, requires_operator_auth,
+        job_async_payload, operator_auth_mode_from_env, operator_auth_startup_config_error,
+        operator_auth_token_from_env, parse_request, read_http_request, requires_operator_auth,
         status_snapshot_with_deploy_fingerprint, HttpRequestReadError, OperatorAuthMode,
-        LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
+        AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, LEGACY_OPERATOR_TOKEN_ENV,
+        MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
     use crate::contracts::{Backend, JobRequest, RuntimeMode};
     use crate::state::ControlPlaneState;
@@ -2133,6 +2190,28 @@ mod tests {
         assert_eq!(mode, OperatorAuthMode::MissingTokenDisabled);
         assert!(!mode.enforced());
         assert_eq!(mode.as_str(), "missing-token-disabled");
+    }
+
+    #[test]
+    fn auth_disabled_is_rejected_for_production_environment() {
+        let error = operator_auth_startup_config_error(Some("true"), Some("production"))
+            .expect("production should reject auth-disabled mode");
+
+        assert!(error.contains(AUTH_DISABLED_ENV));
+        assert!(error.contains(CONTROL_PLANE_ENVIRONMENT_ENV));
+        assert!(error.contains("production"));
+    }
+
+    #[test]
+    fn auth_disabled_is_allowed_for_local_and_uat() {
+        assert_eq!(
+            operator_auth_startup_config_error(Some("true"), Some("local")),
+            None
+        );
+        assert_eq!(
+            operator_auth_startup_config_error(Some("yes"), Some("uat")),
+            None
+        );
     }
 
     #[test]
