@@ -26,7 +26,8 @@ See the component READMEs for local development details:
 | `SUPABASE_URL` | No | Supabase project URL (e.g. `https://xxx.supabase.co`). Derived automatically from `DATABASE_URL` if omitted. |
 | `MUNDUSX_OPERATOR_TOKEN` | **Strongly recommended** | Bearer token protecting the dashboard (`/`), status, nodes, jobs, credits, and job-submit endpoints. If unset, those endpoints are publicly accessible with no authentication. |
 | `OPENGPU_OPERATOR_TOKEN` | Deprecated | Legacy alias for `MUNDUSX_OPERATOR_TOKEN`. It still protects operator routes when the canonical variable is absent, but startup logs warn operators to rename it. |
-| `MUNDUSX_AUTH_DISABLED` | Local/UAT only | Set to `true` to deliberately disable operator authentication even when `MUNDUSX_OPERATOR_TOKEN` is present. Never enable this in production. |
+| `MUNDUSX_ENVIRONMENT` | **Yes in shared deployments** | Environment classification for auth guardrails. Use `local`, `dev`, `development`, `test`, `uat`, or `production`. Defaults to `local` when unset for local development. |
+| `MUNDUSX_AUTH_DISABLED` | Local/UAT only | Set to `true`, `1`, `yes`, or `on` to deliberately disable operator authentication even when `MUNDUSX_OPERATOR_TOKEN` is present. Startup rejects this flag unless `MUNDUSX_ENVIRONMENT` is `local`, `dev`, `development`, `test`, or `uat`. |
 | `MUNDUSX_CONTROL_PLANE_HOST` | No | Override the bind host. Defaults to `0.0.0.0` when `PORT` is set. |
 
 ### Local `.env`
@@ -39,6 +40,7 @@ DATABASE_URL=postgresql://postgres.your-ref:password@aws-0-eu-central-1.pooler.s
 SUPABASE_SERVICE_ROLE_KEY=your-service-role-key
 SUPABASE_URL=https://your-ref.supabase.co
 MUNDUSX_OPERATOR_TOKEN=a-strong-random-secret
+MUNDUSX_ENVIRONMENT=local
 # Local/UAT smoke tests only:
 # MUNDUSX_AUTH_DISABLED=true
 ```
@@ -69,7 +71,9 @@ MUNDUSX_OPERATOR_TOKEN=a-strong-random-secret
 | `GET` | `/v1/jobs/next?node_id=...` | Claim next available job |
 | `POST` | `/v1/jobs/complete` | Mark a job completed or failed |
 
-### Operator endpoints (require `Authorization: Bearer <MUNDUSX_OPERATOR_TOKEN>` when auth is enforced)
+### Operator endpoints
+
+These endpoints require `Authorization: Bearer <MUNDUSX_OPERATOR_TOKEN>` when operator auth is enforced. Auth is enforced when `MUNDUSX_OPERATOR_TOKEN` or the deprecated `OPENGPU_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH_DISABLED` is not enabled. `MUNDUSX_AUTH_DISABLED` is rejected at startup outside local/dev/test/UAT environments.
 
 | Method | Path | Description |
 |---|---|---|
@@ -83,7 +87,7 @@ MUNDUSX_OPERATOR_TOKEN=a-strong-random-secret
 | `POST` | `/v1/jobs` | Submit a job |
 | `POST` | `/v1/chat/completions` | OpenAI-compatible chat completion (queued, non-streaming) |
 
-Operator auth is enforced when `MUNDUSX_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH_DISABLED` is not enabled. The legacy `OPENGPU_OPERATOR_TOKEN` name is accepted only as a deprecated fallback so old deployments fail closed instead of accidentally opening operator routes. `/health` includes `operator_auth_enforced` and `operator_auth_mode` so local/UAT smoke tests can verify the effective mode before submitting work.
+Operator auth is enforced when `MUNDUSX_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH_DISABLED` is not enabled. The legacy `OPENGPU_OPERATOR_TOKEN` name is accepted only as a deprecated fallback so old deployments fail closed instead of accidentally opening operator routes. `/health` includes `environment`, `operator_auth_enforced`, and `operator_auth_mode` so local/UAT smoke tests can verify the effective mode before submitting work.
 
 ---
 
@@ -91,6 +95,6 @@ Operator auth is enforced when `MUNDUSX_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH
 
 - **No `GET /v1/jobs/:id`** — after submitting a job or chat completion you get a `job_id` back, but there is no endpoint yet to poll individual job status or retrieve the result.
 - **Streaming not supported** — `POST /v1/chat/completions` with `"stream": true` returns `400`.
-- **`operatorAuth: disabled (MUNDUSX_AUTH_DISABLED=true)`** in logs means operator endpoints are deliberately open for local/UAT smoke tests.
+- **`operatorAuth: disabled (MUNDUSX_AUTH_DISABLED=true)`** in logs means operator endpoints are deliberately open for local/UAT smoke tests. Startup rejects this setting when `MUNDUSX_ENVIRONMENT` is `production` or another non-local environment.
 - **`operatorAuth: disabled (MUNDUSX_OPERATOR_TOKEN missing)`** in logs means operator endpoints are open because no token was configured.
 - **`operatorAuth warning: OPENGPU_OPERATOR_TOKEN is deprecated`** in logs means the process is using the old token alias and should be renamed to `MUNDUSX_OPERATOR_TOKEN`.
