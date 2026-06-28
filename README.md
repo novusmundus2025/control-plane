@@ -14,6 +14,8 @@ See the component READMEs for local development details:
 - `apps/control-plane/README.md`
 - `apps/dashboard/README.md`
 
+For the complete cross-repo setup path from local control-plane startup to CLI/node-agent registration, job submission, dashboard verification, and active release-channel follow-ups, see `docs/operator-howto.md`.
+
 ---
 
 ## Environment variables
