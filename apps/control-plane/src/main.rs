@@ -535,6 +535,229 @@ fn render_nodes(state: &ControlPlaneState) -> String {
     html
 }
 
+#[derive(Clone, Copy)]
+enum OperatorPage {
+    Nodes,
+    Jobs,
+    Credits,
+    Registry,
+    Settings,
+}
+
+impl OperatorPage {
+    fn from_path(path: &str) -> Option<Self> {
+        match path {
+            "/nodes" => Some(Self::Nodes),
+            "/jobs" => Some(Self::Jobs),
+            "/credits" => Some(Self::Credits),
+            "/registry" => Some(Self::Registry),
+            "/settings" => Some(Self::Settings),
+            _ => None,
+        }
+    }
+
+    fn title(self) -> &'static str {
+        match self {
+            Self::Nodes => "Nodes",
+            Self::Jobs => "Jobs",
+            Self::Credits => "Credits",
+            Self::Registry => "Registry & Trust",
+            Self::Settings => "Operator Settings",
+        }
+    }
+
+    fn path(self) -> &'static str {
+        match self {
+            Self::Nodes => "/nodes",
+            Self::Jobs => "/jobs",
+            Self::Credits => "/credits",
+            Self::Registry => "/registry",
+            Self::Settings => "/settings",
+        }
+    }
+}
+
+fn operator_nav_item(page: OperatorPage, current: OperatorPage) -> String {
+    let active = if page.path() == current.path() {
+        " active"
+    } else {
+        ""
+    };
+    format!(
+        r#"<a class="nav-item{active}" href="{}">{}</a>"#,
+        page.path(),
+        page.title()
+    )
+}
+
+fn control_plane_operator_page(
+    state: &ControlPlaneState,
+    storage_source: StorageSource,
+    sync_status: &SupabaseSyncStatus,
+    page: OperatorPage,
+) -> String {
+    let snapshot = state.snapshot(storage_source.as_str());
+    let nodes = snapshot["online_count"].as_u64().unwrap_or(0);
+    let trusted = snapshot["trusted_count"].as_u64().unwrap_or(0);
+    let paused = snapshot["paused_count"].as_u64().unwrap_or(0);
+    let policy_blocked = snapshot["policy_blocked_count"].as_u64().unwrap_or(0);
+    let queued = snapshot["queued_job_count"].as_u64().unwrap_or(0);
+    let assigned = snapshot["assigned_job_count"].as_u64().unwrap_or(0);
+    let completed = snapshot["completed_job_count"].as_u64().unwrap_or(0);
+    let failed = snapshot["failed_job_count"].as_u64().unwrap_or(0);
+    let credits_total = snapshot["credits_total"].as_f64().unwrap_or(0.0);
+    let credits_ledger = snapshot["credits_ledger"].as_u64().unwrap_or(0);
+    let supabase = sync_status.summary();
+    let deploy_fingerprint = deploy_fingerprint().unwrap_or_else(|| "unavailable".to_string());
+    let body = match page {
+        OperatorPage::Nodes => format!(
+            r#"<section class="toolbar" aria-label="Node fleet controls">
+              <input aria-label="Search nodes" placeholder="Search node id, host, model, backend" />
+              <select aria-label="Filter node state"><option>All states</option><option>Online</option><option>Trusted</option><option>Paused</option><option>Policy blocked</option></select>
+              <select aria-label="Sort nodes"><option>Sort by last heartbeat</option><option>Sort by assigned jobs</option><option>Sort by credits</option><option>Sort by trust</option></select>
+              <a class="button" href="/v1/nodes">Nodes JSON</a>
+            </section>
+            <section class="grid four">
+              <div class="metric"><span>Online</span><strong>{nodes}</strong></div>
+              <div class="metric"><span>Trusted</span><strong>{trusted}</strong></div>
+              <div class="metric"><span>Paused</span><strong>{paused}</strong></div>
+              <div class="metric"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
+            </section>
+            <section class="panel">
+              <h2>Fleet Browser</h2>
+              <p class="meta">Large fleets should be controlled here with search, filters, sorting, and batched operator actions. The overview topology stays summarized so hundreds of nodes do not become visual noise.</p>
+              {}
+            </section>"#,
+            render_nodes(state)
+        ),
+        OperatorPage::Jobs => format!(
+            r#"<section class="grid four">
+              <div class="metric"><span>Queued</span><strong>{queued}</strong></div>
+              <div class="metric"><span>Assigned</span><strong>{assigned}</strong></div>
+              <div class="metric"><span>Completed</span><strong>{completed}</strong></div>
+              <div class="metric"><span>Failed</span><strong>{failed}</strong></div>
+            </section>
+            <section class="panel">
+              <h2>Job Queue</h2>
+              <p class="meta">Operator job review belongs on this page with status filters, node/model/runtime facets, and safe retry or cancel controls when those actions are enabled.</p>
+              <a class="button" href="/v1/jobs">Jobs JSON</a>
+              <a class="button" href="/v1/job-events">Job Events JSON</a>
+            </section>"#
+        ),
+        OperatorPage::Credits => format!(
+            r#"<section class="grid two">
+              <div class="metric"><span>Total credits</span><strong>{credits_total:.2}</strong></div>
+              <div class="metric"><span>Ledger entries</span><strong>{credits_ledger}</strong></div>
+            </section>
+            <section class="panel">
+              <h2>Credits Ledger</h2>
+              <p class="meta">Credit reconciliation should use ledger history, node-level totals, and exportable raw data. Keep the raw endpoint available for automation.</p>
+              <a class="button" href="/v1/credits">Credits JSON</a>
+            </section>"#
+        ),
+        OperatorPage::Registry => format!(
+            r#"<section class="grid four">
+              <div class="metric"><span>Registered</span><strong>{nodes}</strong></div>
+              <div class="metric"><span>Trusted</span><strong>{trusted}</strong></div>
+              <div class="metric"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
+              <div class="metric"><span>Storage</span><strong>{}</strong></div>
+            </section>
+            <section class="panel">
+              <h2>Registry & Trust</h2>
+              <p class="meta">Signed registry snapshots, identity trust paths, and policy decisions should be reviewed here. Raw node data remains available for contract checks.</p>
+              <a class="button" href="/v1/nodes">Registry JSON</a>
+              <a class="button" href="/v1/status">Status JSON</a>
+            </section>"#,
+            escape_html(storage_source.as_str())
+        ),
+        OperatorPage::Settings => format!(
+            r#"<section class="grid two">
+              <div class="metric"><span>Supabase sync</span><strong>{}</strong></div>
+              <div class="metric"><span>Deploy</span><strong>{}</strong></div>
+            </section>
+            <section class="panel">
+              <h2>Operator Controls</h2>
+              <p class="meta">Authentication state, runtime caps, policy overrides, fallback approvals, and environment health should be managed here. Mutating controls stay behind operator-authenticated API calls.</p>
+              <a class="button" href="/health">Health JSON</a>
+              <a class="button" href="/v1/status">Status JSON</a>
+            </section>"#,
+            escape_html(&supabase),
+            escape_html(&deploy_fingerprint)
+        ),
+    };
+    let nav = [
+        OperatorPage::Nodes,
+        OperatorPage::Jobs,
+        OperatorPage::Credits,
+        OperatorPage::Registry,
+        OperatorPage::Settings,
+    ]
+    .into_iter()
+    .map(|nav_page| operator_nav_item(nav_page, page))
+    .collect::<String>();
+
+    format!(
+        r#"<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title} - NovusX</title>
+    <style>
+      :root {{ color-scheme: dark; --bg:#020711; --surface:#06101d; --line:rgba(73,159,255,.22); --line-strong:rgba(45,164,255,.48); --text:#f6fbff; --muted:#9baac0; --blue:#33a8ff; }}
+      * {{ box-sizing: border-box; }}
+      body {{ margin:0; min-height:100vh; background:linear-gradient(135deg,#020711,#050b16 52%,#01040b); color:var(--text); font-family:Inter,"Segoe UI",sans-serif; }}
+      a {{ color:inherit; text-decoration:none; }}
+      .shell {{ display:grid; grid-template-columns:250px minmax(0,1fr); min-height:100vh; }}
+      .sidebar {{ border-right:1px solid var(--line); background:rgba(2,9,18,.96); padding:26px 16px; display:flex; flex-direction:column; gap:22px; }}
+      .brand {{ display:flex; align-items:center; gap:12px; font-family:Georgia,"Times New Roman",serif; font-size:22px; }}
+      .brand-mark {{ width:54px; height:54px; border-radius:50%; object-fit:contain; }}
+      .nav {{ display:grid; gap:8px; }}
+      .nav-item {{ min-height:46px; display:flex; align-items:center; border:1px solid transparent; border-radius:7px; padding:0 13px; color:#b9c5d6; }}
+      .nav-item:hover,.nav-item.active {{ color:#ecf8ff; border-color:var(--line-strong); background:rgba(51,168,255,.1); }}
+      main {{ padding:32px; }}
+      .topbar {{ display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:22px; }}
+      h1 {{ margin:0; font-size:34px; letter-spacing:0; }}
+      h2 {{ margin:0 0 10px; font-size:18px; }}
+      .meta {{ color:var(--muted); line-height:1.55; }}
+      .button {{ min-height:38px; display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:8px; padding:0 12px; background:rgba(4,12,23,.72); margin-right:8px; margin-top:10px; }}
+      .toolbar {{ display:grid; grid-template-columns:minmax(260px,1fr) 190px 210px auto; gap:12px; margin-bottom:18px; }}
+      input,select {{ min-height:42px; border:1px solid var(--line); border-radius:8px; background:#030b14; color:var(--text); padding:0 12px; }}
+      .grid {{ display:grid; gap:14px; margin-bottom:18px; }}
+      .grid.four {{ grid-template-columns:repeat(4,minmax(0,1fr)); }}
+      .grid.two {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
+      .metric,.panel {{ border:1px solid var(--line); background:linear-gradient(180deg,rgba(8,23,41,.92),rgba(3,10,19,.92)); border-radius:8px; padding:18px; }}
+      .metric span {{ color:var(--muted); display:block; font-size:13px; text-transform:uppercase; }}
+      .metric strong {{ display:block; margin-top:7px; font-size:28px; }}
+      .table {{ display:grid; overflow-x:auto; }}
+      .thead,.row {{ display:grid; grid-template-columns:1.1fr 1fr .8fr .9fr .8fr 1fr .8fr .9fr; gap:10px; min-width:980px; padding:12px 0; border-bottom:1px solid var(--line); }}
+      .thead {{ color:var(--muted); text-transform:uppercase; font-size:12px; }}
+      .empty {{ border:1px dashed var(--line); border-radius:8px; padding:24px; color:var(--muted); }}
+      .api-box {{ margin-top:auto; border:1px solid var(--line); border-radius:8px; padding:14px; color:var(--muted); }}
+      @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; }} .toolbar,.grid.four,.grid.two {{ grid-template-columns:1fr; }} main {{ padding:22px; }} }}
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="sidebar">
+        <a class="brand" href="/"><img class="brand-mark" alt="NovusX logo" src="{logo_path}" /> <span>NovusX</span></a>
+        <nav class="nav"><a class="nav-item" href="/">Overview</a>{nav}</nav>
+        <div class="api-box"><strong>Developer APIs</strong><br/><a href="/health">Health JSON</a><br/><a href="/v1/status">Status JSON</a><br/><a href="/v1/nodes">Nodes JSON</a><br/><a href="/v1/jobs">Jobs JSON</a></div>
+      </aside>
+      <main>
+        <div class="topbar"><div><h1>{title}</h1><div class="meta">Operator-facing control page. Raw contracts stay grouped under Developer APIs.</div></div><a class="button" href="/">Overview</a></div>
+        {body}
+      </main>
+    </div>
+  </body>
+</html>"#,
+        title = page.title(),
+        logo_path = CONTROL_PLANE_LOGO_PATH,
+        nav = nav,
+        body = body
+    )
+}
+
 fn control_plane_home(
     state: &ControlPlaneState,
     storage_source: StorageSource,
@@ -1302,11 +1525,11 @@ fn control_plane_home(
         <a class="brand motion-glow" href="/" aria-label="NovusX control plane home"><img class="brand-mark" alt="NovusX control plane logo" src="{logo_path}" /> <span>NovusX</span></a>
         <nav class="nav">
           <a class="nav-item motion-lift active" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>Overview</a>
-          <a class="nav-item motion-lift" href="/v1/nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>Nodes</a>
-          <a class="nav-item motion-lift" href="/v1/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>Jobs</a>
-          <a class="nav-item motion-lift" href="/v1/credits"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>Credits</a>
-          <a class="nav-item motion-lift" href="/health"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>Policies</a>
-          <a class="nav-item motion-lift" href="/v1/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>Status</a>
+          <a class="nav-item motion-lift" href="/nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>Nodes</a>
+          <a class="nav-item motion-lift" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>Jobs</a>
+          <a class="nav-item motion-lift" href="/credits"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>Credits</a>
+          <a class="nav-item motion-lift" href="/registry"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>Registry</a>
+          <a class="nav-item motion-lift" href="/settings"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>Settings</a>
         </nav>
         <div class="sidebar-bottom">
           <div class="side-card">
@@ -1398,7 +1621,7 @@ fn control_plane_home(
               <div class="info-box">
                 <div style="display:flex;gap:12px;align-items:flex-start;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg><div>Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.<br/>Current startup storage source: <code>{storage_source}</code><br/>Supabase sync is <code>{supabase}</code></div></div>
               </div>
-              <div class="api-strip links"><a class="api-link" href="/health">health</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes">nodes json</a><a class="api-link" href="/v1/jobs">jobs json</a><a class="api-link" href="/v1/credits">credits json</a></div>
+              <div class="api-strip links" aria-label="Developer APIs"><a class="api-link" href="/health">health json</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes">nodes json</a><a class="api-link" href="/v1/jobs">jobs json</a><a class="api-link" href="/v1/credits">credits json</a></div>
             </div>
           </div>
         </section>
@@ -1947,6 +2170,15 @@ fn handle_connection(
             html_response(
                 "200 OK",
                 &control_plane_home(&snapshot, storage_source, &sync_snapshot),
+            )
+        }
+        ("GET", path) if OperatorPage::from_path(path).is_some() => {
+            let page = OperatorPage::from_path(path).expect("operator page");
+            let snapshot = state.lock().expect("state lock");
+            let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
+            html_response(
+                "200 OK",
+                &control_plane_operator_page(&snapshot, storage_source, &sync_snapshot, page),
             )
         }
         ("GET", "/health") => {
@@ -2697,6 +2929,12 @@ mod tests {
         assert!(html.contains("Network Topology"));
         assert!(html.contains("Credits Overview"));
         assert!(html.contains("Node Details"));
+        assert!(html.contains(r#"href="/nodes""#));
+        assert!(html.contains(r#"href="/jobs""#));
+        assert!(html.contains(r#"href="/credits""#));
+        assert!(html.contains(r#"href="/registry""#));
+        assert!(html.contains(r#"href="/settings""#));
+        assert!(html.contains(r#"aria-label="Developer APIs""#));
         assert!(html.contains("Signed registry snapshot"));
         assert!(html.contains("Nodes JSON"));
         assert!(html.contains("Assigned jobs"));
@@ -2709,6 +2947,25 @@ mod tests {
         assert!(html.contains("logo-signal s1"));
         assert!(!html.contains("Search nodes..."));
         assert!(!html.contains("Control Plane</div></div></div>"));
+    }
+
+    #[test]
+    fn operator_pages_separate_html_navigation_from_raw_api_links() {
+        let state = ControlPlaneState::default();
+        let html = crate::control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            crate::OperatorPage::Nodes,
+        );
+
+        assert!(html.contains("Fleet Browser"));
+        assert!(html.contains("Search node id, host, model, backend"));
+        assert!(html.contains("Sort by last heartbeat"));
+        assert!(html.contains("Large fleets should be controlled here"));
+        assert!(html.contains("Developer APIs"));
+        assert!(html.contains(r#"href="/nodes""#));
+        assert!(html.contains(r#"href="/v1/nodes""#));
     }
 
     #[test]
