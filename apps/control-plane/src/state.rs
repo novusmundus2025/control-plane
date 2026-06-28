@@ -1555,7 +1555,7 @@ pub fn fallback_decision_for_policy(
 
 pub fn evaluate_policy(
     agent_state: AgentState,
-    power_source: &str,
+    _power_source: &str,
     on_battery: bool,
     battery_percent: Option<u8>,
     worker_health: &WorkerHealthReport,
@@ -1567,12 +1567,6 @@ pub fn evaluate_policy(
         AgentState::Starting => reasons.push("agent is still starting".to_string()),
         AgentState::Paused => reasons.push("agent is paused".to_string()),
         AgentState::Stopped => reasons.push("agent is stopped".to_string()),
-    }
-
-    let normalized_power_source = power_source.trim();
-    if normalized_power_source.is_empty() || normalized_power_source.eq_ignore_ascii_case("unknown")
-    {
-        reasons.push("power source is unknown".to_string());
     }
 
     if on_battery {
@@ -1633,9 +1627,14 @@ pub fn evaluate_policy(
     }
 
     let runtime_mode = worker_health.runtime_mode.trim();
-    if runtime_mode.is_empty() {
+    let supports_local_execution = worker_health
+        .supported_runtime_modes
+        .iter()
+        .any(|mode| matches!(mode, RuntimeMode::Local | RuntimeMode::Interactive));
+    if runtime_mode.is_empty() && !supports_local_execution {
         reasons.push("runtime mode is missing".to_string());
-    } else if !runtime_mode.eq_ignore_ascii_case("local")
+    } else if !supports_local_execution
+        && !runtime_mode.eq_ignore_ascii_case("local")
         && !runtime_mode.eq_ignore_ascii_case("interactive")
     {
         reasons.push(format!(
@@ -2392,6 +2391,7 @@ mod tests {
         heartbeat.worker_health.healthy = false;
         heartbeat.worker_health.llama_cli_available = false;
         heartbeat.worker_health.runtime_mode = "batch".to_string();
+        heartbeat.worker_health.supported_runtime_modes = Vec::new();
         state.heartbeat(heartbeat, "1".to_string());
         state.submit_job(
             JobRequest {
@@ -2679,6 +2679,23 @@ mod tests {
     }
 
     #[test]
+    fn allows_healthy_node_when_power_source_is_unknown_but_not_on_battery() {
+        let mut state = ready_state();
+        let mut heartbeat = ready_heartbeat("node-1", "2");
+        heartbeat.power_source = "unknown".to_string();
+        heartbeat.worker_health.power_source = "unknown".to_string();
+        heartbeat.on_battery = false;
+        heartbeat.worker_health.on_battery = false;
+        heartbeat.battery_percent = None;
+        heartbeat.worker_health.battery_percent = None;
+
+        let node = state.heartbeat(heartbeat, "2".to_string());
+
+        assert!(node.policy_allowed);
+        assert_eq!(node.policy_reason, None);
+    }
+
+    #[test]
     fn blocks_nodes_that_are_not_ready_for_local_execution() {
         let mut state = ControlPlaneState::default();
         state.register(AgentRegistration {
@@ -2720,7 +2737,7 @@ mod tests {
                     battery_percent: Some(90),
                     runtime_ready: true,
                     runtime_mode: "batch".to_string(),
-                    supported_runtime_modes: vec![RuntimeMode::Local],
+                    supported_runtime_modes: Vec::new(),
                     streaming_supported: false,
                     checked_at: "2".to_string(),
                     notes: vec![],
@@ -2986,6 +3003,39 @@ mod tests {
         assert_eq!(updated.state, AgentState::Ready);
         assert!(updated.policy_allowed);
         assert_eq!(updated.policy_reason, None);
+    }
+
+    #[test]
+    fn claims_local_job_when_worker_reports_blas_runtime_with_local_support() {
+        let mut state = ready_state();
+        let node = state.nodes.get_mut("node-1").expect("node exists");
+        let worker_health = node.worker_health.as_mut().expect("worker health");
+        worker_health.runtime_mode = "blas".to_string();
+        worker_health.supported_runtime_modes = vec![RuntimeMode::Local];
+
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "hello world".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                stream: false,
+                model: Some("demo".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        let claim = state.claim_job("node-1", "3".to_string());
+        assert_eq!(claim.job.map(|job| job.job_id), Some("job-1".to_string()));
+        assert_eq!(
+            state.jobs.get("job-1").map(|job| job.status),
+            Some(JobStatus::Assigned)
+        );
     }
 
     #[test]
