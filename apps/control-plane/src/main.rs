@@ -980,68 +980,79 @@ fn control_plane_home(
         transform: translate(-50%, -50%);
         width: 154px;
         height: 128px;
-        clip-path: polygon(50% 0, 94% 24%, 94% 76%, 50% 100%, 6% 76%, 6% 24%);
-        border: 1px solid rgba(94, 194, 255, 0.9);
-        background: radial-gradient(circle, rgba(50, 161, 255, 0.36), rgba(3, 12, 22, 0.96) 66%);
         display: grid;
         place-items: center;
         text-align: center;
-        overflow: hidden;
+        overflow: visible;
         isolation: isolate;
-        box-shadow: 0 0 36px rgba(38, 163, 255, 0.58), inset 0 0 26px rgba(51, 168, 255, 0.28);
-        transition: transform var(--motion-medium), box-shadow var(--motion-medium);
+        transition: transform var(--motion-medium);
+      }}
+      .topology-center::before,
+      .topology-center::after {{
+        content: "";
+        position: absolute;
+        clip-path: polygon(50% 0, 94% 24%, 94% 76%, 50% 100%, 6% 76%, 6% 24%);
+        pointer-events: none;
+      }}
+      .topology-center::before {{
+        inset: 0;
+        z-index: 2;
+        background: linear-gradient(145deg, rgba(126, 220, 255, 0.98), rgba(44, 147, 255, 0.76) 42%, rgba(128, 86, 255, 0.72));
+        filter: drop-shadow(0 0 16px rgba(45, 174, 255, 0.54));
+      }}
+      .topology-center::after {{
+        inset: 2px;
+        z-index: 3;
+        background: radial-gradient(circle at 50% 45%, rgba(50, 161, 255, 0.42), rgba(5, 20, 36, 0.98) 66%);
+        box-shadow: inset 0 0 24px rgba(51, 168, 255, 0.28);
       }}
       .topology-center:hover {{
         transform: translate(-50%, -50%) scale(1.03);
-        box-shadow: 0 0 48px rgba(38, 163, 255, 0.78), inset 0 0 34px rgba(51, 168, 255, 0.34);
+      }}
+      .topology-center:hover::before {{
+        filter: drop-shadow(0 0 24px rgba(45, 174, 255, 0.78));
       }}
       .center-logo {{
         position: relative;
-        z-index: 2;
+        z-index: 5;
         width: 76px;
         height: 76px;
         border-radius: 50%;
         object-fit: contain;
         filter: drop-shadow(0 0 11px rgba(55, 169, 255, 0.48));
       }}
-      .logo-sphere {{
+      .logo-signal {{
         position: absolute;
+        inset: 0;
         z-index: 1;
-        width: 11px;
-        height: 11px;
-        border-radius: 50%;
+        clip-path: polygon(50% 0, 94% 24%, 94% 76%, 50% 100%, 6% 76%, 6% 24%);
         pointer-events: none;
-        opacity: 0.52;
-        background: radial-gradient(circle at 32% 28%, rgba(255, 255, 255, 0.95), rgba(74, 186, 255, 0.82) 36%, rgba(117, 89, 255, 0.34) 66%, rgba(117, 89, 255, 0) 72%);
-        box-shadow: 0 0 14px rgba(55, 178, 255, 0.62), 0 0 24px rgba(117, 89, 255, 0.26);
-        animation: logo-sphere-pulse 3.8s ease-in-out infinite;
+        background: linear-gradient(145deg, rgba(90, 198, 255, 0.34), rgba(122, 91, 255, 0.16));
+        box-shadow: 0 0 0 1px rgba(91, 194, 255, 0.38), 0 0 28px rgba(41, 163, 255, 0.28);
+        opacity: 0;
+        transform: scale(0.92);
+        animation: logo-signal-wave 4.4s ease-out infinite;
       }}
-      .logo-sphere.s1 {{
-        left: 34%;
-        top: 32%;
+      .logo-signal.s2 {{
+        animation-delay: 1.45s;
       }}
-      .logo-sphere.s2 {{
-        right: 32%;
-        top: 46%;
-        width: 8px;
-        height: 8px;
-        animation-delay: -1.2s;
+      .logo-signal.s3 {{
+        animation-delay: 2.9s;
       }}
-      .logo-sphere.s3 {{
-        left: 48%;
-        bottom: 24%;
-        width: 7px;
-        height: 7px;
-        animation-delay: -2.4s;
-      }}
-      @keyframes logo-sphere-pulse {{
-        0%, 100% {{
-          transform: translate3d(0, 0, 0) scale(0.78);
-          opacity: 0.28;
+      @keyframes logo-signal-wave {{
+        0% {{
+          transform: scale(0.92);
+          opacity: 0;
         }}
-        48% {{
-          transform: translate3d(2px, -3px, 0) scale(1.08);
-          opacity: 0.74;
+        12% {{
+          opacity: 0.48;
+        }}
+        72% {{
+          opacity: 0.12;
+        }}
+        100% {{
+          transform: scale(1.72);
+          opacity: 0;
         }}
       }}
       .topo-node {{
@@ -1278,8 +1289,8 @@ fn control_plane_home(
         .topo-node:hover .node-hex {{
           transform: none;
         }}
-        .logo-sphere {{
-          opacity: 0.36;
+        .logo-signal {{
+          opacity: 0.18;
           transform: none;
         }}
       }}
@@ -1359,7 +1370,7 @@ fn control_plane_home(
               <div class="topology">
                 <div class="orbit"></div><div class="grid-ring"></div>
                 <div class="radial"></div><div class="radial r2"></div><div class="radial r3"></div><div class="radial r4"></div><div class="radial r5"></div><div class="radial r6"></div><div class="radial r7"></div><div class="radial r8"></div>
-                <div class="topology-center motion-glow"><span class="logo-sphere s1" aria-hidden="true"></span><span class="logo-sphere s2" aria-hidden="true"></span><span class="logo-sphere s3" aria-hidden="true"></span><img class="center-logo" alt="NovusX topology logo" src="{logo_path}" /></div>
+                <div class="topology-center motion-glow"><span class="logo-signal s1" aria-hidden="true"></span><span class="logo-signal s2" aria-hidden="true"></span><span class="logo-signal s3" aria-hidden="true"></span><img class="center-logo" alt="NovusX topology logo" src="{logo_path}" /></div>
                 <div class="topo-node" style="left:50%;top:12%;"><div class="node-hex"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="5" rx="1"/><rect x="5" y="14" width="14" height="5" rx="1"/><path d="M8 7.5h5"/><path d="M8 16.5h5"/></svg></div>No nodes</div>
                 <div class="topo-node" style="left:70%;top:22%;"><div class="node-hex"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="5" rx="1"/><rect x="5" y="14" width="14" height="5" rx="1"/></svg></div>No nodes</div>
                 <div class="topo-node" style="left:85%;top:50%;"><div class="node-hex"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="5" y="5" width="14" height="5" rx="1"/><rect x="5" y="14" width="14" height="5" rx="1"/></svg></div>No nodes</div>
@@ -2694,8 +2705,8 @@ mod tests {
         assert!(html.contains("motion-glow"));
         assert!(html.contains("prefers-reduced-motion: reduce"));
         assert!(html.contains("node-hex::before"));
-        assert!(html.contains("logo-sphere-pulse"));
-        assert!(html.contains("logo-sphere s1"));
+        assert!(html.contains("logo-signal-wave"));
+        assert!(html.contains("logo-signal s1"));
         assert!(!html.contains("Search nodes..."));
         assert!(!html.contains("Control Plane</div></div></div>"));
     }
