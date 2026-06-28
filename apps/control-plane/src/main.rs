@@ -45,6 +45,9 @@ enum OperatorAuthMode {
     MissingTokenDisabled,
 }
 
+const OPERATOR_TOKEN_ENV: &str = "MUNDUSX_OPERATOR_TOKEN";
+const LEGACY_OPERATOR_TOKEN_ENV: &str = "OPENGPU_OPERATOR_TOKEN";
+
 impl OperatorAuthMode {
     fn as_str(self) -> &'static str {
         match self {
@@ -1195,10 +1198,21 @@ fn authorize_device_request(
 }
 
 fn operator_auth_token() -> Option<String> {
-    std::env::var("MUNDUSX_OPERATOR_TOKEN")
-        .ok()
-        .map(|token| token.trim().to_string())
+    operator_auth_token_from_env(
+        std::env::var(OPERATOR_TOKEN_ENV).ok().as_deref(),
+        std::env::var(LEGACY_OPERATOR_TOKEN_ENV).ok().as_deref(),
+    )
+}
+
+fn operator_auth_token_from_env(
+    operator_token: Option<&str>,
+    legacy_operator_token: Option<&str>,
+) -> Option<String> {
+    operator_token
+        .or(legacy_operator_token)
+        .map(str::trim)
         .filter(|token| !token.is_empty())
+        .map(str::to_string)
 }
 
 fn auth_disabled_flag_enabled(value: Option<&str>) -> bool {
@@ -1216,15 +1230,13 @@ fn auth_disabled_flag_enabled(value: Option<&str>) -> bool {
 fn operator_auth_mode_from_env(
     auth_disabled: Option<&str>,
     operator_token: Option<&str>,
+    legacy_operator_token: Option<&str>,
 ) -> OperatorAuthMode {
     if auth_disabled_flag_enabled(auth_disabled) {
         return OperatorAuthMode::ExplicitlyDisabled;
     }
 
-    match operator_token
-        .map(str::trim)
-        .filter(|token| !token.is_empty())
-    {
+    match operator_auth_token_from_env(operator_token, legacy_operator_token) {
         Some(_) => OperatorAuthMode::Enforced,
         None => OperatorAuthMode::MissingTokenDisabled,
     }
@@ -1233,8 +1245,28 @@ fn operator_auth_mode_from_env(
 fn operator_auth_mode() -> OperatorAuthMode {
     operator_auth_mode_from_env(
         std::env::var("MUNDUSX_AUTH_DISABLED").ok().as_deref(),
-        std::env::var("MUNDUSX_OPERATOR_TOKEN").ok().as_deref(),
+        std::env::var(OPERATOR_TOKEN_ENV).ok().as_deref(),
+        std::env::var(LEGACY_OPERATOR_TOKEN_ENV).ok().as_deref(),
     )
+}
+
+fn legacy_operator_token_warning() -> Option<String> {
+    let canonical_present = std::env::var(OPERATOR_TOKEN_ENV)
+        .ok()
+        .map(|token| !token.trim().is_empty())
+        .unwrap_or(false);
+    let legacy_present = std::env::var(LEGACY_OPERATOR_TOKEN_ENV)
+        .ok()
+        .map(|token| !token.trim().is_empty())
+        .unwrap_or(false);
+
+    if legacy_present && !canonical_present {
+        Some(format!(
+            "{LEGACY_OPERATOR_TOKEN_ENV} is deprecated; set {OPERATOR_TOKEN_ENV} instead. Using the legacy token for this process."
+        ))
+    } else {
+        None
+    }
 }
 
 fn authorize_operator_request(
@@ -1895,6 +1927,9 @@ fn main() {
         }
     }
     println!("operatorAuth: {}", operator_auth_mode().log_label());
+    if let Some(warning) = legacy_operator_token_warning() {
+        eprintln!("operatorAuth warning: {warning}");
+    }
     println!("home: GET /");
     println!("health: GET /health");
     println!("status: GET /v1/status");
@@ -1929,9 +1964,10 @@ fn main() {
 mod tests {
     use super::{
         auth_disabled_flag_enabled, control_plane_bind_addr_from_env, deploy_fingerprint_from_env,
-        job_async_payload, operator_auth_mode_from_env, parse_request, read_http_request,
-        requires_operator_auth, status_snapshot_with_deploy_fingerprint, HttpRequestReadError,
-        OperatorAuthMode, MAX_BODY_BYTES,
+        job_async_payload, operator_auth_mode_from_env, operator_auth_token_from_env,
+        parse_request, read_http_request, requires_operator_auth,
+        status_snapshot_with_deploy_fingerprint, HttpRequestReadError, OperatorAuthMode,
+        LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
     use crate::contracts::{Backend, JobRequest, RuntimeMode};
     use crate::state::ControlPlaneState;
@@ -2041,7 +2077,7 @@ mod tests {
 
     #[test]
     fn operator_auth_mode_honors_explicit_disable_over_token() {
-        let mode = operator_auth_mode_from_env(Some("true"), Some("secret"));
+        let mode = operator_auth_mode_from_env(Some("true"), Some("secret"), None);
 
         assert_eq!(mode, OperatorAuthMode::ExplicitlyDisabled);
         assert!(!mode.enforced());
@@ -2050,7 +2086,7 @@ mod tests {
 
     #[test]
     fn operator_auth_mode_enforces_when_token_is_present() {
-        let mode = operator_auth_mode_from_env(None, Some("secret"));
+        let mode = operator_auth_mode_from_env(None, Some("secret"), None);
 
         assert_eq!(mode, OperatorAuthMode::Enforced);
         assert!(mode.enforced());
@@ -2058,8 +2094,41 @@ mod tests {
     }
 
     #[test]
+    fn operator_auth_mode_enforces_when_legacy_token_is_present() {
+        let mode = operator_auth_mode_from_env(None, None, Some("legacy-secret"));
+
+        assert_eq!(mode, OperatorAuthMode::Enforced);
+        assert!(mode.enforced());
+    }
+
+    #[test]
+    fn operator_auth_token_prefers_canonical_over_legacy() {
+        let token =
+            operator_auth_token_from_env(Some(" canonical "), Some(" legacy ")).expect("token");
+
+        assert_eq!(token, "canonical");
+    }
+
+    #[test]
+    fn operator_auth_token_falls_back_to_legacy() {
+        let token =
+            operator_auth_token_from_env(None, Some(" legacy-secret ")).expect("legacy token");
+
+        assert_eq!(token, "legacy-secret");
+    }
+
+    #[test]
+    fn readme_documents_operator_auth_env_names() {
+        let readme = include_str!("../../../README.md");
+
+        assert!(readme.contains(OPERATOR_TOKEN_ENV));
+        assert!(readme.contains(LEGACY_OPERATOR_TOKEN_ENV));
+        assert!(readme.contains("Deprecated"));
+    }
+
+    #[test]
     fn operator_auth_mode_reports_missing_token_disable() {
-        let mode = operator_auth_mode_from_env(None, None);
+        let mode = operator_auth_mode_from_env(None, None, None);
 
         assert_eq!(mode, OperatorAuthMode::MissingTokenDisabled);
         assert!(!mode.enforced());
