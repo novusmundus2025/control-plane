@@ -1621,7 +1621,7 @@ fn control_plane_home(
               <div class="info-box">
                 <div style="display:flex;gap:12px;align-items:flex-start;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg><div>Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.<br/>Current startup storage source: <code>{storage_source}</code><br/>Supabase sync is <code>{supabase}</code></div></div>
               </div>
-              <div class="api-strip links" aria-label="Developer APIs"><a class="api-link" href="/health">health json</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes">nodes json</a><a class="api-link" href="/v1/jobs">jobs json</a><a class="api-link" href="/v1/credits">credits json</a></div>
+              <div class="api-strip links" aria-label="Developer APIs"><span class="meta">Developer APIs</span><a class="api-link" href="/health">health json</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes">nodes json</a><a class="api-link" href="/v1/jobs">jobs json</a><a class="api-link" href="/v1/credits">credits json</a></div>
             </div>
           </div>
         </section>
@@ -2935,6 +2935,7 @@ mod tests {
         assert!(html.contains(r#"href="/registry""#));
         assert!(html.contains(r#"href="/settings""#));
         assert!(html.contains(r#"aria-label="Developer APIs""#));
+        assert!(html.contains(">Developer APIs</span>"));
         assert!(html.contains("Signed registry snapshot"));
         assert!(html.contains("Nodes JSON"));
         assert!(html.contains("Assigned jobs"));
