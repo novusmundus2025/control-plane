@@ -265,6 +265,7 @@ impl ControlPlaneState {
         };
 
         self.nodes.insert(registration.node_id, record.clone());
+        self.reevaluate_queued_jobs();
         record
     }
 
@@ -305,8 +306,12 @@ impl ControlPlaneState {
             error: None,
         };
 
-        self.jobs.insert(job_id, record.clone());
-        record
+        self.jobs.insert(job_id.clone(), record);
+        self.reevaluate_queued_jobs();
+        self.jobs
+            .get(&job_id)
+            .cloned()
+            .expect("submitted job is stored")
     }
 
     pub fn set_operator_contribution_percent(
@@ -328,7 +333,9 @@ impl ControlPlaneState {
         node.operator_contribution_percent = contribution_percent;
         node.contribution_percent =
             contribution_percent.unwrap_or(node.reported_contribution_percent);
-        Ok(node.clone())
+        let updated = node.clone();
+        self.reevaluate_queued_jobs();
+        Ok(updated)
     }
 
     pub fn set_node_policy_override(
@@ -348,7 +355,9 @@ impl ControlPlaneState {
             updated_at: value.updated_at,
         });
         Self::apply_policy_override(node);
-        Ok(node.clone())
+        let updated = node.clone();
+        self.reevaluate_queued_jobs();
+        Ok(updated)
     }
 
     fn node_backend_matches(
@@ -427,6 +436,22 @@ impl ControlPlaneState {
 
         if job.stream && !worker_health.streaming_supported {
             return false;
+        }
+
+        if let Some(required_model) = job
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let model_matches = worker_health
+                .model_name
+                .as_deref()
+                .map(|available| available.eq_ignore_ascii_case(required_model))
+                .unwrap_or(false);
+            if !model_matches {
+                return false;
+            }
         }
 
         true
@@ -521,6 +546,64 @@ impl ControlPlaneState {
         }
     }
 
+    fn best_scheduler_decision_for_job(&self, job: &JobRecord) -> SchedulerDecision {
+        let ready_m_exists = self.nodes.values().any(|candidate| {
+            candidate.state == AgentState::Ready
+                && candidate.policy_allowed
+                && candidate.backend == Backend::M
+        });
+        let ready_cuda_exists = self.nodes.values().any(|candidate| {
+            candidate.state == AgentState::Ready
+                && candidate.policy_allowed
+                && candidate.backend == Backend::Cuda
+        });
+
+        self.nodes
+            .values()
+            .filter(|node| {
+                node.state == AgentState::Ready
+                    && node.policy_allowed
+                    && Self::node_backend_matches(
+                        job,
+                        node.backend,
+                        ready_m_exists,
+                        ready_cuda_exists,
+                    )
+                    && Self::node_can_run_job(node, job)
+            })
+            .map(|node| Self::scheduler_score(node, job))
+            .max_by(|left, right| {
+                left.score
+                    .cmp(&right.score)
+                    .then_with(|| right.node_id.cmp(&left.node_id))
+            })
+            .unwrap_or_else(|| SchedulerDecision {
+                node_id: String::new(),
+                score: 0,
+                reasons: vec![format!(
+                    "queued: no compatible ready node available for backend {:?}, runtime {:?}, model {}",
+                    job.preferred_backend,
+                    job.runtime_mode,
+                    job.model.as_deref().unwrap_or("any")
+                )],
+            })
+    }
+
+    fn reevaluate_queued_jobs(&mut self) {
+        let updates: Vec<(String, SchedulerDecision)> = self
+            .jobs
+            .iter()
+            .filter(|(_, job)| job.status == JobStatus::Queued)
+            .map(|(job_id, job)| (job_id.clone(), self.best_scheduler_decision_for_job(job)))
+            .collect();
+
+        for (job_id, scheduler_decision) in updates {
+            if let Some(job) = self.jobs.get_mut(&job_id) {
+                job.scheduler_decision = Some(scheduler_decision);
+            }
+        }
+    }
+
     pub fn claim_job(&mut self, node_id: &str, claimed_at: String) -> JobClaimResponse {
         let Some(node) = self.nodes.get(node_id) else {
             return JobClaimResponse { job: None };
@@ -592,9 +675,11 @@ impl ControlPlaneState {
                 Self::apply_policy_override(node);
             }
 
-            return JobClaimResponse {
+            let claimed = JobClaimResponse {
                 job: Some(job.clone()),
             };
+            self.reevaluate_queued_jobs();
+            return claimed;
         }
 
         JobClaimResponse { job: None }
@@ -631,6 +716,7 @@ impl ControlPlaneState {
             Self::apply_policy_override(node);
         }
 
+        self.reevaluate_queued_jobs();
         Some(updated_job)
     }
 
@@ -740,6 +826,7 @@ impl ControlPlaneState {
         Self::apply_policy_override(&mut record);
 
         self.nodes.insert(heartbeat.node_id, record.clone());
+        self.reevaluate_queued_jobs();
         record
     }
 }
@@ -1890,7 +1977,157 @@ mod tests {
             record.scheduling_requirements.language.as_deref(),
             Some("rust")
         );
-        assert_eq!(record.scheduler_decision, None);
+        let decision = record.scheduler_decision.expect("scheduler decision");
+        assert_eq!(decision.node_id, "");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("no compatible ready node")));
+    }
+
+    #[test]
+    fn queued_job_records_no_capacity_before_nodes_arrive() {
+        let mut state = ControlPlaneState::default();
+        let record = state.submit_job(classification_request("hello world"), "1".to_string());
+
+        assert_eq!(record.status, JobStatus::Queued);
+        let decision = record.scheduler_decision.expect("scheduler decision");
+        assert_eq!(decision.node_id, "");
+        assert_eq!(decision.score, 0);
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("no compatible ready node")));
+    }
+
+    #[test]
+    fn incompatible_node_arrival_keeps_queued_job_without_resubmission() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "hello world".to_string(),
+                preferred_backend: Backend::M,
+                runtime_mode: RuntimeMode::Local,
+                stream: false,
+                model: Some("demo".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "1".to_string(),
+        );
+        state.register(AgentRegistration {
+            node_id: "node-cuda".to_string(),
+            public_key_fingerprint: "fingerprint-cuda".to_string(),
+            public_key_hex: "hex-cuda".to_string(),
+            hostname: "host-cuda".to_string(),
+            identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
+            backend: Backend::Cuda,
+            contribution_percent: 50,
+            agent_version: "0.1.0".to_string(),
+        });
+        let mut heartbeat = ready_heartbeat("node-cuda", "2");
+        heartbeat.backend = Backend::Cuda;
+        heartbeat.worker_health.model_name = Some("other".to_string());
+        state.heartbeat(heartbeat, "2".to_string());
+
+        let job = state.jobs.get("job-1").expect("job");
+        assert_eq!(job.status, JobStatus::Queued);
+        let decision = job.scheduler_decision.as_ref().expect("scheduler decision");
+        assert_eq!(decision.node_id, "");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("no compatible ready node")));
+    }
+
+    #[test]
+    fn compatible_node_arrival_scores_queued_job_without_resubmission() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(classification_request("hello world"), "1".to_string());
+
+        state.register(m_series_registration("node-1"));
+        state.heartbeat(ready_heartbeat("node-1", "2"), "2".to_string());
+
+        let job = state.jobs.get("job-1").expect("job");
+        assert_eq!(job.status, JobStatus::Queued);
+        let decision = job.scheduler_decision.as_ref().expect("scheduler decision");
+        assert_eq!(decision.node_id, "node-1");
+        assert!(decision.score > 0);
+
+        let claim = state.claim_job("node-1", "3".to_string());
+        assert_eq!(
+            claim.job.map(|job| (job.job_id, job.status)),
+            Some(("job-1".to_string(), JobStatus::Assigned))
+        );
+    }
+
+    #[test]
+    fn paused_policy_node_does_not_satisfy_queued_job() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(classification_request("hello world"), "1".to_string());
+        state.register(m_series_registration("node-1"));
+        state.heartbeat(ready_heartbeat("node-1", "2"), "2".to_string());
+        state
+            .set_node_policy_override(
+                "node-1",
+                Some(NodePolicyOverrideInput {
+                    target: NodePolicyOverrideTarget::Paused,
+                    reason: "maintenance".to_string(),
+                    actor: "operator".to_string(),
+                    updated_at: "3".to_string(),
+                }),
+            )
+            .expect("policy override");
+
+        let job = state.jobs.get("job-1").expect("job");
+        assert_eq!(job.status, JobStatus::Queued);
+        assert_eq!(
+            job.scheduler_decision
+                .as_ref()
+                .map(|decision| decision.node_id.as_str()),
+            Some("")
+        );
+        assert!(state.claim_job("node-1", "4".to_string()).job.is_none());
+    }
+
+    #[test]
+    fn runtime_or_model_mismatch_keeps_job_queued() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "hello world".to_string(),
+                preferred_backend: Backend::M,
+                runtime_mode: RuntimeMode::Interactive,
+                stream: false,
+                model: Some("missing-model".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "1".to_string(),
+        );
+        state.register(m_series_registration("node-1"));
+        let mut heartbeat = ready_heartbeat("node-1", "2");
+        heartbeat.worker_health.supported_runtime_modes = vec![RuntimeMode::Local];
+        heartbeat.worker_health.model_name = Some("demo".to_string());
+        state.heartbeat(heartbeat, "2".to_string());
+
+        let job = state.jobs.get("job-1").expect("job");
+        assert_eq!(job.status, JobStatus::Queued);
+        assert_eq!(
+            job.scheduler_decision
+                .as_ref()
+                .map(|decision| decision.node_id.as_str()),
+            Some("")
+        );
+        assert!(state.claim_job("node-1", "3".to_string()).job.is_none());
     }
 
     #[test]
