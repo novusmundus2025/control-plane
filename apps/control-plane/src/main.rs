@@ -927,12 +927,14 @@ fn control_plane_operator_page(
       .node-health {{ display:grid; gap:4px; overflow-wrap:anywhere; word-break:break-word; }}
       .pill {{ display:inline-flex; align-items:center; max-width:100%; min-height:22px; border-radius:4px; padding:2px 6px; overflow-wrap:anywhere; }}
       .empty {{ border:1px dashed var(--line); border-radius:8px; padding:24px; color:var(--muted); }}
-      .sidebar-bottom {{ margin-top:auto; display:grid; gap:16px; }}
-      .side-card {{ border:1px solid var(--line); border-radius:8px; background:rgba(6,18,32,.78); padding:16px; }}
+      .sidebar-bottom {{ margin-top:auto; display:grid; gap:16px; min-width:0; }}
+      .side-card {{ min-width:0; max-width:100%; border:1px solid var(--line); border-radius:8px; background:rgba(6,18,32,.78); padding:16px; overflow:hidden; }}
       .status-dot {{ width:9px; height:9px; border-radius:50%; background:#25d7ff; box-shadow:0 0 16px rgba(37,215,255,.7); }}
       .operator {{ display:flex; align-items:center; gap:12px; }}
-      .avatar {{ width:42px; height:42px; border-radius:12px; background:linear-gradient(135deg,#14539e,#071f3c); display:grid; place-items:center; font-weight:700; }}
-      .foot {{ color:var(--muted); font-size:12px; margin-top:22px; }}
+      .operator > div:last-child {{ min-width:0; }}
+      .operator .meta {{ overflow-wrap:anywhere; word-break:break-word; line-height:1.35; }}
+      .avatar {{ width:42px; height:42px; flex:0 0 42px; border-radius:12px; background:linear-gradient(135deg,#14539e,#071f3c); display:grid; place-items:center; font-weight:700; }}
+      .foot {{ color:var(--muted); font-size:12px; margin-top:22px; overflow-wrap:anywhere; }}
       @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two {{ grid-template-columns:1fr; }} main {{ padding:22px; }} }}
       @media (prefers-reduced-motion: reduce) {{ *,*::before,*::after {{ animation-duration:.01ms!important; animation-iteration-count:1!important; scroll-behavior:auto!important; transition-duration:.01ms!important; }} .motion-lift:hover,.motion-lift:focus-visible,.motion-glow:hover,.motion-glow:focus-visible {{ transform:none; }} }}
     </style>
@@ -1150,12 +1152,16 @@ fn control_plane_home(
         margin-top: auto;
         display: grid;
         gap: 16px;
+        min-width: 0;
       }}
       .side-card {{
+        min-width: 0;
+        max-width: 100%;
         border: 1px solid var(--line);
         border-radius: 8px;
         background: rgba(6, 18, 32, 0.78);
         padding: 16px;
+        overflow: hidden;
       }}
       .status-dot {{
         width: 9px;
@@ -1169,9 +1175,18 @@ fn control_plane_home(
         align-items: center;
         gap: 12px;
       }}
+      .operator > div:last-child {{
+        min-width: 0;
+      }}
+      .operator .meta {{
+        overflow-wrap: anywhere;
+        word-break: break-word;
+        line-height: 1.35;
+      }}
       .avatar {{
         width: 42px;
         height: 42px;
+        flex: 0 0 42px;
         border-radius: 12px;
         background: linear-gradient(135deg, #14539e, #071f3c);
         display: grid;
@@ -1677,6 +1692,7 @@ fn control_plane_home(
         color: var(--muted);
         font-size: 12px;
         margin-top: 22px;
+        overflow-wrap: anywhere;
       }}
       @media (max-width: 1200px) {{
         .app-shell {{ grid-template-columns: 1fr; }}
@@ -3804,6 +3820,7 @@ mod tests {
         assert!(html.contains(r#"<svg class="icon" viewBox="0 0 24 24""#));
         assert!(html.contains("min-height:54px"));
         assert!(html.contains("sidebar-bottom"));
+        assert!(html.contains("overflow-wrap:anywhere"));
         assert!(html.contains("MundusX Control Plane<br/>v1.0.0"));
         assert!(html.contains(r#"value="node-new""#));
         assert!(html.contains(r#"name="state""#));
