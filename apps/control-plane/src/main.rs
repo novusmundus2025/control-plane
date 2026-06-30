@@ -727,6 +727,26 @@ impl OperatorPage {
             Self::Settings => "/settings",
         }
     }
+
+    fn nav_label(self) -> &'static str {
+        match self {
+            Self::Nodes => "Nodes",
+            Self::Jobs => "Jobs",
+            Self::Credits => "Credits",
+            Self::Registry => "Registry",
+            Self::Settings => "Settings",
+        }
+    }
+
+    fn nav_icon(self) -> &'static str {
+        match self {
+            Self::Nodes => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>"#,
+            Self::Jobs => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>"#,
+            Self::Credits => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>"#,
+            Self::Registry => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>"#,
+            Self::Settings => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>"#,
+        }
+    }
 }
 
 fn operator_nav_item(page: OperatorPage, current: OperatorPage) -> String {
@@ -736,9 +756,10 @@ fn operator_nav_item(page: OperatorPage, current: OperatorPage) -> String {
         ""
     };
     format!(
-        r#"<a class="nav-item{active}" href="{}">{}</a>"#,
+        r#"<a class="nav-item motion-lift{active}" href="{}">{}{}</a>"#,
         page.path(),
-        page.title()
+        page.nav_icon(),
+        page.nav_label()
     )
 }
 
@@ -871,8 +892,10 @@ fn control_plane_operator_page(
       .brand {{ display:flex; align-items:center; gap:12px; font-family:Georgia,"Times New Roman",serif; font-size:22px; }}
       .brand-mark {{ width:54px; height:54px; border-radius:50%; object-fit:contain; }}
       .nav {{ display:grid; gap:8px; }}
-      .nav-item {{ min-height:46px; display:flex; align-items:center; border:1px solid transparent; border-radius:7px; padding:0 13px; color:#b9c5d6; }}
-      .nav-item:hover,.nav-item.active {{ color:#ecf8ff; border-color:var(--line-strong); background:rgba(51,168,255,.1); }}
+      .icon {{ width:20px; height:20px; flex:0 0 auto; color:#2ea8ff; }}
+      .nav-item {{ min-height:46px; display:flex; align-items:center; gap:12px; border:1px solid transparent; border-radius:7px; padding:0 13px; color:#b9c5d6; font-weight:500; }}
+      .nav-item:hover,.nav-item:focus-visible,.nav-item.active {{ color:#ecf8ff; border-color:var(--line-strong); background:rgba(51,168,255,.1); outline:none; }}
+      .nav-item.active {{ box-shadow:inset 0 0 0 1px rgba(51,168,255,.08); }}
       main {{ padding:32px; }}
       .topbar {{ display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:22px; }}
       h1 {{ margin:0; font-size:34px; letter-spacing:0; }}
@@ -910,7 +933,7 @@ fn control_plane_operator_page(
     <div class="shell">
       <aside class="sidebar">
         <a class="brand" href="/"><img class="brand-mark" alt="MundusX logo" src="{logo_path}" /> <span>MundusX</span></a>
-        <nav class="nav"><a class="nav-item" href="/">Overview</a>{nav}</nav>
+        <nav class="nav"><a class="nav-item motion-lift" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6"/></svg>Overview</a>{nav}</nav>
         <div class="api-box"><strong>Developer APIs</strong><br/><a href="/health">Health JSON</a><br/><a href="/v1/status">Status JSON</a><br/><a href="/v1/nodes?page=1&page_size=25">Nodes JSON</a><br/><a href="/v1/jobs?page=1&page_size=25">Jobs JSON</a></div>
       </aside>
       <main>
@@ -3748,6 +3771,8 @@ mod tests {
 
         assert!(html.contains("Fleet Browser"));
         assert!(html.contains("Search node id, host, model, backend"));
+        assert!(html.contains(r#"class="nav-item motion-lift active" href="/nodes""#));
+        assert!(html.contains(r#"<svg class="icon" viewBox="0 0 24 24""#));
         assert!(html.contains(r#"value="node-new""#));
         assert!(html.contains(r#"name="state""#));
         assert!(html.contains(r#"value="ready" selected"#));
