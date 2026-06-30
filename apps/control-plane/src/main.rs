@@ -53,6 +53,18 @@ const CONTROL_PLANE_LOGO_PATH: &str = "/assets/mundusx-logo.png";
 const CONTROL_PLANE_LOGO_PNG: &[u8] = include_bytes!("../assets/mundusx-logo.png");
 const DEFAULT_PAGE_SIZE: usize = 25;
 const MAX_PAGE_SIZE: usize = 100;
+const FILTER_QUERY_KEYS: &[&str] = &[
+    "search",
+    "start",
+    "end",
+    "state",
+    "status",
+    "backend",
+    "node_id",
+    "job_id",
+    "event_type",
+    "entry_type",
+];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 struct Pagination {
@@ -541,6 +553,10 @@ fn render_topology_slots(state: &ControlPlaneState) -> String {
 
 fn render_nodes(state: &ControlPlaneState) -> String {
     let nodes: Vec<_> = state.nodes.values().cloned().collect();
+    render_node_records(nodes)
+}
+
+fn render_node_records(nodes: Vec<NodeRecord>) -> String {
     if nodes.is_empty() {
         return r#"<div class="empty">No nodes have registered yet.</div>"#.to_string();
     }
@@ -731,7 +747,7 @@ fn control_plane_operator_page(
     storage_source: StorageSource,
     sync_status: &SupabaseSyncStatus,
     page: OperatorPage,
-    nodes_search: Option<&str>,
+    query: Option<&str>,
 ) -> String {
     let snapshot = state.snapshot(storage_source.as_str());
     let nodes = snapshot["online_count"].as_u64().unwrap_or(0);
@@ -746,15 +762,15 @@ fn control_plane_operator_page(
     let credits_ledger = snapshot["credits_ledger"].as_u64().unwrap_or(0);
     let supabase = sync_status.summary();
     let deploy_fingerprint = deploy_fingerprint().unwrap_or_else(|| "unavailable".to_string());
-    let nodes_search_value = nodes_search.map(escape_html).unwrap_or_default();
+    let nodes_api_href = filtered_api_href("/v1/nodes", query);
+    let jobs_api_href = filtered_api_href("/v1/jobs", query);
+    let credits_api_href = filtered_api_href("/v1/credits", query);
+    let filtered_nodes =
+        filter_json_items(state.nodes.values().cloned().collect::<Vec<_>>(), query, "nodes");
+    let filtered_nodes_html = render_node_records(filtered_nodes);
     let body = match page {
         OperatorPage::Nodes => format!(
-            r#"<section class="toolbar" aria-label="Node fleet controls">
-              <input aria-label="Search nodes" placeholder="Search node id, host, model, backend" value="{nodes_search_value}" />
-              <select aria-label="Filter node state"><option>All states</option><option>Online</option><option>Trusted</option><option>Paused</option><option>Policy blocked</option></select>
-              <select aria-label="Sort nodes"><option>Sort by last heartbeat</option><option>Sort by assigned jobs</option><option>Sort by credits</option><option>Sort by trust</option></select>
-              <a class="button" href="/v1/nodes?page=1&page_size=25">Nodes JSON</a>
-            </section>
+            r#"{filters}
             <section class="grid four">
               <div class="metric"><span>Online</span><strong>{nodes}</strong></div>
               <div class="metric"><span>Trusted</span><strong>{trusted}</strong></div>
@@ -764,12 +780,13 @@ fn control_plane_operator_page(
             <section class="panel">
               <h2>Fleet Browser</h2>
               <p class="meta">Large fleets should be controlled here with search, filters, sorting, and batched operator actions. The overview topology stays summarized so hundreds of nodes do not become visual noise.</p>
-              {}
+              {filtered_nodes_html}
             </section>"#,
-            render_nodes(state)
+            filters = control_filter_form(page, query, &nodes_api_href),
         ),
         OperatorPage::Jobs => format!(
-            r#"<section class="grid four">
+            r#"{filters}
+            <section class="grid four">
               <div class="metric"><span>Queued</span><strong>{queued}</strong></div>
               <div class="metric"><span>Assigned</span><strong>{assigned}</strong></div>
               <div class="metric"><span>Completed</span><strong>{completed}</strong></div>
@@ -778,40 +795,42 @@ fn control_plane_operator_page(
             <section class="panel">
               <h2>Job Queue</h2>
               <p class="meta">Operator job review belongs on this page with status filters, node/model/runtime facets, and safe retry or cancel controls when those actions are enabled.</p>
-              <a class="button" href="/v1/jobs?page=1&page_size=25">Jobs JSON</a>
-              <a class="button" href="/v1/job-events?page=1&page_size=25">Job Events JSON</a>
-            </section>"#
+            </section>"#,
+            filters = control_filter_form(page, query, &jobs_api_href)
         ),
         OperatorPage::Credits => format!(
-            r#"<section class="grid two">
+            r#"{filters}
+            <section class="grid two">
               <div class="metric"><span>Total credits</span><strong>{credits_total:.2}</strong></div>
               <div class="metric"><span>Ledger entries</span><strong>{credits_ledger}</strong></div>
             </section>
             <section class="panel">
               <h2>Credits Ledger</h2>
               <p class="meta">Credit reconciliation should use ledger history, node-level totals, and exportable raw data. Keep the raw endpoint available for automation.</p>
-              <a class="button" href="/v1/credits?page=1&page_size=25">Credits JSON</a>
-            </section>"#
+            </section>"#,
+            filters = control_filter_form(page, query, &credits_api_href)
         ),
         OperatorPage::Registry => format!(
-            r#"<section class="grid four">
+            r#"{filters}
+            <section class="grid four">
               <div class="metric"><span>Registered</span><strong>{nodes}</strong></div>
               <div class="metric"><span>Trusted</span><strong>{trusted}</strong></div>
               <div class="metric"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
-              <div class="metric"><span>Storage</span><strong>{}</strong></div>
+              <div class="metric"><span>Storage</span><strong>{storage_value}</strong></div>
             </section>
             <section class="panel">
               <h2>Registry & Trust</h2>
               <p class="meta">Signed registry snapshots, identity trust paths, and policy decisions should be reviewed here. Raw node data remains available for contract checks.</p>
-              <a class="button" href="/v1/nodes?page=1&page_size=25">Registry JSON</a>
               <a class="button" href="/v1/status">Status JSON</a>
             </section>"#,
-            escape_html(storage_source.as_str())
+            filters = control_filter_form(page, query, &nodes_api_href),
+            storage_value = escape_html(storage_source.as_str())
         ),
         OperatorPage::Settings => format!(
-            r#"<section class="grid two">
-              <div class="metric"><span>Supabase sync</span><strong>{}</strong></div>
-              <div class="metric"><span>Deploy</span><strong>{}</strong></div>
+            r#"{filters}
+            <section class="grid two">
+              <div class="metric"><span>Supabase sync</span><strong>{supabase_value}</strong></div>
+              <div class="metric"><span>Deploy</span><strong>{deploy_value}</strong></div>
             </section>
             <section class="panel">
               <h2>Operator Controls</h2>
@@ -819,8 +838,9 @@ fn control_plane_operator_page(
               <a class="button" href="/health">Health JSON</a>
               <a class="button" href="/v1/status">Status JSON</a>
             </section>"#,
-            escape_html(&supabase),
-            escape_html(&deploy_fingerprint)
+            filters = control_filter_form(page, query, "/v1/status"),
+            supabase_value = escape_html(&supabase),
+            deploy_value = escape_html(&deploy_fingerprint)
         ),
     };
     let nav = [
@@ -859,7 +879,7 @@ fn control_plane_operator_page(
       h2 {{ margin:0 0 10px; font-size:18px; }}
       .meta {{ color:var(--muted); line-height:1.55; }}
       .button {{ min-height:38px; display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:8px; padding:0 12px; background:rgba(4,12,23,.72); margin-right:8px; margin-top:10px; }}
-      .toolbar {{ display:grid; grid-template-columns:minmax(260px,1fr) 190px 210px auto; gap:12px; margin-bottom:18px; }}
+      .toolbar {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px; align-items:center; }}
       input,select {{ min-height:42px; border:1px solid var(--line); border-radius:8px; background:#030b14; color:var(--text); padding:0 12px; }}
       .grid {{ display:grid; gap:14px; margin-bottom:18px; }}
       .grid.four {{ grid-template-columns:repeat(4,minmax(0,1fr)); }}
@@ -2051,7 +2071,234 @@ fn paginated_items_response<T: Serialize>(
         "collection": collection,
         "items": page_items,
         "pagination": pagination,
+        "filters": active_filter_params(query),
     })
+}
+
+fn filtered_api_href(base_path: &str, query: Option<&str>) -> String {
+    let page_size = query_param(query, "page_size")
+        .or_else(|| query_param(query, "limit"))
+        .unwrap_or("25");
+    let mut params = vec![
+        "page=1".to_string(),
+        format!("page_size={}", escape_query_value(page_size)),
+    ];
+
+    for key in FILTER_QUERY_KEYS {
+        if let Some(value) = query_param(query, key) {
+            if !value.trim().is_empty() && value != "all" {
+                params.push(format!("{key}={}", escape_query_value(value)));
+            }
+        }
+    }
+
+    format!("{base_path}?{}", params.join("&"))
+}
+
+fn active_filter_params(query: Option<&str>) -> serde_json::Value {
+    let mut filters = serde_json::Map::new();
+    for key in FILTER_QUERY_KEYS {
+        if let Some(value) = query_param(query, key) {
+            if !value.trim().is_empty() && value != "all" {
+                filters.insert((*key).to_string(), serde_json::Value::String(value.to_string()));
+            }
+        }
+    }
+    serde_json::Value::Object(filters)
+}
+
+fn query_value(query: Option<&str>, key: &str) -> String {
+    query_param(query, key).unwrap_or_default().to_string()
+}
+
+fn selected_attr(query: Option<&str>, key: &str, value: &str) -> &'static str {
+    if query_param(query, key)
+        .map(|candidate| candidate.eq_ignore_ascii_case(value))
+        .unwrap_or(false)
+    {
+        " selected"
+    } else {
+        ""
+    }
+}
+
+fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) -> String {
+    let search = escape_html(&query_value(query, "search"));
+    let start = escape_html(&query_value(query, "start"));
+    let end = escape_html(&query_value(query, "end"));
+    let node_id = escape_html(&query_value(query, "node_id"));
+    let job_id = escape_html(&query_value(query, "job_id"));
+    let api_href = escape_html(api_path);
+
+    match page {
+        OperatorPage::Nodes | OperatorPage::Registry => format!(
+            r#"<form class="toolbar" method="get" action="{action}">
+              <input name="search" aria-label="Search" placeholder="Search node id, host, model, backend" value="{search}" />
+              <select name="state" aria-label="Filter state"><option value="">All states</option><option value="ready"{ready}>Ready</option><option value="busy"{busy}>Busy</option><option value="paused"{paused}>Paused</option><option value="stopped"{stopped}>Stopped</option></select>
+              <select name="backend" aria-label="Filter backend"><option value="">All backends</option><option value="cuda"{cuda}>CUDA</option><option value="m"{m}>M-series</option><option value="auto"{auto}>Auto</option></select>
+              <input name="start" aria-label="Start timestamp" placeholder="start timestamp" value="{start}" />
+              <input name="end" aria-label="End timestamp" placeholder="end timestamp" value="{end}" />
+              <button class="button" type="submit">Apply</button>
+              <a class="button" href="{api_href}">JSON</a>
+            </form>"#,
+            action = page.path(),
+            ready = selected_attr(query, "state", "ready"),
+            busy = selected_attr(query, "state", "busy"),
+            paused = selected_attr(query, "state", "paused"),
+            stopped = selected_attr(query, "state", "stopped"),
+            cuda = selected_attr(query, "backend", "cuda"),
+            m = selected_attr(query, "backend", "m"),
+            auto = selected_attr(query, "backend", "auto"),
+        ),
+        OperatorPage::Jobs => format!(
+            r#"<form class="toolbar" method="get" action="/jobs">
+              <input name="search" aria-label="Search jobs" placeholder="Search job id, prompt, model, node" value="{search}" />
+              <select name="status" aria-label="Filter job status"><option value="">All statuses</option><option value="queued"{queued}>Queued</option><option value="assigned"{assigned}>Assigned</option><option value="completed"{completed}>Completed</option><option value="failed"{failed}>Failed</option></select>
+              <input name="node_id" aria-label="Node id" placeholder="node id" value="{node_id}" />
+              <input name="start" aria-label="Start timestamp" placeholder="start timestamp" value="{start}" />
+              <input name="end" aria-label="End timestamp" placeholder="end timestamp" value="{end}" />
+              <button class="button" type="submit">Apply</button>
+              <a class="button" href="{api_href}">Jobs JSON</a>
+              <a class="button" href="{events_href}">Events JSON</a>
+            </form>"#,
+            queued = selected_attr(query, "status", "queued"),
+            assigned = selected_attr(query, "status", "assigned"),
+            completed = selected_attr(query, "status", "completed"),
+            failed = selected_attr(query, "status", "failed"),
+            events_href = escape_html(&filtered_api_href("/v1/job-events", query)),
+        ),
+        OperatorPage::Credits => format!(
+            r#"<form class="toolbar" method="get" action="/credits">
+              <input name="search" aria-label="Search credits" placeholder="Search ledger id, node, job, type" value="{search}" />
+              <input name="node_id" aria-label="Node id" placeholder="node id" value="{node_id}" />
+              <input name="job_id" aria-label="Job id" placeholder="job id" value="{job_id}" />
+              <select name="entry_type" aria-label="Entry type"><option value="">All entries</option><option value="job_completed"{job_completed}>Job completed</option><option value="job_failed"{job_failed}>Job failed</option></select>
+              <input name="start" aria-label="Start timestamp" placeholder="start timestamp" value="{start}" />
+              <input name="end" aria-label="End timestamp" placeholder="end timestamp" value="{end}" />
+              <button class="button" type="submit">Apply</button>
+              <a class="button" href="{api_href}">Credits JSON</a>
+            </form>"#,
+            job_completed = selected_attr(query, "entry_type", "job_completed"),
+            job_failed = selected_attr(query, "entry_type", "job_failed"),
+        ),
+        OperatorPage::Settings => format!(
+            r#"<section class="toolbar"><a class="button" href="{api_href}">Status JSON</a></section>"#
+        ),
+    }
+}
+
+fn json_text(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(text) => text.clone(),
+        serde_json::Value::Null => String::new(),
+        other => other.to_string(),
+    }
+}
+
+fn json_field_text(value: &serde_json::Value, field: &str) -> String {
+    value.get(field).map(json_text).unwrap_or_default()
+}
+
+fn timestamp_for_collection(value: &serde_json::Value, collection: &str) -> String {
+    match collection {
+        "nodes" => json_field_text(value, "updated_at"),
+        "jobs" => ["submitted_at", "assigned_at", "completed_at"]
+            .iter()
+            .map(|field| json_field_text(value, field))
+            .find(|text| !text.is_empty())
+            .unwrap_or_default(),
+        "job_events" | "credits_ledger" => json_field_text(value, "created_at"),
+        _ => String::new(),
+    }
+}
+
+fn timestamp_in_range(value: &serde_json::Value, query: Option<&str>, collection: &str) -> bool {
+    let timestamp = timestamp_for_collection(value, collection);
+    let parsed_timestamp = timestamp.parse::<u64>().ok();
+
+    if let Some(start) = query_param(query, "start").filter(|value| !value.trim().is_empty()) {
+        if let Some(start) = start.parse::<u64>().ok() {
+            if parsed_timestamp.map(|timestamp| timestamp < start).unwrap_or(false) {
+                return false;
+            }
+        } else if timestamp.as_str() < start {
+            return false;
+        }
+    }
+
+    if let Some(end) = query_param(query, "end").filter(|value| !value.trim().is_empty()) {
+        if let Some(end) = end.parse::<u64>().ok() {
+            if parsed_timestamp.map(|timestamp| timestamp > end).unwrap_or(false) {
+                return false;
+            }
+        } else if timestamp.as_str() > end {
+            return false;
+        }
+    }
+
+    true
+}
+
+fn query_exact_match(
+    value: &serde_json::Value,
+    query: Option<&str>,
+    key: &str,
+    fields: &[&str],
+) -> bool {
+    let Some(expected) = query_param(query, key)
+        .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("all"))
+    else {
+        return true;
+    };
+
+    fields.iter().any(|field| {
+        json_field_text(value, field).eq_ignore_ascii_case(expected)
+    })
+}
+
+fn filter_json_items<T: Serialize>(items: Vec<T>, query: Option<&str>, collection: &str) -> Vec<T> {
+    let search = query_param(query, "search")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_ascii_lowercase);
+
+    items
+        .into_iter()
+        .filter(|item| {
+            let value = serde_json::to_value(item).expect("filterable json");
+            if let Some(search) = search.as_ref() {
+                if !value.to_string().to_ascii_lowercase().contains(search) {
+                    return false;
+                }
+            }
+
+            timestamp_in_range(&value, query, collection)
+                && match collection {
+                    "nodes" => {
+                        query_exact_match(&value, query, "state", &["state", "reported_state"])
+                            && query_exact_match(&value, query, "backend", &["backend"])
+                            && query_exact_match(&value, query, "node_id", &["node_id"])
+                    }
+                    "jobs" => {
+                        query_exact_match(&value, query, "status", &["status"])
+                            && query_exact_match(&value, query, "backend", &["backend", "preferred_backend"])
+                            && query_exact_match(&value, query, "node_id", &["assigned_node_id"])
+                            && query_exact_match(&value, query, "job_id", &["job_id", "request_id"])
+                    }
+                    "job_events" => {
+                        query_exact_match(&value, query, "event_type", &["event_type"])
+                            && query_exact_match(&value, query, "node_id", &["node_id"])
+                            && query_exact_match(&value, query, "job_id", &["job_id"])
+                    }
+                    "credits_ledger" => {
+                        query_exact_match(&value, query, "entry_type", &["entry_type"])
+                            && query_exact_match(&value, query, "node_id", &["device_id"])
+                            && query_exact_match(&value, query, "job_id", &["job_id"])
+                    }
+                    _ => true,
+                }
+        })
+        .collect()
 }
 
 fn header_value<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
@@ -2405,7 +2652,6 @@ fn handle_connection(
             let page = OperatorPage::from_path(path).expect("operator page");
             let snapshot = state.lock().expect("state lock");
             let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
-            let nodes_search = query_param(query, "search");
             html_response(
                 "200 OK",
                 &control_plane_operator_page(
@@ -2413,7 +2659,7 @@ fn handle_connection(
                     storage_source,
                     &sync_snapshot,
                     page,
-                    nodes_search,
+                    query,
                 ),
             )
         }
@@ -2469,6 +2715,7 @@ fn handle_connection(
                 json_response("200 OK", guard.nodes_snapshot())
             } else {
                 let nodes = guard.nodes.values().cloned().collect::<Vec<_>>();
+                let nodes = filter_json_items(nodes, query, "nodes");
                 json_response("200 OK", paginated_items_response(nodes, query, "nodes"))
             }
         }
@@ -2522,6 +2769,7 @@ fn handle_connection(
             } else {
                 let mut jobs = guard.jobs.values().cloned().collect::<Vec<_>>();
                 jobs.reverse();
+                let jobs = filter_json_items(jobs, query, "jobs");
                 json_response("200 OK", paginated_items_response(jobs, query, "jobs"))
             }
         }
@@ -2577,6 +2825,7 @@ fn handle_connection(
             } else {
                 let mut events = guard.job_events.clone();
                 events.reverse();
+                let events = filter_json_items(events, query, "job_events");
                 json_response(
                     "200 OK",
                     paginated_items_response(events, query, "job_events"),
@@ -2589,6 +2838,7 @@ fn handle_connection(
             if !wants_legacy_array(query) {
                 let mut ledger = guard.credits_ledger.clone();
                 ledger.reverse();
+                let ledger = filter_json_items(ledger, query, "credits_ledger");
                 let paged = paginated_items_response(ledger, query, "credits_ledger");
                 if let serde_json::Value::Object(fields) = &mut response {
                     if let Some(items) = paged.get("items") {
@@ -3487,17 +3737,18 @@ mod tests {
             StorageSource::LocalJsonFallback,
             &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
             crate::OperatorPage::Nodes,
-            Some("node-new"),
+            Some("search=node-new&state=ready&backend=m&start=1&end=99"),
         );
 
         assert!(html.contains("Fleet Browser"));
         assert!(html.contains("Search node id, host, model, backend"));
         assert!(html.contains(r#"value="node-new""#));
-        assert!(html.contains("Sort by last heartbeat"));
+        assert!(html.contains(r#"name="state""#));
+        assert!(html.contains(r#"value="ready" selected"#));
         assert!(html.contains("Large fleets should be controlled here"));
         assert!(html.contains("Developer APIs"));
         assert!(html.contains(r#"href="/nodes""#));
-        assert!(html.contains(r#"href="/v1/nodes?page=1&page_size=25""#));
+        assert!(html.contains(r#"href="/v1/nodes?page=1&amp;page_size=25&amp;search=node-new&amp;start=1&amp;end=99&amp;state=ready&amp;backend=m""#));
     }
 
     #[test]
@@ -3549,6 +3800,47 @@ mod tests {
         assert_eq!(response["pagination"]["total_pages"], 3);
         assert_eq!(response["pagination"]["has_previous"], true);
         assert_eq!(response["pagination"]["has_next"], true);
+        assert_eq!(response["filters"], serde_json::json!({}));
+    }
+
+    #[test]
+    fn filtered_api_href_preserves_operator_filters() {
+        assert_eq!(
+            crate::filtered_api_href(
+                "/v1/jobs",
+                Some("page=5&page_size=50&search=qwen history&status=completed&node_id=node-1")
+            ),
+            "/v1/jobs?page=1&page_size=50&search=qwen%20history&status=completed&node_id=node-1"
+        );
+    }
+
+    #[test]
+    fn filter_json_items_applies_search_exact_filters_and_time_bounds() {
+        let items = vec![
+            serde_json::json!({
+                "job_id": "job-1",
+                "prompt": "Qwen history",
+                "status": "completed",
+                "assigned_node_id": "node-1",
+                "submitted_at": "10"
+            }),
+            serde_json::json!({
+                "job_id": "job-2",
+                "prompt": "Other task",
+                "status": "queued",
+                "assigned_node_id": "node-2",
+                "submitted_at": "20"
+            }),
+        ];
+
+        let filtered = crate::filter_json_items(
+            items,
+            Some("search=qwen&status=completed&node_id=node-1&start=5&end=15"),
+            "jobs",
+        );
+
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0]["job_id"], "job-1");
     }
 
     #[test]
