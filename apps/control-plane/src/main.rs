@@ -887,15 +887,20 @@ fn control_plane_operator_page(
       * {{ box-sizing: border-box; }}
       body {{ margin:0; min-height:100vh; background:linear-gradient(135deg,#020711,#050b16 52%,#01040b); color:var(--text); font-family:Inter,"Segoe UI",sans-serif; }}
       a {{ color:inherit; text-decoration:none; }}
+      a:focus-visible {{ outline:0; box-shadow:0 0 0 3px rgba(37,215,255,.2); }}
+      .motion-lift {{ transition:transform .18s ease,border-color .12s ease,background .12s ease,box-shadow .18s ease,color .12s ease; will-change:transform; }}
+      .motion-lift:hover,.motion-lift:focus-visible {{ transform:translateY(-2px); border-color:var(--line-strong); box-shadow:0 18px 42px rgba(0,0,0,.28),0 0 28px rgba(37,215,255,.15); }}
+      .motion-glow {{ transition:transform .18s ease,filter .18s ease,box-shadow .18s ease; will-change:transform; }}
+      .motion-glow:hover,.motion-glow:focus-visible {{ transform:scale(1.04); filter:drop-shadow(0 0 22px rgba(37,215,255,.52)); }}
       .shell {{ display:grid; grid-template-columns:250px minmax(0,1fr); min-height:100vh; }}
-      .sidebar {{ border-right:1px solid var(--line); background:rgba(2,9,18,.96); padding:26px 16px; display:flex; flex-direction:column; gap:22px; }}
-      .brand {{ display:flex; align-items:center; gap:12px; font-family:Georgia,"Times New Roman",serif; font-size:22px; }}
-      .brand-mark {{ width:54px; height:54px; border-radius:50%; object-fit:contain; }}
+      .sidebar {{ position:sticky; top:0; height:100vh; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(2,9,18,.96),rgba(2,8,16,.9)); padding:26px 16px 18px; display:flex; flex-direction:column; gap:22px; }}
+      .brand {{ display:flex; align-items:center; gap:12px; font-family:Georgia,"Times New Roman",serif; font-size:22px; color:#fff; border-radius:8px; }}
+      .brand-mark {{ width:54px; height:54px; border-radius:50%; object-fit:contain; filter:drop-shadow(0 0 16px rgba(70,174,255,.34)); }}
       .nav {{ display:grid; gap:8px; }}
-      .icon {{ width:20px; height:20px; flex:0 0 auto; color:#2ea8ff; }}
-      .nav-item {{ min-height:46px; display:flex; align-items:center; gap:12px; border:1px solid transparent; border-radius:7px; padding:0 13px; color:#b9c5d6; font-weight:500; }}
-      .nav-item:hover,.nav-item:focus-visible,.nav-item.active {{ color:#ecf8ff; border-color:var(--line-strong); background:rgba(51,168,255,.1); outline:none; }}
-      .nav-item.active {{ box-shadow:inset 0 0 0 1px rgba(51,168,255,.08); }}
+      .nav-item {{ min-height:54px; display:flex; align-items:center; gap:14px; border:1px solid transparent; border-radius:7px; padding:0 13px; color:#b9c5d6; }}
+      .nav-item:hover,.nav-item:focus-visible {{ color:#ecf8ff; background:rgba(51,168,255,.1); outline:none; }}
+      .nav-item.active {{ color:#55bdff; border-color:rgba(35,161,255,.7); background:linear-gradient(90deg,rgba(0,106,255,.26),rgba(0,165,255,.08)); box-shadow:0 0 24px rgba(0,128,255,.25),inset 0 0 22px rgba(0,136,255,.1); }}
+      .icon {{ width:22px; height:22px; flex:0 0 auto; color:var(--blue); }}
       main {{ padding:32px; }}
       .topbar {{ display:flex; justify-content:space-between; gap:18px; align-items:flex-start; margin-bottom:22px; }}
       h1 {{ margin:0; font-size:34px; letter-spacing:0; }}
@@ -923,18 +928,32 @@ fn control_plane_operator_page(
       .node-health {{ display:grid; gap:4px; overflow-wrap:anywhere; word-break:break-word; }}
       .pill {{ display:inline-flex; align-items:center; max-width:100%; min-height:22px; border-radius:4px; padding:2px 6px; overflow-wrap:anywhere; }}
       .empty {{ border:1px dashed var(--line); border-radius:8px; padding:24px; color:var(--muted); }}
-      .api-box {{ margin-top:auto; border:1px solid var(--line); border-radius:8px; padding:14px; color:var(--muted); }}
-      .api-box a {{ min-height:30px; display:flex; align-items:center; border-radius:6px; padding:0 8px; margin-top:4px; color:#9bd1ff; }}
-      .api-box a:hover,.api-box a:focus-visible {{ background:rgba(51,168,255,.1); color:#ecf8ff; outline:none; }}
-      @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; }} .toolbar,.grid.four,.grid.two {{ grid-template-columns:1fr; }} main {{ padding:22px; }} }}
+      .sidebar-bottom {{ margin-top:auto; display:grid; gap:16px; }}
+      .side-card {{ border:1px solid var(--line); border-radius:8px; background:rgba(6,18,32,.78); padding:16px; }}
+      .status-dot {{ width:9px; height:9px; border-radius:50%; background:#25d7ff; box-shadow:0 0 16px rgba(37,215,255,.7); }}
+      .operator {{ display:flex; align-items:center; gap:12px; }}
+      .avatar {{ width:42px; height:42px; border-radius:12px; background:linear-gradient(135deg,#14539e,#071f3c); display:grid; place-items:center; font-weight:700; }}
+      .foot {{ color:var(--muted); font-size:12px; margin-top:22px; }}
+      @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two {{ grid-template-columns:1fr; }} main {{ padding:22px; }} }}
+      @media (prefers-reduced-motion: reduce) {{ *,*::before,*::after {{ animation-duration:.01ms!important; animation-iteration-count:1!important; scroll-behavior:auto!important; transition-duration:.01ms!important; }} .motion-lift:hover,.motion-lift:focus-visible,.motion-glow:hover,.motion-glow:focus-visible {{ transform:none; }} }}
     </style>
   </head>
   <body>
     <div class="shell">
-      <aside class="sidebar">
-        <a class="brand" href="/"><img class="brand-mark" alt="MundusX logo" src="{logo_path}" /> <span>MundusX</span></a>
+      <aside class="sidebar" aria-label="Control plane navigation">
+        <a class="brand motion-glow" href="/" aria-label="MundusX control plane home"><img class="brand-mark" alt="MundusX control plane logo" src="{logo_path}" /> <span>MundusX</span></a>
         <nav class="nav"><a class="nav-item motion-lift" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6"/></svg>Overview</a>{nav}</nav>
-        <div class="api-box"><strong>Developer APIs</strong><br/><a href="/health">Health JSON</a><br/><a href="/v1/status">Status JSON</a><br/><a href="/v1/nodes?page=1&page_size=25">Nodes JSON</a><br/><a href="/v1/jobs?page=1&page_size=25">Jobs JSON</a></div>
+        <div class="sidebar-bottom">
+          <div class="side-card">
+            <div style="display:flex;align-items:center;gap:12px;"><span class="status-dot"></span><span>Control Plane Status</span></div>
+            <div style="color:#54b9ff;margin-top:10px;">Healthy</div>
+          </div>
+          <div class="side-card operator">
+            <div class="avatar">NX</div>
+            <div><strong>Operator</strong><div class="meta">operator@mundusx.ai</div></div>
+          </div>
+          <div class="foot">MundusX Control Plane<br/>v1.0.0</div>
+        </div>
       </aside>
       <main>
         <div class="topbar"><div><h1>{title}</h1><div class="meta">Operator-facing control page. Raw contracts stay grouped under Developer APIs.</div></div><a class="button" href="/">Overview</a></div>
@@ -3773,6 +3792,9 @@ mod tests {
         assert!(html.contains("Search node id, host, model, backend"));
         assert!(html.contains(r#"class="nav-item motion-lift active" href="/nodes""#));
         assert!(html.contains(r#"<svg class="icon" viewBox="0 0 24 24""#));
+        assert!(html.contains("min-height:54px"));
+        assert!(html.contains("sidebar-bottom"));
+        assert!(html.contains("MundusX Control Plane<br/>v1.0.0"));
         assert!(html.contains(r#"value="node-new""#));
         assert!(html.contains(r#"name="state""#));
         assert!(html.contains(r#"value="ready" selected"#));
