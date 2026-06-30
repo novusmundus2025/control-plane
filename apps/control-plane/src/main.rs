@@ -878,9 +878,13 @@ fn control_plane_operator_page(
       h1 {{ margin:0; font-size:34px; letter-spacing:0; }}
       h2 {{ margin:0 0 10px; font-size:18px; }}
       .meta {{ color:var(--muted); line-height:1.55; }}
-      .button {{ min-height:38px; display:inline-flex; align-items:center; border:1px solid var(--line); border-radius:8px; padding:0 12px; background:rgba(4,12,23,.72); margin-right:8px; margin-top:10px; }}
+      .button {{ min-height:42px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:8px; padding:0 14px; background:rgba(4,12,23,.72); color:var(--text); font:inherit; font-weight:600; line-height:1; text-align:center; white-space:nowrap; cursor:pointer; }}
+      .button:hover,.button:focus-visible {{ border-color:var(--line-strong); background:rgba(51,168,255,.1); outline:none; }}
       .toolbar {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px; align-items:center; }}
-      input,select {{ min-height:42px; border:1px solid var(--line); border-radius:8px; background:#030b14; color:var(--text); padding:0 12px; }}
+      .toolbar .button {{ width:100%; }}
+      .panel .button {{ margin-top:10px; margin-right:8px; }}
+      .topbar .button {{ margin-left:auto; }}
+      input,select {{ width:100%; min-height:42px; border:1px solid var(--line); border-radius:8px; background:#030b14; color:var(--text); padding:0 12px; font:inherit; }}
       .grid {{ display:grid; gap:14px; margin-bottom:18px; }}
       .grid.four {{ grid-template-columns:repeat(4,minmax(0,1fr)); }}
       .grid.two {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
@@ -897,6 +901,8 @@ fn control_plane_operator_page(
       .pill {{ display:inline-flex; align-items:center; max-width:100%; min-height:22px; border-radius:4px; padding:2px 6px; overflow-wrap:anywhere; }}
       .empty {{ border:1px dashed var(--line); border-radius:8px; padding:24px; color:var(--muted); }}
       .api-box {{ margin-top:auto; border:1px solid var(--line); border-radius:8px; padding:14px; color:var(--muted); }}
+      .api-box a {{ min-height:30px; display:flex; align-items:center; border-radius:6px; padding:0 8px; margin-top:4px; color:#9bd1ff; }}
+      .api-box a:hover,.api-box a:focus-visible {{ background:rgba(51,168,255,.1); color:#ecf8ff; outline:none; }}
       @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; }} .toolbar,.grid.four,.grid.two {{ grid-template-columns:1fr; }} main {{ padding:22px; }} }}
     </style>
   </head>
