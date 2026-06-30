@@ -553,11 +553,6 @@ fn render_topology_slots(state: &ControlPlaneState) -> String {
     html
 }
 
-fn render_nodes(state: &ControlPlaneState) -> String {
-    let nodes: Vec<_> = state.nodes.values().cloned().collect();
-    render_node_records(nodes)
-}
-
 fn render_node_records(nodes: Vec<NodeRecord>) -> String {
     if nodes.is_empty() {
         return r#"<div class="empty">No nodes have registered yet.</div>"#.to_string();
@@ -1626,39 +1621,6 @@ fn control_plane_home(
         line-height: 1.55;
         margin-top: 22px;
       }}
-      .node-panel {{
-        margin-top: 18px;
-      }}
-      .node-tools {{
-        display: flex;
-        align-items: center;
-        gap: 12px;
-      }}
-      .node-summary {{
-        width: 280px;
-        min-height: 42px;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: rgba(2, 9, 17, 0.78);
-        color: var(--muted);
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 0 13px;
-      }}
-      .node-details-body {{
-        border-top: 1px solid rgba(73, 159, 255, 0.13);
-        min-height: 118px;
-        display: grid;
-        grid-template-columns: minmax(220px, 1fr) minmax(280px, 420px) minmax(220px, 1fr);
-        align-items: center;
-        gap: 16px;
-        color: #cbd5e1;
-      }}
-      .node-art {{
-        opacity: 0.45;
-        justify-self: center;
-      }}
       .table .thead,
       .table .row {{
         display: grid;
@@ -1739,14 +1701,12 @@ fn control_plane_home(
         .nav {{ grid-template-columns: 1fr 1fr; }}
         .primary-metrics,
         .secondary-metrics,
-        .credits-layout,
-        .node-details-body {{ grid-template-columns: 1fr; }}
+        .credits-layout {{ grid-template-columns: 1fr; }}
         h1 {{ font-size: 30px; }}
         .topology {{ height: 470px; }}
         .orbit {{ inset: 112px 20px 82px; }}
         .grid-ring {{ inset: 154px 74px 124px; }}
         .topo-node {{ font-size: 11px; }}
-        .node-summary {{ width: 100%; }}
         .table .thead {{ display: none; }}
         .table .row {{
           grid-template-columns: 1fr;
@@ -1878,25 +1838,11 @@ fn control_plane_home(
           </div>
         </section>
 
-        <section class="section node-panel">
-          <div class="section-head">
-            <div class="section-title-row"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><path d="M8 7h7"/><path d="M8 17h7"/></svg><h2 class="section-title">Node Details</h2></div>
-            <div class="node-tools"><span class="meta">{nodes} registered</span><div class="node-summary"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Signed registry snapshot</div><a class="endpoint-button motion-lift" href="/v1/nodes?page=1&page_size=25">Nodes JSON</a></div>
-          </div>
-          <div class="section-body">
-            <div class="node-details-body">
-              <div>{node_rows}</div>
-              <svg class="node-art" width="260" height="90" viewBox="0 0 260 90" fill="none"><path d="M54 67h152" stroke="#2d75bd" opacity=".5"/><rect x="92" y="10" width="76" height="22" rx="4" stroke="#2d75bd"/><rect x="92" y="39" width="76" height="22" rx="4" stroke="#2d75bd"/><path d="M104 21h32M104 50h32" stroke="#57adff"/><circle cx="151" cy="21" r="2" fill="#57adff"/><circle cx="158" cy="50" r="2" fill="#57adff"/><path d="M46 70c4-16 21-16 26-5 6-6 16-2 17 5M207 70c4-16 21-16 26-5 6-6 16-2 17 5" stroke="#2d75bd" opacity=".5"/><path d="M70 14h8M74 10v8M202 10h8M206 6v8" stroke="#57adff" opacity=".6"/></svg>
-              <div></div>
-            </div>
-          </div>
-        </section>
         <div class="foot">Deploy fingerprint is exposed on <code>/health</code> and <code>/v1/status</code> for post-merge verification.</div>
       </main>
     </div>
   </body>
 </html>"##,
-        node_rows = render_nodes(state),
         storage_source = escape_html(storage_source.as_str()),
         logo_path = CONTROL_PLANE_LOGO_PATH,
         deploy_badge = deploy_badge
@@ -3792,7 +3738,6 @@ mod tests {
         assert!(html.contains("Status API"));
         assert!(html.contains("Network Topology"));
         assert!(html.contains("Credits Overview"));
-        assert!(html.contains("Node Details"));
         assert!(html.contains(r#"href="/nodes""#));
         assert!(html.contains(r#"href="/jobs""#));
         assert!(html.contains(r#"href="/credits""#));
@@ -3800,8 +3745,7 @@ mod tests {
         assert!(html.contains(r#"href="/settings""#));
         assert!(html.contains(r#"aria-label="Developer APIs""#));
         assert!(html.contains(">Developer APIs</span>"));
-        assert!(html.contains("Signed registry snapshot"));
-        assert!(html.contains("Nodes JSON"));
+        assert!(html.contains("nodes json"));
         assert!(html.contains("Assigned jobs"));
         assert!(html.contains("color-scheme: dark"));
         assert!(html.contains("motion-lift"));
@@ -3819,6 +3763,8 @@ mod tests {
         assert!(html.contains("slot 8"));
         assert!(!html.contains(">No nodes</div>"));
         assert!(!html.contains("Search nodes..."));
+        assert!(!html.contains("Node Details"));
+        assert!(!html.contains("Signed registry snapshot"));
         assert!(!html.contains("Control Plane</div></div></div>"));
     }
 
