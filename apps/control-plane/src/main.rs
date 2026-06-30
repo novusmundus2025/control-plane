@@ -60,6 +60,8 @@ const FILTER_QUERY_KEYS: &[&str] = &[
     "state",
     "status",
     "backend",
+    "trust",
+    "policy",
     "node_id",
     "job_id",
     "event_type",
@@ -793,10 +795,10 @@ fn control_plane_operator_page(
         OperatorPage::Nodes => format!(
             r#"{filters}
             <section class="grid four">
-              <div class="metric"><span>Online</span><strong>{nodes}</strong></div>
-              <div class="metric"><span>Trusted</span><strong>{trusted}</strong></div>
-              <div class="metric"><span>Paused</span><strong>{paused}</strong></div>
-              <div class="metric"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
+              <a class="metric metric-link" href="/nodes?state=online"><span>Online</span><strong>{nodes}</strong></a>
+              <a class="metric metric-link" href="/nodes?trust=trusted"><span>Trusted</span><strong>{trusted}</strong></a>
+              <a class="metric metric-link" href="/nodes?state=paused"><span>Paused</span><strong>{paused}</strong></a>
+              <a class="metric metric-link" href="/nodes?policy=blocked"><span>Policy blocked</span><strong>{policy_blocked}</strong></a>
             </section>
             <section class="panel">
               <h2>Fleet Browser</h2>
@@ -808,10 +810,10 @@ fn control_plane_operator_page(
         OperatorPage::Jobs => format!(
             r#"{filters}
             <section class="grid four">
-              <div class="metric"><span>Queued</span><strong>{queued}</strong></div>
-              <div class="metric"><span>Assigned</span><strong>{assigned}</strong></div>
-              <div class="metric"><span>Completed</span><strong>{completed}</strong></div>
-              <div class="metric"><span>Failed</span><strong>{failed}</strong></div>
+              <a class="metric metric-link" href="/jobs?status=queued"><span>Queued</span><strong>{queued}</strong></a>
+              <a class="metric metric-link" href="/jobs?status=assigned"><span>Assigned</span><strong>{assigned}</strong></a>
+              <a class="metric metric-link" href="/jobs?status=completed"><span>Completed</span><strong>{completed}</strong></a>
+              <a class="metric metric-link" href="/jobs?status=failed"><span>Failed</span><strong>{failed}</strong></a>
             </section>
             <section class="panel">
               <h2>Job Queue</h2>
@@ -822,8 +824,8 @@ fn control_plane_operator_page(
         OperatorPage::Credits => format!(
             r#"{filters}
             <section class="grid two">
-              <div class="metric"><span>Total credits</span><strong>{credits_total:.2}</strong></div>
-              <div class="metric"><span>Ledger entries</span><strong>{credits_ledger}</strong></div>
+              <a class="metric metric-link" href="/credits"><span>Total credits</span><strong>{credits_total:.2}</strong></a>
+              <a class="metric metric-link" href="/credits"><span>Ledger entries</span><strong>{credits_ledger}</strong></a>
             </section>
             <section class="panel">
               <h2>Credits Ledger</h2>
@@ -834,9 +836,9 @@ fn control_plane_operator_page(
         OperatorPage::Registry => format!(
             r#"{filters}
             <section class="grid four">
-              <div class="metric"><span>Registered</span><strong>{nodes}</strong></div>
-              <div class="metric"><span>Trusted</span><strong>{trusted}</strong></div>
-              <div class="metric"><span>Policy blocked</span><strong>{policy_blocked}</strong></div>
+              <a class="metric metric-link" href="/registry"><span>Registered</span><strong>{nodes}</strong></a>
+              <a class="metric metric-link" href="/registry?trust=trusted"><span>Trusted</span><strong>{trusted}</strong></a>
+              <a class="metric metric-link" href="/registry?policy=blocked"><span>Policy blocked</span><strong>{policy_blocked}</strong></a>
               <div class="metric"><span>Storage</span><strong>{storage_value}</strong></div>
             </section>
             <section class="panel">
@@ -917,6 +919,8 @@ fn control_plane_operator_page(
       .grid.four {{ grid-template-columns:repeat(4,minmax(0,1fr)); }}
       .grid.two {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
       .metric,.panel {{ border:1px solid var(--line); background:linear-gradient(180deg,rgba(8,23,41,.92),rgba(3,10,19,.92)); border-radius:8px; padding:18px; }}
+      .metric-link {{ display:block; transition:border-color .12s ease,background .12s ease,transform .18s ease; }}
+      .metric-link:hover,.metric-link:focus-visible {{ border-color:var(--line-strong); background:linear-gradient(180deg,rgba(12,35,61,.94),rgba(4,14,26,.94)); transform:translateY(-1px); outline:none; }}
       .metric span {{ color:var(--muted); display:block; font-size:13px; text-transform:uppercase; }}
       .metric strong {{ display:block; margin-top:7px; font-size:28px; }}
       .table {{ display:grid; overflow-x:auto; }}
@@ -1823,19 +1827,19 @@ fn control_plane_home(
         </div>
 
         <section class="primary-metrics" aria-label="Primary metrics">
-          <a class="card metric-link" href="/nodes"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="16" r="2.5"/><circle cx="19" cy="16" r="2.5"/><path d="M10 7 6.5 14"/><path d="m14 7 3.5 7"/><path d="M7.5 16h9"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Online nodes</div><div class="card-value">{nodes}</div><div class="delta">Open Nodes</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 33 C14 28 16 17 27 19 C36 21 35 34 47 31 C60 28 54 12 69 11 C82 11 77 25 89 22 C101 19 102 8 120 4" stroke="#188fff" stroke-width="2"/></svg></a>
-          <a class="card metric-link" href="/registry"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Trusted nodes</div><div class="card-value">{trusted}</div><div class="delta">Open Registry</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 30 C10 14 18 34 27 19 S41 23 50 16 S66 27 74 13 S92 19 120 3" stroke="#188fff" stroke-width="2"/></svg></a>
-          <a class="card metric-link" href="/jobs"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M3 13h18"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Queued jobs</div><div class="card-value">{queued}</div><div class="delta">Open Jobs</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 34 C12 33 12 13 27 9 C39 6 42 31 55 28 C68 25 69 11 82 15 C95 19 99 17 120 4" stroke="#188fff" stroke-width="2"/></svg></a>
+          <a class="card metric-link" href="/nodes?state=online"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="16" r="2.5"/><circle cx="19" cy="16" r="2.5"/><path d="M10 7 6.5 14"/><path d="m14 7 3.5 7"/><path d="M7.5 16h9"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Online nodes</div><div class="card-value">{nodes}</div><div class="delta">Open Nodes</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 33 C14 28 16 17 27 19 C36 21 35 34 47 31 C60 28 54 12 69 11 C82 11 77 25 89 22 C101 19 102 8 120 4" stroke="#188fff" stroke-width="2"/></svg></a>
+          <a class="card metric-link" href="/registry?trust=trusted"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Trusted nodes</div><div class="card-value">{trusted}</div><div class="delta">Open Registry</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 30 C10 14 18 34 27 19 S41 23 50 16 S66 27 74 13 S92 19 120 3" stroke="#188fff" stroke-width="2"/></svg></a>
+          <a class="card metric-link" href="/jobs?status=queued"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M3 13h18"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Queued jobs</div><div class="card-value">{queued}</div><div class="delta">Open Jobs</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 34 C12 33 12 13 27 9 C39 6 42 31 55 28 C68 25 69 11 82 15 C95 19 99 17 120 4" stroke="#188fff" stroke-width="2"/></svg></a>
           <a class="card metric-link" href="/credits"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Total credits</div><div class="card-value">{credits_total:.2}</div><div class="delta">Open Credits</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 30 C12 12 19 27 30 20 S44 26 55 16 S70 20 80 7 S99 32 120 18" stroke="#188fff" stroke-width="2"/></svg></a>
         </section>
 
         <section class="secondary-metrics" aria-label="Secondary metrics">
           <a class="card compact metric-link" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-5"/></svg><div><div class="card-label">Job events</div><div class="card-value">{job_events}</div></div></a>
           <a class="card compact metric-link" href="/credits"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg><div><div class="card-label">Credits ledger</div><div class="card-value">{credits_ledger}</div></div></a>
-          <a class="card compact metric-link" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg><div><div class="card-label">Assigned jobs</div><div class="card-value">{assigned}</div></div></a>
-          <a class="card compact metric-link" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-5"/></svg><div><div class="card-label">Completed jobs</div><div class="card-value">{completed}</div></div></a>
-          <a class="card compact metric-link" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><div><div class="card-label">Failed jobs</div><div class="card-value">{failed}</div></div></a>
-          <a class="card compact metric-link" href="/registry"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v8"/><path d="M9 12h6"/></svg><div><div class="card-label">Policy blocked</div><div class="card-value">{policy_blocked}</div></div></a>
+          <a class="card compact metric-link" href="/jobs?status=assigned"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg><div><div class="card-label">Assigned jobs</div><div class="card-value">{assigned}</div></div></a>
+          <a class="card compact metric-link" href="/jobs?status=completed"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-5"/></svg><div><div class="card-label">Completed jobs</div><div class="card-value">{completed}</div></div></a>
+          <a class="card compact metric-link" href="/jobs?status=failed"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><div><div class="card-label">Failed jobs</div><div class="card-value">{failed}</div></div></a>
+          <a class="card compact metric-link" href="/registry?policy=blocked"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v8"/><path d="M9 12h6"/></svg><div><div class="card-label">Policy blocked</div><div class="card-value">{policy_blocked}</div></div></a>
         </section>
 
         <section class="work-grid">
@@ -2182,14 +2186,17 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
         OperatorPage::Nodes | OperatorPage::Registry => format!(
             r#"<form class="toolbar" method="get" action="{action}">
               <input name="search" aria-label="Search" placeholder="Search node id, host, model, backend" value="{search}" />
-              <select name="state" aria-label="Filter state"><option value="">All states</option><option value="ready"{ready}>Ready</option><option value="busy"{busy}>Busy</option><option value="paused"{paused}>Paused</option><option value="stopped"{stopped}>Stopped</option></select>
+              <select name="state" aria-label="Filter state"><option value="">All states</option><option value="online"{online}>Online</option><option value="ready"{ready}>Ready</option><option value="busy"{busy}>Busy</option><option value="paused"{paused}>Paused</option><option value="stopped"{stopped}>Stopped</option></select>
               <select name="backend" aria-label="Filter backend"><option value="">All backends</option><option value="cuda"{cuda}>CUDA</option><option value="m"{m}>M-series</option><option value="auto"{auto}>Auto</option></select>
+              <select name="trust" aria-label="Filter trust"><option value="">All trust</option><option value="trusted"{trusted}>Trusted</option><option value="untrusted"{untrusted}>Untrusted</option></select>
+              <select name="policy" aria-label="Filter policy"><option value="">All policy</option><option value="allowed"{policy_allowed}>Allowed</option><option value="blocked"{policy_blocked}>Blocked</option></select>
               <input name="start" aria-label="Start timestamp" placeholder="start timestamp" value="{start}" />
               <input name="end" aria-label="End timestamp" placeholder="end timestamp" value="{end}" />
               <button class="button" type="submit">Apply</button>
               <a class="button" href="{api_href}">JSON</a>
             </form>"#,
             action = page.path(),
+            online = selected_attr(query, "state", "online"),
             ready = selected_attr(query, "state", "ready"),
             busy = selected_attr(query, "state", "busy"),
             paused = selected_attr(query, "state", "paused"),
@@ -2197,6 +2204,10 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
             cuda = selected_attr(query, "backend", "cuda"),
             m = selected_attr(query, "backend", "m"),
             auto = selected_attr(query, "backend", "auto"),
+            trusted = selected_attr(query, "trust", "trusted"),
+            untrusted = selected_attr(query, "trust", "untrusted"),
+            policy_allowed = selected_attr(query, "policy", "allowed"),
+            policy_blocked = selected_attr(query, "policy", "blocked"),
         ),
         OperatorPage::Jobs => format!(
             r#"<form class="toolbar" method="get" action="/jobs">
@@ -2304,6 +2315,56 @@ fn query_exact_match(
     })
 }
 
+fn node_state_filter_matches(value: &serde_json::Value, query: Option<&str>) -> bool {
+    let Some(expected) = query_param(query, "state")
+        .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("all"))
+    else {
+        return true;
+    };
+
+    let state = json_field_text(value, "state");
+    if expected.eq_ignore_ascii_case("online") {
+        return state.eq_ignore_ascii_case("ready") || state.eq_ignore_ascii_case("busy");
+    }
+
+    state.eq_ignore_ascii_case(expected)
+        || json_field_text(value, "reported_state").eq_ignore_ascii_case(expected)
+}
+
+fn node_trust_filter_matches(value: &serde_json::Value, query: Option<&str>) -> bool {
+    let Some(expected) = query_param(query, "trust")
+        .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("all"))
+    else {
+        return true;
+    };
+
+    let trusted = is_trusted_identity_path(&json_field_text(value, "identity_trust_path"));
+    match expected.to_ascii_lowercase().as_str() {
+        "trusted" => trusted,
+        "untrusted" => !trusted,
+        _ => true,
+    }
+}
+
+fn node_policy_filter_matches(value: &serde_json::Value, query: Option<&str>) -> bool {
+    let Some(expected) = query_param(query, "policy")
+        .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("all"))
+    else {
+        return true;
+    };
+
+    let allowed = value
+        .get("policy_allowed")
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true);
+
+    match expected.to_ascii_lowercase().as_str() {
+        "allowed" => allowed,
+        "blocked" => !allowed,
+        _ => true,
+    }
+}
+
 fn filter_json_items<T: Serialize>(items: Vec<T>, query: Option<&str>, collection: &str) -> Vec<T> {
     let search = query_param(query, "search")
         .map(str::trim)
@@ -2323,9 +2384,11 @@ fn filter_json_items<T: Serialize>(items: Vec<T>, query: Option<&str>, collectio
             timestamp_in_range(&value, query, collection)
                 && match collection {
                     "nodes" => {
-                        query_exact_match(&value, query, "state", &["state", "reported_state"])
+                        node_state_filter_matches(&value, query)
                             && query_exact_match(&value, query, "backend", &["backend"])
                             && query_exact_match(&value, query, "node_id", &["node_id"])
+                            && node_trust_filter_matches(&value, query)
+                            && node_policy_filter_matches(&value, query)
                     }
                     "jobs" => {
                         query_exact_match(&value, query, "status", &["status"])
@@ -3743,10 +3806,11 @@ mod tests {
         assert!(html.contains("color-scheme: dark"));
         assert!(html.contains("motion-lift"));
         assert!(html.contains("motion-glow"));
-        assert!(html.contains(r#"class="card metric-link" href="/nodes""#));
-        assert!(html.contains(r#"class="card metric-link" href="/jobs""#));
+        assert!(html.contains(r#"class="card metric-link" href="/nodes?state=online""#));
+        assert!(html.contains(r#"class="card metric-link" href="/jobs?status=queued""#));
         assert!(html.contains(r#"class="card metric-link" href="/credits""#));
-        assert!(html.contains(r#"class="card compact metric-link" href="/registry""#));
+        assert!(html.contains(r#"class="card compact metric-link" href="/registry?policy=blocked""#));
+        assert!(html.contains(r#"href="/jobs?status=completed""#));
         assert!(html.contains("prefers-reduced-motion: reduce"));
         assert!(html.contains("node-hex::before"));
         assert!(html.contains("logo-signal-wave"));
@@ -3785,7 +3849,7 @@ mod tests {
             StorageSource::LocalJsonFallback,
             &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
             crate::OperatorPage::Nodes,
-            Some("search=node-new&state=ready&backend=m&start=1&end=99"),
+            Some("search=node-new&state=online&backend=m&trust=trusted&policy=allowed&start=1&end=99"),
         );
 
         assert!(html.contains("Fleet Browser"));
@@ -3797,11 +3861,14 @@ mod tests {
         assert!(html.contains("MundusX Control Plane<br/>v1.0.0"));
         assert!(html.contains(r#"value="node-new""#));
         assert!(html.contains(r#"name="state""#));
-        assert!(html.contains(r#"value="ready" selected"#));
+        assert!(html.contains(r#"value="online" selected"#));
+        assert!(html.contains(r#"value="trusted" selected"#));
+        assert!(html.contains(r#"value="allowed" selected"#));
         assert!(html.contains("Large fleets should be controlled here"));
         assert!(html.contains("Developer APIs"));
         assert!(html.contains(r#"href="/nodes""#));
-        assert!(html.contains(r#"href="/v1/nodes?page=1&amp;page_size=25&amp;search=node-new&amp;start=1&amp;end=99&amp;state=ready&amp;backend=m""#));
+        assert!(html.contains(r#"href="/nodes?state=online""#));
+        assert!(html.contains(r#"href="/v1/nodes?page=1&amp;page_size=25&amp;search=node-new&amp;start=1&amp;end=99&amp;state=online&amp;backend=m&amp;trust=trusted&amp;policy=allowed""#));
     }
 
     #[test]
@@ -3894,6 +3961,47 @@ mod tests {
 
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0]["job_id"], "job-1");
+    }
+
+    #[test]
+    fn filter_json_items_applies_node_metric_filters() {
+        let items = vec![
+            serde_json::json!({
+                "node_id": "node-1",
+                "state": "ready",
+                "backend": "cuda",
+                "identity_trust_path": crate::contracts::IDENTITY_TRUST_KEYCHAIN,
+                "policy_allowed": true,
+                "updated_at": "10"
+            }),
+            serde_json::json!({
+                "node_id": "node-2",
+                "state": "busy",
+                "backend": "m",
+                "identity_trust_path": crate::contracts::IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
+                "policy_allowed": false,
+                "updated_at": "11"
+            }),
+            serde_json::json!({
+                "node_id": "node-3",
+                "state": "paused",
+                "backend": "cuda",
+                "identity_trust_path": crate::contracts::IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
+                "policy_allowed": true,
+                "updated_at": "12"
+            }),
+        ];
+
+        let online = crate::filter_json_items(items.clone(), Some("state=online"), "nodes");
+        assert_eq!(online.len(), 2);
+
+        let trusted = crate::filter_json_items(items.clone(), Some("trust=trusted"), "nodes");
+        assert_eq!(trusted.len(), 1);
+        assert_eq!(trusted[0]["node_id"], "node-1");
+
+        let blocked = crate::filter_json_items(items, Some("policy=blocked"), "nodes");
+        assert_eq!(blocked.len(), 1);
+        assert_eq!(blocked[0]["node_id"], "node-2");
     }
 
     #[test]
