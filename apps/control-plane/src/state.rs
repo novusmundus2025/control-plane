@@ -1356,7 +1356,7 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
             strategy: "sectioned_research".to_string(),
             summary: format!(
                 "Planned {} sectioned research units plus a final reducer.",
-                jobs.len()
+                jobs.len().saturating_sub(1)
             ),
             jobs,
         };
@@ -1574,6 +1574,11 @@ fn refresh_job_graph(graph: &mut JobGraph) {
 }
 
 fn apply_job_completion_to_graph(job: &mut JobRecord, completion: &JobCompletion) {
+    if !job.graph_execution_enabled {
+        refresh_job_graph(&mut job.graph);
+        return;
+    }
+
     match completion.status {
         JobStatus::Completed => {
             if let Some(final_node_id) = job.graph.final_node_id.clone() {
@@ -2659,6 +2664,49 @@ mod tests {
                 .and_then(|job| job.active_graph_node_id.as_deref()),
             None
         );
+    }
+
+    #[test]
+    fn advisory_graph_completion_does_not_fake_reducer_progress() {
+        let mut state = ready_state();
+        let mut request = classification_request(
+            "Give me a detailed history of Facebook from its origins to today.",
+        );
+        request.execution_mode = JobExecutionMode::Auto;
+
+        let record = state.submit_job(request, "1".to_string());
+        assert!(!record.graph_execution_enabled);
+
+        state
+            .claim_job("node-1", "2".to_string())
+            .job
+            .expect("claimed single job");
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("single answer".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "3".to_string(),
+            )
+            .expect("completed job");
+
+        assert_eq!(completed.status, JobStatus::Completed);
+        assert_eq!(completed.output.as_deref(), Some("single answer"));
+        assert!(completed.graph.results.is_empty());
+        assert!(completed.graph.final_output.is_none());
+        assert!(completed
+            .graph
+            .nodes
+            .iter()
+            .all(|node| node.status != JobGraphNodeStatus::Completed));
     }
 
     #[test]

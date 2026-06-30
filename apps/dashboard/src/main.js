@@ -597,8 +597,10 @@ function renderJobs(jobs = []) {
                 </div>
                 <div>${escapeHtml(planSummary)}</div>
                 ${
-                  graph.total
+                  job.graph_execution_enabled && graph.total
                     ? `<div class="job-progress"><strong>${graph.completed}/${graph.total} chunks complete</strong><span>${graph.running} running</span></div>`
+                    : planJobs.length
+                      ? `<div class="job-progress"><strong>planned only</strong><span>not chunk-executed</span></div>`
                     : ""
                 }
                 ${
