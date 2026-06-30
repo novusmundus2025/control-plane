@@ -51,6 +51,52 @@ const AUTH_DISABLED_ENV: &str = "MUNDUSX_AUTH_DISABLED";
 const CONTROL_PLANE_ENVIRONMENT_ENV: &str = "MUNDUSX_ENVIRONMENT";
 const CONTROL_PLANE_LOGO_PATH: &str = "/assets/mundusx-logo.png";
 const CONTROL_PLANE_LOGO_PNG: &[u8] = include_bytes!("../assets/mundusx-logo.png");
+const DEFAULT_PAGE_SIZE: usize = 25;
+const MAX_PAGE_SIZE: usize = 100;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+struct Pagination {
+    page: usize,
+    page_size: usize,
+    total_items: usize,
+    total_pages: usize,
+    has_previous: bool,
+    has_next: bool,
+}
+
+impl Pagination {
+    fn from_query(query: Option<&str>) -> Self {
+        let page = query_usize(query, "page")
+            .unwrap_or(1)
+            .clamp(1, usize::MAX);
+        let page_size = query_usize(query, "page_size")
+            .or_else(|| query_usize(query, "limit"))
+            .unwrap_or(DEFAULT_PAGE_SIZE)
+            .clamp(1, MAX_PAGE_SIZE);
+
+        Self {
+            page,
+            page_size,
+            total_items: 0,
+            total_pages: 1,
+            has_previous: false,
+            has_next: false,
+        }
+    }
+
+    fn with_total(self, total_items: usize) -> Self {
+        let total_pages = total_items.div_ceil(self.page_size).max(1);
+        let page = self.page.min(total_pages);
+        Self {
+            page,
+            page_size: self.page_size,
+            total_items,
+            total_pages,
+            has_previous: page > 1,
+            has_next: page < total_pages,
+        }
+    }
+}
 
 impl OperatorAuthMode {
     fn as_str(self) -> &'static str {
@@ -707,7 +753,7 @@ fn control_plane_operator_page(
               <input aria-label="Search nodes" placeholder="Search node id, host, model, backend" value="{nodes_search_value}" />
               <select aria-label="Filter node state"><option>All states</option><option>Online</option><option>Trusted</option><option>Paused</option><option>Policy blocked</option></select>
               <select aria-label="Sort nodes"><option>Sort by last heartbeat</option><option>Sort by assigned jobs</option><option>Sort by credits</option><option>Sort by trust</option></select>
-              <a class="button" href="/v1/nodes">Nodes JSON</a>
+              <a class="button" href="/v1/nodes?page=1&page_size=25">Nodes JSON</a>
             </section>
             <section class="grid four">
               <div class="metric"><span>Online</span><strong>{nodes}</strong></div>
@@ -732,8 +778,8 @@ fn control_plane_operator_page(
             <section class="panel">
               <h2>Job Queue</h2>
               <p class="meta">Operator job review belongs on this page with status filters, node/model/runtime facets, and safe retry or cancel controls when those actions are enabled.</p>
-              <a class="button" href="/v1/jobs">Jobs JSON</a>
-              <a class="button" href="/v1/job-events">Job Events JSON</a>
+              <a class="button" href="/v1/jobs?page=1&page_size=25">Jobs JSON</a>
+              <a class="button" href="/v1/job-events?page=1&page_size=25">Job Events JSON</a>
             </section>"#
         ),
         OperatorPage::Credits => format!(
@@ -744,7 +790,7 @@ fn control_plane_operator_page(
             <section class="panel">
               <h2>Credits Ledger</h2>
               <p class="meta">Credit reconciliation should use ledger history, node-level totals, and exportable raw data. Keep the raw endpoint available for automation.</p>
-              <a class="button" href="/v1/credits">Credits JSON</a>
+              <a class="button" href="/v1/credits?page=1&page_size=25">Credits JSON</a>
             </section>"#
         ),
         OperatorPage::Registry => format!(
@@ -757,7 +803,7 @@ fn control_plane_operator_page(
             <section class="panel">
               <h2>Registry & Trust</h2>
               <p class="meta">Signed registry snapshots, identity trust paths, and policy decisions should be reviewed here. Raw node data remains available for contract checks.</p>
-              <a class="button" href="/v1/nodes">Registry JSON</a>
+              <a class="button" href="/v1/nodes?page=1&page_size=25">Registry JSON</a>
               <a class="button" href="/v1/status">Status JSON</a>
             </section>"#,
             escape_html(storage_source.as_str())
@@ -839,7 +885,7 @@ fn control_plane_operator_page(
       <aside class="sidebar">
         <a class="brand" href="/"><img class="brand-mark" alt="MundusX logo" src="{logo_path}" /> <span>MundusX</span></a>
         <nav class="nav"><a class="nav-item" href="/">Overview</a>{nav}</nav>
-        <div class="api-box"><strong>Developer APIs</strong><br/><a href="/health">Health JSON</a><br/><a href="/v1/status">Status JSON</a><br/><a href="/v1/nodes">Nodes JSON</a><br/><a href="/v1/jobs">Jobs JSON</a></div>
+        <div class="api-box"><strong>Developer APIs</strong><br/><a href="/health">Health JSON</a><br/><a href="/v1/status">Status JSON</a><br/><a href="/v1/nodes?page=1&page_size=25">Nodes JSON</a><br/><a href="/v1/jobs?page=1&page_size=25">Jobs JSON</a></div>
       </aside>
       <main>
         <div class="topbar"><div><h1>{title}</h1><div class="meta">Operator-facing control page. Raw contracts stay grouped under Developer APIs.</div></div><a class="button" href="/">Overview</a></div>
@@ -1180,6 +1226,15 @@ fn control_plane_home(
         border-color: var(--line-strong);
         transform: translateY(-2px);
         box-shadow: 0 20px 44px rgba(0, 0, 0, 0.24), inset 0 1px 0 rgba(255, 255, 255, 0.06);
+      }}
+      .metric-link {{
+        display: block;
+        color: inherit;
+        text-decoration: none;
+      }}
+      .metric-link:focus-visible {{
+        outline: 2px solid var(--blue);
+        outline-offset: 3px;
       }}
       .card.compact {{
         min-height: 88px;
@@ -1700,19 +1755,19 @@ fn control_plane_home(
         </div>
 
         <section class="primary-metrics" aria-label="Primary metrics">
-          <div class="card"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="16" r="2.5"/><circle cx="19" cy="16" r="2.5"/><path d="M10 7 6.5 14"/><path d="m14 7 3.5 7"/><path d="M7.5 16h9"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Online nodes</div><div class="card-value">{nodes}</div><div class="delta">-- vs last 24h</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 33 C14 28 16 17 27 19 C36 21 35 34 47 31 C60 28 54 12 69 11 C82 11 77 25 89 22 C101 19 102 8 120 4" stroke="#188fff" stroke-width="2"/></svg></div>
-          <div class="card"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Trusted nodes</div><div class="card-value">{trusted}</div><div class="delta">-- vs last 24h</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 30 C10 14 18 34 27 19 S41 23 50 16 S66 27 74 13 S92 19 120 3" stroke="#188fff" stroke-width="2"/></svg></div>
-          <div class="card"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M3 13h18"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Queued jobs</div><div class="card-value">{queued}</div><div class="delta">-- vs last 24h</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 34 C12 33 12 13 27 9 C39 6 42 31 55 28 C68 25 69 11 82 15 C95 19 99 17 120 4" stroke="#188fff" stroke-width="2"/></svg></div>
-          <div class="card"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Total credits</div><div class="card-value">{credits_total:.2}</div><div class="delta">-- vs last 24h</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 30 C12 12 19 27 30 20 S44 26 55 16 S70 20 80 7 S99 32 120 18" stroke="#188fff" stroke-width="2"/></svg></div>
+          <a class="card metric-link" href="/nodes"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="16" r="2.5"/><circle cx="19" cy="16" r="2.5"/><path d="M10 7 6.5 14"/><path d="m14 7 3.5 7"/><path d="M7.5 16h9"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Online nodes</div><div class="card-value">{nodes}</div><div class="delta">Open Nodes</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 33 C14 28 16 17 27 19 C36 21 35 34 47 31 C60 28 54 12 69 11 C82 11 77 25 89 22 C101 19 102 8 120 4" stroke="#188fff" stroke-width="2"/></svg></a>
+          <a class="card metric-link" href="/registry"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Trusted nodes</div><div class="card-value">{trusted}</div><div class="delta">Open Registry</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 30 C10 14 18 34 27 19 S41 23 50 16 S66 27 74 13 S92 19 120 3" stroke="#188fff" stroke-width="2"/></svg></a>
+          <a class="card metric-link" href="/jobs"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M3 13h18"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Queued jobs</div><div class="card-value">{queued}</div><div class="delta">Open Jobs</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 34 C12 33 12 13 27 9 C39 6 42 31 55 28 C68 25 69 11 82 15 C95 19 99 17 120 4" stroke="#188fff" stroke-width="2"/></svg></a>
+          <a class="card metric-link" href="/credits"><div class="metric-icon"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg></div><div style="position:absolute;left:104px;top:22px;"><div class="card-label">Total credits</div><div class="card-value">{credits_total:.2}</div><div class="delta">Open Credits</div></div><svg class="sparkline" viewBox="0 0 120 44" fill="none"><path d="M0 30 C12 12 19 27 30 20 S44 26 55 16 S70 20 80 7 S99 32 120 18" stroke="#188fff" stroke-width="2"/></svg></a>
         </section>
 
         <section class="secondary-metrics" aria-label="Secondary metrics">
-          <div class="card compact"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-5"/></svg><div><div class="card-label">Job events</div><div class="card-value">{job_events}</div></div></div>
-          <div class="card compact"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg><div><div class="card-label">Credits ledger</div><div class="card-value">{credits_ledger}</div></div></div>
-          <div class="card compact"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg><div><div class="card-label">Assigned jobs</div><div class="card-value">{assigned}</div></div></div>
-          <div class="card compact"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-5"/></svg><div><div class="card-label">Completed jobs</div><div class="card-value">{completed}</div></div></div>
-          <div class="card compact"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><div><div class="card-label">Failed jobs</div><div class="card-value">{failed}</div></div></div>
-          <div class="card compact"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v8"/><path d="M9 12h6"/></svg><div><div class="card-label">Policy blocked</div><div class="card-value">{policy_blocked}</div></div></div>
+          <a class="card compact metric-link" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M8 2v4"/><path d="M16 2v4"/><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M3 10h18"/><path d="m9 16 2 2 4-5"/></svg><div><div class="card-label">Job events</div><div class="card-value">{job_events}</div></div></a>
+          <a class="card compact metric-link" href="/credits"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg><div><div class="card-label">Credits ledger</div><div class="card-value">{credits_ledger}</div></div></a>
+          <a class="card compact metric-link" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M20 21a8 8 0 0 0-16 0"/><circle cx="12" cy="7" r="4"/></svg><div><div class="card-label">Assigned jobs</div><div class="card-value">{assigned}</div></div></a>
+          <a class="card compact metric-link" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-5"/></svg><div><div class="card-label">Completed jobs</div><div class="card-value">{completed}</div></div></a>
+          <a class="card compact metric-link" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><div><div class="card-label">Failed jobs</div><div class="card-value">{failed}</div></div></a>
+          <a class="card compact metric-link" href="/registry"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v8"/><path d="M9 12h6"/></svg><div><div class="card-label">Policy blocked</div><div class="card-value">{policy_blocked}</div></div></a>
         </section>
 
         <section class="work-grid">
@@ -1746,7 +1801,7 @@ fn control_plane_home(
               <div class="info-box">
                 <div style="display:flex;gap:12px;align-items:flex-start;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg><div>Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.<br/>Current startup storage source: <code>{storage_source}</code><br/>Supabase sync is <code>{supabase}</code></div></div>
               </div>
-              <div class="api-strip links" aria-label="Developer APIs"><span class="meta">Developer APIs</span><a class="api-link" href="/health">health json</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes">nodes json</a><a class="api-link" href="/v1/jobs">jobs json</a><a class="api-link" href="/v1/credits">credits json</a></div>
+              <div class="api-strip links" aria-label="Developer APIs"><span class="meta">Developer APIs</span><a class="api-link" href="/health">health json</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes?page=1&page_size=25">nodes json</a><a class="api-link" href="/v1/jobs?page=1&page_size=25">jobs json</a><a class="api-link" href="/v1/credits?page=1&page_size=25">credits json</a></div>
             </div>
           </div>
         </section>
@@ -1754,7 +1809,7 @@ fn control_plane_home(
         <section class="section node-panel">
           <div class="section-head">
             <div class="section-title-row"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="4" y="4" width="16" height="6" rx="1"/><rect x="4" y="14" width="16" height="6" rx="1"/><path d="M8 7h7"/><path d="M8 17h7"/></svg><h2 class="section-title">Node Details</h2></div>
-            <div class="node-tools"><span class="meta">{nodes} registered</span><div class="node-summary"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Signed registry snapshot</div><a class="endpoint-button motion-lift" href="/v1/nodes">Nodes JSON</a></div>
+            <div class="node-tools"><span class="meta">{nodes} registered</span><div class="node-summary"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>Signed registry snapshot</div><a class="endpoint-button motion-lift" href="/v1/nodes?page=1&page_size=25">Nodes JSON</a></div>
           </div>
           <div class="section-body">
             <div class="node-details-body">
@@ -1948,6 +2003,55 @@ fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
         }
     }
     None
+}
+
+fn query_usize(query: Option<&str>, key: &str) -> Option<usize> {
+    query_param(query, key)?.parse::<usize>().ok()
+}
+
+fn wants_legacy_array(query: Option<&str>) -> bool {
+    matches!(query_param(query, "format"), Some("array"))
+}
+
+fn wants_full_snapshot(query: Option<&str>) -> bool {
+    matches!(query_param(query, "include"), Some("full"))
+}
+
+fn compact_status_snapshot(mut snapshot: serde_json::Value) -> serde_json::Value {
+    if let serde_json::Value::Object(fields) = &mut snapshot {
+        fields.remove("nodes");
+        fields.remove("jobs");
+        fields.insert(
+            "list_endpoints".to_string(),
+            serde_json::json!({
+                "nodes": "/v1/nodes?page=1&page_size=25",
+                "jobs": "/v1/jobs?page=1&page_size=25",
+                "job_events": "/v1/job-events?page=1&page_size=25",
+                "credits": "/v1/credits?page=1&page_size=25"
+            }),
+        );
+    }
+    snapshot
+}
+
+fn paginated_items_response<T: Serialize>(
+    items: Vec<T>,
+    query: Option<&str>,
+    collection: &str,
+) -> serde_json::Value {
+    let pagination = Pagination::from_query(query).with_total(items.len());
+    let start = (pagination.page - 1) * pagination.page_size;
+    let page_items = items
+        .into_iter()
+        .skip(start)
+        .take(pagination.page_size)
+        .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "collection": collection,
+        "items": page_items,
+        "pagination": pagination,
+    })
 }
 
 fn header_value<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<&'a str> {
@@ -2318,6 +2422,11 @@ fn handle_connection(
                 .lock()
                 .expect("state lock")
                 .snapshot(storage_source.as_str());
+            let snapshot = if wants_full_snapshot(query) {
+                snapshot
+            } else {
+                compact_status_snapshot(snapshot)
+            };
             let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
             let deploy_fingerprint = deploy_fingerprint();
             let auth_mode = operator_auth_mode();
@@ -2344,14 +2453,24 @@ fn handle_connection(
                 .lock()
                 .expect("state lock")
                 .snapshot(storage_source.as_str());
+            let snapshot = if wants_full_snapshot(query) {
+                snapshot
+            } else {
+                compact_status_snapshot(snapshot)
+            };
             json_response(
                 "200 OK",
                 status_snapshot_with_deploy_fingerprint(snapshot, deploy_fingerprint()),
             )
         }
         ("GET", "/v1/nodes") => {
-            let snapshot = state.lock().expect("state lock").nodes_snapshot();
-            json_response("200 OK", snapshot)
+            let guard = state.lock().expect("state lock");
+            if wants_legacy_array(query) {
+                json_response("200 OK", guard.nodes_snapshot())
+            } else {
+                let nodes = guard.nodes.values().cloned().collect::<Vec<_>>();
+                json_response("200 OK", paginated_items_response(nodes, query, "nodes"))
+            }
         }
         ("POST", "/v1/nodes/contribution-cap") => {
             match serde_json::from_str::<OperatorContributionPercentUpdate>(&request.body) {
@@ -2397,8 +2516,14 @@ fn handle_connection(
             }
         }
         ("GET", "/v1/jobs") => {
-            let snapshot = state.lock().expect("state lock").jobs_snapshot();
-            json_response("200 OK", snapshot)
+            let guard = state.lock().expect("state lock");
+            if wants_legacy_array(query) {
+                json_response("200 OK", guard.jobs_snapshot())
+            } else {
+                let mut jobs = guard.jobs.values().cloned().collect::<Vec<_>>();
+                jobs.reverse();
+                json_response("200 OK", paginated_items_response(jobs, query, "jobs"))
+            }
         }
         ("GET", "/v1/jobs/next") => {
             if let Some(node_id) = query_param(query, "node_id") {
@@ -2446,12 +2571,39 @@ fn handle_connection(
             }
         }
         ("GET", "/v1/job-events") => {
-            let snapshot = state.lock().expect("state lock").job_events_snapshot();
-            json_response("200 OK", snapshot)
+            let guard = state.lock().expect("state lock");
+            if wants_legacy_array(query) {
+                json_response("200 OK", guard.job_events_snapshot())
+            } else {
+                let mut events = guard.job_events.clone();
+                events.reverse();
+                json_response(
+                    "200 OK",
+                    paginated_items_response(events, query, "job_events"),
+                )
+            }
         }
         ("GET", "/v1/credits") => {
-            let snapshot = state.lock().expect("state lock").credits_snapshot();
-            json_response("200 OK", snapshot)
+            let guard = state.lock().expect("state lock");
+            let mut response = guard.credits_snapshot();
+            if !wants_legacy_array(query) {
+                let mut ledger = guard.credits_ledger.clone();
+                ledger.reverse();
+                let paged = paginated_items_response(ledger, query, "credits_ledger");
+                if let serde_json::Value::Object(fields) = &mut response {
+                    if let Some(items) = paged.get("items") {
+                        fields.insert("ledger".to_string(), items.clone());
+                    }
+                    if let Some(pagination) = paged.get("pagination") {
+                        fields.insert("pagination".to_string(), pagination.clone());
+                    }
+                    fields.insert(
+                        "collection".to_string(),
+                        serde_json::Value::String("credits_ledger".to_string()),
+                    );
+                }
+            }
+            json_response("200 OK", response)
         }
         ("POST", "/v1/register") => {
             match serde_json::from_str::<AgentRegistration>(&request.body) {
@@ -3293,6 +3445,10 @@ mod tests {
         assert!(html.contains("color-scheme: dark"));
         assert!(html.contains("motion-lift"));
         assert!(html.contains("motion-glow"));
+        assert!(html.contains(r#"class="card metric-link" href="/nodes""#));
+        assert!(html.contains(r#"class="card metric-link" href="/jobs""#));
+        assert!(html.contains(r#"class="card metric-link" href="/credits""#));
+        assert!(html.contains(r#"class="card compact metric-link" href="/registry""#));
         assert!(html.contains("prefers-reduced-motion: reduce"));
         assert!(html.contains("node-hex::before"));
         assert!(html.contains("logo-signal-wave"));
@@ -3341,7 +3497,58 @@ mod tests {
         assert!(html.contains("Large fleets should be controlled here"));
         assert!(html.contains("Developer APIs"));
         assert!(html.contains(r#"href="/nodes""#));
-        assert!(html.contains(r#"href="/v1/nodes""#));
+        assert!(html.contains(r#"href="/v1/nodes?page=1&page_size=25""#));
+    }
+
+    #[test]
+    fn compact_status_snapshot_removes_unbounded_lists() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "10");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "hello".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "11".to_string(),
+        );
+
+        let compact = crate::compact_status_snapshot(state.snapshot("supabase"));
+
+        assert!(compact.get("nodes").is_none());
+        assert!(compact.get("jobs").is_none());
+        assert_eq!(compact["online_count"].as_u64(), Some(1));
+        assert_eq!(
+            compact.pointer("/list_endpoints/nodes").and_then(|value| value.as_str()),
+            Some("/v1/nodes?page=1&page_size=25")
+        );
+    }
+
+    #[test]
+    fn paginated_items_response_limits_list_payloads() {
+        let response = crate::paginated_items_response(
+            vec![1, 2, 3, 4, 5],
+            Some("page=2&page_size=2"),
+            "numbers",
+        );
+
+        assert_eq!(response["collection"], "numbers");
+        assert_eq!(response["items"], serde_json::json!([3, 4]));
+        assert_eq!(response["pagination"]["page"], 2);
+        assert_eq!(response["pagination"]["page_size"], 2);
+        assert_eq!(response["pagination"]["total_items"], 5);
+        assert_eq!(response["pagination"]["total_pages"], 3);
+        assert_eq!(response["pagination"]["has_previous"], true);
+        assert_eq!(response["pagination"]["has_next"], true);
     }
 
     #[test]
