@@ -682,6 +682,129 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
     html
 }
 
+fn compact_preview(value: Option<&str>) -> String {
+    let text = value.unwrap_or("").trim();
+    if text.is_empty() {
+        return "none".to_string();
+    }
+
+    let mut preview = text.chars().take(180).collect::<String>();
+    if text.chars().count() > 180 {
+        preview.push_str("...");
+    }
+    preview
+}
+
+fn job_execution_mode_label(mode: contracts::JobExecutionMode) -> &'static str {
+    match mode {
+        contracts::JobExecutionMode::Single => "single",
+        contracts::JobExecutionMode::Auto => "auto",
+        contracts::JobExecutionMode::Decompose => "decompose",
+    }
+}
+
+fn render_job_records(jobs: Vec<JobRecord>) -> String {
+    if jobs.is_empty() {
+        return r#"<div class="empty">No jobs match these filters.</div>"#.to_string();
+    }
+
+    let mut html = String::from(
+        r#"<div class="table jobs-table">
+        <div class="thead">
+          <div>Job</div>
+          <div>Prompt</div>
+          <div>Status</div>
+          <div>Node</div>
+          <div>Worker</div>
+          <div>Timing</div>
+          <div>Result</div>
+        </div>"#,
+    );
+
+    for job in jobs {
+        let status = job.status.to_string();
+        let (status_bg, status_fg) = state_badge(&status);
+        let assigned_node = job.assigned_node_id.as_deref().unwrap_or("unassigned");
+        let worker = job.worker_id.as_deref().unwrap_or("none");
+        let backend = job
+            .backend
+            .map(|backend| backend.to_string())
+            .unwrap_or_else(|| job.preferred_backend.to_string());
+        let model = job.model.as_deref().unwrap_or("default");
+        let completed = job.completed_at.as_deref().unwrap_or("not completed");
+        let assigned = job.assigned_at.as_deref().unwrap_or("not assigned");
+        let result_label = if job
+            .error
+            .as_ref()
+            .is_some_and(|error| !error.trim().is_empty())
+        {
+            "error"
+        } else {
+            "output"
+        };
+        let result_preview = if result_label == "error" {
+            compact_preview(job.error.as_deref())
+        } else {
+            compact_preview(job.output.as_deref())
+        };
+
+        html.push_str(&format!(
+            r#"<div class="row">
+              <div>
+                <strong>{}</strong>
+                <div class="meta">request {}</div>
+              </div>
+              <div>
+                <div>{}</div>
+                <div class="meta">model {} &middot; mode {} &middot; graph {}</div>
+              </div>
+              <div><span class="pill" style="background:{};color:{};">{}</span></div>
+              <div>
+                <strong>{}</strong>
+                <div class="meta">assigned node</div>
+              </div>
+              <div>
+                <strong>{}</strong>
+                <div class="meta">backend {}</div>
+              </div>
+              <div>
+                <div class="meta">submitted {}</div>
+                <div class="meta">assigned {}</div>
+                <div class="meta">completed {}</div>
+              </div>
+              <div>
+                <strong>{}</strong>
+                <div class="meta">{}</div>
+              </div>
+            </div>"#,
+            escape_html(&job.job_id),
+            escape_html(&job.request_id),
+            escape_html(&compact_preview(Some(&job.prompt))),
+            escape_html(model),
+            escape_html(job_execution_mode_label(job.execution_mode)),
+            if job.graph_execution_enabled {
+                "enabled"
+            } else {
+                "advisory"
+            },
+            status_bg,
+            status_fg,
+            escape_html(&status),
+            escape_html(assigned_node),
+            escape_html(worker),
+            escape_html(&backend),
+            escape_html(&job.submitted_at),
+            escape_html(assigned),
+            escape_html(completed),
+            result_label,
+            escape_html(&result_preview),
+        ));
+    }
+
+    html.push_str("</div>");
+    html
+}
+
 fn paged_node_records(
     nodes: Vec<NodeRecord>,
     query: Option<&str>,
@@ -695,6 +818,18 @@ fn paged_node_records(
         .collect::<Vec<_>>();
 
     (page_nodes, pagination)
+}
+
+fn paged_job_records(jobs: Vec<JobRecord>, query: Option<&str>) -> (Vec<JobRecord>, Pagination) {
+    let pagination = Pagination::from_query(query).with_total(jobs.len());
+    let start = (pagination.page - 1) * pagination.page_size;
+    let page_jobs = jobs
+        .into_iter()
+        .skip(start)
+        .take(pagination.page_size)
+        .collect::<Vec<_>>();
+
+    (page_jobs, pagination)
 }
 
 fn paged_operator_href(path: &str, query: Option<&str>, page: usize, page_size: usize) -> String {
@@ -874,6 +1009,12 @@ fn control_plane_operator_page(
     let (paged_nodes, nodes_pagination) = paged_node_records(filtered_nodes, query);
     let filtered_nodes_html = render_node_records(paged_nodes);
     let nodes_pagination_html = render_pagination_controls("/nodes", query, &nodes_pagination);
+    let mut filtered_jobs = state.jobs.values().cloned().collect::<Vec<_>>();
+    filtered_jobs.reverse();
+    let filtered_jobs = filter_json_items(filtered_jobs, query, "jobs");
+    let (paged_jobs, jobs_pagination) = paged_job_records(filtered_jobs, query);
+    let filtered_jobs_html = render_job_records(paged_jobs);
+    let jobs_pagination_html = render_pagination_controls("/jobs", query, &jobs_pagination);
     let body = match page {
         OperatorPage::Nodes => format!(
             r#"{filters}
@@ -901,7 +1042,9 @@ fn control_plane_operator_page(
             </section>
             <section class="panel">
               <h2>Job Queue</h2>
-              <p class="meta">Operator job review belongs on this page with status filters, node/model/runtime facets, and safe retry or cancel controls when those actions are enabled.</p>
+              <p class="meta">Review who handled each request, what model/runtime was used, when it completed, and the output or error summary. Retry and cancel controls can attach here when mutating job actions are enabled.</p>
+              {filtered_jobs_html}
+              {jobs_pagination_html}
             </section>"#,
             filters = control_filter_form(page, query, &jobs_api_href)
         ),
@@ -1009,6 +1152,7 @@ fn control_plane_operator_page(
       .metric strong {{ display:block; margin-top:7px; font-size:28px; }}
       .table {{ display:grid; overflow-x:auto; }}
       .thead,.row {{ display:grid; grid-template-columns:minmax(210px,1.15fr) minmax(130px,.7fr) minmax(170px,.95fr) minmax(90px,.45fr) minmax(90px,.45fr) minmax(340px,1.8fr) minmax(130px,.7fr) minmax(110px,.55fr); gap:14px; min-width:1280px; padding:14px 0; border-bottom:1px solid var(--line); }}
+      .jobs-table .thead,.jobs-table .row {{ grid-template-columns:minmax(190px,1fr) minmax(260px,1.45fr) minmax(110px,.55fr) minmax(160px,.85fr) minmax(160px,.85fr) minmax(180px,.9fr) minmax(260px,1.35fr); min-width:1320px; }}
       .thead {{ color:var(--muted); text-transform:uppercase; font-size:12px; }}
       .row > div {{ min-width:0; overflow-wrap:anywhere; }}
       .row strong {{ overflow-wrap:anywhere; }}
@@ -3523,8 +3667,8 @@ mod tests {
         LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
     use crate::contracts::{
-        AgentRegistration, AgentState, Backend, Heartbeat, JobExecutionMode, JobRequest,
-        RuntimeMode, WorkerHealthReport,
+        AgentRegistration, AgentState, Backend, Heartbeat, JobCompletion, JobExecutionMode,
+        JobRequest, JobStatus, RuntimeMode, WorkerHealthReport,
     };
     use crate::state::ControlPlaneState;
     use ed25519_dalek::{Signer, SigningKey};
@@ -3969,6 +4113,65 @@ mod tests {
         assert!(html.contains(r#"href="/nodes?page=1&amp;page_size=10&amp;state=online""#));
         assert!(html.contains(r#"href="/nodes?page=3&amp;page_size=10&amp;state=online""#));
         assert!(html.contains(r#"href="/v1/nodes?page=1&amp;page_size=10&amp;state=online""#));
+    }
+
+    #[test]
+    fn jobs_page_shows_filtered_completed_job_details() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "1");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-completed".to_string(),
+                prompt: "Summarize Tesla history".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(128),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claimed job");
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-completed".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-123".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("Tesla summary output".to_string()),
+                    error: None,
+                    latency_ms: Some(50),
+                },
+                "4".to_string(),
+            )
+            .expect("completed job");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Jobs,
+            Some("status=completed&page=1&page_size=10"),
+        );
+
+        assert!(html.contains("Job Queue"));
+        assert!(html.contains("job-completed"));
+        assert!(html.contains("Summarize Tesla history"));
+        assert!(html.contains("node-1"));
+        assert!(html.contains("worker-123"));
+        assert!(html.contains("Tesla summary output"));
+        assert!(html.contains("Showing 1-1 of 1"));
+        assert!(html.contains(r#"href="/v1/jobs?page=1&amp;page_size=10&amp;status=completed""#));
     }
 
     #[test]
