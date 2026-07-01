@@ -428,6 +428,14 @@ pub struct JobGraphNode {
     pub required_output: String,
     pub status: JobGraphNodeStatus,
     pub blocked_by: Vec<String>,
+    #[serde(default)]
+    pub assigned_node_id: Option<String>,
+    #[serde(default)]
+    pub assigned_at: Option<String>,
+    #[serde(default)]
+    pub worker_id: Option<String>,
+    #[serde(default)]
+    pub backend: Option<Backend>,
     pub output: Option<String>,
     pub error: Option<String>,
 }
