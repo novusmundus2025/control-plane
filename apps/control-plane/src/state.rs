@@ -164,16 +164,12 @@ impl ControlPlaneState {
         let job_id_ref = job_id.as_deref();
         let parent_job_id_ref = parent_job_id.as_deref();
         let graph_node_id_ref = graph_node_id.as_deref();
-        if self
-            .credits_ledger
-            .iter()
-            .any(|entry| {
-                entry.entry_type == "job_reward"
-                    && entry.job_id.as_deref() == job_id_ref
-                    && entry.parent_job_id.as_deref() == parent_job_id_ref
-                    && entry.graph_node_id.as_deref() == graph_node_id_ref
-            })
-        {
+        if self.credits_ledger.iter().any(|entry| {
+            entry.entry_type == "job_reward"
+                && entry.job_id.as_deref() == job_id_ref
+                && entry.parent_job_id.as_deref() == parent_job_id_ref
+                && entry.graph_node_id.as_deref() == graph_node_id_ref
+        }) {
             return None;
         }
 
@@ -958,7 +954,11 @@ fn graph_execution_allowed(
     }
 }
 
-fn update_node_trust(trust: &mut NodeTrustRecord, completion: &JobCompletion, completed_at: String) {
+fn update_node_trust(
+    trust: &mut NodeTrustRecord,
+    completion: &JobCompletion,
+    completed_at: String,
+) {
     match completion.status {
         JobStatus::Completed => {
             trust.completed_jobs = trust.completed_jobs.saturating_add(1);
@@ -1055,8 +1055,7 @@ fn complete_graph_execution_job(
                     graph_node.error = None;
                 }
                 JobStatus::Failed => {
-                    let is_final_node =
-                        job.graph.final_node_id.as_deref() == Some(active_node_id);
+                    let is_final_node = job.graph.final_node_id.as_deref() == Some(active_node_id);
                     if !graph_node
                         .failed_node_ids
                         .iter()
@@ -1110,7 +1109,7 @@ fn complete_graph_execution_job(
             .final_output
             .clone()
             .or_else(|| job.output.clone());
-        job.error = None;
+        job.error = job.graph.merge_error.clone();
         job.completed_at = Some(completed_at.clone());
     } else if job.graph.status == JobGraphStatus::Failed {
         job.status = JobStatus::Failed;
@@ -3094,9 +3093,7 @@ mod tests {
             .expect("retried graph node");
         assert_eq!(retry_node.status, JobGraphNodeStatus::Running);
         assert_eq!(retry_node.attempt_count, 2);
-        assert!(retry_node
-            .failed_node_ids
-            .contains(&"node-1".to_string()));
+        assert!(retry_node.failed_node_ids.contains(&"node-1".to_string()));
         assert_eq!(retry_node.assigned_node_id.as_deref(), Some("node-2"));
     }
 
@@ -3316,7 +3313,10 @@ mod tests {
         assert_eq!(second_award.device_id.as_deref(), Some("node-2"));
         assert_eq!(first_award.parent_job_id.as_deref(), Some("job-1"));
         assert_eq!(second_award.parent_job_id.as_deref(), Some("job-1"));
-        assert_eq!(first_award.graph_node_id.as_deref(), Some(first_graph_node.as_str()));
+        assert_eq!(
+            first_award.graph_node_id.as_deref(),
+            Some(first_graph_node.as_str())
+        );
         assert_eq!(
             second_award.graph_node_id.as_deref(),
             Some(second_graph_node.as_str())
@@ -3473,7 +3473,11 @@ mod tests {
             .expect("reducer failure falls back");
 
         assert_eq!(completed.status, JobStatus::Completed);
-        assert_eq!(completed.error, None);
+        assert!(completed
+            .error
+            .as_deref()
+            .expect("reducer warning")
+            .contains("Final synthesis: llama-cli exited 1"));
         assert!(completed
             .output
             .as_deref()
@@ -4098,10 +4102,7 @@ mod tests {
         );
 
         let job = state.jobs.get("job-1").expect("job");
-        let decision = job
-            .scheduler_decision
-            .as_ref()
-            .expect("scheduler decision");
+        let decision = job.scheduler_decision.as_ref().expect("scheduler decision");
         assert_eq!(decision.node_id, "node-2");
         assert!(decision
             .reasons
