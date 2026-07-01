@@ -15,6 +15,8 @@ use std::fs;
 use std::path::PathBuf;
 
 const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
+const DEFAULT_GRAPH_NODE_LEASE_SECONDS: u64 = 600;
+const GRAPH_NODE_LEASE_SECONDS_ENV: &str = "MUNDUSX_GRAPH_NODE_LEASE_SECONDS";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ControlPlaneState {
@@ -655,6 +657,8 @@ impl ControlPlaneState {
     }
 
     pub fn claim_job(&mut self, node_id: &str, claimed_at: String) -> JobClaimResponse {
+        self.release_stale_graph_claims(&claimed_at);
+
         let Some(node) = self.nodes.get(node_id) else {
             return JobClaimResponse { job: None };
         };
@@ -817,6 +821,89 @@ impl ControlPlaneState {
             && next_ready_graph_node_id(&job.graph).is_some()
     }
 
+    fn release_stale_graph_claims(&mut self, now: &str) {
+        let Some(now) = parse_unix_seconds(now) else {
+            return;
+        };
+        let lease_seconds = graph_node_lease_seconds();
+
+        for job in self.jobs.values_mut() {
+            if !job.graph_execution_enabled || !matches!(job.status, JobStatus::Assigned) {
+                continue;
+            }
+
+            let mut changed = false;
+            for node in &mut job.graph.nodes {
+                if node.status != JobGraphNodeStatus::Running {
+                    continue;
+                }
+                let Some(assigned_at) = node.assigned_at.as_deref().and_then(parse_unix_seconds)
+                else {
+                    continue;
+                };
+                if now.saturating_sub(assigned_at) < lease_seconds {
+                    continue;
+                }
+
+                let stale_node_id = node.assigned_node_id.clone();
+                if let Some(node_id) = stale_node_id.as_ref() {
+                    if !node.failed_node_ids.iter().any(|failed| failed == node_id) {
+                        node.failed_node_ids.push(node_id.clone());
+                    }
+                }
+                let stale_error = format!(
+                    "stale assignment timed out after {lease_seconds}s on {}",
+                    stale_node_id.as_deref().unwrap_or("unknown node")
+                );
+                node.error = Some(stale_error);
+                node.output = None;
+                node.assigned_node_id = None;
+                node.assigned_at = None;
+                node.worker_id = None;
+                node.backend = None;
+                node.status = if node.attempt_count >= node.max_attempts {
+                    JobGraphNodeStatus::Failed
+                } else {
+                    JobGraphNodeStatus::Ready
+                };
+                changed = true;
+            }
+
+            if !changed {
+                continue;
+            }
+
+            refresh_job_graph(&mut job.graph);
+            refresh_graph_results(
+                &mut job.graph,
+                job.classification.output_format,
+                None,
+                None,
+                None,
+            );
+            job.graph.updated_at = now.to_string();
+            job.active_graph_node_id = next_ready_graph_node_id(&job.graph);
+            job.assigned_node_id = None;
+            job.assigned_at = None;
+            job.worker_id = None;
+            job.backend = None;
+            job.output = job.graph.final_output.clone();
+            job.error = job.graph.merge_error.clone();
+            if job.graph.status == JobGraphStatus::Failed {
+                job.status = JobStatus::Failed;
+                job.completed_at = Some(now.to_string());
+            } else if graph_has_running_nodes(&job.graph) {
+                job.status = JobStatus::Assigned;
+                job.completed_at = None;
+            } else {
+                job.status = JobStatus::Queued;
+                job.completed_at = None;
+            }
+        }
+
+        self.reevaluate_queued_jobs();
+    }
+
     pub fn update_graph_node(
         &mut self,
         job_id: &str,
@@ -952,6 +1039,18 @@ fn graph_execution_allowed(
                     || looks_sectionable_prompt(&request.prompt))
         }
     }
+}
+
+fn parse_unix_seconds(value: &str) -> Option<u64> {
+    value.parse::<u64>().ok()
+}
+
+fn graph_node_lease_seconds() -> u64 {
+    std::env::var(GRAPH_NODE_LEASE_SECONDS_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_GRAPH_NODE_LEASE_SECONDS)
 }
 
 fn update_node_trust(
@@ -3095,6 +3194,92 @@ mod tests {
         assert_eq!(retry_node.attempt_count, 2);
         assert!(retry_node.failed_node_ids.contains(&"node-1".to_string()));
         assert_eq!(retry_node.assigned_node_id.as_deref(), Some("node-2"));
+    }
+
+    #[test]
+    fn stale_running_graph_chunk_retries_on_a_different_ready_node() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Auto;
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first claim");
+        let stale_graph_node = first_claim
+            .active_graph_node_id
+            .clone()
+            .expect("stale graph node");
+
+        let retry_claim = state
+            .claim_job("node-2", "604".to_string())
+            .job
+            .expect("retry claim after stale lease");
+        assert_eq!(
+            retry_claim.active_graph_node_id.as_deref(),
+            Some(stale_graph_node.as_str())
+        );
+
+        let retried_node = state
+            .jobs
+            .get("job-1")
+            .expect("job")
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == stale_graph_node)
+            .expect("retried graph node");
+        assert_eq!(retried_node.status, JobGraphNodeStatus::Running);
+        assert_eq!(retried_node.attempt_count, 2);
+        assert!(retried_node.failed_node_ids.contains(&"node-1".to_string()));
+        assert_eq!(retried_node.assigned_node_id.as_deref(), Some("node-2"));
+        assert_eq!(retried_node.worker_id, None);
+    }
+
+    #[test]
+    fn stale_running_graph_chunk_fails_after_max_attempts() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Auto;
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first claim");
+        let stale_graph_node = first_claim
+            .active_graph_node_id
+            .clone()
+            .expect("stale graph node");
+        let job = state.jobs.get_mut("job-1").expect("job");
+        let graph_node = job
+            .graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == stale_graph_node)
+            .expect("graph node");
+        graph_node.max_attempts = 1;
+
+        let retry = state.claim_job("node-2", "604".to_string());
+        assert!(retry.job.is_none());
+
+        let job = state.jobs.get("job-1").expect("job");
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(job.graph.status, JobGraphStatus::Failed);
+        assert!(job
+            .error
+            .as_deref()
+            .expect("stale error")
+            .contains("stale assignment timed out after 600s on node-1"));
     }
 
     #[test]
