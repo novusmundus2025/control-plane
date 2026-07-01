@@ -269,6 +269,9 @@ test("renders the high-impact command deck shell with replacement logo and live 
   assert.match(html, /Control Plane/i);
   assert.match(html, /MundusX control plane logo/i);
   assert.match(html, /\/assets\/mundusx-logo\.png/);
+  assert.match(html, /href="http:\/\/127\.0\.0\.1:3001\/#nodes"/);
+  assert.match(html, /aria-label="Show first 25 nodes and clear filters"/);
+  assert.match(html, /<div class="section" id="nodes">/);
   assert.match(html, /motion-lift/);
   assert.match(html, /motion-glow/);
   assert.match(html, /prefers-reduced-motion:\s*reduce/);
@@ -276,4 +279,41 @@ test("renders the high-impact command deck shell with replacement logo and live 
   assert.match(html, /<strong>2<\/strong><span>nodes<\/span>/);
   assert.match(html, /<strong>5<\/strong><span>active jobs<\/span>/);
   assert.match(html, /<strong>9<\/strong><span>events<\/span>/);
+});
+
+test("logo navigation targets a clean nodes view and the node table caps at 25", () => {
+  const nodes = Array.from({ length: 26 }, (_, index) => ({
+    node_id: `node-${String(index + 1).padStart(2, "0")}`,
+    hostname: `host-${index + 1}`,
+    backend: "cuda",
+    state: "ready",
+    policy_allowed: true,
+    power_source: "AC",
+    on_battery: false,
+    battery_percent: 100,
+    available_memory_mb: 4096,
+    available_gpu_percent: 70,
+    updated_at: "2026-07-01T12:00:00Z",
+  }));
+  const html = page({
+    health: {
+      status: "ok",
+      storage_source: "supabase",
+      supabase: "enabled",
+    },
+    status: {
+      storage_source: "supabase",
+      queued_job_count: 0,
+      nodes,
+      jobs: [],
+    },
+    events: [],
+    credits: {},
+    error: null,
+  });
+
+  assert.match(html, /href="http:\/\/127\.0\.0\.1:3001\/#nodes"/);
+  assert.match(html, /Showing the first 25 of 26 nodes/);
+  assert.match(html, /node-25/);
+  assert.doesNotMatch(html, /node-26/);
 });

@@ -432,6 +432,9 @@ function renderNodes(nodes = []) {
     return `<div class="empty">No nodes are registered yet.</div>`;
   }
 
+  const visibleNodes = nodes.slice(0, 25);
+  const hiddenCount = Math.max(0, nodes.length - visibleNodes.length);
+
   return `
     <div class="table">
       <div class="thead">
@@ -443,7 +446,7 @@ function renderNodes(nodes = []) {
         <div>Power</div>
         <div>Updated</div>
       </div>
-      ${nodes
+      ${visibleNodes
         .map((node) => {
           const cap = capStatus(node);
           const override = overrideStatus(node);
@@ -485,7 +488,12 @@ function renderNodes(nodes = []) {
             </div>`;
         })
         .join("")}
-    </div>`;
+    </div>
+    ${
+      hiddenCount
+        ? `<div class="meta" style="margin-top: 12px;">Showing the first ${formatCount(visibleNodes.length)} of ${formatCount(nodes.length)} nodes.</div>`
+        : ""
+    }`;
 }
 
 function backendTone(backend) {
@@ -1575,6 +1583,15 @@ function renderContributorPortal() {
         display: flex;
         gap: 10px;
         flex-wrap: wrap;
+      }
+      .brand-logo-action {
+        display: inline-flex;
+        border-radius: 8px;
+        text-decoration: none;
+      }
+      .brand-logo-action:focus-visible {
+        outline: 0;
+        box-shadow: var(--focus-ring);
       }
       a {
         color: var(--blue);
@@ -2765,7 +2782,12 @@ export function page({ health, status, events, credits, error }) {
       <div class="hero">
         <div class="topline command-center">
           <div>
-            <div class="brand motion-glow"><img class="brand-mark" alt="MundusX control plane logo" src="${escapeHtml(controlPlaneLogoUrl)}" /> MundusX Command Deck</div>
+            <div class="brand">
+              <a class="brand-logo-action motion-glow" href="${escapeHtml(appUrl)}/#nodes" aria-label="Show first 25 nodes and clear filters">
+                <img class="brand-mark" alt="MundusX control plane logo" src="${escapeHtml(controlPlaneLogoUrl)}" />
+              </a>
+              MundusX Command Deck
+            </div>
             <h1>Control Plane</h1>
             <div class="sub">High-signal operator view for fleet readiness, routing pressure, policy gates, storage source, and audit trail.</div>
             <div class="statusline">
@@ -2808,7 +2830,7 @@ export function page({ health, status, events, credits, error }) {
         <div class="section-body">${renderMSeriesOperatorSummary(snapshot)}</div>
       </div>
 
-      <div class="section">
+      <div class="section" id="nodes">
         <div class="section-head">
           <h2 class="section-title">Nodes</h2>
           <div class="meta">${formatCount(snapshot.nodes?.length ?? 0)} registered</div>
