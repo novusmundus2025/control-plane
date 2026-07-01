@@ -57,6 +57,10 @@ const FILTER_QUERY_KEYS: &[&str] = &[
     "search",
     "start",
     "end",
+    "submitted_after",
+    "submitted_before",
+    "recorded_after",
+    "recorded_before",
     "state",
     "status",
     "backend",
@@ -786,6 +790,113 @@ fn trust_grade_badge(
     }
 }
 
+fn query_time_start(query: Option<&str>) -> Option<&str> {
+    query_param(query, "submitted_after")
+        .or_else(|| query_param(query, "recorded_after"))
+        .or_else(|| query_param(query, "start"))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn query_time_end(query: Option<&str>) -> Option<&str> {
+    query_param(query, "submitted_before")
+        .or_else(|| query_param(query, "recorded_before"))
+        .or_else(|| query_param(query, "end"))
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn query_value_any(query: Option<&str>, keys: &[&str]) -> String {
+    keys.iter()
+        .find_map(|key| query_param(query, key))
+        .unwrap_or_default()
+        .to_string()
+}
+
+fn graph_progress_summary(job: &JobRecord) -> String {
+    if job.graph.nodes.is_empty() {
+        return if job.graph_execution_enabled {
+            "graph enabled, no chunks yet".to_string()
+        } else {
+            "single job".to_string()
+        };
+    }
+
+    let completed = job
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == JobGraphNodeStatus::Completed)
+        .count();
+    let running = job
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == JobGraphNodeStatus::Running)
+        .count();
+    let failed = job
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == JobGraphNodeStatus::Failed)
+        .count();
+    let waiting = job
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.status,
+                JobGraphNodeStatus::Waiting | JobGraphNodeStatus::Ready
+            )
+        })
+        .count();
+
+    format!(
+        "{completed}/{} chunks complete · {running} running · {failed} failed · {waiting} waiting",
+        job.graph.nodes.len()
+    )
+}
+
+fn graph_attention_summary(job: &JobRecord) -> String {
+    let missing_worker = job
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| {
+            node.status == JobGraphNodeStatus::Running
+                && node.assigned_node_id.is_some()
+                && node.worker_id.is_none()
+        })
+        .map(|node| {
+            format!(
+                "{} on {}",
+                node.id,
+                node.assigned_node_id.as_deref().unwrap_or("unknown node")
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if missing_worker.is_empty() {
+        "no stuck chunk indicator".to_string()
+    } else {
+        format!("awaiting worker result: {}", missing_worker.join(", "))
+    }
+}
+
+fn graph_node_attention(node: &contracts::JobGraphNode) -> String {
+    if node.status == JobGraphNodeStatus::Running
+        && node.assigned_node_id.is_some()
+        && node.worker_id.is_none()
+    {
+        "awaiting worker result from assigned node".to_string()
+    } else if node.status == JobGraphNodeStatus::Ready && !node.failed_node_ids.is_empty() {
+        "retry ready on a different node".to_string()
+    } else if node.status == JobGraphNodeStatus::Failed {
+        "chunk exhausted retries or failed permanently".to_string()
+    } else {
+        "normal".to_string()
+    }
+}
+
 fn node_profile_link(node_id: &str) -> String {
     let trimmed = node_id.trim();
     if trimmed.is_empty() || matches!(trimmed, "unassigned" | "unknown" | "none") {
@@ -1102,10 +1213,10 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
           <div>Job</div>
           <div>Prompt</div>
           <div>Status</div>
-          <div>Node</div>
-          <div>Worker</div>
+          <div>Assigned node / worker</div>
+          <div>Graph progress</div>
           <div>Timing</div>
-          <div>Result</div>
+          <div>Result / error</div>
         </div>"#,
     );
 
@@ -1121,6 +1232,8 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
         let model = job.model.as_deref().unwrap_or("default");
         let completed = job.completed_at.as_deref().unwrap_or("not completed");
         let assigned = job.assigned_at.as_deref().unwrap_or("not assigned");
+        let graph_progress = graph_progress_summary(&job);
+        let graph_attention = graph_attention_summary(&job);
         let result_label = if job
             .error
             .as_ref()
@@ -1149,11 +1262,12 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
               <div><span class="pill" style="background:{};color:{};">{}</span></div>
               <div>
                 <strong>{}</strong>
-                <div class="meta">assigned node</div>
+                <div class="meta">worker {}</div>
+                <div class="meta">backend {}</div>
               </div>
               <div>
                 <strong>{}</strong>
-                <div class="meta">backend {}</div>
+                <div class="meta">{}</div>
               </div>
               <div>
                 <div class="meta">submitted {}</div>
@@ -1181,6 +1295,8 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
             node_profile_link(assigned_node),
             escape_html(worker),
             escape_html(&backend),
+            escape_html(&graph_progress),
+            escape_html(&graph_attention),
             escape_html(&job.submitted_at),
             escape_html(assigned),
             escape_html(completed),
@@ -1237,11 +1353,12 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
                       <div><span class="pill" style="background:{};color:{};">{}</span></div>
                       <div>
                         <strong>{}</strong>
-                        <div class="meta">assigned node</div>
+                        <div class="meta">worker {}</div>
+                        <div class="meta">backend {}</div>
                       </div>
                       <div>
                         <strong>{}</strong>
-                        <div class="meta">backend {}</div>
+                        <div class="meta">attempts {}/{}</div>
                       </div>
                       <div>
                         <div class="meta">assigned {}</div>
@@ -1262,6 +1379,9 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
                     node_profile_link(sub_assigned),
                     escape_html(sub_worker),
                     escape_html(&sub_backend),
+                    escape_html(&graph_node_attention(node)),
+                    node.attempt_count,
+                    node.max_attempts,
                     escape_html(node.assigned_at.as_deref().unwrap_or("not assigned")),
                     escape_html(&depends_on),
                     escape_html(&sub_result),
@@ -1528,6 +1648,7 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
                   <div>
                     <span class="pill" style="background:{status_bg};color:{status_fg};">{status}</span>
                     <div class="meta">verification {verification}</div>
+                    <div class="meta">{attention}</div>
                   </div>
                   <div>
                     <strong>{assigned}</strong>
@@ -1560,6 +1681,7 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
                 status_fg = status_fg,
                 status = escape_html(&status),
                 verification = escape_html(&verification),
+                attention = escape_html(&graph_node_attention(node)),
                 assigned = node_profile_link(assigned),
                 worker = escape_html(node.worker_id.as_deref().unwrap_or("none")),
                 backend = escape_html(
@@ -1765,8 +1887,8 @@ fn render_credits_detail_panel(credits: &[CreditsLedgerRecord], query: Option<&s
         scope_filter = escape_html(query_param(query, "reward_scope").unwrap_or("all")),
         time_filter = escape_html(&format!(
             "{} to {}",
-            query_param(query, "start").unwrap_or("beginning"),
-            query_param(query, "end").unwrap_or("now")
+            query_time_start(query).unwrap_or("beginning"),
+            query_time_end(query).unwrap_or("now")
         )),
     )
 }
@@ -3453,8 +3575,14 @@ fn selected_attr(query: Option<&str>, key: &str, value: &str) -> &'static str {
 
 fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) -> String {
     let search = escape_html(&query_value(query, "search"));
-    let start = escape_html(&query_value(query, "start"));
-    let end = escape_html(&query_value(query, "end"));
+    let start = escape_html(&query_value_any(
+        query,
+        &["submitted_after", "recorded_after", "start"],
+    ));
+    let end = escape_html(&query_value_any(
+        query,
+        &["submitted_before", "recorded_before", "end"],
+    ));
     let node_id = escape_html(&query_value(query, "node_id"));
     let job_id = escape_html(&query_value(query, "job_id"));
     let api_href = escape_html(api_path);
@@ -3467,8 +3595,8 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
               <select name="backend" aria-label="Filter backend"><option value="">All backends</option><option value="cuda"{cuda}>CUDA</option><option value="m"{m}>M-series</option><option value="auto"{auto}>Auto</option></select>
               <select name="trust" aria-label="Filter trust"><option value="">All trust</option><option value="trusted"{trusted}>Trusted</option><option value="untrusted"{untrusted}>Untrusted</option></select>
               <select name="policy" aria-label="Filter policy"><option value="">All policy</option><option value="allowed"{policy_allowed}>Allowed</option><option value="blocked"{policy_blocked}>Blocked</option></select>
-              <input name="start" aria-label="Start timestamp" placeholder="start timestamp" value="{start}" />
-              <input name="end" aria-label="End timestamp" placeholder="end timestamp" value="{end}" />
+              <input name="recorded_after" aria-label="Heartbeat after timestamp" placeholder="heartbeat after timestamp" value="{start}" />
+              <input name="recorded_before" aria-label="Heartbeat before timestamp" placeholder="heartbeat before timestamp" value="{end}" />
               <button class="button" type="submit">Apply</button>
               <a class="button" href="{api_href}">JSON</a>
             </form>"#,
@@ -3491,8 +3619,8 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
               <input name="search" aria-label="Search jobs" placeholder="Search job id, prompt, model, node" value="{search}" />
               <select name="status" aria-label="Filter job status"><option value="">All statuses</option><option value="queued"{queued}>Queued</option><option value="assigned"{assigned}>Assigned</option><option value="completed"{completed}>Completed</option><option value="failed"{failed}>Failed</option></select>
               <input name="node_id" aria-label="Node id" placeholder="node id" value="{node_id}" />
-              <input name="start" aria-label="Start timestamp" placeholder="start timestamp" value="{start}" />
-              <input name="end" aria-label="End timestamp" placeholder="end timestamp" value="{end}" />
+              <input name="submitted_after" aria-label="Submitted after timestamp" placeholder="submitted after timestamp" value="{start}" />
+              <input name="submitted_before" aria-label="Submitted before timestamp" placeholder="submitted before timestamp" value="{end}" />
               <button class="button" type="submit">Apply</button>
               <a class="button" href="{api_href}">Jobs JSON</a>
               <a class="button" href="{events_href}">Events JSON</a>
@@ -3510,8 +3638,8 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
               <input name="job_id" aria-label="Job id" placeholder="parent job or subjob id" value="{job_id}" />
               <select name="entry_type" aria-label="Entry type"><option value="">All entries</option><option value="job_reward"{job_reward}>Job reward</option></select>
               <select name="reward_scope" aria-label="Reward scope"><option value="">All scopes</option><option value="job"{scope_job}>Whole job</option><option value="graph_node"{scope_graph_node}>Graph chunk</option></select>
-              <input name="start" aria-label="Start timestamp" placeholder="start timestamp" value="{start}" />
-              <input name="end" aria-label="End timestamp" placeholder="end timestamp" value="{end}" />
+              <input name="recorded_after" aria-label="Recorded after timestamp" placeholder="recorded after timestamp" value="{start}" />
+              <input name="recorded_before" aria-label="Recorded before timestamp" placeholder="recorded before timestamp" value="{end}" />
               <button class="button" type="submit">Apply</button>
               <a class="button" href="{api_href}">Credits JSON</a>
             </form>"#,
@@ -3554,7 +3682,7 @@ fn timestamp_in_range(value: &serde_json::Value, query: Option<&str>, collection
     let timestamp = timestamp_for_collection(value, collection);
     let parsed_timestamp = timestamp.parse::<u64>().ok();
 
-    if let Some(start) = query_param(query, "start").filter(|value| !value.trim().is_empty()) {
+    if let Some(start) = query_time_start(query) {
         if let Some(start) = start.parse::<u64>().ok() {
             if parsed_timestamp
                 .map(|timestamp| timestamp < start)
@@ -3567,7 +3695,7 @@ fn timestamp_in_range(value: &serde_json::Value, query: Option<&str>, collection
         }
     }
 
-    if let Some(end) = query_param(query, "end").filter(|value| !value.trim().is_empty()) {
+    if let Some(end) = query_time_end(query) {
         if let Some(end) = end.parse::<u64>().ok() {
             if parsed_timestamp
                 .map(|timestamp| timestamp > end)
@@ -5869,11 +5997,63 @@ mod tests {
         assert!(html.contains("Job Queue"));
         assert!(html.contains("job-completed"));
         assert!(html.contains("Summarize Tesla history"));
+        assert!(html.contains("Assigned node / worker"));
+        assert!(html.contains("Graph progress"));
+        assert!(html.contains(r#"name="submitted_after""#));
+        assert!(html.contains("Submitted after timestamp"));
         assert!(html.contains("node-1"));
         assert!(html.contains("worker-123"));
         assert!(html.contains("Tesla summary output"));
         assert!(html.contains("Showing 1-1 of 1"));
         assert!(html.contains(r#"href="/v1/jobs?page=1&amp;page_size=10&amp;status=completed""#));
+    }
+
+    #[test]
+    fn jobs_page_explains_graph_chunk_owner_and_worker_wait() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "1");
+        register_ready_node(&mut state, "node-2", "HAL", "1");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-graph-wait".to_string(),
+                prompt: "Give me a detailed history of BMW from its origins to today.".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Decompose,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(256),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claim graph chunk");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Jobs,
+            Some("status=assigned&submitted_after=1&submitted_before=4"),
+        );
+
+        assert!(html.contains("job-graph-wait"));
+        assert!(html.contains(r#"href="/nodes/node-1""#));
+        assert!(html.contains("worker none"));
+        assert!(html.contains("chunks complete"));
+        assert!(html.contains("1 running"));
+        assert!(html.contains("awaiting worker result"));
+        assert!(html.contains("awaiting worker result from assigned node"));
+        assert!(html.contains(r#"name="submitted_after""#));
+        assert!(html.contains(r#"value="1""#));
+        assert!(html.contains(r#"name="submitted_before""#));
+        assert!(html.contains(r#"value="4""#));
     }
 
     #[test]
@@ -5962,7 +6142,9 @@ mod tests {
 
         let filtered = crate::filter_json_items(
             items,
-            Some("search=qwen&status=completed&node_id=node-1&start=5&end=15"),
+            Some(
+                "search=qwen&status=completed&node_id=node-1&submitted_after=5&submitted_before=15",
+            ),
             "jobs",
         );
 
