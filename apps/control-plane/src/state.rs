@@ -311,9 +311,7 @@ impl ControlPlaneState {
         let fallback_decision = fallback_decision_for(&scheduling_requirements);
         let plan = plan_job_request(&request, &classification);
         let graph = build_job_graph(&request.request_id, &plan, &submitted_at);
-        let ready_node_count = self.ready_executable_node_count(&request);
-        let graph_execution_enabled =
-            graph_execution_allowed(&request, &classification, &plan, ready_node_count);
+        let graph_execution_enabled = graph_execution_allowed(&request, &classification, &plan);
         let record = JobRecord {
             job_id: job_id.clone(),
             request_id: request.request_id,
@@ -795,70 +793,6 @@ impl ControlPlaneState {
         Some(updated_job)
     }
 
-    fn ready_executable_node_count(&self, request: &JobRequest) -> usize {
-        let probe = JobRecord {
-            job_id: request.request_id.clone(),
-            request_id: request.request_id.clone(),
-            prompt: request.prompt.clone(),
-            preferred_backend: request.preferred_backend,
-            runtime_mode: request.runtime_mode,
-            execution_mode: request.execution_mode,
-            stream: request.stream,
-            model: request.model.clone(),
-            system_prompt: request.system_prompt.clone(),
-            max_tokens: request.max_tokens,
-            temperature: request.temperature,
-            top_p: request.top_p,
-            seed: request.seed,
-            classification: classify_job_request(request),
-            scheduling_requirements: scheduling_requirements_for(
-                request,
-                &classify_job_request(request),
-            ),
-            scheduler_decision: None,
-            fallback_decision: FallbackDecision::default(),
-            plan: JobPlan::default(),
-            graph: JobGraph::default(),
-            graph_execution_enabled: false,
-            active_graph_node_id: None,
-            last_completed_graph_node_id: None,
-            status: JobStatus::Queued,
-            submitted_at: String::new(),
-            assigned_node_id: None,
-            assigned_at: None,
-            completed_at: None,
-            worker_id: None,
-            backend: None,
-            output: None,
-            error: None,
-        };
-        let ready_m_exists = self.nodes.values().any(|candidate| {
-            candidate.state == AgentState::Ready
-                && candidate.policy_allowed
-                && candidate.backend == Backend::M
-        });
-        let ready_cuda_exists = self.nodes.values().any(|candidate| {
-            candidate.state == AgentState::Ready
-                && candidate.policy_allowed
-                && candidate.backend == Backend::Cuda
-        });
-
-        self.nodes
-            .values()
-            .filter(|node| {
-                node.state == AgentState::Ready
-                    && node.policy_allowed
-                    && Self::node_backend_matches(
-                        &probe,
-                        node.backend,
-                        ready_m_exists,
-                        ready_cuda_exists,
-                    )
-                    && Self::node_can_run_job(node, &probe)
-            })
-            .count()
-    }
-
     fn job_can_be_claimed(&self, job: &JobRecord) -> bool {
         if !job.graph_execution_enabled {
             return job.status == JobStatus::Queued;
@@ -982,7 +916,6 @@ fn graph_execution_allowed(
     request: &JobRequest,
     classification: &RequestClassification,
     plan: &JobPlan,
-    ready_node_count: usize,
 ) -> bool {
     if request.stream || plan.jobs.len() <= 1 {
         return false;
@@ -992,8 +925,7 @@ fn graph_execution_allowed(
         JobExecutionMode::Single => false,
         JobExecutionMode::Decompose => true,
         JobExecutionMode::Auto => {
-            ready_node_count >= 2
-                && classification.privacy_level != PrivacyLevel::Sensitive
+            classification.privacy_level != PrivacyLevel::Sensitive
                 && (classification.complexity == RequestComplexity::High
                     || looks_sectionable_prompt(&request.prompt))
         }
@@ -2817,7 +2749,7 @@ mod tests {
         let mut request = classification_request(
             "Give me a detailed history of Facebook from its origins to today.",
         );
-        request.execution_mode = JobExecutionMode::Auto;
+        request.execution_mode = JobExecutionMode::Single;
 
         let record = state.submit_job(request, "1".to_string());
         assert!(!record.graph_execution_enabled);
@@ -2917,20 +2849,98 @@ mod tests {
     }
 
     #[test]
-    fn auto_decompose_requires_multiple_ready_nodes_and_sectionable_work() {
+    fn auto_decompose_chunks_sectionable_work_with_one_ready_node() {
         let mut one_node_state = ready_state();
         let mut request = classification_request(
             "Write a detailed history of Mercedes-Benz with major eras and milestones.",
         );
         request.execution_mode = JobExecutionMode::Auto;
         let one_node_record = one_node_state.submit_job(request.clone(), "1".to_string());
-        assert!(!one_node_record.graph_execution_enabled);
+        assert!(one_node_record.graph_execution_enabled);
+        assert_eq!(one_node_record.plan.strategy, "sectioned_research");
 
         let mut two_node_state = ready_state();
         two_node_state.register(m_series_registration("node-2"));
         two_node_state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
         let two_node_record = two_node_state.submit_job(request, "2".to_string());
         assert!(two_node_record.graph_execution_enabled);
+    }
+
+    #[test]
+    fn auto_decompose_fans_out_remaining_chunks_when_second_node_becomes_ready() {
+        let mut state = ready_state();
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Auto;
+        let record = state.submit_job(request, "2".to_string());
+        assert!(record.graph_execution_enabled);
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first chunk claim");
+        let first_graph_node = first_claim
+            .active_graph_node_id
+            .clone()
+            .expect("first active graph node");
+        assert!(first_claim.prompt.contains("Original user request"));
+        assert!(first_claim.prompt.contains("Subjob:"));
+
+        let first_completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("origins complete".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("first completion");
+        assert_eq!(first_completed.status, JobStatus::Queued);
+
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "5"), "5".to_string());
+
+        let second_claim = state
+            .claim_job("node-1", "6".to_string())
+            .job
+            .expect("second chunk claim");
+        let third_claim = state
+            .claim_job("node-2", "6".to_string())
+            .job
+            .expect("third chunk claim");
+        let second_graph_node = second_claim
+            .active_graph_node_id
+            .as_deref()
+            .expect("second active graph node");
+        let third_graph_node = third_claim
+            .active_graph_node_id
+            .as_deref()
+            .expect("third active graph node");
+
+        assert_ne!(first_graph_node, second_graph_node);
+        assert_ne!(first_graph_node, third_graph_node);
+        assert_ne!(second_graph_node, third_graph_node);
+
+        let job = state.jobs.get("job-1").expect("job");
+        let running = job
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.status == JobGraphNodeStatus::Running)
+            .collect::<Vec<_>>();
+        assert_eq!(running.len(), 2);
+        assert!(running
+            .iter()
+            .any(|node| node.assigned_node_id.as_deref() == Some("node-1")));
+        assert!(running
+            .iter()
+            .any(|node| node.assigned_node_id.as_deref() == Some("node-2")));
     }
 
     #[test]
