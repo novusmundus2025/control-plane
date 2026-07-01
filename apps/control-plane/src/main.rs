@@ -812,6 +812,66 @@ fn job_detail_link(job_id: &str) -> String {
     )
 }
 
+fn render_node_scheduler_fit(state: &ControlPlaneState, node: &NodeRecord) -> String {
+    let mut recent = state
+        .jobs
+        .values()
+        .filter_map(|job| {
+            let decision = job.scheduler_decision.as_ref()?;
+            let selected = decision.node_id == node.node_id
+                || job.assigned_node_id.as_deref() == Some(node.node_id.as_str());
+            if !selected {
+                return None;
+            }
+            let reasons = if decision.reasons.is_empty() {
+                "no scheduler reasons recorded".to_string()
+            } else {
+                decision.reasons.join(" / ")
+            };
+            Some(format!(
+                r#"<div><strong>{}</strong><div class="meta">scheduler score {} / {}</div></div>"#,
+                job_detail_link(&job.job_id),
+                decision.score,
+                escape_html(&reasons)
+            ))
+        })
+        .take(3)
+        .collect::<Vec<_>>();
+
+    if recent.is_empty() {
+        let explanation = if !node.policy_allowed {
+            format!(
+                "policy blocked: {}",
+                node.policy_reason
+                    .as_deref()
+                    .unwrap_or("no reason recorded")
+            )
+        } else if !matches!(node.state.as_str(), "ready") {
+            format!("not ready: current node state is {}", node.state)
+        } else if let Some(health) = node.worker_health.as_ref() {
+            if !health.healthy {
+                "runtime health is degraded".to_string()
+            } else if !health.runtime_ready {
+                "runtime is not ready for local jobs".to_string()
+            } else {
+                format!(
+                    "eligible for compatible jobs; trust score {} affects ranking",
+                    node.trust.score
+                )
+            }
+        } else {
+            "waiting for worker health before local job eligibility is clear".to_string()
+        };
+
+        recent.push(format!(
+            r#"<div><strong>{}</strong><div class="meta">current scheduler fit</div></div>"#,
+            escape_html(&explanation)
+        ));
+    }
+
+    format!(r#"<div class="profile-kv">{}</div>"#, recent.join(""))
+}
+
 fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String {
     let Some(node) = state.nodes.get(node_id) else {
         return format!(
@@ -928,6 +988,7 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
     } else {
         String::new()
     };
+    let scheduler_fit = render_node_scheduler_fit(state, node);
 
     format!(
         r#"<section class="panel node-profile-panel">
@@ -983,6 +1044,10 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
                 <div><strong>{state}</strong><div class="meta">reported status</div></div>
               </div>
             </div>
+            <div class="node-profile-card">
+              <h3>Scheduler Fit</h3>
+              {scheduler_fit}
+            </div>
           </section>
         </section>"#,
         hostname = escape_html(&node.hostname),
@@ -1022,6 +1087,7 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
         fingerprint = escape_html(&node.public_key_fingerprint),
         trust_path = escape_html(&node.identity_trust_path),
         state = escape_html(&node.state.to_string()),
+        scheduler_fit = scheduler_fit,
     )
 }
 
@@ -5474,8 +5540,83 @@ mod tests {
         assert!(response.contains("single"));
         assert!(response.contains("Graph Chunks"));
         assert!(response.contains("advisory"));
+        assert!(response.contains("trust:"));
         assert!(response.contains(r#"href="/jobs?job_id=job-single""#));
         assert!(response.contains(r#"href="/nodes/node-1""#));
+    }
+
+    #[test]
+    fn queued_job_detail_exposes_scheduler_no_capacity_reason() {
+        let mut state = ControlPlaneState::default();
+        state.submit_job(
+            JobRequest {
+                request_id: "job-queued".to_string(),
+                prompt: "Summarize scheduler state".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(128),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Jobs,
+            Some("job_id=job-queued"),
+        );
+
+        assert!(html.contains("Job Detail"));
+        assert!(html.contains("queued: no compatible ready node available"));
+        assert!(html.contains("scheduler reasons"));
+    }
+
+    #[test]
+    fn node_profile_shows_recent_scheduler_reason_for_node() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "1");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-node-fit".to_string(),
+                prompt: "Summarize scheduler assignment".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(128),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claim");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Nodes,
+            Some("node_id=node-1"),
+        );
+
+        assert!(html.contains("Scheduler Fit"));
+        assert!(html.contains(r#"href="/jobs/job-node-fit""#));
+        assert!(html.contains("trust:"));
+        assert!(html.contains("scheduler score"));
     }
 
     #[test]
