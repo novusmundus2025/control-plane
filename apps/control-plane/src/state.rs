@@ -600,7 +600,7 @@ impl ControlPlaneState {
         let updates: Vec<(String, SchedulerDecision)> = self
             .jobs
             .iter()
-            .filter(|(_, job)| job.status == JobStatus::Queued && self.job_has_claimable_work(job))
+            .filter(|(_, job)| self.job_can_be_claimed(job))
             .map(|(job_id, job)| (job_id.clone(), self.best_scheduler_decision_for_job(job)))
             .collect();
 
@@ -639,8 +639,7 @@ impl ControlPlaneState {
             .jobs
             .iter()
             .filter_map(|(job_id, job)| {
-                if job.status == JobStatus::Queued
-                    && self.job_has_claimable_work(job)
+                if self.job_can_be_claimed(job)
                     && Self::node_backend_matches(
                         job,
                         node_backend,
@@ -667,7 +666,7 @@ impl ControlPlaneState {
 
         if let Some(job) = self.jobs.get_mut(&job_id) {
             let active_graph_node_id = if job.graph_execution_enabled {
-                next_ready_graph_node_id(&job.graph)
+                next_ready_graph_node_id_for_node(&job.graph, node_id)
             } else {
                 None
             };
@@ -680,6 +679,10 @@ impl ControlPlaneState {
                 {
                     graph_node.status = JobGraphNodeStatus::Running;
                     graph_node.blocked_by.clear();
+                    graph_node.assigned_node_id = Some(node_id.to_string());
+                    graph_node.assigned_at = Some(claimed_at.clone());
+                    graph_node.worker_id = None;
+                    graph_node.backend = Some(node_backend);
                 }
             }
 
@@ -725,13 +728,13 @@ impl ControlPlaneState {
     ) -> Option<JobRecord> {
         let updated_job = {
             let job = self.jobs.get_mut(&completion.job_id)?;
-            if job.assigned_node_id.as_deref() != Some(completion.node_id.as_str()) {
-                return Some(job.clone());
-            }
 
             if job.graph_execution_enabled {
                 complete_graph_execution_job(job, completion.clone(), completed_at.clone())
             } else {
+                if job.assigned_node_id.as_deref() != Some(completion.node_id.as_str()) {
+                    return Some(job.clone());
+                }
                 job.status = completion.status;
                 job.worker_id = Some(completion.worker_id.clone());
                 job.backend = Some(completion.backend);
@@ -821,8 +824,12 @@ impl ControlPlaneState {
             .count()
     }
 
-    fn job_has_claimable_work(&self, job: &JobRecord) -> bool {
-        !job.graph_execution_enabled || next_ready_graph_node_id(&job.graph).is_some()
+    fn job_can_be_claimed(&self, job: &JobRecord) -> bool {
+        if !job.graph_execution_enabled {
+            return job.status == JobStatus::Queued;
+        }
+        matches!(job.status, JobStatus::Queued | JobStatus::Assigned)
+            && next_ready_graph_node_id(&job.graph).is_some()
     }
 
     pub fn update_graph_node(
@@ -985,12 +992,26 @@ fn next_ready_graph_node_id(graph: &JobGraph) -> Option<String> {
         .map(|node| node.id.clone())
 }
 
+fn next_ready_graph_node_id_for_node(graph: &JobGraph, node_id: &str) -> Option<String> {
+    graph
+        .nodes
+        .iter()
+        .find(|node| {
+            node.status == JobGraphNodeStatus::Ready
+                && node
+                    .assigned_node_id
+                    .as_deref()
+                    .map_or(true, |assigned| assigned == node_id)
+        })
+        .map(|node| node.id.clone())
+}
+
 fn complete_graph_execution_job(
     job: &mut JobRecord,
     completion: JobCompletion,
     completed_at: String,
 ) -> JobRecord {
-    let active_node_id = job.active_graph_node_id.clone();
+    let active_node_id = graph_node_assigned_to_node(&job.graph, &completion.node_id);
     if let Some(active_node_id) = active_node_id.as_deref() {
         if let Some(graph_node) = job
             .graph
@@ -1005,7 +1026,11 @@ fn complete_graph_execution_job(
             };
             graph_node.output = completion.output.clone();
             graph_node.error = completion.error.clone();
+            graph_node.worker_id = Some(completion.worker_id.clone());
+            graph_node.backend = Some(completion.backend);
         }
+    } else {
+        return job.clone();
     }
 
     refresh_job_graph(&mut job.graph);
@@ -1022,7 +1047,6 @@ fn complete_graph_execution_job(
     job.output = completion.output;
     job.error = completion.error.or_else(|| job.graph.merge_error.clone());
     job.last_completed_graph_node_id = active_node_id.clone();
-    job.active_graph_node_id = None;
 
     if job.graph.status == JobGraphStatus::Completed {
         job.status = JobStatus::Completed;
@@ -1037,12 +1061,35 @@ fn complete_graph_execution_job(
         job.status = JobStatus::Failed;
         job.completed_at = Some(completed_at.clone());
     } else {
-        job.status = JobStatus::Queued;
+        job.status = if graph_has_running_nodes(&job.graph) {
+            JobStatus::Assigned
+        } else {
+            JobStatus::Queued
+        };
         job.completed_at = None;
     }
+    job.active_graph_node_id = next_ready_graph_node_id(&job.graph);
 
     job.graph.updated_at = completed_at;
     job.clone()
+}
+
+fn graph_node_assigned_to_node(graph: &JobGraph, node_id: &str) -> Option<String> {
+    graph
+        .nodes
+        .iter()
+        .find(|node| {
+            node.status == JobGraphNodeStatus::Running
+                && node.assigned_node_id.as_deref() == Some(node_id)
+        })
+        .map(|node| node.id.clone())
+}
+
+fn graph_has_running_nodes(graph: &JobGraph) -> bool {
+    graph
+        .nodes
+        .iter()
+        .any(|node| node.status == JobGraphNodeStatus::Running)
 }
 
 fn graph_node_execution_prompt(job: &JobRecord, active_node_id: &str) -> String {
@@ -1523,6 +1570,10 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
                 required_output: job.required_output.clone(),
                 status: JobGraphNodeStatus::Waiting,
                 blocked_by: job.depends_on.clone(),
+                assigned_node_id: None,
+                assigned_at: None,
+                worker_id: None,
+                backend: None,
                 output: None,
                 error: None,
             })
@@ -1580,6 +1631,10 @@ fn refresh_job_graph(graph: &mut JobGraph) {
         } else {
             JobGraphNodeStatus::Waiting
         };
+        node.assigned_node_id = None;
+        node.assigned_at = None;
+        node.worker_id = None;
+        node.backend = None;
     }
 
     graph.status = if !failed_ids.is_empty() {
@@ -2841,6 +2896,86 @@ mod tests {
         two_node_state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
         let two_node_record = two_node_state.submit_job(request, "2".to_string());
         assert!(two_node_record.graph_execution_enabled);
+    }
+
+    #[test]
+    fn decompose_allows_parallel_claims_for_independent_graph_nodes() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first parallel claim");
+        let second_claim = state
+            .claim_job("node-2", "3".to_string())
+            .job
+            .expect("second parallel claim");
+
+        let first_graph_node = first_claim
+            .active_graph_node_id
+            .as_deref()
+            .expect("first active graph node");
+        let second_graph_node = second_claim
+            .active_graph_node_id
+            .as_deref()
+            .expect("second active graph node");
+        assert_ne!(first_graph_node, second_graph_node);
+
+        let job = state.jobs.get("job-1").expect("job");
+        let running = job
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.status == JobGraphNodeStatus::Running)
+            .collect::<Vec<_>>();
+        assert_eq!(running.len(), 2);
+        assert!(running
+            .iter()
+            .any(|node| node.assigned_node_id.as_deref() == Some("node-1")));
+        assert!(running
+            .iter()
+            .any(|node| node.assigned_node_id.as_deref() == Some("node-2")));
+
+        let first_completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("node one output".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("first completion");
+        assert_eq!(first_completed.status, JobStatus::Assigned);
+
+        let second_completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-2".to_string(),
+                    worker_id: "worker-2".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("node two output".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "5".to_string(),
+            )
+            .expect("second completion");
+        assert_eq!(second_completed.status, JobStatus::Queued);
     }
 
     #[test]
