@@ -771,6 +771,37 @@ pub struct NodePolicyOverrideInput {
     pub updated_at: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NodeTrustRecord {
+    pub score: u8,
+    pub completed_jobs: u32,
+    pub failed_jobs: u32,
+    pub consecutive_failures: u32,
+    pub total_latency_ms: u64,
+    pub accepted_results: u32,
+    pub rejected_results: u32,
+    pub last_success_at: Option<String>,
+    pub last_failure_at: Option<String>,
+    pub last_failure_reason: Option<String>,
+}
+
+impl Default for NodeTrustRecord {
+    fn default() -> Self {
+        Self {
+            score: 50,
+            completed_jobs: 0,
+            failed_jobs: 0,
+            consecutive_failures: 0,
+            total_latency_ms: 0,
+            accepted_results: 0,
+            rejected_results: 0,
+            last_success_at: None,
+            last_failure_at: None,
+            last_failure_reason: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct NodeRecord {
     pub node_id: String,
@@ -803,6 +834,8 @@ pub struct NodeRecord {
     pub computed_policy_reason: Option<String>,
     #[serde(default)]
     pub operator_policy_override: Option<NodePolicyOverride>,
+    #[serde(default)]
+    pub trust: NodeTrustRecord,
     pub worker_health: Option<WorkerHealthReport>,
     pub updated_at: String,
 }

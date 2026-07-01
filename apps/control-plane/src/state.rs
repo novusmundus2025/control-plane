@@ -5,8 +5,9 @@ use crate::contracts::{
     JobEventRecord, JobExecutionMode, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus,
     JobPlan, JobRecord, JobRequest, JobResultRecord, JobResultVerificationStatus,
     JobSchedulingRequirements, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
-    NodePolicyOverrideTarget, NodeRecord, PlannedJob, PrivacyLevel, RequestClassification,
-    RequestComplexity, RequestTaskType, RuntimeMode, SchedulerDecision, WorkerHealthReport,
+    NodePolicyOverrideTarget, NodeRecord, NodeTrustRecord, PlannedJob, PrivacyLevel,
+    RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode, SchedulerDecision,
+    WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -297,6 +298,7 @@ impl ControlPlaneState {
             computed_policy_allowed: false,
             computed_policy_reason: None,
             operator_policy_override: None,
+            trust: NodeTrustRecord::default(),
             worker_health: None,
             updated_at: String::new(),
         };
@@ -581,6 +583,16 @@ impl ControlPlaneState {
             }
         }
 
+        let trust_bonus = node.trust.score as i32 / 5 - 10;
+        score += trust_bonus;
+        reasons.push(format!(
+            "trust:{} completed:{} failed:{} consecutive_failures:{}",
+            node.trust.score,
+            node.trust.completed_jobs,
+            node.trust.failed_jobs,
+            node.trust.consecutive_failures
+        ));
+
         SchedulerDecision {
             node_id: node.node_id.clone(),
             score,
@@ -793,6 +805,7 @@ impl ControlPlaneState {
             }
             node.backend = completion.backend;
             node.updated_at = completed_at;
+            update_node_trust(&mut node.trust, &completion, node.updated_at.clone());
             Self::apply_policy_override(node);
         }
 
@@ -868,6 +881,11 @@ impl ControlPlaneState {
             .nodes
             .get(&heartbeat.node_id)
             .and_then(|node| node.operator_policy_override.clone());
+        let existing_trust = self
+            .nodes
+            .get(&heartbeat.node_id)
+            .map(|node| node.trust.clone())
+            .unwrap_or_default();
         let reported_contribution_percent = heartbeat.contribution_percent;
         let mut record = NodeRecord {
             node_id: heartbeat.node_id.clone(),
@@ -908,6 +926,7 @@ impl ControlPlaneState {
             computed_policy_allowed: policy_allowed,
             computed_policy_reason: policy_reason,
             operator_policy_override: existing_policy_override,
+            trust: existing_trust,
             worker_health: Some(heartbeat.worker_health),
             updated_at: updated_at.clone(),
         };
@@ -937,6 +956,41 @@ fn graph_execution_allowed(
                     || looks_sectionable_prompt(&request.prompt))
         }
     }
+}
+
+fn update_node_trust(trust: &mut NodeTrustRecord, completion: &JobCompletion, completed_at: String) {
+    match completion.status {
+        JobStatus::Completed => {
+            trust.completed_jobs = trust.completed_jobs.saturating_add(1);
+            trust.accepted_results = trust.accepted_results.saturating_add(1);
+            trust.consecutive_failures = 0;
+            trust.last_success_at = Some(completed_at);
+            trust.last_failure_reason = None;
+        }
+        JobStatus::Failed => {
+            trust.failed_jobs = trust.failed_jobs.saturating_add(1);
+            trust.rejected_results = trust.rejected_results.saturating_add(1);
+            trust.consecutive_failures = trust.consecutive_failures.saturating_add(1);
+            trust.last_failure_at = Some(completed_at);
+            trust.last_failure_reason = completion.error.clone();
+        }
+        _ => {}
+    }
+
+    if let Some(latency_ms) = completion.latency_ms {
+        trust.total_latency_ms = trust.total_latency_ms.saturating_add(latency_ms);
+    }
+    trust.score = calculate_node_trust_score(trust);
+}
+
+fn calculate_node_trust_score(trust: &NodeTrustRecord) -> u8 {
+    let mut score: i32 = 50;
+    score += (trust.completed_jobs.min(20) as i32) * 2;
+    score -= (trust.failed_jobs.min(20) as i32) * 5;
+    score -= (trust.consecutive_failures.min(10) as i32) * 4;
+    score += (trust.accepted_results.min(20) as i32) * 2;
+    score -= (trust.rejected_results.min(20) as i32) * 4;
+    score.clamp(0, 100) as u8
 }
 
 fn looks_sectionable_prompt(prompt: &str) -> bool {
@@ -3925,6 +3979,134 @@ mod tests {
         assert_eq!(job.job_id, "job-1");
         assert_eq!(job.backend, Some(Backend::M));
         assert_eq!(job.assigned_node_id.as_deref(), Some("node-1"));
+    }
+
+    #[test]
+    fn completion_updates_node_trust_stats() {
+        let mut state = ready_state();
+        state.submit_job(classification_request("hello world"), "2".to_string());
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claimed job");
+
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("done".to_string()),
+                    error: None,
+                    latency_ms: Some(125),
+                },
+                "4".to_string(),
+            )
+            .expect("completed job");
+
+        let node = state.nodes.get("node-1").expect("node");
+        assert_eq!(node.trust.completed_jobs, 1);
+        assert_eq!(node.trust.failed_jobs, 0);
+        assert_eq!(node.trust.consecutive_failures, 0);
+        assert_eq!(node.trust.total_latency_ms, 125);
+        assert_eq!(node.trust.last_success_at.as_deref(), Some("4"));
+        assert!(node.trust.score > 50);
+
+        state.submit_job(
+            JobRequest {
+                request_id: "job-2".to_string(),
+                prompt: "hello again".to_string(),
+                preferred_backend: Backend::M,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: Some("demo".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "5".to_string(),
+        );
+        state
+            .claim_job("node-1", "6".to_string())
+            .job
+            .expect("second claim");
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-2".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Failed,
+                    output: None,
+                    error: Some("runtime failed".to_string()),
+                    latency_ms: Some(75),
+                },
+                "7".to_string(),
+            )
+            .expect("failed job");
+
+        let node = state.nodes.get("node-1").expect("node");
+        assert_eq!(node.trust.completed_jobs, 1);
+        assert_eq!(node.trust.failed_jobs, 1);
+        assert_eq!(node.trust.consecutive_failures, 1);
+        assert_eq!(node.trust.total_latency_ms, 200);
+        assert_eq!(node.trust.last_failure_at.as_deref(), Some("7"));
+        assert_eq!(
+            node.trust.last_failure_reason.as_deref(),
+            Some("runtime failed")
+        );
+    }
+
+    #[test]
+    fn scheduler_prefers_higher_trust_node_when_capabilities_match() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        {
+            let node_1 = state.nodes.get_mut("node-1").expect("node-1");
+            node_1.trust.score = 30;
+            node_1.trust.failed_jobs = 4;
+            node_1.trust.consecutive_failures = 2;
+            let node_2 = state.nodes.get_mut("node-2").expect("node-2");
+            node_2.trust.score = 90;
+            node_2.trust.completed_jobs = 10;
+        }
+
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "Draft a concise report.".to_string(),
+                preferred_backend: Backend::M,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: Some("demo".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        let job = state.jobs.get("job-1").expect("job");
+        let decision = job
+            .scheduler_decision
+            .as_ref()
+            .expect("scheduler decision");
+        assert_eq!(decision.node_id, "node-2");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.starts_with("trust:90")));
     }
 
     #[test]
