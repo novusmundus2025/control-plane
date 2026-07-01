@@ -80,9 +80,7 @@ struct Pagination {
 
 impl Pagination {
     fn from_query(query: Option<&str>) -> Self {
-        let page = query_usize(query, "page")
-            .unwrap_or(1)
-            .clamp(1, usize::MAX);
+        let page = query_usize(query, "page").unwrap_or(1).clamp(1, usize::MAX);
         let page_size = query_usize(query, "page_size")
             .or_else(|| query_usize(query, "limit"))
             .unwrap_or(DEFAULT_PAGE_SIZE)
@@ -684,6 +682,81 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
     html
 }
 
+fn paged_node_records(
+    nodes: Vec<NodeRecord>,
+    query: Option<&str>,
+) -> (Vec<NodeRecord>, Pagination) {
+    let pagination = Pagination::from_query(query).with_total(nodes.len());
+    let start = (pagination.page - 1) * pagination.page_size;
+    let page_nodes = nodes
+        .into_iter()
+        .skip(start)
+        .take(pagination.page_size)
+        .collect::<Vec<_>>();
+
+    (page_nodes, pagination)
+}
+
+fn paged_operator_href(path: &str, query: Option<&str>, page: usize, page_size: usize) -> String {
+    let mut params = vec![format!("page={page}"), format!("page_size={page_size}")];
+
+    for key in FILTER_QUERY_KEYS {
+        if let Some(value) = query_param(query, key) {
+            if !value.trim().is_empty() && value != "all" {
+                params.push(format!("{key}={}", escape_query_value(value)));
+            }
+        }
+    }
+
+    format!("{path}?{}", params.join("&"))
+}
+
+fn render_pagination_controls(path: &str, query: Option<&str>, pagination: &Pagination) -> String {
+    let start = if pagination.total_items == 0 {
+        0
+    } else {
+        ((pagination.page - 1) * pagination.page_size) + 1
+    };
+    let end = (pagination.page * pagination.page_size).min(pagination.total_items);
+    let previous_href = paged_operator_href(
+        path,
+        query,
+        pagination.page.saturating_sub(1).max(1),
+        pagination.page_size,
+    );
+    let next_href = paged_operator_href(
+        path,
+        query,
+        (pagination.page + 1).min(pagination.total_pages),
+        pagination.page_size,
+    );
+
+    format!(
+        r#"<div class="pager" aria-label="Pagination">
+          <div class="meta">Showing {start}-{end} of {total} · page {page} of {total_pages}</div>
+          <div class="pager-actions">
+            <a class="button" href="{previous_href}" {previous_disabled}>Previous</a>
+            <a class="button" href="{next_href}" {next_disabled}>Next</a>
+          </div>
+        </div>"#,
+        total = pagination.total_items,
+        page = pagination.page,
+        total_pages = pagination.total_pages,
+        previous_href = escape_html(&previous_href),
+        next_href = escape_html(&next_href),
+        previous_disabled = if pagination.has_previous {
+            ""
+        } else {
+            r#"aria-disabled="true""#
+        },
+        next_disabled = if pagination.has_next {
+            ""
+        } else {
+            r#"aria-disabled="true""#
+        },
+    )
+}
+
 #[derive(Clone, Copy)]
 enum OperatorPage {
     Nodes,
@@ -737,11 +810,21 @@ impl OperatorPage {
 
     fn nav_icon(self) -> &'static str {
         match self {
-            Self::Nodes => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>"#,
-            Self::Jobs => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>"#,
-            Self::Credits => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>"#,
-            Self::Registry => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>"#,
-            Self::Settings => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>"#,
+            Self::Nodes => {
+                r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>"#
+            }
+            Self::Jobs => {
+                r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>"#
+            }
+            Self::Credits => {
+                r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>"#
+            }
+            Self::Registry => {
+                r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>"#
+            }
+            Self::Settings => {
+                r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>"#
+            }
         }
     }
 }
@@ -783,9 +866,14 @@ fn control_plane_operator_page(
     let nodes_api_href = filtered_api_href("/v1/nodes", query);
     let jobs_api_href = filtered_api_href("/v1/jobs", query);
     let credits_api_href = filtered_api_href("/v1/credits", query);
-    let filtered_nodes =
-        filter_json_items(state.nodes.values().cloned().collect::<Vec<_>>(), query, "nodes");
-    let filtered_nodes_html = render_node_records(filtered_nodes);
+    let filtered_nodes = filter_json_items(
+        state.nodes.values().cloned().collect::<Vec<_>>(),
+        query,
+        "nodes",
+    );
+    let (paged_nodes, nodes_pagination) = paged_node_records(filtered_nodes, query);
+    let filtered_nodes_html = render_node_records(paged_nodes);
+    let nodes_pagination_html = render_pagination_controls("/nodes", query, &nodes_pagination);
     let body = match page {
         OperatorPage::Nodes => format!(
             r#"{filters}
@@ -799,6 +887,7 @@ fn control_plane_operator_page(
               <h2>Fleet Browser</h2>
               <p class="meta">Large fleets should be controlled here with search, filters, sorting, and batched operator actions. The overview topology stays summarized so hundreds of nodes do not become visual noise.</p>
               {filtered_nodes_html}
+              {nodes_pagination_html}
             </section>"#,
             filters = control_filter_form(page, query, &nodes_api_href),
         ),
@@ -927,6 +1016,9 @@ fn control_plane_operator_page(
       .node-health {{ display:grid; gap:4px; overflow-wrap:anywhere; word-break:break-word; }}
       .pill {{ display:inline-flex; align-items:center; max-width:100%; min-height:22px; border-radius:4px; padding:2px 6px; overflow-wrap:anywhere; }}
       .empty {{ border:1px dashed var(--line); border-radius:8px; padding:24px; color:var(--muted); }}
+      .pager {{ display:flex; align-items:center; justify-content:space-between; gap:14px; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }}
+      .pager-actions {{ display:flex; gap:10px; }}
+      .pager .button[aria-disabled="true"] {{ opacity:.45; pointer-events:none; }}
       .sidebar-bottom {{ margin-top:auto; display:grid; gap:16px; min-width:0; }}
       .side-card {{ min-width:0; max-width:100%; border:1px solid var(--line); border-radius:8px; background:rgba(6,18,32,.78); padding:16px; overflow:hidden; }}
       .status-dot {{ width:9px; height:9px; border-radius:50%; background:#25d7ff; box-shadow:0 0 16px rgba(37,215,255,.7); }}
@@ -935,7 +1027,7 @@ fn control_plane_operator_page(
       .operator .meta {{ overflow-wrap:anywhere; word-break:break-word; line-height:1.35; }}
       .avatar {{ width:42px; height:42px; flex:0 0 42px; border-radius:12px; background:linear-gradient(135deg,#14539e,#071f3c); display:grid; place-items:center; font-weight:700; }}
       .foot {{ color:var(--muted); font-size:12px; margin-top:22px; overflow-wrap:anywhere; }}
-      @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two {{ grid-template-columns:1fr; }} main {{ padding:22px; }} }}
+      @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two {{ grid-template-columns:1fr; }} .pager {{ align-items:stretch; flex-direction:column; }} .pager-actions {{ display:grid; grid-template-columns:1fr 1fr; }} main {{ padding:22px; }} }}
       @media (prefers-reduced-motion: reduce) {{ *,*::before,*::after {{ animation-duration:.01ms!important; animation-iteration-count:1!important; scroll-behavior:auto!important; transition-duration:.01ms!important; }} .motion-lift:hover,.motion-lift:focus-visible,.motion-glow:hover,.motion-glow:focus-visible {{ transform:none; }} }}
     </style>
   </head>
@@ -2114,7 +2206,10 @@ fn active_filter_params(query: Option<&str>) -> serde_json::Value {
     for key in FILTER_QUERY_KEYS {
         if let Some(value) = query_param(query, key) {
             if !value.trim().is_empty() && value != "all" {
-                filters.insert((*key).to_string(), serde_json::Value::String(value.to_string()));
+                filters.insert(
+                    (*key).to_string(),
+                    serde_json::Value::String(value.to_string()),
+                );
             }
         }
     }
@@ -2239,7 +2334,10 @@ fn timestamp_in_range(value: &serde_json::Value, query: Option<&str>, collection
 
     if let Some(start) = query_param(query, "start").filter(|value| !value.trim().is_empty()) {
         if let Some(start) = start.parse::<u64>().ok() {
-            if parsed_timestamp.map(|timestamp| timestamp < start).unwrap_or(false) {
+            if parsed_timestamp
+                .map(|timestamp| timestamp < start)
+                .unwrap_or(false)
+            {
                 return false;
             }
         } else if timestamp.as_str() < start {
@@ -2249,7 +2347,10 @@ fn timestamp_in_range(value: &serde_json::Value, query: Option<&str>, collection
 
     if let Some(end) = query_param(query, "end").filter(|value| !value.trim().is_empty()) {
         if let Some(end) = end.parse::<u64>().ok() {
-            if parsed_timestamp.map(|timestamp| timestamp > end).unwrap_or(false) {
+            if parsed_timestamp
+                .map(|timestamp| timestamp > end)
+                .unwrap_or(false)
+            {
                 return false;
             }
         } else if timestamp.as_str() > end {
@@ -2272,9 +2373,9 @@ fn query_exact_match(
         return true;
     };
 
-    fields.iter().any(|field| {
-        json_field_text(value, field).eq_ignore_ascii_case(expected)
-    })
+    fields
+        .iter()
+        .any(|field| json_field_text(value, field).eq_ignore_ascii_case(expected))
 }
 
 fn node_state_filter_matches(value: &serde_json::Value, query: Option<&str>) -> bool {
@@ -2354,7 +2455,12 @@ fn filter_json_items<T: Serialize>(items: Vec<T>, query: Option<&str>, collectio
                     }
                     "jobs" => {
                         query_exact_match(&value, query, "status", &["status"])
-                            && query_exact_match(&value, query, "backend", &["backend", "preferred_backend"])
+                            && query_exact_match(
+                                &value,
+                                query,
+                                "backend",
+                                &["backend", "preferred_backend"],
+                            )
                             && query_exact_match(&value, query, "node_id", &["assigned_node_id"])
                             && query_exact_match(&value, query, "job_id", &["job_id", "request_id"])
                     }
@@ -3408,12 +3514,13 @@ fn main() {
 mod tests {
     use super::{
         auth_disabled_flag_enabled, control_plane_bind_addr_from_env, control_plane_home,
-        deploy_fingerprint_from_env, handle_connection, job_async_payload, now_unix_seconds,
-        operator_auth_mode_from_env, operator_auth_startup_config_error,
-        operator_auth_token_from_env, parse_request, read_http_request, requires_operator_auth,
-        status_snapshot_with_deploy_fingerprint, HttpRequestReadError, OperatorAuthMode,
-        StorageSource, SupabaseSyncStatus, AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV,
-        CONTROL_PLANE_LOGO_PATH, LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
+        control_plane_operator_page, deploy_fingerprint_from_env, handle_connection,
+        job_async_payload, now_unix_seconds, operator_auth_mode_from_env,
+        operator_auth_startup_config_error, operator_auth_token_from_env, parse_request,
+        read_http_request, requires_operator_auth, status_snapshot_with_deploy_fingerprint,
+        HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource, SupabaseSyncStatus,
+        AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, CONTROL_PLANE_LOGO_PATH,
+        LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
     use crate::contracts::{
         AgentRegistration, AgentState, Backend, Heartbeat, JobExecutionMode, JobRequest,
@@ -3769,7 +3876,9 @@ mod tests {
         assert!(html.contains(r#"class="card metric-link" href="/nodes?state=online""#));
         assert!(html.contains(r#"class="card metric-link" href="/jobs?status=queued""#));
         assert!(html.contains(r#"class="card metric-link" href="/credits""#));
-        assert!(html.contains(r#"class="card compact metric-link" href="/registry?policy=blocked""#));
+        assert!(
+            html.contains(r#"class="card compact metric-link" href="/registry?policy=blocked""#)
+        );
         assert!(html.contains(r#"href="/jobs?status=completed""#));
         assert!(html.contains("prefers-reduced-motion: reduce"));
         assert!(html.contains("node-hex::before"));
@@ -3806,11 +3915,11 @@ mod tests {
     #[test]
     fn operator_pages_separate_html_navigation_from_raw_api_links() {
         let state = ControlPlaneState::default();
-        let html = crate::control_plane_operator_page(
+        let html = control_plane_operator_page(
             &state,
             StorageSource::LocalJsonFallback,
             &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
-            crate::OperatorPage::Nodes,
+            OperatorPage::Nodes,
             Some("search=node-new&state=online&backend=m&trust=trusted&policy=allowed&start=1&end=99"),
         );
 
@@ -3832,6 +3941,34 @@ mod tests {
         assert!(html.contains(r#"href="/nodes""#));
         assert!(html.contains(r#"href="/nodes?state=online""#));
         assert!(html.contains(r#"href="/v1/nodes?page=1&amp;page_size=25&amp;search=node-new&amp;start=1&amp;end=99&amp;state=online&amp;backend=m&amp;trust=trusted&amp;policy=allowed""#));
+    }
+
+    #[test]
+    fn nodes_page_fleet_browser_is_paginated() {
+        let mut state = ControlPlaneState::default();
+        for index in 1..=30 {
+            let node_id = format!("node-{index:02}");
+            let hostname = format!("host-{index:02}");
+            register_ready_node(&mut state, &node_id, &hostname, &index.to_string());
+        }
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Nodes,
+            Some("page=2&page_size=10&state=online"),
+        );
+
+        assert!(html.contains("Showing 11-20 of 30"));
+        assert!(html.contains("page 2 of 3"));
+        assert!(html.contains("node-11"));
+        assert!(html.contains("node-20"));
+        assert!(!html.contains("node-10"));
+        assert!(!html.contains("node-21"));
+        assert!(html.contains(r#"href="/nodes?page=1&amp;page_size=10&amp;state=online""#));
+        assert!(html.contains(r#"href="/nodes?page=3&amp;page_size=10&amp;state=online""#));
+        assert!(html.contains(r#"href="/v1/nodes?page=1&amp;page_size=10&amp;state=online""#));
     }
 
     #[test]
@@ -3862,7 +3999,9 @@ mod tests {
         assert!(compact.get("jobs").is_none());
         assert_eq!(compact["online_count"].as_u64(), Some(1));
         assert_eq!(
-            compact.pointer("/list_endpoints/nodes").and_then(|value| value.as_str()),
+            compact
+                .pointer("/list_endpoints/nodes")
+                .and_then(|value| value.as_str()),
             Some("/v1/nodes?page=1&page_size=25")
         );
     }
