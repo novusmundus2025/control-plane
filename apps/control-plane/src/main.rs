@@ -557,7 +557,7 @@ fn render_topology_slots(state: &ControlPlaneState) -> String {
                 node.hostname.as_str()
             };
             html.push_str(&format!(
-                r#"<a class="topo-node {tone}" href="/nodes/{path_id}" style="left:{left};top:{top};" title="Open {title} node profile"><div class="node-hex">{icon}</div><span class="topo-label">{label}</span><span class="topo-id">{state} - {backend}</span></a>"#,
+                r#"<a class="topo-node live {tone}" href="/nodes/{path_id}" style="left:{left};top:{top};" title="Open {title} node profile"><div class="node-hex">{icon}</div><span class="topo-label">{label}</span><span class="topo-id">{state} - {backend}</span></a>"#,
                 tone = topology_node_tone(node),
                 path_id = escape_path_segment(&node.node_id),
                 title = escape_html(&node.node_id),
@@ -2776,6 +2776,7 @@ fn control_plane_home(
         min-width: 112px;
         text-align: center;
         text-decoration: none;
+        isolation: isolate;
       }}
       .node-hex {{
         position: relative;
@@ -2802,6 +2803,41 @@ fn control_plane_home(
       .node-hex .icon {{
         position: relative;
         z-index: 1;
+      }}
+      .topo-node.live::before,
+      .topo-node.live::after {{
+        content: "";
+        position: absolute;
+        left: 50%;
+        top: 23px;
+        width: 70px;
+        height: 62px;
+        z-index: -1;
+        clip-path: polygon(50% 0, 95% 25%, 95% 75%, 50% 100%, 5% 75%, 5% 25%);
+        background: rgba(87, 173, 255, 0.18);
+        box-shadow: 0 0 24px rgba(41, 163, 255, 0.28);
+        animation: node-signal-pulse 3.6s ease-out infinite;
+      }}
+      .topo-node.live::after {{
+        animation-delay: 1.8s;
+      }}
+      .topo-node.live.trusted::before,
+      .topo-node.live.trusted::after {{
+        background: rgba(132, 224, 184, 0.16);
+        box-shadow: 0 0 25px rgba(111, 219, 169, 0.24);
+      }}
+      @keyframes node-signal-pulse {{
+        0% {{
+          transform: translate(-50%, -50%) scale(0.74);
+          opacity: 0;
+        }}
+        18% {{
+          opacity: 0.68;
+        }}
+        100% {{
+          transform: translate(-50%, -50%) scale(1.48);
+          opacity: 0;
+        }}
       }}
       .topo-label,
       .topo-id {{
@@ -3023,6 +3059,12 @@ fn control_plane_home(
         .logo-signal {{
           opacity: 0.18;
           transform: none;
+        }}
+        .topo-node.live::before,
+        .topo-node.live::after {{
+          animation: none;
+          opacity: 0.18;
+          transform: translate(-50%, -50%);
         }}
       }}
     </style>
@@ -5174,6 +5216,7 @@ mod tests {
         assert!(html.contains("prefers-reduced-motion: reduce"));
         assert!(html.contains("node-hex::before"));
         assert!(html.contains("logo-signal-wave"));
+        assert!(html.contains("node-signal-pulse"));
         assert!(html.contains("logo-signal s1"));
         assert!(html.contains(r#"class="topo-node offline""#));
         assert!(html.contains("slot 8"));
@@ -5198,6 +5241,7 @@ mod tests {
 
         assert!(html.contains(r#"href="/nodes/node-new""#));
         assert!(html.contains(r#"href="/nodes/node-old""#));
+        assert!(html.contains(r#"class="topo-node live online""#));
         assert!(html.contains(">DAVE</span>"));
         assert!(html.contains(">OLD</span>"));
         assert!(html.contains(r#"class="topo-node offline""#));
