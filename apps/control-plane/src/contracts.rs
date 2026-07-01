@@ -710,6 +710,10 @@ pub struct CreditsLedgerRecord {
     pub user_id: Option<String>,
     pub device_id: Option<String>,
     pub job_id: Option<String>,
+    #[serde(default)]
+    pub parent_job_id: Option<String>,
+    #[serde(default)]
+    pub graph_node_id: Option<String>,
     pub entry_type: String,
     pub amount: f64,
     pub currency: String,
