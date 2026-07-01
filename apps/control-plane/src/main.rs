@@ -763,6 +763,19 @@ fn node_profile_link(node_id: &str) -> String {
     )
 }
 
+fn job_detail_link(job_id: &str) -> String {
+    let trimmed = job_id.trim();
+    if trimmed.is_empty() || matches!(trimmed, "unknown" | "none") {
+        return escape_html(job_id);
+    }
+
+    format!(
+        r#"<a class="inline-link" href="/jobs/{}">{}</a>"#,
+        escape_path_segment(trimmed),
+        escape_html(job_id)
+    )
+}
+
 fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String {
     let Some(node) = state.nodes.get(node_id) else {
         return format!(
@@ -1042,7 +1055,7 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
                 <div class="meta">{}</div>
               </div>
             </div>"#,
-            escape_html(&job.job_id),
+            job_detail_link(&job.job_id),
             escape_html(&job.request_id),
             escape_html(&compact_preview(Some(&job.prompt))),
             escape_html(model),
@@ -1205,7 +1218,7 @@ fn render_credit_records(credits: Vec<CreditsLedgerRecord>) -> String {
                 <div class="meta">{}</div>
               </div>
               <div>
-                <a class="inline-link" href="/jobs?job_id={}">{}</a>
+                <a class="inline-link" href="/jobs/{}">{}</a>
                 <div class="meta">subjob {}</div>
               </div>
               <div>
@@ -1228,7 +1241,7 @@ fn render_credit_records(credits: Vec<CreditsLedgerRecord>) -> String {
             </div>"#,
             escape_html(&credit.id),
             escape_html(&credit.entry_type),
-            escape_query_value(parent_job.unwrap_or_default()),
+            escape_path_segment(parent_job.unwrap_or_default()),
             escape_html(parent_job.unwrap_or("unknown")),
             escape_html(graph_node),
             escape_path_segment(credit.device_id.as_deref().unwrap_or_default()),
@@ -1246,6 +1259,320 @@ fn render_credit_records(credits: Vec<CreditsLedgerRecord>) -> String {
 
     html.push_str("</div>");
     html
+}
+
+fn graph_result_for_node<'a>(
+    job: &'a JobRecord,
+    graph_node_id: &str,
+) -> Option<&'a contracts::JobResultRecord> {
+    job.graph
+        .results
+        .iter()
+        .find(|result| result.node_id == graph_node_id)
+}
+
+fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
+    let Some(job) = state.jobs.get(job_id) else {
+        return format!(
+            r#"<section class="panel job-detail-panel">
+              <h2>Job Detail</h2>
+              <div class="empty">No job matched <strong>{}</strong>.</div>
+            </section>"#,
+            escape_html(job_id)
+        );
+    };
+
+    let status = job.status.to_string();
+    let backend = job
+        .backend
+        .map(|backend| backend.to_string())
+        .unwrap_or_else(|| job.preferred_backend.to_string());
+    let model = job.model.as_deref().unwrap_or("default");
+    let scheduler = job
+        .scheduler_decision
+        .as_ref()
+        .map(|decision| {
+            let reasons = if decision.reasons.is_empty() {
+                "no scheduler reasons recorded".to_string()
+            } else {
+                decision.reasons.join(" / ")
+            };
+            format!(
+                r#"<div><strong>{}</strong><div class="meta">scheduler node</div></div>
+                <div><strong>{}</strong><div class="meta">scheduler score</div></div>
+                <div><strong>{}</strong><div class="meta">scheduler reasons</div></div>"#,
+                node_profile_link(&decision.node_id),
+                decision.score,
+                escape_html(&reasons),
+            )
+        })
+        .unwrap_or_else(|| {
+            r#"<div><strong>not decided</strong><div class="meta">scheduler node</div></div>
+              <div><strong>0</strong><div class="meta">scheduler score</div></div>
+              <div><strong>no scheduler decision recorded</strong><div class="meta">scheduler reasons</div></div>"#
+                .to_string()
+        });
+    let fallback_triggers = if job.fallback_decision.triggers.is_empty() {
+        "none".to_string()
+    } else {
+        job.fallback_decision.triggers.join(", ")
+    };
+    let fallback_blocks = if job.fallback_decision.blocked_reasons.is_empty() {
+        "none".to_string()
+    } else {
+        job.fallback_decision.blocked_reasons.join(", ")
+    };
+    let total_payout = state
+        .credits_ledger
+        .iter()
+        .filter(|credit| {
+            credit.job_id.as_deref() == Some(job.job_id.as_str())
+                || credit.parent_job_id.as_deref() == Some(job.job_id.as_str())
+        })
+        .map(|credit| credit.amount)
+        .sum::<f64>();
+    let graph_nodes_html = if job.graph.nodes.is_empty() {
+        r#"<div class="empty">This job has no decomposed graph chunks.</div>"#.to_string()
+    } else {
+        let mut html = String::from(
+            r#"<div class="table job-detail-table">
+            <div class="thead">
+              <div>Chunk</div>
+              <div>Status</div>
+              <div>Node</div>
+              <div>Attempts</div>
+              <div>Dependencies</div>
+              <div>Payout</div>
+              <div>Result</div>
+            </div>"#,
+        );
+        for node in &job.graph.nodes {
+            let status = graph_node_status_label(node.status).to_string();
+            let (status_bg, status_fg) = state_badge(&status);
+            let assigned = node.assigned_node_id.as_deref().unwrap_or("unassigned");
+            let failed_nodes = if node.failed_node_ids.is_empty() {
+                "none".to_string()
+            } else {
+                node.failed_node_ids
+                    .iter()
+                    .map(|node_id| node_profile_link(node_id))
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let depends_on = if node.depends_on.is_empty() {
+                "none".to_string()
+            } else {
+                node.depends_on.join(", ")
+            };
+            let blocked_by = if node.blocked_by.is_empty() {
+                "none".to_string()
+            } else {
+                node.blocked_by.join(", ")
+            };
+            let result = graph_result_for_node(job, &node.id);
+            let latency = result
+                .and_then(|result| result.latency_ms)
+                .map(|latency| format!("{latency} ms"))
+                .unwrap_or_else(|| "not recorded".to_string());
+            let verification = result
+                .map(|result| format!("{:?}", result.verification_status))
+                .unwrap_or_else(|| "not verified".to_string());
+            let result_preview = if node
+                .error
+                .as_ref()
+                .is_some_and(|error| !error.trim().is_empty())
+            {
+                compact_preview(node.error.as_deref())
+            } else {
+                compact_preview(node.output.as_deref())
+            };
+            let payout = state
+                .credits_ledger
+                .iter()
+                .filter(|credit| {
+                    credit.parent_job_id.as_deref() == Some(job.job_id.as_str())
+                        && credit.graph_node_id.as_deref() == Some(node.id.as_str())
+                })
+                .map(|credit| credit.amount)
+                .sum::<f64>();
+            let payout_href = format!(
+                "/credits?job_id={}&reward_scope=graph_node",
+                escape_query_value(&node.id)
+            );
+            let retry_label =
+                if !node.failed_node_ids.is_empty() && node.status != JobGraphNodeStatus::Failed {
+                    "retried"
+                } else if node.status == JobGraphNodeStatus::Failed {
+                    "failed"
+                } else {
+                    "normal"
+                };
+
+            html.push_str(&format!(
+                r#"<div class="row job-detail-row {retry_label}">
+                  <div>
+                    <strong>{name}</strong>
+                    <div class="meta">chunk {id}</div>
+                    <div class="meta">{responsibility}</div>
+                  </div>
+                  <div>
+                    <span class="pill" style="background:{status_bg};color:{status_fg};">{status}</span>
+                    <div class="meta">verification {verification}</div>
+                  </div>
+                  <div>
+                    <strong>{assigned}</strong>
+                    <div class="meta">worker {worker}</div>
+                    <div class="meta">backend {backend}</div>
+                  </div>
+                  <div>
+                    <strong>{attempts}/{max_attempts}</strong>
+                    <div class="meta">failed nodes {failed_nodes}</div>
+                    <div class="meta">latency {latency}</div>
+                  </div>
+                  <div>
+                    <div class="meta">depends on {depends_on}</div>
+                    <div class="meta">blocked by {blocked_by}</div>
+                  </div>
+                  <div>
+                    <a class="inline-link" href="{payout_href}">{payout:.2}</a>
+                    <div class="meta">credits paid</div>
+                  </div>
+                  <div>
+                    <strong>{result_preview}</strong>
+                    <div class="meta">required {required}</div>
+                  </div>
+                </div>"#,
+                retry_label = retry_label,
+                name = escape_html(&node.name),
+                id = escape_html(&node.id),
+                responsibility = escape_html(&compact_preview(Some(&node.responsibility))),
+                status_bg = status_bg,
+                status_fg = status_fg,
+                status = escape_html(&status),
+                verification = escape_html(&verification),
+                assigned = node_profile_link(assigned),
+                worker = escape_html(node.worker_id.as_deref().unwrap_or("none")),
+                backend = escape_html(
+                    &node
+                        .backend
+                        .map(|backend| backend.to_string())
+                        .unwrap_or_else(|| "pending".to_string())
+                ),
+                attempts = node.attempt_count,
+                max_attempts = node.max_attempts,
+                failed_nodes = failed_nodes,
+                latency = escape_html(&latency),
+                depends_on = escape_html(&depends_on),
+                blocked_by = escape_html(&blocked_by),
+                payout_href = escape_html(&payout_href),
+                payout = payout,
+                result_preview = escape_html(&result_preview),
+                required = escape_html(&compact_preview(Some(&node.required_output))),
+            ));
+        }
+        html.push_str("</div>");
+        html
+    };
+    let final_output = job
+        .graph
+        .final_output
+        .as_deref()
+        .or(job.output.as_deref())
+        .map(|output| compact_preview(Some(output)))
+        .unwrap_or_else(|| "not produced".to_string());
+    let merge_error = job
+        .graph
+        .merge_error
+        .as_deref()
+        .or(job.error.as_deref())
+        .unwrap_or("none");
+
+    format!(
+        r#"<section class="panel job-detail-panel">
+          <div class="profile-head">
+            <div>
+              <h2>Job Detail</h2>
+              <div class="meta">request {request_id} / submitted {submitted}</div>
+            </div>
+            <a class="button" href="/jobs?job_id={job_query}">Filter table</a>
+          </div>
+          <section class="node-profile-grid" aria-label="Job detail summary">
+            <div class="node-profile-card"><span>Status</span><strong>{status}</strong><div class="meta">graph {graph_status}</div></div>
+            <div class="node-profile-card"><span>Execution</span><strong>{execution_mode}</strong><div class="meta">graph {graph_enabled}</div></div>
+            <div class="node-profile-card"><span>Backend / model</span><strong>{backend}</strong><div class="meta">{model}</div></div>
+            <div class="node-profile-card"><span>Total payout</span><strong>{total_payout:.2}</strong><div class="meta">credits paid by ledger</div></div>
+          </section>
+          <section class="profile-sections">
+            <div class="node-profile-card">
+              <h3>Request</h3>
+              <div class="profile-kv">
+                <div><strong>{prompt}</strong><div class="meta">prompt</div></div>
+                <div><strong>{assigned_node}</strong><div class="meta">assigned node</div></div>
+                <div><strong>{assigned}</strong><div class="meta">assigned at</div></div>
+                <div><strong>{completed}</strong><div class="meta">completed at</div></div>
+              </div>
+            </div>
+            <div class="node-profile-card">
+              <h3>Scheduler</h3>
+              <div class="profile-kv">{scheduler}</div>
+            </div>
+            <div class="node-profile-card">
+              <h3>Fallback</h3>
+              <div class="profile-kv">
+                <div><strong>{fallback_status}</strong><div class="meta">decision</div></div>
+                <div><strong>{fallback_approval}</strong><div class="meta">operator approval</div></div>
+                <div><strong>{fallback_triggers}</strong><div class="meta">triggers</div></div>
+                <div><strong>{fallback_blocks}</strong><div class="meta">blocked reasons</div></div>
+              </div>
+            </div>
+            <div class="node-profile-card">
+              <h3>Reducer</h3>
+              <div class="profile-kv">
+                <div><strong>{final_node}</strong><div class="meta">final node</div></div>
+                <div><strong>{final_output}</strong><div class="meta">final output</div></div>
+                <div><strong>{merge_error}</strong><div class="meta">merge error</div></div>
+                <div><strong>{graph_updated}</strong><div class="meta">graph updated</div></div>
+              </div>
+            </div>
+          </section>
+          <section class="job-detail-chunks">
+            <h2>Graph Chunks</h2>
+            {graph_nodes_html}
+          </section>
+        </section>"#,
+        request_id = escape_html(&job.request_id),
+        submitted = escape_html(&job.submitted_at),
+        job_query = escape_query_value(&job.job_id),
+        status = escape_html(&status),
+        graph_status = escape_html(&format!("{:?}", job.graph.status)),
+        execution_mode = escape_html(job_execution_mode_label(job.execution_mode)),
+        graph_enabled = if job.graph_execution_enabled {
+            "enabled"
+        } else {
+            "advisory"
+        },
+        backend = escape_html(&backend),
+        model = escape_html(model),
+        total_payout = total_payout,
+        prompt = escape_html(&compact_preview(Some(&job.prompt))),
+        assigned_node = node_profile_link(job.assigned_node_id.as_deref().unwrap_or("unassigned")),
+        assigned = escape_html(job.assigned_at.as_deref().unwrap_or("not assigned")),
+        completed = escape_html(job.completed_at.as_deref().unwrap_or("not completed")),
+        scheduler = scheduler,
+        fallback_status = escape_html(&format!("{:?}", job.fallback_decision.status)),
+        fallback_approval = if job.fallback_decision.requires_operator_approval {
+            "required"
+        } else {
+            "not required"
+        },
+        fallback_triggers = escape_html(&fallback_triggers),
+        fallback_blocks = escape_html(&fallback_blocks),
+        final_node = escape_html(job.graph.final_node_id.as_deref().unwrap_or("none")),
+        final_output = escape_html(&final_output),
+        merge_error = escape_html(merge_error),
+        graph_updated = escape_html(&job.graph.updated_at),
+        graph_nodes_html = graph_nodes_html,
+    )
 }
 
 fn credit_reward_scope(credit: &CreditsLedgerRecord) -> &str {
@@ -1559,6 +1886,9 @@ fn control_plane_operator_page(
     let (paged_jobs, jobs_pagination) = paged_job_records(filtered_jobs, query);
     let filtered_jobs_html = render_job_records(paged_jobs);
     let jobs_pagination_html = render_pagination_controls("/jobs", query, &jobs_pagination);
+    let job_detail_html = query_param(query, "job_id")
+        .map(|job_id| render_job_detail_panel(state, job_id))
+        .unwrap_or_default();
     let mut filtered_credits = state.credits_ledger.clone();
     filtered_credits.reverse();
     let filtered_credits = filter_json_items(filtered_credits, query, "credits_ledger");
@@ -1597,13 +1927,15 @@ fn control_plane_operator_page(
               <a class="metric metric-link" href="/jobs?status=completed"><span>Completed</span><strong>{completed}</strong></a>
               <a class="metric metric-link" href="/jobs?status=failed"><span>Failed</span><strong>{failed}</strong></a>
             </section>
+            {job_detail_html}
             <section class="panel">
               <h2>Job Queue</h2>
               <p class="meta">Review who handled each request, what model/runtime was used, when it completed, and the output or error summary. Retry and cancel controls can attach here when mutating job actions are enabled.</p>
               {filtered_jobs_html}
               {jobs_pagination_html}
             </section>"#,
-            filters = control_filter_form(page, query, &jobs_api_href)
+            filters = control_filter_form(page, query, &jobs_api_href),
+            job_detail_html = job_detail_html
         ),
         OperatorPage::Credits => format!(
             r#"{filters}
@@ -3649,6 +3981,33 @@ fn handle_connection(
                 ),
             )
         }
+        ("GET", path) if path.starts_with("/jobs/") => {
+            let encoded_job_id = path.trim_start_matches("/jobs/");
+            let Some(job_id) = decode_path_segment(encoded_job_id) else {
+                let _ = stream
+                    .write_all(text_response("404 Not Found", "job detail not found").as_bytes());
+                return;
+            };
+            if job_id.trim().is_empty() {
+                let _ = stream
+                    .write_all(text_response("404 Not Found", "job detail not found").as_bytes());
+                return;
+            }
+
+            let detail_query = format!("job_id={}", escape_query_value(&job_id));
+            let snapshot = state.lock().expect("state lock");
+            let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
+            html_response(
+                "200 OK",
+                &control_plane_operator_page(
+                    &snapshot,
+                    storage_source,
+                    &sync_snapshot,
+                    OperatorPage::Jobs,
+                    Some(&detail_query),
+                ),
+            )
+        }
         ("GET", path) if OperatorPage::from_path(path).is_some() => {
             let page = OperatorPage::from_path(path).expect("operator page");
             let snapshot = state.lock().expect("state lock");
@@ -4894,7 +5253,7 @@ mod tests {
         assert!(html.contains("graph chunk rewards"));
         assert!(html.contains(r#"value="graph_node" selected"#));
         assert!(html.contains(r#"href="/nodes/node-1""#));
-        assert!(html.contains(r#"href="/jobs?job_id=job-1""#));
+        assert!(html.contains(r#"href="/jobs/job-1""#));
         assert!(html.contains("chunk-1"));
         assert!(html.contains("Research"));
         assert!(!html.contains("node-2"));
@@ -4940,6 +5299,181 @@ mod tests {
         assert!(html.contains("job-21"));
         assert!(html.contains("job-12"));
         assert!(!html.contains("job-31</a>"));
+    }
+
+    #[test]
+    fn job_detail_route_renders_single_job_summary() {
+        let mut initial_state = ControlPlaneState::default();
+        register_ready_node(&mut initial_state, "node-1", "DAVE", "1");
+        initial_state.submit_job(
+            JobRequest {
+                request_id: "job-single".to_string(),
+                prompt: "Summarize Tesla history".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(128),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        initial_state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claim");
+        initial_state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-single".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("Tesla output".to_string()),
+                    error: None,
+                    latency_ms: Some(50),
+                },
+                "4".to_string(),
+            )
+            .expect("complete");
+        let state = Arc::new(Mutex::new(initial_state));
+        let sync_status = Arc::new(Mutex::new(SupabaseSyncStatus::disabled(
+            StorageSource::LocalJsonOnly,
+        )));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let handler_state = Arc::clone(&state);
+        let handler_sync_status = Arc::clone(&sync_status);
+
+        let handler = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept request");
+            handle_connection(
+                stream,
+                handler_state,
+                handler_sync_status,
+                None,
+                StorageSource::LocalJsonOnly,
+            );
+        });
+
+        let request = "GET /jobs/job-single HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let mut client = TcpStream::connect(address).expect("connect to test listener");
+        client.write_all(request.as_bytes()).expect("write request");
+
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read response");
+        handler.join().expect("handler completes");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Job Detail"));
+        assert!(response.contains("Summarize Tesla history"));
+        assert!(response.contains("single"));
+        assert!(response.contains("Graph Chunks"));
+        assert!(response.contains("advisory"));
+        assert!(response.contains(r#"href="/jobs?job_id=job-single""#));
+        assert!(response.contains(r#"href="/nodes/node-1""#));
+    }
+
+    #[test]
+    fn job_detail_page_shows_decomposed_retries_nodes_and_payouts() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "1");
+        register_ready_node(&mut state, "node-2", "HAL", "1");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-graph".to_string(),
+                prompt: "Give me a detailed history of BMW from its origins to today.".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Decompose,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(256),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first claim");
+        let graph_node_id = first_claim
+            .active_graph_node_id
+            .clone()
+            .expect("active graph node");
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-graph".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Failed,
+                    output: None,
+                    error: Some("local runtime failed".to_string()),
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("failed chunk");
+        let retry_claim = state
+            .claim_job("node-2", "5".to_string())
+            .job
+            .expect("retry claim");
+        assert_eq!(
+            retry_claim.active_graph_node_id.as_deref(),
+            Some(graph_node_id.as_str())
+        );
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-graph".to_string(),
+                    node_id: "node-2".to_string(),
+                    worker_id: "worker-2".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("BMW chunk output".to_string()),
+                    error: None,
+                    latency_ms: Some(25),
+                },
+                "6".to_string(),
+            )
+            .expect("completed retry");
+        state
+            .award_job_reward(&completed, "6".to_string())
+            .expect("credit award");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Jobs,
+            Some("job_id=job-graph"),
+        );
+
+        assert!(html.contains("Job Detail"));
+        assert!(html.contains("Graph Chunks"));
+        assert!(html.contains("decompose"));
+        assert!(html.contains("retried"));
+        assert!(html.contains("2/3"));
+        assert!(html.contains("failed nodes"));
+        assert!(html.contains(r#"href="/nodes/node-1""#));
+        assert!(html.contains(r#"href="/nodes/node-2""#));
+        assert!(html.contains("BMW chunk output"));
+        assert!(html.contains("credits paid"));
+        assert!(html.contains("Total payout"));
+        assert!(html.contains(&format!(
+            r#"href="/credits?job_id={}&amp;reward_scope=graph_node""#,
+            graph_node_id
+        )));
     }
 
     #[test]
