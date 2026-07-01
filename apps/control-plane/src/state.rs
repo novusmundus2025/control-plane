@@ -151,16 +151,25 @@ impl ControlPlaneState {
         &mut self,
         device_id: Option<String>,
         job_id: Option<String>,
+        parent_job_id: Option<String>,
+        graph_node_id: Option<String>,
         amount: f64,
         currency: &str,
         metadata: serde_json::Value,
         created_at: String,
     ) -> Option<CreditsLedgerRecord> {
         let job_id_ref = job_id.as_deref();
+        let parent_job_id_ref = parent_job_id.as_deref();
+        let graph_node_id_ref = graph_node_id.as_deref();
         if self
             .credits_ledger
             .iter()
-            .any(|entry| entry.entry_type == "job_reward" && entry.job_id.as_deref() == job_id_ref)
+            .any(|entry| {
+                entry.entry_type == "job_reward"
+                    && entry.job_id.as_deref() == job_id_ref
+                    && entry.parent_job_id.as_deref() == parent_job_id_ref
+                    && entry.graph_node_id.as_deref() == graph_node_id_ref
+            })
         {
             return None;
         }
@@ -170,6 +179,8 @@ impl ControlPlaneState {
             user_id: None,
             device_id,
             job_id,
+            parent_job_id,
+            graph_node_id,
             entry_type: "job_reward".to_string(),
             amount,
             currency: currency.to_string(),
@@ -207,17 +218,35 @@ impl ControlPlaneState {
         job: &JobRecord,
         completed_at: String,
     ) -> Option<CreditsLedgerRecord> {
-        let node_id = job.assigned_node_id.clone()?;
-        let node = self.nodes.get(&node_id)?;
-        let prompt_chars = job.prompt.chars().count() as f64;
-        let output_chars = job
-            .output
+        let graph_node = job
+            .last_completed_graph_node_id
             .as_ref()
+            .and_then(|graph_node_id| {
+                job.graph
+                    .nodes
+                    .iter()
+                    .find(|node| &node.id == graph_node_id)
+            });
+        let node_id = graph_node
+            .and_then(|node| node.assigned_node_id.clone())
+            .or_else(|| job.assigned_node_id.clone())?;
+        let node = self.nodes.get(&node_id)?;
+        let prompt_text = graph_node
+            .map(|node| node.responsibility.as_str())
+            .unwrap_or(job.prompt.as_str());
+        let output_text = graph_node
+            .and_then(|node| node.output.as_deref())
+            .or(job.output.as_deref());
+        let prompt_chars = prompt_text.chars().count() as f64;
+        let output_chars = output_text
             .map(|output| output.chars().count() as f64)
             .unwrap_or(0.0);
         let work_units = ((prompt_chars + output_chars) / 400.0).ceil().max(1.0);
         let contribution_multiplier = 1.0 + (node.contribution_percent as f64 / 100.0);
         let amount = ((work_units * contribution_multiplier) * 100.0).round() / 100.0;
+        let graph_node_id = graph_node.map(|node| node.id.clone());
+        let graph_node_name = graph_node.map(|node| node.name.clone());
+        let parent_job_id = graph_node_id.as_ref().map(|_| job.job_id.clone());
         let metadata = serde_json::json!({
             "formula": "ceil((prompt_chars + output_chars) / 400) * (1 + contribution_percent / 100)",
             "prompt_chars": prompt_chars,
@@ -225,10 +254,16 @@ impl ControlPlaneState {
             "contribution_percent": node.contribution_percent,
             "backend": node.backend,
             "job_status": job.status,
+            "parent_job_id": job.job_id,
+            "graph_node_id": graph_node_id.clone(),
+            "graph_node_name": graph_node_name,
+            "reward_scope": if graph_node_id.is_some() { "graph_node" } else { "job" },
         });
         self.record_credit_award(
             Some(node_id),
             Some(job.job_id.clone()),
+            parent_job_id,
+            graph_node_id,
             amount,
             "credits",
             metadata,
@@ -2976,6 +3011,90 @@ mod tests {
             )
             .expect("second completion");
         assert_eq!(second_completed.status, JobStatus::Queued);
+    }
+
+    #[test]
+    fn decompose_awards_credits_per_completed_graph_node() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first claim");
+        let second_claim = state
+            .claim_job("node-2", "3".to_string())
+            .job
+            .expect("second claim");
+        let first_graph_node = first_claim
+            .active_graph_node_id
+            .clone()
+            .expect("first graph node");
+        let second_graph_node = second_claim
+            .active_graph_node_id
+            .clone()
+            .expect("second graph node");
+
+        let first_completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("first chunk output".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("first completion");
+        let first_award = state
+            .award_job_reward(&first_completed, "4".to_string())
+            .expect("first award");
+
+        let second_completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-2".to_string(),
+                    worker_id: "worker-2".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("second chunk output".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "5".to_string(),
+            )
+            .expect("second completion");
+        let second_award = state
+            .award_job_reward(&second_completed, "5".to_string())
+            .expect("second award");
+
+        assert_eq!(state.credits_ledger.len(), 2);
+        assert_eq!(first_award.device_id.as_deref(), Some("node-1"));
+        assert_eq!(second_award.device_id.as_deref(), Some("node-2"));
+        assert_eq!(first_award.parent_job_id.as_deref(), Some("job-1"));
+        assert_eq!(second_award.parent_job_id.as_deref(), Some("job-1"));
+        assert_eq!(first_award.graph_node_id.as_deref(), Some(first_graph_node.as_str()));
+        assert_eq!(
+            second_award.graph_node_id.as_deref(),
+            Some(second_graph_node.as_str())
+        );
+        assert_eq!(first_award.job_id.as_deref(), Some("job-1"));
+        assert_eq!(second_award.job_id.as_deref(), Some("job-1"));
+        assert_ne!(first_award.id, second_award.id);
+        assert!(state
+            .award_job_reward(&second_completed, "6".to_string())
+            .is_none());
     }
 
     #[test]

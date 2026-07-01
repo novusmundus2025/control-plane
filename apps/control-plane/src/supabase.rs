@@ -258,6 +258,8 @@ impl SupabaseMirror {
             "user_id": entry.user_id,
             "device_id": entry.device_id,
             "job_id": entry.job_id,
+            "parent_job_id": entry.parent_job_id,
+            "graph_node_id": entry.graph_node_id,
             "entry_type": entry.entry_type,
             "amount": entry.amount,
             "currency": entry.currency,

@@ -140,6 +140,8 @@ create table if not exists public.credits_ledger (
   user_id uuid references public.users(id),
   device_id text references public.devices(node_id),
   job_id text references public.jobs(job_id),
+  parent_job_id text references public.jobs(job_id),
+  graph_node_id text,
   entry_type text not null,
   amount numeric not null default 0,
   currency text not null default 'credits',

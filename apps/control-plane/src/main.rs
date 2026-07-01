@@ -6,8 +6,8 @@ mod supabase;
 use contracts::{
     is_trusted_identity_path, trust_path_label, AgentRegistration, ChatCompletionChoice,
     ChatCompletionChoiceMessage, ChatCompletionMundusX, ChatCompletionRequest,
-    ChatCompletionResponse, Heartbeat, JobCompletion, JobExecutionMode, JobRecord, JobRequest,
-    NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
+    ChatCompletionResponse, CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode,
+    JobRecord, JobRequest, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
     OperatorNodePolicyOverrideUpdate, RuntimeMode,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -703,6 +703,16 @@ fn job_execution_mode_label(mode: contracts::JobExecutionMode) -> &'static str {
     }
 }
 
+fn graph_node_status_label(status: contracts::JobGraphNodeStatus) -> &'static str {
+    match status {
+        contracts::JobGraphNodeStatus::Waiting => "waiting",
+        contracts::JobGraphNodeStatus::Ready => "ready",
+        contracts::JobGraphNodeStatus::Running => "running",
+        contracts::JobGraphNodeStatus::Completed => "completed",
+        contracts::JobGraphNodeStatus::Failed => "failed",
+    }
+}
+
 fn render_job_records(jobs: Vec<JobRecord>) -> String {
     if jobs.is_empty() {
         return r#"<div class="empty">No jobs match these filters.</div>"#.to_string();
@@ -799,6 +809,184 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
             result_label,
             escape_html(&result_preview),
         ));
+
+        if job.graph_execution_enabled || !job.graph.nodes.is_empty() {
+            let completed_chunks = job
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.status == contracts::JobGraphNodeStatus::Completed)
+                .count();
+            html.push_str(&format!(
+                r#"<div class="subjob-header">Subjobs for <strong>{}</strong> &middot; {}/{} complete</div>"#,
+                escape_html(&job.job_id),
+                completed_chunks,
+                job.graph.nodes.len()
+            ));
+            for node in &job.graph.nodes {
+                let sub_status = graph_node_status_label(node.status).to_string();
+                let (sub_status_bg, sub_status_fg) = state_badge(&sub_status);
+                let sub_assigned = node.assigned_node_id.as_deref().unwrap_or("unassigned");
+                let sub_worker = node.worker_id.as_deref().unwrap_or("none");
+                let sub_backend = node
+                    .backend
+                    .map(|backend| backend.to_string())
+                    .unwrap_or_else(|| "pending".to_string());
+                let sub_result = if node
+                    .error
+                    .as_ref()
+                    .is_some_and(|error| !error.trim().is_empty())
+                {
+                    compact_preview(node.error.as_deref())
+                } else {
+                    compact_preview(node.output.as_deref())
+                };
+                let depends_on = if node.depends_on.is_empty() {
+                    "none".to_string()
+                } else {
+                    node.depends_on.join(", ")
+                };
+                html.push_str(&format!(
+                    r#"<div class="row subjob-row">
+                      <div>
+                        <strong>{}</strong>
+                        <div class="meta">subjob {}</div>
+                      </div>
+                      <div>
+                        <div>{}</div>
+                        <div class="meta">requires {}</div>
+                      </div>
+                      <div><span class="pill" style="background:{};color:{};">{}</span></div>
+                      <div>
+                        <strong>{}</strong>
+                        <div class="meta">assigned node</div>
+                      </div>
+                      <div>
+                        <strong>{}</strong>
+                        <div class="meta">backend {}</div>
+                      </div>
+                      <div>
+                        <div class="meta">assigned {}</div>
+                        <div class="meta">depends on {}</div>
+                      </div>
+                      <div>
+                        <strong>{}</strong>
+                        <div class="meta">chunk output</div>
+                      </div>
+                    </div>"#,
+                    escape_html(&node.name),
+                    escape_html(&node.id),
+                    escape_html(&compact_preview(Some(&node.responsibility))),
+                    escape_html(&compact_preview(Some(&node.required_output))),
+                    sub_status_bg,
+                    sub_status_fg,
+                    escape_html(&sub_status),
+                    escape_html(sub_assigned),
+                    escape_html(sub_worker),
+                    escape_html(&sub_backend),
+                    escape_html(node.assigned_at.as_deref().unwrap_or("not assigned")),
+                    escape_html(&depends_on),
+                    escape_html(&sub_result),
+                ));
+            }
+        }
+    }
+
+    html.push_str("</div>");
+    html
+}
+
+fn render_credit_records(credits: Vec<CreditsLedgerRecord>) -> String {
+    if credits.is_empty() {
+        return r#"<div class="empty">No credit entries match these filters.</div>"#.to_string();
+    }
+
+    let mut html = String::from(
+        r#"<div class="table credits-table">
+        <div class="thead">
+          <div>Credit</div>
+          <div>Job / Subjob</div>
+          <div>Node</div>
+          <div>Amount</div>
+          <div>Scope</div>
+          <div>Created</div>
+          <div>Formula</div>
+        </div>"#,
+    );
+
+    for credit in credits {
+        let parent_job = credit.parent_job_id.as_deref().or(credit.job_id.as_deref());
+        let graph_node = credit.graph_node_id.as_deref().unwrap_or("whole job");
+        let scope = credit
+            .metadata
+            .get("reward_scope")
+            .and_then(|value| value.as_str())
+            .unwrap_or("job");
+        let graph_name = credit
+            .metadata
+            .get("graph_node_name")
+            .and_then(|value| value.as_str())
+            .unwrap_or(scope);
+        let formula = credit
+            .metadata
+            .get("formula")
+            .and_then(|value| value.as_str())
+            .unwrap_or("unknown");
+        let prompt_chars = credit
+            .metadata
+            .get("prompt_chars")
+            .map(json_text)
+            .unwrap_or_default();
+        let output_chars = credit
+            .metadata
+            .get("output_chars")
+            .map(json_text)
+            .unwrap_or_default();
+
+        html.push_str(&format!(
+            r#"<div class="row">
+              <div>
+                <strong>{}</strong>
+                <div class="meta">{}</div>
+              </div>
+              <div>
+                <a class="inline-link" href="/jobs?job_id={}">{}</a>
+                <div class="meta">subjob {}</div>
+              </div>
+              <div>
+                <a class="inline-link" href="/nodes?node_id={}">{}</a>
+                <div class="meta">worker credit owner</div>
+              </div>
+              <div>
+                <strong>{:.2}</strong>
+                <div class="meta">{}</div>
+              </div>
+              <div>
+                <strong>{}</strong>
+                <div class="meta">{}</div>
+              </div>
+              <div><div class="meta">{}</div></div>
+              <div>
+                <strong>{}</strong>
+                <div class="meta">prompt chars {} &middot; output chars {}</div>
+              </div>
+            </div>"#,
+            escape_html(&credit.id),
+            escape_html(&credit.entry_type),
+            escape_query_value(parent_job.unwrap_or_default()),
+            escape_html(parent_job.unwrap_or("unknown")),
+            escape_html(graph_node),
+            escape_query_value(credit.device_id.as_deref().unwrap_or_default()),
+            escape_html(credit.device_id.as_deref().unwrap_or("unknown")),
+            credit.amount,
+            escape_html(&credit.currency),
+            escape_html(scope),
+            escape_html(graph_name),
+            escape_html(&credit.created_at),
+            escape_html(formula),
+            escape_html(&prompt_chars),
+            escape_html(&output_chars),
+        ));
     }
 
     html.push_str("</div>");
@@ -830,6 +1018,21 @@ fn paged_job_records(jobs: Vec<JobRecord>, query: Option<&str>) -> (Vec<JobRecor
         .collect::<Vec<_>>();
 
     (page_jobs, pagination)
+}
+
+fn paged_credit_records(
+    credits: Vec<CreditsLedgerRecord>,
+    query: Option<&str>,
+) -> (Vec<CreditsLedgerRecord>, Pagination) {
+    let pagination = Pagination::from_query(query).with_total(credits.len());
+    let start = (pagination.page - 1) * pagination.page_size;
+    let page_credits = credits
+        .into_iter()
+        .skip(start)
+        .take(pagination.page_size)
+        .collect::<Vec<_>>();
+
+    (page_credits, pagination)
 }
 
 fn paged_operator_href(path: &str, query: Option<&str>, page: usize, page_size: usize) -> String {
@@ -1015,6 +1218,13 @@ fn control_plane_operator_page(
     let (paged_jobs, jobs_pagination) = paged_job_records(filtered_jobs, query);
     let filtered_jobs_html = render_job_records(paged_jobs);
     let jobs_pagination_html = render_pagination_controls("/jobs", query, &jobs_pagination);
+    let mut filtered_credits = state.credits_ledger.clone();
+    filtered_credits.reverse();
+    let filtered_credits = filter_json_items(filtered_credits, query, "credits_ledger");
+    let (paged_credits, credits_pagination) = paged_credit_records(filtered_credits, query);
+    let filtered_credits_html = render_credit_records(paged_credits);
+    let credits_pagination_html =
+        render_pagination_controls("/credits", query, &credits_pagination);
     let body = match page {
         OperatorPage::Nodes => format!(
             r#"{filters}
@@ -1056,7 +1266,9 @@ fn control_plane_operator_page(
             </section>
             <section class="panel">
               <h2>Credits Ledger</h2>
-              <p class="meta">Credit reconciliation should use ledger history, node-level totals, and exportable raw data. Keep the raw endpoint available for automation.</p>
+              <p class="meta">Credit reconciliation uses append-only ledger history. Graph jobs pay the node that completed each subjob, with the parent job kept as the rollup.</p>
+              {filtered_credits_html}
+              {credits_pagination_html}
             </section>"#,
             filters = control_filter_form(page, query, &credits_api_href)
         ),
@@ -1898,6 +2110,27 @@ fn control_plane_home(
         border-color: rgba(73, 159, 255, 0.24);
       }}
       .table .row:last-child {{ border-bottom: 0; }}
+      .subjob-header {{
+        margin: 6px 0 0;
+        padding: 10px 14px;
+        border-top: 1px solid rgba(73, 159, 255, 0.18);
+        color: #9ecbff;
+        font-size: 13px;
+        background: rgba(21, 96, 155, 0.08);
+      }}
+      .table .row.subjob-row {{
+        background: rgba(10, 28, 48, 0.68);
+        border-left: 2px solid rgba(50, 151, 255, 0.55);
+        padding-left: 12px;
+      }}
+      .inline-link {{
+        color: #9ed0ff;
+        text-decoration: none;
+      }}
+      .inline-link:hover {{
+        color: #ffffff;
+        text-decoration: underline;
+      }}
       .meta {{
         color: var(--muted);
         font-size: 12px;
@@ -2431,15 +2664,14 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
             r#"<form class="toolbar" method="get" action="/credits">
               <input name="search" aria-label="Search credits" placeholder="Search ledger id, node, job, type" value="{search}" />
               <input name="node_id" aria-label="Node id" placeholder="node id" value="{node_id}" />
-              <input name="job_id" aria-label="Job id" placeholder="job id" value="{job_id}" />
-              <select name="entry_type" aria-label="Entry type"><option value="">All entries</option><option value="job_completed"{job_completed}>Job completed</option><option value="job_failed"{job_failed}>Job failed</option></select>
+              <input name="job_id" aria-label="Job id" placeholder="parent job or subjob id" value="{job_id}" />
+              <select name="entry_type" aria-label="Entry type"><option value="">All entries</option><option value="job_reward"{job_reward}>Job reward</option></select>
               <input name="start" aria-label="Start timestamp" placeholder="start timestamp" value="{start}" />
               <input name="end" aria-label="End timestamp" placeholder="end timestamp" value="{end}" />
               <button class="button" type="submit">Apply</button>
               <a class="button" href="{api_href}">Credits JSON</a>
             </form>"#,
-            job_completed = selected_attr(query, "entry_type", "job_completed"),
-            job_failed = selected_attr(query, "entry_type", "job_failed"),
+            job_reward = selected_attr(query, "entry_type", "job_reward"),
         ),
         OperatorPage::Settings => format!(
             r#"<section class="toolbar"><a class="button" href="{api_href}">Status JSON</a></section>"#
@@ -2522,6 +2754,39 @@ fn query_exact_match(
         .any(|field| json_field_text(value, field).eq_ignore_ascii_case(expected))
 }
 
+fn query_exact_match_deep(
+    value: &serde_json::Value,
+    query: Option<&str>,
+    key: &str,
+    fields: &[&str],
+) -> bool {
+    let Some(expected) = query_param(query, key)
+        .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("all"))
+    else {
+        return true;
+    };
+
+    json_field_matches_deep(value, fields, expected)
+}
+
+fn json_field_matches_deep(value: &serde_json::Value, fields: &[&str], expected: &str) -> bool {
+    match value {
+        serde_json::Value::Object(map) => {
+            fields.iter().any(|field| {
+                map.get(*field)
+                    .map(json_text)
+                    .is_some_and(|text| text.eq_ignore_ascii_case(expected))
+            }) || map
+                .values()
+                .any(|value| json_field_matches_deep(value, fields, expected))
+        }
+        serde_json::Value::Array(items) => items
+            .iter()
+            .any(|value| json_field_matches_deep(value, fields, expected)),
+        _ => false,
+    }
+}
+
 fn node_state_filter_matches(value: &serde_json::Value, query: Option<&str>) -> bool {
     let Some(expected) = query_param(query, "state")
         .filter(|value| !value.trim().is_empty() && !value.eq_ignore_ascii_case("all"))
@@ -2599,14 +2864,24 @@ fn filter_json_items<T: Serialize>(items: Vec<T>, query: Option<&str>, collectio
                     }
                     "jobs" => {
                         query_exact_match(&value, query, "status", &["status"])
-                            && query_exact_match(
+                            && query_exact_match_deep(
                                 &value,
                                 query,
                                 "backend",
                                 &["backend", "preferred_backend"],
                             )
-                            && query_exact_match(&value, query, "node_id", &["assigned_node_id"])
-                            && query_exact_match(&value, query, "job_id", &["job_id", "request_id"])
+                            && query_exact_match_deep(
+                                &value,
+                                query,
+                                "node_id",
+                                &["assigned_node_id", "source_node_id"],
+                            )
+                            && query_exact_match_deep(
+                                &value,
+                                query,
+                                "job_id",
+                                &["job_id", "request_id", "id", "node_id"],
+                            )
                     }
                     "job_events" => {
                         query_exact_match(&value, query, "event_type", &["event_type"])
@@ -2616,7 +2891,12 @@ fn filter_json_items<T: Serialize>(items: Vec<T>, query: Option<&str>, collectio
                     "credits_ledger" => {
                         query_exact_match(&value, query, "entry_type", &["entry_type"])
                             && query_exact_match(&value, query, "node_id", &["device_id"])
-                            && query_exact_match(&value, query, "job_id", &["job_id"])
+                            && query_exact_match_deep(
+                                &value,
+                                query,
+                                "job_id",
+                                &["job_id", "parent_job_id", "graph_node_id"],
+                            )
                     }
                     _ => true,
                 }
