@@ -1024,16 +1024,17 @@ fn complete_graph_execution_job(
     job.last_completed_graph_node_id = active_node_id.clone();
     job.active_graph_node_id = None;
 
-    if completion.status == JobStatus::Failed || job.graph.status == JobGraphStatus::Failed {
-        job.status = JobStatus::Failed;
-        job.completed_at = Some(completed_at.clone());
-    } else if job.graph.status == JobGraphStatus::Completed {
+    if job.graph.status == JobGraphStatus::Completed {
         job.status = JobStatus::Completed;
         job.output = job
             .graph
             .final_output
             .clone()
             .or_else(|| job.output.clone());
+        job.error = None;
+        job.completed_at = Some(completed_at.clone());
+    } else if completion.status == JobStatus::Failed || job.graph.status == JobGraphStatus::Failed {
+        job.status = JobStatus::Failed;
         job.completed_at = Some(completed_at.clone());
     } else {
         job.status = JobStatus::Queued;
@@ -1061,16 +1062,15 @@ fn graph_node_execution_prompt(job: &JobRecord, active_node_id: &str) -> String 
             .iter()
             .filter(|candidate| candidate.id != node.id)
             .filter_map(|candidate| {
-                candidate
-                    .output
-                    .as_ref()
-                    .map(|output| format!("## {}\n{}", candidate.name, output.trim()))
+                candidate.output.as_ref().map(|output| {
+                    format!("## {}\n{}", candidate.name, reducer_section_text(output))
+                })
             })
             .collect::<Vec<_>>()
             .join("\n\n");
 
         return format!(
-            "Original user request:\n{}\n\nCompleted subjob outputs:\n{}\n\nProduce the final answer. Preserve useful details, remove duplication, and return only the final response.",
+            "Original user request:\n{}\n\nCompleted subjob outputs:\n{}\n\nProduce the final answer. Preserve useful details, remove duplication, and return only the final response. If the section notes conflict, prefer widely established facts and omit uncertain claims.",
             job.prompt, sections
         );
     }
@@ -1079,6 +1079,36 @@ fn graph_node_execution_prompt(job: &JobRecord, active_node_id: &str) -> String 
         "Original user request:\n{}\n\nYou are executing one validated MundusX subjob.\nSubjob: {}\nResponsibility: {}\nRequired output: {}\n\nReturn only this subjob's useful output. Do not solve unrelated sections.",
         job.prompt, node.name, node.responsibility, node.required_output
     )
+}
+
+fn reducer_section_text(output: &str) -> String {
+    const MAX_SECTION_CHARS: usize = 2_400;
+    let cleaned = clean_worker_output(output);
+    truncate_chars(cleaned.trim(), MAX_SECTION_CHARS)
+}
+
+fn clean_worker_output(output: &str) -> String {
+    let without_metadata = output
+        .rsplit_once("response=")
+        .map(|(_, response)| response)
+        .unwrap_or(output);
+    without_metadata
+        .replace("[end of text]", "")
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    let mut chars = value.chars();
+    let truncated = chars.by_ref().take(max_chars).collect::<String>();
+    if chars.next().is_some() {
+        format!("{}...", truncated.trim_end())
+    } else {
+        truncated
+    }
 }
 
 fn normalize_amount(value: f64) -> f64 {
@@ -1668,6 +1698,10 @@ fn refresh_graph_results(
     graph.final_output = merge_completed_graph_outputs(graph);
     graph.merge_error = merge_graph_error(graph);
     if graph.merge_error.is_some() {
+        if reducer_failed_with_section_fallback(graph) {
+            graph.status = JobGraphStatus::Completed;
+            return;
+        }
         graph.status = JobGraphStatus::Failed;
     }
 }
@@ -1701,7 +1735,11 @@ fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
         if output.is_empty() {
             continue;
         }
-        parts.push(format!("## {}\n{}", result.name, output));
+        parts.push(format!(
+            "## {}\n{}",
+            result.name,
+            reducer_section_text(output)
+        ));
     }
 
     if parts.is_empty() {
@@ -1709,6 +1747,23 @@ fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
     } else {
         Some(parts.join("\n\n"))
     }
+}
+
+fn reducer_failed_with_section_fallback(graph: &JobGraph) -> bool {
+    let Some(final_node_id) = graph.final_node_id.as_deref() else {
+        return false;
+    };
+
+    let final_node_failed = graph
+        .nodes
+        .iter()
+        .any(|node| node.id == final_node_id && node.status == JobGraphNodeStatus::Failed);
+    let non_final_failed = graph
+        .nodes
+        .iter()
+        .any(|node| node.id != final_node_id && node.status == JobGraphNodeStatus::Failed);
+
+    final_node_failed && !non_final_failed && graph.final_output.is_some()
 }
 
 fn merge_graph_error(graph: &JobGraph) -> Option<String> {
@@ -2825,6 +2880,125 @@ mod tests {
         assert!(claim.prompt.contains("frontend complete"));
         assert!(claim.prompt.contains("tests complete"));
         assert!(claim.prompt.contains("Produce the final answer"));
+    }
+
+    #[test]
+    fn reducer_prompt_strips_worker_metadata_and_caps_sections() {
+        let noisy_output = format!(
+            "llama.cpp mode=cuda; model=demo; path=C:\\models\\demo.gguf; response={} [end of text]",
+            "BMW began as an aircraft engine maker. ".repeat(200)
+        );
+
+        let mut state = ready_state();
+        let mut request =
+            classification_request("Write a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "1".to_string());
+
+        for (node_id, updated_at) in [
+            ("job.origins", "2"),
+            ("job.early_development", "3"),
+            ("job.expansion", "4"),
+            ("job.modern_era", "5"),
+        ] {
+            state
+                .update_graph_node(
+                    "job-1",
+                    node_id,
+                    JobGraphNodeStatus::Completed,
+                    Some(noisy_output.clone()),
+                    None,
+                    updated_at.to_string(),
+                )
+                .expect("complete graph node");
+        }
+
+        let claim = state
+            .claim_job("node-1", "6".to_string())
+            .job
+            .expect("final claim");
+        assert!(claim
+            .prompt
+            .contains("BMW began as an aircraft engine maker."));
+        assert!(!claim.prompt.contains("llama.cpp mode=cuda"));
+        assert!(!claim.prompt.contains("C:\\models\\demo.gguf"));
+        assert!(claim.prompt.len() < noisy_output.len() * 4);
+    }
+
+    #[test]
+    fn final_reducer_failure_completes_with_section_fallback() {
+        let mut state = ready_state();
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "1".to_string());
+
+        for (expected_node, output, updated_at) in [
+            ("job.origins", "Origins section text", "2"),
+            ("job.early_development", "Early section text", "3"),
+            ("job.expansion", "Expansion section text", "4"),
+            ("job.modern_era", "Modern section text", "5"),
+        ] {
+            let claim = state
+                .claim_job("node-1", updated_at.to_string())
+                .job
+                .expect("section claim");
+            assert_eq!(claim.active_graph_node_id.as_deref(), Some(expected_node));
+            state
+                .complete_job(
+                    JobCompletion {
+                        job_id: "job-1".to_string(),
+                        node_id: "node-1".to_string(),
+                        worker_id: "worker-1".to_string(),
+                        backend: Backend::M,
+                        status: JobStatus::Completed,
+                        output: Some(format!("llama.cpp mode=cuda; response={output}")),
+                        error: None,
+                        latency_ms: Some(10),
+                    },
+                    updated_at.to_string(),
+                )
+                .expect("section completion");
+        }
+
+        let final_claim = state
+            .claim_job("node-1", "6".to_string())
+            .job
+            .expect("final claim");
+        assert_eq!(
+            final_claim.active_graph_node_id.as_deref(),
+            Some("job.final_merge")
+        );
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Failed,
+                    output: None,
+                    error: Some("llama-cli exited 1".to_string()),
+                    latency_ms: Some(10),
+                },
+                "7".to_string(),
+            )
+            .expect("reducer failure falls back");
+
+        assert_eq!(completed.status, JobStatus::Completed);
+        assert_eq!(completed.error, None);
+        assert!(completed
+            .output
+            .as_deref()
+            .expect("fallback output")
+            .contains("Origins section text"));
+        assert!(completed
+            .graph
+            .merge_error
+            .as_deref()
+            .expect("merge warning")
+            .contains("Final synthesis: llama-cli exited 1"));
     }
 
     #[test]
