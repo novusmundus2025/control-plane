@@ -599,6 +599,11 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
     for node in nodes {
         let (state_bg, state_fg) = state_badge(node.state.as_str());
         let (trust_bg, trust_fg, trust_label) = trust_badge(&node.identity_trust_path);
+        let (grade_bg, grade_fg, grade_label) = trust_grade_badge(
+            node.trust.score,
+            node.trust.completed_jobs,
+            node.trust.failed_jobs,
+        );
         let (policy_bg, policy_fg, policy_label) = policy_badge(node.policy_allowed);
         let backend = node.backend.to_string();
         let (backend_bg, backend_fg) = backend_badge(&backend);
@@ -660,6 +665,9 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
               <div>
                 <span class="pill" style="background:{};color:{};">{}</span>
                 <div class="meta">{}</div>
+                <span class="pill" style="background:{};color:{};margin-top:6px;">grade {} &middot; {}/100 &middot; {}</span>
+                <div class="meta">completed {} &middot; failed {} &middot; consecutive failures {}</div>
+                <div class="meta">accepted {} &middot; rejected {} &middot; last failure {}</div>
               </div>
               <div><span class="pill" style="background:{};color:{};">{}</span></div>
               <div>
@@ -687,6 +695,17 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
             trust_fg,
             escape_html(trust_label),
             escape_html(&node.identity_trust_path),
+            grade_bg,
+            grade_fg,
+            trust_grade(node.trust.score),
+            node.trust.score,
+            escape_html(grade_label),
+            node.trust.completed_jobs,
+            node.trust.failed_jobs,
+            node.trust.consecutive_failures,
+            node.trust.accepted_results,
+            node.trust.rejected_results,
+            escape_html(node.trust.last_failure_reason.as_deref().unwrap_or("none")),
             backend_bg,
             backend_fg,
             escape_html(&backend),
@@ -744,9 +763,26 @@ fn trust_grade(score: u8) -> &'static str {
     match score {
         90..=100 => "A",
         75..=89 => "B",
-        60..=74 => "C",
-        40..=59 => "D",
+        50..=74 => "C",
+        40..=49 => "D",
         _ => "F",
+    }
+}
+
+fn trust_grade_badge(
+    score: u8,
+    completed_jobs: u32,
+    failed_jobs: u32,
+) -> (&'static str, &'static str, &'static str) {
+    if completed_jobs == 0 && failed_jobs == 0 {
+        return ("#22304c", "#c9d7f0", "new");
+    }
+
+    match trust_grade(score) {
+        "A" | "B" => ("#12351f", "#8ef0aa", "high trust"),
+        "C" => ("#22304c", "#c9d7f0", "neutral"),
+        "D" => ("#3a2610", "#ffbf7a", "warning"),
+        _ => ("#3b1418", "#ff9aa2", "poor trust"),
     }
 }
 
@@ -918,6 +954,10 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
                 <div><strong>{consecutive}</strong><div class="meta">consecutive failures</div></div>
                 <div><strong>{failure_rate}</strong><div class="meta">failure percentage</div></div>
                 <div><strong>{avg_latency}</strong><div class="meta">average latency</div></div>
+                <div><strong>{total_latency}</strong><div class="meta">total latency</div></div>
+                <div><strong>{accepted}</strong><div class="meta">accepted results</div></div>
+                <div><strong>{rejected}</strong><div class="meta">rejected results</div></div>
+                <div><strong>{last_success}</strong><div class="meta">last success</div></div>
                 <div><strong>{last_failure}</strong><div class="meta">last failure reason</div></div>
               </div>
             </div>
@@ -960,6 +1000,10 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
         consecutive = node.trust.consecutive_failures,
         failure_rate = escape_html(&failure_rate),
         avg_latency = escape_html(&avg_latency),
+        total_latency = escape_html(&format!("{} ms", node.trust.total_latency_ms)),
+        accepted = node.trust.accepted_results,
+        rejected = node.trust.rejected_results,
+        last_success = escape_html(node.trust.last_success_at.as_deref().unwrap_or("none")),
         last_failure = escape_html(last_failure),
         worker_health = worker_health,
         policy_allowed = if node.policy_allowed {
@@ -4699,9 +4743,9 @@ mod tests {
         job_async_payload, now_unix_seconds, operator_auth_mode_from_env,
         operator_auth_startup_config_error, operator_auth_token_from_env, parse_request,
         read_http_request, requires_operator_auth, status_snapshot_with_deploy_fingerprint,
-        HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource, SupabaseSyncStatus,
-        AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, CONTROL_PLANE_LOGO_PATH,
-        LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
+        trust_grade, trust_grade_badge, HttpRequestReadError, OperatorAuthMode, OperatorPage,
+        StorageSource, SupabaseSyncStatus, AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV,
+        CONTROL_PLANE_LOGO_PATH, LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
     use crate::contracts::{
         AgentRegistration, AgentState, Backend, Heartbeat, JobCompletion, JobExecutionMode,
@@ -5156,6 +5200,61 @@ mod tests {
         assert!(html.contains("operator effective share"));
         assert!(html.contains(r#"href="/nodes/node-1""#));
         assert!(html.contains(r#"href="/nodes?node_id=node-1""#));
+    }
+
+    #[test]
+    fn trust_grade_mapping_and_badge_states_are_stable() {
+        assert_eq!(trust_grade(95), "A");
+        assert_eq!(trust_grade(80), "B");
+        assert_eq!(trust_grade(65), "C");
+        assert_eq!(trust_grade(45), "D");
+        assert_eq!(trust_grade(10), "F");
+        assert_eq!(trust_grade_badge(50, 0, 0).2, "new");
+        assert_eq!(trust_grade_badge(92, 4, 0).2, "high trust");
+        assert_eq!(trust_grade_badge(45, 1, 1).2, "warning");
+        assert_eq!(trust_grade_badge(20, 1, 5).2, "poor trust");
+    }
+
+    #[test]
+    fn nodes_page_surfaces_trust_reputation_states() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-new", "NEW", "1");
+        register_ready_node(&mut state, "node-good", "GOOD", "2");
+        register_ready_node(&mut state, "node-poor", "POOR", "3");
+        {
+            let node = state.nodes.get_mut("node-good").expect("good node");
+            node.trust.score = 95;
+            node.trust.completed_jobs = 8;
+            node.trust.accepted_results = 8;
+            node.trust.total_latency_ms = 800;
+            node.trust.last_success_at = Some("20".to_string());
+        }
+        {
+            let node = state.nodes.get_mut("node-poor").expect("poor node");
+            node.trust.score = 20;
+            node.trust.completed_jobs = 1;
+            node.trust.failed_jobs = 5;
+            node.trust.consecutive_failures = 3;
+            node.trust.accepted_results = 1;
+            node.trust.rejected_results = 5;
+            node.trust.last_failure_reason = Some("runtime failed".to_string());
+        }
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Nodes,
+            Some("page=1&page_size=25"),
+        );
+
+        assert!(html.contains("grade A &middot; 95/100 &middot; high trust"));
+        assert!(html.contains("grade F &middot; 20/100 &middot; poor trust"));
+        assert!(html.contains("grade C &middot; 50/100 &middot; new"));
+        assert!(html.contains("completed 8 &middot; failed 0 &middot; consecutive failures 0"));
+        assert!(
+            html.contains("accepted 1 &middot; rejected 5 &middot; last failure runtime failed")
+        );
     }
 
     #[test]
