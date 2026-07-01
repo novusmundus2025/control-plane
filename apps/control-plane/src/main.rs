@@ -482,6 +482,7 @@ fn state_badge(state: &str) -> (&'static str, &'static str) {
     match state {
         "ready" => ("#12351f", "#8ef0aa"),
         "busy" => ("#3d2b0f", "#ffd27f"),
+        "completed with reducer fallback" => ("#3a2610", "#ffbf7a"),
         "paused" => ("#3a2610", "#ffbf7a"),
         "stopped" => ("#3b1515", "#ff9d9d"),
         _ => ("#22304c", "#b8c7e8"),
@@ -857,6 +858,18 @@ fn graph_progress_summary(job: &JobRecord) -> String {
 }
 
 fn graph_attention_summary(job: &JobRecord) -> String {
+    if let Some(error) = job
+        .graph
+        .merge_error
+        .as_deref()
+        .filter(|error| !error.trim().is_empty())
+    {
+        return format!(
+            "reducer/final step warning: {}",
+            compact_preview(Some(error))
+        );
+    }
+
     let missing_worker = job
         .graph
         .nodes
@@ -879,6 +892,20 @@ fn graph_attention_summary(job: &JobRecord) -> String {
         "no stuck chunk indicator".to_string()
     } else {
         format!("awaiting worker result: {}", missing_worker.join(", "))
+    }
+}
+
+fn job_operator_status_label(job: &JobRecord) -> String {
+    if job.status == JobStatus::Completed
+        && job
+            .graph
+            .merge_error
+            .as_deref()
+            .is_some_and(|error| !error.trim().is_empty())
+    {
+        "completed with reducer fallback".to_string()
+    } else {
+        job.status.to_string()
     }
 }
 
@@ -1221,7 +1248,7 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
     );
 
     for job in jobs {
-        let status = job.status.to_string();
+        let status = job_operator_status_label(&job);
         let (status_bg, status_fg) = state_badge(&status);
         let assigned_node = job.assigned_node_id.as_deref().unwrap_or("unassigned");
         let worker = job.worker_id.as_deref().unwrap_or("none");
@@ -6054,6 +6081,86 @@ mod tests {
         assert!(html.contains(r#"value="1""#));
         assert!(html.contains(r#"name="submitted_before""#));
         assert!(html.contains(r#"value="4""#));
+    }
+
+    #[test]
+    fn jobs_page_marks_completed_graph_with_reducer_warning() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "1");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-reducer-warning".to_string(),
+                prompt: "Give me a detailed history of BMW from its origins to today.".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Decompose,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(256),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        for timestamp in 3..10 {
+            let claim = state
+                .claim_job("node-1", timestamp.to_string())
+                .job
+                .expect("claim graph chunk");
+            let active_graph_node_id = claim
+                .active_graph_node_id
+                .as_deref()
+                .expect("active graph node")
+                .to_string();
+            let is_final = active_graph_node_id == "job.final_merge";
+            state
+                .complete_job(
+                    JobCompletion {
+                        job_id: "job-reducer-warning".to_string(),
+                        node_id: "node-1".to_string(),
+                        worker_id: "worker-1".to_string(),
+                        backend: Backend::M,
+                        status: if is_final {
+                            JobStatus::Failed
+                        } else {
+                            JobStatus::Completed
+                        },
+                        output: if is_final {
+                            None
+                        } else {
+                            Some(format!("section output for {active_graph_node_id}"))
+                        },
+                        error: if is_final {
+                            Some("llama-cli exited 1".to_string())
+                        } else {
+                            None
+                        },
+                        latency_ms: Some(10),
+                    },
+                    timestamp.to_string(),
+                )
+                .expect("complete graph chunk");
+
+            if is_final {
+                break;
+            }
+        }
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Jobs,
+            Some("status=completed&page=1&page_size=10"),
+        );
+
+        assert!(html.contains("job-reducer-warning"));
+        assert!(html.contains("completed with reducer fallback"));
+        assert!(html.contains("reducer/final step warning"));
+        assert!(html.contains("Final synthesis: llama-cli exited 1"));
     }
 
     #[test]
