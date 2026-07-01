@@ -66,6 +66,7 @@ const FILTER_QUERY_KEYS: &[&str] = &[
     "job_id",
     "event_type",
     "entry_type",
+    "reward_scope",
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
@@ -1247,6 +1248,92 @@ fn render_credit_records(credits: Vec<CreditsLedgerRecord>) -> String {
     html
 }
 
+fn credit_reward_scope(credit: &CreditsLedgerRecord) -> &str {
+    credit
+        .metadata
+        .get("reward_scope")
+        .and_then(|value| value.as_str())
+        .unwrap_or("job")
+}
+
+fn render_credits_detail_panel(credits: &[CreditsLedgerRecord], query: Option<&str>) -> String {
+    let total_earned = credits
+        .iter()
+        .filter(|credit| credit.amount > 0.0)
+        .map(|credit| credit.amount)
+        .sum::<f64>();
+    let total_spent = credits
+        .iter()
+        .filter(|credit| credit.amount < 0.0)
+        .map(|credit| credit.amount.abs())
+        .sum::<f64>();
+    let net_total = total_earned - total_spent;
+    let graph_rewards = credits
+        .iter()
+        .filter(|credit| credit_reward_scope(credit).eq_ignore_ascii_case("graph_node"))
+        .count();
+    let whole_job_rewards = credits
+        .iter()
+        .filter(|credit| credit_reward_scope(credit).eq_ignore_ascii_case("job"))
+        .count();
+    let scope_note = if query.map(|query| query.trim().is_empty()).unwrap_or(true) {
+        "Totals cover the full ledger view below.".to_string()
+    } else {
+        "Totals reconcile with the filtered ledger entries below.".to_string()
+    };
+
+    format!(
+        r#"<section class="panel credits-detail-panel">
+          <div class="profile-head">
+            <div>
+              <h2>Credits Detail</h2>
+              <div class="meta">{scope_note}</div>
+            </div>
+            <a class="button" href="/credits">Clear filters</a>
+          </div>
+          <section class="node-profile-grid" aria-label="Credits detail totals">
+            <div class="node-profile-card"><span>Total earned</span><strong>{total_earned:.2}</strong><div class="meta">worker credits</div></div>
+            <div class="node-profile-card"><span>Total used</span><strong>{total_spent:.2}</strong><div class="meta">requester debits recorded here</div></div>
+            <div class="node-profile-card"><span>Net credits</span><strong>{net_total:.2}</strong><div class="meta">earned minus used</div></div>
+            <div class="node-profile-card"><span>Finalized entries</span><strong>{entry_count}</strong><div class="meta">pending credits are not tracked in this ledger yet</div></div>
+          </section>
+          <section class="profile-sections">
+            <div class="node-profile-card">
+              <h3>Reward Scope</h3>
+              <div class="profile-kv">
+                <div><strong>{whole_job_rewards}</strong><div class="meta">whole job rewards</div></div>
+                <div><strong>{graph_rewards}</strong><div class="meta">graph chunk rewards</div></div>
+              </div>
+            </div>
+            <div class="node-profile-card">
+              <h3>Filters</h3>
+              <div class="profile-kv">
+                <div><strong>{node_filter}</strong><div class="meta">node id</div></div>
+                <div><strong>{job_filter}</strong><div class="meta">job or chunk id</div></div>
+                <div><strong>{scope_filter}</strong><div class="meta">reward scope</div></div>
+                <div><strong>{time_filter}</strong><div class="meta">time range</div></div>
+              </div>
+            </div>
+          </section>
+        </section>"#,
+        scope_note = escape_html(&scope_note),
+        total_earned = total_earned,
+        total_spent = total_spent,
+        net_total = net_total,
+        entry_count = credits.len(),
+        whole_job_rewards = whole_job_rewards,
+        graph_rewards = graph_rewards,
+        node_filter = escape_html(query_param(query, "node_id").unwrap_or("all")),
+        job_filter = escape_html(query_param(query, "job_id").unwrap_or("all")),
+        scope_filter = escape_html(query_param(query, "reward_scope").unwrap_or("all")),
+        time_filter = escape_html(&format!(
+            "{} to {}",
+            query_param(query, "start").unwrap_or("beginning"),
+            query_param(query, "end").unwrap_or("now")
+        )),
+    )
+}
+
 fn paged_node_records(
     nodes: Vec<NodeRecord>,
     query: Option<&str>,
@@ -1475,6 +1562,7 @@ fn control_plane_operator_page(
     let mut filtered_credits = state.credits_ledger.clone();
     filtered_credits.reverse();
     let filtered_credits = filter_json_items(filtered_credits, query, "credits_ledger");
+    let credits_detail_html = render_credits_detail_panel(&filtered_credits, query);
     let (paged_credits, credits_pagination) = paged_credit_records(filtered_credits, query);
     let filtered_credits_html = render_credit_records(paged_credits);
     let credits_pagination_html =
@@ -1523,13 +1611,15 @@ fn control_plane_operator_page(
               <a class="metric metric-link" href="/credits"><span>Total credits</span><strong>{credits_total:.2}</strong></a>
               <a class="metric metric-link" href="/credits"><span>Ledger entries</span><strong>{credits_ledger}</strong></a>
             </section>
+            {credits_detail_html}
             <section class="panel">
               <h2>Credits Ledger</h2>
               <p class="meta">Credit reconciliation uses append-only ledger history. Graph jobs pay the node that completed each subjob, with the parent job kept as the rollup.</p>
               {filtered_credits_html}
               {credits_pagination_html}
             </section>"#,
-            filters = control_filter_form(page, query, &credits_api_href)
+            filters = control_filter_form(page, query, &credits_api_href),
+            credits_detail_html = credits_detail_html
         ),
         OperatorPage::Registry => format!(
             r#"{filters}
@@ -2938,12 +3028,15 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
               <input name="node_id" aria-label="Node id" placeholder="node id" value="{node_id}" />
               <input name="job_id" aria-label="Job id" placeholder="parent job or subjob id" value="{job_id}" />
               <select name="entry_type" aria-label="Entry type"><option value="">All entries</option><option value="job_reward"{job_reward}>Job reward</option></select>
+              <select name="reward_scope" aria-label="Reward scope"><option value="">All scopes</option><option value="job"{scope_job}>Whole job</option><option value="graph_node"{scope_graph_node}>Graph chunk</option></select>
               <input name="start" aria-label="Start timestamp" placeholder="start timestamp" value="{start}" />
               <input name="end" aria-label="End timestamp" placeholder="end timestamp" value="{end}" />
               <button class="button" type="submit">Apply</button>
               <a class="button" href="{api_href}">Credits JSON</a>
             </form>"#,
             job_reward = selected_attr(query, "entry_type", "job_reward"),
+            scope_job = selected_attr(query, "reward_scope", "job"),
+            scope_graph_node = selected_attr(query, "reward_scope", "graph_node"),
         ),
         OperatorPage::Settings => format!(
             r#"<section class="toolbar"><a class="button" href="{api_href}">Status JSON</a></section>"#
@@ -3163,6 +3256,12 @@ fn filter_json_items<T: Serialize>(items: Vec<T>, query: Option<&str>, collectio
                     "credits_ledger" => {
                         query_exact_match(&value, query, "entry_type", &["entry_type"])
                             && query_exact_match(&value, query, "node_id", &["device_id"])
+                            && query_exact_match_deep(
+                                &value,
+                                query,
+                                "reward_scope",
+                                &["reward_scope"],
+                            )
                             && query_exact_match_deep(
                                 &value,
                                 query,
@@ -4736,6 +4835,111 @@ mod tests {
         assert!(response.contains("Node Profile"));
         assert!(response.contains("DAVE"));
         assert!(response.contains(r#"href="/nodes?node_id=node-1""#));
+    }
+
+    #[test]
+    fn credits_detail_page_filters_totals_and_links() {
+        let mut state = ControlPlaneState::default();
+        state
+            .record_credit_award(
+                Some("node-1".to_string()),
+                Some("subjob-1".to_string()),
+                Some("job-1".to_string()),
+                Some("chunk-1".to_string()),
+                2.5,
+                "credits",
+                serde_json::json!({
+                    "reward_scope": "graph_node",
+                    "graph_node_name": "Research",
+                    "formula": "test formula",
+                    "prompt_chars": 120,
+                    "output_chars": 240
+                }),
+                "10".to_string(),
+            )
+            .expect("graph credit");
+        state
+            .record_credit_award(
+                Some("node-2".to_string()),
+                Some("job-2".to_string()),
+                None,
+                None,
+                4.0,
+                "credits",
+                serde_json::json!({
+                    "reward_scope": "job",
+                    "graph_node_name": "job",
+                    "formula": "test formula",
+                    "prompt_chars": 40,
+                    "output_chars": 80
+                }),
+                "11".to_string(),
+            )
+            .expect("job credit");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Credits,
+            Some("node_id=node-1&job_id=chunk-1&reward_scope=graph_node&page=1&page_size=10"),
+        );
+
+        assert!(html.contains("Credits Detail"));
+        assert!(html.contains("Totals reconcile with the filtered ledger entries below."));
+        assert!(html.contains("Total earned"));
+        assert!(html.contains(">2.50</strong>"));
+        assert!(html.contains("Net credits"));
+        assert!(html.contains("Finalized entries"));
+        assert!(html.contains("graph chunk rewards"));
+        assert!(html.contains(r#"value="graph_node" selected"#));
+        assert!(html.contains(r#"href="/nodes/node-1""#));
+        assert!(html.contains(r#"href="/jobs?job_id=job-1""#));
+        assert!(html.contains("chunk-1"));
+        assert!(html.contains("Research"));
+        assert!(!html.contains("node-2"));
+    }
+
+    #[test]
+    fn credits_detail_page_paginates_large_ledgers() {
+        let mut state = ControlPlaneState::default();
+        for index in 1..=31 {
+            state
+                .record_credit_award(
+                    Some(format!("node-{index:02}")),
+                    Some(format!("job-{index:02}")),
+                    None,
+                    None,
+                    1.0,
+                    "credits",
+                    serde_json::json!({
+                        "reward_scope": "job",
+                        "graph_node_name": "job",
+                        "formula": "test formula",
+                        "prompt_chars": 10,
+                        "output_chars": 20
+                    }),
+                    index.to_string(),
+                )
+                .expect("credit");
+        }
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Credits,
+            Some("page=2&page_size=10"),
+        );
+
+        assert!(html.contains("Showing 11-20 of 31"));
+        assert!(html.contains("page 2 of 4"));
+        assert!(html.contains(r#"href="/credits?page=1&amp;page_size=10""#));
+        assert!(html.contains(r#"href="/credits?page=3&amp;page_size=10""#));
+        assert!(html.contains("<strong>31</strong><div class=\"meta\">pending credits are not tracked in this ledger yet</div>"));
+        assert!(html.contains("job-21"));
+        assert!(html.contains("job-12"));
+        assert!(!html.contains("job-31</a>"));
     }
 
     #[test]
