@@ -7,8 +7,8 @@ use contracts::{
     is_trusted_identity_path, trust_path_label, AgentRegistration, ChatCompletionChoice,
     ChatCompletionChoiceMessage, ChatCompletionMundusX, ChatCompletionRequest,
     ChatCompletionResponse, CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode,
-    JobRecord, JobRequest, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
-    OperatorNodePolicyOverrideUpdate, RuntimeMode,
+    JobGraphNodeStatus, JobRecord, JobRequest, JobStatus, NodePolicyOverrideInput, NodeRecord,
+    OperatorContributionPercentUpdate, OperatorNodePolicyOverrideUpdate, RuntimeMode,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::{applied_migrations, apply_migrations};
@@ -448,6 +448,31 @@ fn escape_query_value(input: &str) -> String {
     escaped
 }
 
+fn escape_path_segment(input: &str) -> String {
+    escape_query_value(input)
+}
+
+fn decode_path_segment(input: &str) -> Option<String> {
+    let bytes = input.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return None;
+            }
+            let hex = std::str::from_utf8(&bytes[index + 1..index + 3]).ok()?;
+            let value = u8::from_str_radix(hex, 16).ok()?;
+            decoded.push(value);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).ok()
+}
+
 fn state_badge(state: &str) -> (&'static str, &'static str) {
     match state {
         "ready" => ("#12351f", "#8ef0aa"),
@@ -531,9 +556,9 @@ fn render_topology_slots(state: &ControlPlaneState) -> String {
                 node.hostname.as_str()
             };
             html.push_str(&format!(
-                r#"<a class="topo-node {tone}" href="/nodes?search={query}" style="left:{left};top:{top};" title="Open {title} in Nodes"><div class="node-hex">{icon}</div><span class="topo-label">{label}</span><span class="topo-id">{state} - {backend}</span></a>"#,
+                r#"<a class="topo-node {tone}" href="/nodes/{path_id}" style="left:{left};top:{top};" title="Open {title} node profile"><div class="node-hex">{icon}</div><span class="topo-label">{label}</span><span class="topo-id">{state} - {backend}</span></a>"#,
                 tone = topology_node_tone(node),
-                query = escape_query_value(&node.node_id),
+                path_id = escape_path_segment(&node.node_id),
                 title = escape_html(&node.node_id),
                 icon = TOPOLOGY_NODE_ICON,
                 label = escape_html(label),
@@ -623,7 +648,7 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
         html.push_str(&format!(
             r#"<div class="row">
               <div>
-                <strong>{}</strong>
+                <a class="inline-link" href="/nodes/{}"><strong>{}</strong></a>
                 <div class="meta">fingerprint {}</div>
                 <div class="meta">cap {}% • {} GPU% free</div>
               </div>
@@ -651,6 +676,7 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
               </div>
               <div>{}</div>
             </div>"#,
+            escape_path_segment(&node.node_id),
             escape_html(&node.node_id),
             escape_html(&node.public_key_fingerprint),
             node.contribution_percent,
@@ -711,6 +737,234 @@ fn graph_node_status_label(status: contracts::JobGraphNodeStatus) -> &'static st
         contracts::JobGraphNodeStatus::Completed => "completed",
         contracts::JobGraphNodeStatus::Failed => "failed",
     }
+}
+
+fn trust_grade(score: u8) -> &'static str {
+    match score {
+        90..=100 => "A",
+        75..=89 => "B",
+        60..=74 => "C",
+        40..=59 => "D",
+        _ => "F",
+    }
+}
+
+fn node_profile_link(node_id: &str) -> String {
+    let trimmed = node_id.trim();
+    if trimmed.is_empty() || matches!(trimmed, "unassigned" | "unknown" | "none") {
+        return escape_html(node_id);
+    }
+
+    format!(
+        r#"<a class="inline-link" href="/nodes/{}">{}</a>"#,
+        escape_path_segment(trimmed),
+        escape_html(node_id)
+    )
+}
+
+fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String {
+    let Some(node) = state.nodes.get(node_id) else {
+        return format!(
+            r#"<section class="panel node-profile-panel">
+              <h2>Node Profile</h2>
+              <div class="empty">No node profile matched <strong>{}</strong>.</div>
+            </section>"#,
+            escape_html(node_id)
+        );
+    };
+
+    let total_earned = state
+        .credits_ledger
+        .iter()
+        .filter(|credit| credit.device_id.as_deref() == Some(node.node_id.as_str()))
+        .map(|credit| credit.amount)
+        .sum::<f64>();
+    let total_attempts = node.trust.completed_jobs + node.trust.failed_jobs;
+    let failure_rate = if total_attempts == 0 {
+        "not enough data".to_string()
+    } else {
+        format!(
+            "{:.1}%",
+            (node.trust.failed_jobs as f64 / total_attempts as f64) * 100.0
+        )
+    };
+    let avg_latency = if total_attempts == 0 {
+        "not enough data".to_string()
+    } else {
+        format!("{} ms", node.trust.total_latency_ms / total_attempts as u64)
+    };
+    let current_work = state
+        .jobs
+        .values()
+        .find_map(|job| {
+            if job.assigned_node_id.as_deref() == Some(node.node_id.as_str())
+                && matches!(job.status, JobStatus::Assigned | JobStatus::Queued)
+            {
+                return Some(format!("job {}", job.job_id));
+            }
+
+            job.graph
+                .nodes
+                .iter()
+                .find(|graph_node| {
+                    graph_node.assigned_node_id.as_deref() == Some(node.node_id.as_str())
+                        && matches!(graph_node.status, JobGraphNodeStatus::Running)
+                })
+                .map(|graph_node| format!("job {} / chunk {}", job.job_id, graph_node.name))
+        })
+        .unwrap_or_else(|| "no active assignment".to_string());
+    let worker_health = node
+        .worker_health
+        .as_ref()
+        .map(|health| {
+            let runtime_modes = if health.supported_runtime_modes.is_empty() {
+                "none reported".to_string()
+            } else {
+                health
+                    .supported_runtime_modes
+                    .iter()
+                    .map(|mode| mode.to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            };
+            let notes = if health.notes.is_empty() {
+                "no notes".to_string()
+            } else {
+                health.notes.join(" / ")
+            };
+            format!(
+                r#"<div><strong>{}</strong><div class="meta">runtime {}</div></div>
+              <div><strong>{}</strong><div class="meta">model readiness</div></div>
+              <div><strong>{}</strong><div class="meta">model</div></div>
+              <div><strong>{}</strong><div class="meta">supported modes</div></div>
+              <div><strong>{}</strong><div class="meta">last health check</div></div>
+              <div><strong>{}</strong><div class="meta">runtime notes</div></div>"#,
+                if health.healthy {
+                    "healthy"
+                } else {
+                    "degraded"
+                },
+                escape_html(&health.runtime_mode),
+                if health.runtime_ready {
+                    "ready"
+                } else {
+                    "not ready"
+                },
+                escape_html(health.model_name.as_deref().unwrap_or("none")),
+                escape_html(&runtime_modes),
+                escape_html(&health.checked_at),
+                escape_html(&notes),
+            )
+        })
+        .unwrap_or_else(|| {
+            r#"<div><strong>unknown</strong><div class="meta">runtime health</div></div>
+          <div><strong>unknown</strong><div class="meta">model readiness</div></div>"#
+                .to_string()
+        });
+    let policy_override = node
+        .operator_policy_override
+        .as_ref()
+        .map(|override_record| {
+            format!(
+                "{} by {}",
+                override_record.target,
+                escape_html(&override_record.actor)
+            )
+        })
+        .unwrap_or_else(|| "none".to_string());
+    let last_failure = node.trust.last_failure_reason.as_deref().unwrap_or("none");
+    let new_node_empty_state = if total_attempts == 0 && total_earned == 0.0 {
+        r#"<div class="empty">New node: no completed work or earned credits yet.</div>"#.to_string()
+    } else {
+        String::new()
+    };
+
+    format!(
+        r#"<section class="panel node-profile-panel">
+          <div class="profile-head">
+            <div>
+              <h2>Node Profile</h2>
+              <div class="meta">{hostname} / {backend} / last heartbeat {updated_at}</div>
+            </div>
+            <a class="button" href="/nodes?node_id={node_query}">Filter table</a>
+          </div>
+          {new_node_empty_state}
+          <section class="node-profile-grid" aria-label="Node profile metrics">
+            <div class="node-profile-card"><span>Trust grade</span><strong>{grade}</strong><div class="meta">score {score}/100</div></div>
+            <div class="node-profile-card"><span>Total earned</span><strong>{earned:.2}</strong><div class="meta">credits</div></div>
+            <div class="node-profile-card"><span>Contribution</span><strong>{contribution}%</strong><div class="meta">operator effective share</div></div>
+            <div class="node-profile-card"><span>Current work</span><strong>{current_work}</strong><div class="meta">active assignment</div></div>
+          </section>
+          <section class="profile-sections">
+            <div class="node-profile-card">
+              <h3>Reliability</h3>
+              <div class="profile-kv">
+                <div><strong>{completed}</strong><div class="meta">completed chunks/jobs</div></div>
+                <div><strong>{failed}</strong><div class="meta">failed chunks/jobs</div></div>
+                <div><strong>{consecutive}</strong><div class="meta">consecutive failures</div></div>
+                <div><strong>{failure_rate}</strong><div class="meta">failure percentage</div></div>
+                <div><strong>{avg_latency}</strong><div class="meta">average latency</div></div>
+                <div><strong>{last_failure}</strong><div class="meta">last failure reason</div></div>
+              </div>
+            </div>
+            <div class="node-profile-card">
+              <h3>Runtime</h3>
+              <div class="profile-kv">{worker_health}</div>
+            </div>
+            <div class="node-profile-card">
+              <h3>Policy</h3>
+              <div class="profile-kv">
+                <div><strong>{policy_allowed}</strong><div class="meta">effective policy</div></div>
+                <div><strong>{computed_policy}</strong><div class="meta">computed policy</div></div>
+                <div><strong>{policy_override}</strong><div class="meta">operator override</div></div>
+                <div><strong>{policy_reason}</strong><div class="meta">policy reason</div></div>
+              </div>
+            </div>
+            <div class="node-profile-card">
+              <h3>Identity</h3>
+              <div class="profile-kv">
+                <div><strong>{node_id_html}</strong><div class="meta">node id</div></div>
+                <div><strong>{fingerprint}</strong><div class="meta">public key fingerprint</div></div>
+                <div><strong>{trust_path}</strong><div class="meta">trust path</div></div>
+                <div><strong>{state}</strong><div class="meta">reported status</div></div>
+              </div>
+            </div>
+          </section>
+        </section>"#,
+        hostname = escape_html(&node.hostname),
+        backend = escape_html(&node.backend.to_string()),
+        updated_at = escape_html(&node.updated_at),
+        node_query = escape_query_value(&node.node_id),
+        new_node_empty_state = new_node_empty_state,
+        grade = trust_grade(node.trust.score),
+        score = node.trust.score,
+        earned = total_earned,
+        contribution = node.contribution_percent,
+        current_work = escape_html(&current_work),
+        completed = node.trust.completed_jobs,
+        failed = node.trust.failed_jobs,
+        consecutive = node.trust.consecutive_failures,
+        failure_rate = escape_html(&failure_rate),
+        avg_latency = escape_html(&avg_latency),
+        last_failure = escape_html(last_failure),
+        worker_health = worker_health,
+        policy_allowed = if node.policy_allowed {
+            "allowed"
+        } else {
+            "blocked"
+        },
+        computed_policy = if node.computed_policy_allowed {
+            "allowed"
+        } else {
+            "blocked"
+        },
+        policy_override = policy_override,
+        policy_reason = escape_html(node.policy_reason.as_deref().unwrap_or("none")),
+        node_id_html = escape_html(&node.node_id),
+        fingerprint = escape_html(&node.public_key_fingerprint),
+        trust_path = escape_html(&node.identity_trust_path),
+        state = escape_html(&node.state.to_string()),
+    )
 }
 
 fn render_job_records(jobs: Vec<JobRecord>) -> String {
@@ -800,7 +1054,7 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
             status_bg,
             status_fg,
             escape_html(&status),
-            escape_html(assigned_node),
+            node_profile_link(assigned_node),
             escape_html(worker),
             escape_html(&backend),
             escape_html(&job.submitted_at),
@@ -881,7 +1135,7 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
                     sub_status_bg,
                     sub_status_fg,
                     escape_html(&sub_status),
-                    escape_html(sub_assigned),
+                    node_profile_link(sub_assigned),
                     escape_html(sub_worker),
                     escape_html(&sub_backend),
                     escape_html(node.assigned_at.as_deref().unwrap_or("not assigned")),
@@ -954,7 +1208,7 @@ fn render_credit_records(credits: Vec<CreditsLedgerRecord>) -> String {
                 <div class="meta">subjob {}</div>
               </div>
               <div>
-                <a class="inline-link" href="/nodes?node_id={}">{}</a>
+                <a class="inline-link" href="/nodes/{}">{}</a>
                 <div class="meta">worker credit owner</div>
               </div>
               <div>
@@ -976,7 +1230,7 @@ fn render_credit_records(credits: Vec<CreditsLedgerRecord>) -> String {
             escape_query_value(parent_job.unwrap_or_default()),
             escape_html(parent_job.unwrap_or("unknown")),
             escape_html(graph_node),
-            escape_query_value(credit.device_id.as_deref().unwrap_or_default()),
+            escape_path_segment(credit.device_id.as_deref().unwrap_or_default()),
             escape_html(credit.device_id.as_deref().unwrap_or("unknown")),
             credit.amount,
             escape_html(&credit.currency),
@@ -1225,6 +1479,9 @@ fn control_plane_operator_page(
     let filtered_credits_html = render_credit_records(paged_credits);
     let credits_pagination_html =
         render_pagination_controls("/credits", query, &credits_pagination);
+    let node_profile_html = query_param(query, "node_id")
+        .map(|node_id| render_node_profile_panel(state, node_id))
+        .unwrap_or_default();
     let body = match page {
         OperatorPage::Nodes => format!(
             r#"{filters}
@@ -1234,6 +1491,7 @@ fn control_plane_operator_page(
               <a class="metric metric-link" href="/nodes?state=paused"><span>Paused</span><strong>{paused}</strong></a>
               <a class="metric metric-link" href="/nodes?policy=blocked"><span>Policy blocked</span><strong>{policy_blocked}</strong></a>
             </section>
+            {node_profile_html}
             <section class="panel">
               <h2>Fleet Browser</h2>
               <p class="meta">Large fleets should be controlled here with search, filters, sorting, and batched operator actions. The overview topology stays summarized so hundreds of nodes do not become visual noise.</p>
@@ -1241,6 +1499,7 @@ fn control_plane_operator_page(
               {nodes_pagination_html}
             </section>"#,
             filters = control_filter_form(page, query, &nodes_api_href),
+            node_profile_html = node_profile_html,
         ),
         OperatorPage::Jobs => format!(
             r#"{filters}
@@ -1369,9 +1628,22 @@ fn control_plane_operator_page(
       .row > div {{ min-width:0; overflow-wrap:anywhere; }}
       .row strong {{ overflow-wrap:anywhere; }}
       .row .meta {{ display:block; overflow-wrap:anywhere; word-break:break-word; }}
+      .inline-link {{ color:#8fd3ff; font-weight:700; text-decoration:none; }}
+      .inline-link:hover,.inline-link:focus-visible {{ color:#fff; text-decoration:underline; outline:none; }}
       .node-health {{ display:grid; gap:4px; overflow-wrap:anywhere; word-break:break-word; }}
       .pill {{ display:inline-flex; align-items:center; max-width:100%; min-height:22px; border-radius:4px; padding:2px 6px; overflow-wrap:anywhere; }}
       .empty {{ border:1px dashed var(--line); border-radius:8px; padding:24px; color:var(--muted); }}
+      .node-profile-panel {{ margin-bottom:18px; }}
+      .profile-head {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:14px; }}
+      .profile-head .button {{ margin-top:0; }}
+      .node-profile-grid,.profile-sections {{ display:grid; gap:14px; margin-top:14px; }}
+      .node-profile-grid {{ grid-template-columns:repeat(4,minmax(0,1fr)); }}
+      .profile-sections {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
+      .node-profile-card {{ min-width:0; border:1px solid var(--line); border-radius:8px; background:rgba(3,13,24,.72); padding:14px; }}
+      .node-profile-card span {{ color:var(--muted); display:block; font-size:12px; text-transform:uppercase; }}
+      .node-profile-card strong {{ display:block; margin-top:4px; font-size:20px; overflow-wrap:anywhere; }}
+      .node-profile-card h3 {{ margin:0 0 12px; font-size:15px; }}
+      .profile-kv {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }}
       .pager {{ display:flex; align-items:center; justify-content:space-between; gap:14px; margin-top:16px; padding-top:16px; border-top:1px solid var(--line); }}
       .pager-actions {{ display:flex; gap:10px; }}
       .pager .button[aria-disabled="true"] {{ opacity:.45; pointer-events:none; }}
@@ -1383,7 +1655,7 @@ fn control_plane_operator_page(
       .operator .meta {{ overflow-wrap:anywhere; word-break:break-word; line-height:1.35; }}
       .avatar {{ width:42px; height:42px; flex:0 0 42px; border-radius:12px; background:linear-gradient(135deg,#14539e,#071f3c); display:grid; place-items:center; font-weight:700; }}
       .foot {{ color:var(--muted); font-size:12px; margin-top:22px; overflow-wrap:anywhere; }}
-      @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two {{ grid-template-columns:1fr; }} .pager {{ align-items:stretch; flex-direction:column; }} .pager-actions {{ display:grid; grid-template-columns:1fr 1fr; }} main {{ padding:22px; }} }}
+      @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two,.node-profile-grid,.profile-sections,.profile-kv {{ grid-template-columns:1fr; }} .profile-head {{ flex-direction:column; }} .pager {{ align-items:stretch; flex-direction:column; }} .pager-actions {{ display:grid; grid-template-columns:1fr 1fr; }} main {{ padding:22px; }} }}
       @media (prefers-reduced-motion: reduce) {{ *,*::before,*::after {{ animation-duration:.01ms!important; animation-iteration-count:1!important; scroll-behavior:auto!important; transition-duration:.01ms!important; }} .motion-lift:hover,.motion-lift:focus-visible,.motion-glow:hover,.motion-glow:focus-visible {{ transform:none; }} }}
     </style>
   </head>
@@ -3251,6 +3523,33 @@ fn handle_connection(
                 &control_plane_home(&snapshot, storage_source, &sync_snapshot),
             )
         }
+        ("GET", path) if path.starts_with("/nodes/") => {
+            let encoded_node_id = path.trim_start_matches("/nodes/");
+            let Some(node_id) = decode_path_segment(encoded_node_id) else {
+                let _ = stream
+                    .write_all(text_response("404 Not Found", "node profile not found").as_bytes());
+                return;
+            };
+            if node_id.trim().is_empty() {
+                let _ = stream
+                    .write_all(text_response("404 Not Found", "node profile not found").as_bytes());
+                return;
+            }
+
+            let profile_query = format!("node_id={}", escape_query_value(&node_id));
+            let snapshot = state.lock().expect("state lock");
+            let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
+            html_response(
+                "200 OK",
+                &control_plane_operator_page(
+                    &snapshot,
+                    storage_source,
+                    &sync_snapshot,
+                    OperatorPage::Nodes,
+                    Some(&profile_query),
+                ),
+            )
+        }
         ("GET", path) if OperatorPage::from_path(path).is_some() => {
             let page = OperatorPage::from_path(path).expect("operator page");
             let snapshot = state.lock().expect("state lock");
@@ -4318,7 +4617,7 @@ mod tests {
     }
 
     #[test]
-    fn home_topology_links_latest_live_nodes_to_nodes_search() {
+    fn home_topology_links_latest_live_nodes_to_node_profiles() {
         let mut state = ControlPlaneState::default();
         register_ready_node(&mut state, "node-old", "OLD", "10");
         register_ready_node(&mut state, "node-new", "DAVE", "20");
@@ -4329,11 +4628,114 @@ mod tests {
             &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
         );
 
-        assert!(html.contains(r#"href="/nodes?search=node-new""#));
-        assert!(html.contains(r#"href="/nodes?search=node-old""#));
+        assert!(html.contains(r#"href="/nodes/node-new""#));
+        assert!(html.contains(r#"href="/nodes/node-old""#));
         assert!(html.contains(">DAVE</span>"));
         assert!(html.contains(">OLD</span>"));
         assert!(html.contains(r#"class="topo-node offline""#));
+    }
+
+    #[test]
+    fn node_profile_page_shows_reputation_credits_runtime_and_links() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "1");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-completed".to_string(),
+                prompt: "Summarize BMW history".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(128),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claimed job");
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-completed".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-123".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("BMW history output".to_string()),
+                    error: None,
+                    latency_ms: Some(50),
+                },
+                "4".to_string(),
+            )
+            .expect("completed job");
+        state
+            .award_job_reward(&completed, "4".to_string())
+            .expect("credit award");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Nodes,
+            Some("node_id=node-1"),
+        );
+
+        assert!(html.contains("Node Profile"));
+        assert!(html.contains("Trust grade"));
+        assert!(html.contains("Total earned"));
+        assert!(html.contains("completed chunks/jobs"));
+        assert!(html.contains("failed chunks/jobs"));
+        assert!(html.contains("average latency"));
+        assert!(html.contains("model readiness"));
+        assert!(html.contains("local runtime ready"));
+        assert!(html.contains("operator effective share"));
+        assert!(html.contains(r#"href="/nodes/node-1""#));
+        assert!(html.contains(r#"href="/nodes?node_id=node-1""#));
+    }
+
+    #[test]
+    fn node_profile_route_renders_selected_node() {
+        let mut initial_state = ControlPlaneState::default();
+        register_ready_node(&mut initial_state, "node-1", "DAVE", "1");
+        let state = Arc::new(Mutex::new(initial_state));
+        let sync_status = Arc::new(Mutex::new(SupabaseSyncStatus::disabled(
+            StorageSource::LocalJsonOnly,
+        )));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let handler_state = Arc::clone(&state);
+        let handler_sync_status = Arc::clone(&sync_status);
+
+        let handler = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept request");
+            handle_connection(
+                stream,
+                handler_state,
+                handler_sync_status,
+                None,
+                StorageSource::LocalJsonOnly,
+            );
+        });
+
+        let request = "GET /nodes/node-1 HTTP/1.1\r\nHost: localhost\r\n\r\n";
+        let mut client = TcpStream::connect(address).expect("connect to test listener");
+        client.write_all(request.as_bytes()).expect("write request");
+
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read response");
+        handler.join().expect("handler completes");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Node Profile"));
+        assert!(response.contains("DAVE"));
+        assert!(response.contains(r#"href="/nodes?node_id=node-1""#));
     }
 
     #[test]
