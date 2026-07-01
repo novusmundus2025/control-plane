@@ -13,6 +13,8 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ControlPlaneState {
     pub nodes: BTreeMap<String, NodeRecord>,
@@ -673,6 +675,8 @@ impl ControlPlaneState {
             .iter()
             .filter_map(|(job_id, job)| {
                 if self.job_can_be_claimed(job)
+                    && (!job.graph_execution_enabled
+                        || next_ready_graph_node_id_for_node(&job.graph, node_id).is_some())
                     && Self::node_backend_matches(
                         job,
                         node_backend,
@@ -716,6 +720,9 @@ impl ControlPlaneState {
                     graph_node.assigned_at = Some(claimed_at.clone());
                     graph_node.worker_id = None;
                     graph_node.backend = Some(node_backend);
+                    graph_node.output = None;
+                    graph_node.error = None;
+                    graph_node.attempt_count = graph_node.attempt_count.saturating_add(1);
                 }
             }
 
@@ -965,6 +972,7 @@ fn next_ready_graph_node_id_for_node(graph: &JobGraph, node_id: &str) -> Option<
         .iter()
         .find(|node| {
             node.status == JobGraphNodeStatus::Ready
+                && !node.failed_node_ids.iter().any(|failed| failed == node_id)
                 && node
                     .assigned_node_id
                     .as_deref()
@@ -986,13 +994,35 @@ fn complete_graph_execution_job(
             .iter_mut()
             .find(|node| node.id == active_node_id)
         {
-            graph_node.status = match completion.status {
-                JobStatus::Completed => JobGraphNodeStatus::Completed,
-                JobStatus::Failed => JobGraphNodeStatus::Failed,
-                _ => graph_node.status,
-            };
-            graph_node.output = completion.output.clone();
-            graph_node.error = completion.error.clone();
+            match completion.status {
+                JobStatus::Completed => {
+                    graph_node.status = JobGraphNodeStatus::Completed;
+                    graph_node.output = completion.output.clone();
+                    graph_node.error = None;
+                }
+                JobStatus::Failed => {
+                    let is_final_node =
+                        job.graph.final_node_id.as_deref() == Some(active_node_id);
+                    if !graph_node
+                        .failed_node_ids
+                        .iter()
+                        .any(|node_id| node_id == &completion.node_id)
+                    {
+                        graph_node.failed_node_ids.push(completion.node_id.clone());
+                    }
+
+                    if is_final_node || graph_node.attempt_count >= graph_node.max_attempts {
+                        graph_node.status = JobGraphNodeStatus::Failed;
+                        graph_node.output = completion.output.clone();
+                        graph_node.error = completion.error.clone();
+                    } else {
+                        graph_node.status = JobGraphNodeStatus::Ready;
+                        graph_node.output = None;
+                        graph_node.error = completion.error.clone();
+                    }
+                }
+                _ => {}
+            }
             graph_node.worker_id = Some(completion.worker_id.clone());
             graph_node.backend = Some(completion.backend);
         }
@@ -1012,7 +1042,11 @@ fn complete_graph_execution_job(
     job.worker_id = Some(completion.worker_id);
     job.backend = Some(completion.backend);
     job.output = completion.output;
-    job.error = completion.error.or_else(|| job.graph.merge_error.clone());
+    job.error = if job.graph.status == JobGraphStatus::Failed {
+        completion.error.or_else(|| job.graph.merge_error.clone())
+    } else {
+        job.graph.merge_error.clone()
+    };
     job.last_completed_graph_node_id = active_node_id.clone();
 
     if job.graph.status == JobGraphStatus::Completed {
@@ -1024,7 +1058,7 @@ fn complete_graph_execution_job(
             .or_else(|| job.output.clone());
         job.error = None;
         job.completed_at = Some(completed_at.clone());
-    } else if completion.status == JobStatus::Failed || job.graph.status == JobGraphStatus::Failed {
+    } else if job.graph.status == JobGraphStatus::Failed {
         job.status = JobStatus::Failed;
         job.completed_at = Some(completed_at.clone());
     } else {
@@ -1541,6 +1575,9 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
                 assigned_at: None,
                 worker_id: None,
                 backend: None,
+                attempt_count: 0,
+                max_attempts: DEFAULT_GRAPH_NODE_MAX_ATTEMPTS,
+                failed_node_ids: Vec::new(),
                 output: None,
                 error: None,
             })
@@ -2941,6 +2978,137 @@ mod tests {
         assert!(running
             .iter()
             .any(|node| node.assigned_node_id.as_deref() == Some("node-2")));
+    }
+
+    #[test]
+    fn failed_graph_chunk_retries_on_a_different_ready_node() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Auto;
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first claim");
+        let failed_graph_node = first_claim
+            .active_graph_node_id
+            .clone()
+            .expect("failed graph node");
+
+        let retryable_failure = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Failed,
+                    output: None,
+                    error: Some("local runtime failed".to_string()),
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("retryable failure");
+
+        assert_eq!(retryable_failure.status, JobStatus::Queued);
+        assert_ne!(retryable_failure.graph.status, JobGraphStatus::Failed);
+        assert_eq!(retryable_failure.error, None);
+
+        let retry_claim = state
+            .claim_job("node-2", "5".to_string())
+            .job
+            .expect("retry claim");
+        assert_eq!(
+            retry_claim.active_graph_node_id.as_deref(),
+            Some(failed_graph_node.as_str())
+        );
+
+        let retry_node = state
+            .jobs
+            .get("job-1")
+            .expect("job")
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == failed_graph_node)
+            .expect("retried graph node");
+        assert_eq!(retry_node.status, JobGraphNodeStatus::Running);
+        assert_eq!(retry_node.attempt_count, 2);
+        assert!(retry_node
+            .failed_node_ids
+            .contains(&"node-1".to_string()));
+        assert_eq!(retry_node.assigned_node_id.as_deref(), Some("node-2"));
+    }
+
+    #[test]
+    fn failed_graph_chunk_exhausts_attempts_before_failing_parent_job() {
+        let mut state = ready_state();
+        for node_id in ["node-2", "node-3"] {
+            state.register(m_series_registration(node_id));
+            state.heartbeat(ready_heartbeat(node_id, "1"), "1".to_string());
+        }
+
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Auto;
+        state.submit_job(request, "2".to_string());
+
+        let mut active_graph_node = None;
+        for (attempt, node_id) in ["node-1", "node-2", "node-3"].iter().enumerate() {
+            let claim = state
+                .claim_job(node_id, (attempt + 3).to_string())
+                .job
+                .expect("attempt claim");
+            let claimed_graph_node = claim
+                .active_graph_node_id
+                .clone()
+                .expect("active graph node");
+            if let Some(expected_graph_node) = active_graph_node.as_deref() {
+                assert_eq!(claimed_graph_node, expected_graph_node);
+            } else {
+                active_graph_node = Some(claimed_graph_node.clone());
+            }
+
+            let completed = state
+                .complete_job(
+                    JobCompletion {
+                        job_id: "job-1".to_string(),
+                        node_id: (*node_id).to_string(),
+                        worker_id: format!("worker-{}", attempt + 1),
+                        backend: Backend::M,
+                        status: JobStatus::Failed,
+                        output: None,
+                        error: Some(format!("attempt {} failed", attempt + 1)),
+                        latency_ms: Some(10),
+                    },
+                    (attempt + 6).to_string(),
+                )
+                .expect("failed attempt");
+
+            if attempt < 2 {
+                assert_eq!(completed.status, JobStatus::Queued);
+                assert_ne!(completed.graph.status, JobGraphStatus::Failed);
+            } else {
+                assert_eq!(completed.status, JobStatus::Failed);
+                assert_eq!(completed.graph.status, JobGraphStatus::Failed);
+                assert_eq!(
+                    completed
+                        .graph
+                        .nodes
+                        .iter()
+                        .find(|node| Some(node.id.as_str()) == active_graph_node.as_deref())
+                        .expect("exhausted graph node")
+                        .attempt_count,
+                    DEFAULT_GRAPH_NODE_MAX_ATTEMPTS
+                );
+            }
+        }
     }
 
     #[test]

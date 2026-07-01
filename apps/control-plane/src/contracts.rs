@@ -436,8 +436,18 @@ pub struct JobGraphNode {
     pub worker_id: Option<String>,
     #[serde(default)]
     pub backend: Option<Backend>,
+    #[serde(default)]
+    pub attempt_count: u32,
+    #[serde(default = "default_graph_node_max_attempts")]
+    pub max_attempts: u32,
+    #[serde(default)]
+    pub failed_node_ids: Vec<String>,
     pub output: Option<String>,
     pub error: Option<String>,
+}
+
+fn default_graph_node_max_attempts() -> u32 {
+    3
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
