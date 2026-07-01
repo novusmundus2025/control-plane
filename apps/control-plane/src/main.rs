@@ -4249,6 +4249,13 @@ fn handle_connection(
         return;
     }
 
+    if request.method == "GET" {
+        state
+            .lock()
+            .expect("state lock")
+            .run_maintenance(&now_unix_seconds());
+    }
+
     let response = match (request.method.as_str(), clean_path) {
         ("GET", "/") => {
             let snapshot = state.lock().expect("state lock");
@@ -6081,6 +6088,50 @@ mod tests {
         assert!(html.contains(r#"value="1""#));
         assert!(html.contains(r#"name="submitted_before""#));
         assert!(html.contains(r#"value="4""#));
+    }
+
+    #[test]
+    fn jobs_page_maintenance_releases_stale_running_chunk() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "1");
+        register_ready_node(&mut state, "node-2", "HAL", "1");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-stale-ui".to_string(),
+                prompt: "Give me a detailed history of BMW from its origins to today.".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Decompose,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(256),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claim graph chunk");
+
+        state.run_maintenance("604");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Jobs,
+            Some("job_id=job-stale-ui"),
+        );
+
+        assert!(html.contains("job-stale-ui"));
+        assert!(html.contains("retry ready on a different node"));
+        assert!(html.contains("attempts 1/3"));
+        assert!(!html.contains("awaiting worker result from assigned node"));
+        assert!(!html.contains("awaiting worker result:"));
     }
 
     #[test]

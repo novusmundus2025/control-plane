@@ -657,7 +657,7 @@ impl ControlPlaneState {
     }
 
     pub fn claim_job(&mut self, node_id: &str, claimed_at: String) -> JobClaimResponse {
-        self.release_stale_graph_claims(&claimed_at);
+        self.run_maintenance(&claimed_at);
 
         let Some(node) = self.nodes.get(node_id) else {
             return JobClaimResponse { job: None };
@@ -771,6 +771,10 @@ impl ControlPlaneState {
         }
 
         JobClaimResponse { job: None }
+    }
+
+    pub fn run_maintenance(&mut self, now: &str) {
+        self.release_stale_graph_claims(now);
     }
 
     pub fn complete_job(
