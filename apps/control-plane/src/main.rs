@@ -2804,39 +2804,38 @@ fn control_plane_home(
         position: relative;
         z-index: 1;
       }}
-      .topo-node.live::before,
-      .topo-node.live::after {{
-        content: "";
-        position: absolute;
-        left: 50%;
-        top: 23px;
-        width: 70px;
-        height: 62px;
-        z-index: -1;
-        clip-path: polygon(50% 0, 95% 25%, 95% 75%, 50% 100%, 5% 75%, 5% 25%);
-        background: rgba(87, 173, 255, 0.18);
-        box-shadow: 0 0 24px rgba(41, 163, 255, 0.28);
-        animation: node-signal-pulse 3.6s ease-out infinite;
+      .topo-node.live .node-hex {{
+        animation: node-signal-pulse 3.6s ease-in-out infinite;
       }}
-      .topo-node.live::after {{
-        animation-delay: 1.8s;
-      }}
-      .topo-node.live.trusted::before,
-      .topo-node.live.trusted::after {{
-        background: rgba(132, 224, 184, 0.16);
-        box-shadow: 0 0 25px rgba(111, 219, 169, 0.24);
+      .topo-node.live.trusted .node-hex {{
+        animation-name: node-trusted-signal-pulse;
       }}
       @keyframes node-signal-pulse {{
         0% {{
-          transform: translate(-50%, -50%) scale(0.74);
-          opacity: 0;
+          box-shadow: 0 0 18px rgba(41, 163, 255, 0.26), 0 0 0 0 rgba(87, 173, 255, 0.28);
+          filter: brightness(1);
         }}
-        18% {{
-          opacity: 0.68;
+        45% {{
+          box-shadow: 0 0 23px rgba(41, 163, 255, 0.42), 0 0 0 8px rgba(87, 173, 255, 0.10);
+          filter: brightness(1.16);
         }}
         100% {{
-          transform: translate(-50%, -50%) scale(1.48);
-          opacity: 0;
+          box-shadow: 0 0 18px rgba(41, 163, 255, 0.26), 0 0 0 0 rgba(87, 173, 255, 0);
+          filter: brightness(1);
+        }}
+      }}
+      @keyframes node-trusted-signal-pulse {{
+        0% {{
+          box-shadow: 0 0 19px rgba(111, 183, 255, 0.34), 0 0 0 0 rgba(132, 224, 184, 0.26);
+          filter: brightness(1);
+        }}
+        45% {{
+          box-shadow: 0 0 25px rgba(111, 219, 169, 0.38), 0 0 0 8px rgba(132, 224, 184, 0.10);
+          filter: brightness(1.14);
+        }}
+        100% {{
+          box-shadow: 0 0 19px rgba(111, 183, 255, 0.34), 0 0 0 0 rgba(132, 224, 184, 0);
+          filter: brightness(1);
         }}
       }}
       .topo-label,
@@ -3060,11 +3059,9 @@ fn control_plane_home(
           opacity: 0.18;
           transform: none;
         }}
-        .topo-node.live::before,
-        .topo-node.live::after {{
+        .topo-node.live .node-hex {{
           animation: none;
-          opacity: 0.18;
-          transform: translate(-50%, -50%);
+          filter: none;
         }}
       }}
     </style>
@@ -5217,6 +5214,7 @@ mod tests {
         assert!(html.contains("node-hex::before"));
         assert!(html.contains("logo-signal-wave"));
         assert!(html.contains("node-signal-pulse"));
+        assert!(!html.contains(".topo-node.live::before"));
         assert!(html.contains("logo-signal s1"));
         assert!(html.contains(r#"class="topo-node offline""#));
         assert!(html.contains("slot 8"));
