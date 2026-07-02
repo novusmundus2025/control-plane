@@ -220,6 +220,12 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
               output: "llama.cpp mode=cuda; response=assistant: Founded in 1916. Founded in 1916.",
             },
             { id: "job.modern", name: "Modern era", status: "running" },
+            {
+              id: "job.notes",
+              name: "Compile and usage notes",
+              status: "completed",
+              output: "Do not include any implementation details. Do not include any source code. Do not include examples.",
+            },
           ],
         },
       },
@@ -233,6 +239,7 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
 
   assert.equal(result.progress.nodes[0].output, "Founded in 1916.");
   assert.equal(result.progress.nodes[1].output, "");
+  assert.equal(result.progress.nodes[2].output, "");
 });
 
 test("cleans worker metadata and repeated role-prefixed output", () => {

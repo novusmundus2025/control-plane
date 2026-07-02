@@ -1742,7 +1742,30 @@ function summarizeChatProgress(job) {
 }
 
 function compactChunkOutput(value) {
-  return truncateText(cleanChatOutput(value), 900);
+  const cleaned = cleanChatOutput(value);
+  if (isInstructionOnlyChunkOutput(cleaned)) {
+    return "";
+  }
+  return truncateText(cleaned, 900);
+}
+
+function isInstructionOnlyChunkOutput(value) {
+  const text = String(value ?? "").trim().toLowerCase();
+  if (!text) {
+    return true;
+  }
+  const sentences = text.split(/[.!?]+/).map((sentence) => sentence.trim()).filter(Boolean);
+  if (!sentences.length) {
+    return false;
+  }
+  const instructionSentences = sentences.filter((sentence) =>
+    sentence.startsWith("do not ") ||
+    sentence.startsWith("don't ") ||
+    sentence.startsWith("avoid ") ||
+    sentence.startsWith("return only ") ||
+    sentence.startsWith("not include "),
+  );
+  return instructionSentences.length / sentences.length >= 0.75;
 }
 
 function truncateText(value, maxLength) {
