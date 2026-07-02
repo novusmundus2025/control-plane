@@ -1,7 +1,14 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { cleanChatOutput, configFromEnv, escapeHtml, page } from "../src/main.js";
+import {
+  cleanChatOutput,
+  configFromEnv,
+  escapeHtml,
+  page,
+  pollChatJob,
+  submitChatJob,
+} from "../src/main.js";
 
 test("renders a usable chat page", () => {
   const html = page(
@@ -40,6 +47,91 @@ test("escapes runtime values rendered into html", () => {
   assert.equal(escapeHtml("<script>"), "&lt;script&gt;");
 });
 
+test("submits chat work as an auto execution job", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    const body = JSON.parse(init.body);
+    assert.equal(body.prompt, "Give me a detailed history of Honda.");
+    assert.equal(body.execution_mode, "auto");
+    assert.equal(body.preferred_backend, "auto");
+    assert.equal(body.max_tokens, 1024);
+    assert.match(body.system_prompt, /Do not echo system/);
+    return jsonResponse({
+      job_id: "job-1",
+      status: "queued",
+      job: {
+        job_id: "job-1",
+        status: "queued",
+        model: "Qwen/Test",
+        execution_mode: "auto",
+        graph_execution_enabled: true,
+        plan: { strategy: "sectioned_research" },
+        graph: {
+          nodes: [
+            { id: "job.origins", name: "Origins", status: "ready" },
+            { id: "job.final", name: "Final synthesis", status: "waiting", responsibility: "merge" },
+          ],
+          final_node_id: "job.final",
+        },
+      },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "Give me a detailed history of Honda." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.job_id, "job-1");
+  assert.equal(result.execution_mode, "auto");
+  assert.equal(result.progress.total, 2);
+  assert.equal(result.progress.waiting, 2);
+});
+
+test("polls chat job progress and final cleaned output", async () => {
+  const fetchImpl = async (url) => {
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-1");
+    return jsonResponse({
+      job: {
+        job_id: "job-1",
+        status: "completed",
+        model: "Qwen/Test",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        active_graph_node_id: "job.final",
+        output: "llama.cpp mode=cuda; response=assistant: Done. Done.",
+        graph: {
+          final_node_id: "job.final",
+          nodes: [
+            { id: "job.origins", name: "Origins", status: "completed" },
+            {
+              id: "job.final",
+              name: "Final synthesis",
+              status: "running",
+              responsibility: "merge",
+            },
+          ],
+        },
+      },
+    });
+  };
+
+  const result = await pollChatJob(
+    "job-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.output, "Done.");
+  assert.equal(result.progress.total, 2);
+  assert.equal(result.progress.completed, 1);
+  assert.equal(result.progress.merging, true);
+});
+
 test("cleans worker metadata and repeated role-prefixed output", () => {
   const output = cleanChatOutput(
     "llama.cpp mode=cuda; model=Qwen/Qwen2.5-1.5B-Instruct; path=C:\\Users\\batal\\.opengpu\\models\\qwen.gguf; max_tokens=512; response=system: The President of the United States is Donald Trump. He is the 47th President of the United States. He is the 47th President of the United States. He is the 47th President of the United States.",
@@ -51,6 +143,14 @@ test("cleans worker metadata and repeated role-prefixed output", () => {
   );
   assert.doesNotMatch(output, /llama\.cpp|path=|response=|system:/i);
 });
+
+function jsonResponse(payload, ok = true, status = 200) {
+  return {
+    ok,
+    status,
+    text: async () => JSON.stringify(payload),
+  };
+}
 
 test("cleans embedded role leakage and repeated answer spam", () => {
   const output = cleanChatOutput(
