@@ -339,7 +339,9 @@ impl ControlPlaneState {
         let classification = classify_job_request(&request);
         let scheduling_requirements = scheduling_requirements_for(&request, &classification);
         let fallback_decision = fallback_decision_for(&scheduling_requirements);
-        let plan = plan_job_request(&request, &classification);
+        let compatible_ready_nodes = self.compatible_ready_node_count_for_request(&request);
+        let plan =
+            plan_job_request_for_submission(&request, &classification, compatible_ready_nodes);
         let graph = build_job_graph(&request.request_id, &plan, &submitted_at);
         let graph_execution_enabled = graph_execution_allowed(&request, &classification, &plan);
         let record = JobRecord {
@@ -478,6 +480,66 @@ impl ControlPlaneState {
             "interactive" => vec![RuntimeMode::Interactive],
             _ => Vec::new(),
         }
+    }
+
+    fn compatible_ready_node_count_for_request(&self, request: &JobRequest) -> usize {
+        self.nodes
+            .values()
+            .filter(|node| {
+                node.state == AgentState::Ready
+                    && node.policy_allowed
+                    && Self::node_backend_can_run_request(node.backend, request.preferred_backend)
+                    && Self::node_worker_can_run_request(node, request)
+            })
+            .count()
+    }
+
+    fn node_backend_can_run_request(node_backend: Backend, preferred_backend: Backend) -> bool {
+        match preferred_backend {
+            Backend::Auto => matches!(node_backend, Backend::Auto | Backend::M | Backend::Cuda),
+            Backend::M => matches!(node_backend, Backend::Auto | Backend::M),
+            Backend::Cuda => matches!(node_backend, Backend::Auto | Backend::Cuda),
+        }
+    }
+
+    fn node_worker_can_run_request(node: &NodeRecord, request: &JobRequest) -> bool {
+        let Some(worker_health) = node.worker_health.as_ref() else {
+            return false;
+        };
+
+        if !worker_health.healthy
+            || !worker_health.runtime_ready
+            || !worker_health.llama_cli_available
+        {
+            return false;
+        }
+
+        let runtime_modes = Self::reported_runtime_modes(worker_health);
+        if !runtime_modes.contains(&request.runtime_mode) {
+            return false;
+        }
+
+        if request.stream && !worker_health.streaming_supported {
+            return false;
+        }
+
+        if let Some(required_model) = request
+            .model
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+        {
+            let model_matches = worker_health
+                .model_name
+                .as_deref()
+                .map(|available| available.eq_ignore_ascii_case(required_model))
+                .unwrap_or(false);
+            if !model_matches {
+                return false;
+            }
+        }
+
+        true
     }
 
     fn node_can_run_job(node: &NodeRecord, job: &JobRecord) -> bool {
@@ -2182,6 +2244,66 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
     }
 }
 
+fn plan_job_request_for_submission(
+    request: &JobRequest,
+    classification: &RequestClassification,
+    compatible_ready_nodes: usize,
+) -> JobPlan {
+    if request.execution_mode == JobExecutionMode::Auto
+        && looks_sectionable_prompt(&request.prompt)
+        && classification.task_type != RequestTaskType::Coding
+        && compatible_ready_nodes < 2
+        && !sectionable_prompt_warrants_single_node_decomposition(request, classification)
+    {
+        return JobPlan {
+            plan_id: format!("plan-{}", request.request_id),
+            strategy: "single_job_latency_optimized".to_string(),
+            summary: format!(
+                "Single execution selected for latency: {compatible_ready_nodes} compatible ready node(s); sectioned research is reserved for multi-node fan-out, explicit decomposition, or larger context."
+            ),
+            jobs: vec![PlannedJob {
+                id: "job.direct_response".to_string(),
+                name: "Direct response".to_string(),
+                responsibility: classification.task_type.as_str().to_string(),
+                depends_on: Vec::new(),
+                required_output: format!(
+                    "Produce the requested {:?} output for the submitted prompt.",
+                    classification.output_format
+                ),
+                reason:
+                    "Auto mode avoided sectioned decomposition because it would run sequentially on the current ready node set."
+                        .to_string(),
+            }],
+        };
+    }
+
+    let mut plan = plan_job_request(request, classification);
+    if request.execution_mode == JobExecutionMode::Auto
+        && plan.strategy == "sectioned_research"
+        && compatible_ready_nodes >= 2
+    {
+        plan.summary = format!(
+            "{} Auto decomposition enabled because {compatible_ready_nodes} compatible ready nodes can fan out independent sections.",
+            plan.summary
+        );
+    }
+    plan
+}
+
+fn sectionable_prompt_warrants_single_node_decomposition(
+    request: &JobRequest,
+    classification: &RequestClassification,
+) -> bool {
+    classification.context_size == ContextSize::Large
+        || request.prompt.chars().count() > 1_800
+        || request.max_tokens.unwrap_or_default() > 2_048
+        || (classification.complexity == RequestComplexity::High
+            && contains_any(
+                &request.prompt.to_ascii_lowercase(),
+                &["multi-step", "architecture", "security review", "migration"],
+            ))
+}
+
 pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> JobGraph {
     let mut graph = JobGraph {
         graph_id: format!("graph-{request_id}"),
@@ -3078,7 +3200,10 @@ mod tests {
 
         assert_ne!(classification.task_type, RequestTaskType::Coding);
         assert_eq!(plan.strategy, "sectioned_research");
-        assert!(plan.jobs.iter().any(|job| job.name == "Origins and founders"));
+        assert!(plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Origins and founders"));
         assert!(!plan
             .jobs
             .iter()
@@ -3184,7 +3309,7 @@ mod tests {
                     .to_string(),
                 preferred_backend: Backend::Auto,
                 runtime_mode: RuntimeMode::Local,
-                execution_mode: JobExecutionMode::Auto,
+                execution_mode: JobExecutionMode::Decompose,
                 stream: false,
                 model: Some("Qwen/Qwen2.5-1.5B-Instruct".to_string()),
                 system_prompt: None,
@@ -3775,26 +3900,40 @@ mod tests {
     }
 
     #[test]
-    fn auto_decompose_chunks_sectionable_work_with_one_ready_node() {
+    fn auto_keeps_sectionable_work_single_with_one_ready_node() {
         let mut one_node_state = ready_state();
         let mut request = classification_request(
             "Write a detailed history of Mercedes-Benz with major eras and milestones.",
         );
         request.execution_mode = JobExecutionMode::Auto;
         let one_node_record = one_node_state.submit_job(request.clone(), "1".to_string());
-        assert!(one_node_record.graph_execution_enabled);
-        assert_eq!(one_node_record.plan.strategy, "sectioned_research");
+        assert!(!one_node_record.graph_execution_enabled);
+        assert_eq!(
+            one_node_record.plan.strategy,
+            "single_job_latency_optimized"
+        );
+        assert!(one_node_record
+            .plan
+            .summary
+            .contains("1 compatible ready node"));
 
         let mut two_node_state = ready_state();
         two_node_state.register(m_series_registration("node-2"));
         two_node_state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
         let two_node_record = two_node_state.submit_job(request, "2".to_string());
         assert!(two_node_record.graph_execution_enabled);
+        assert_eq!(two_node_record.plan.strategy, "sectioned_research");
+        assert!(two_node_record
+            .plan
+            .summary
+            .contains("2 compatible ready nodes"));
     }
 
     #[test]
-    fn auto_decompose_fans_out_remaining_chunks_when_second_node_becomes_ready() {
+    fn auto_decompose_fans_out_chunks_when_two_nodes_are_ready() {
         let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
         let mut request =
             classification_request("Give me a detailed history of BMW from its origins to today.");
         request.execution_mode = JobExecutionMode::Auto;
@@ -3828,9 +3967,6 @@ mod tests {
             )
             .expect("first completion");
         assert_eq!(first_completed.status, JobStatus::Queued);
-
-        state.register(m_series_registration("node-2"));
-        state.heartbeat(ready_heartbeat("node-2", "5"), "5".to_string());
 
         let second_claim = state
             .claim_job("node-1", "6".to_string())
@@ -4348,7 +4484,7 @@ mod tests {
         let mut request = classification_request(
             "Give me a detailed history of Nokia from its origins to today.",
         );
-        request.execution_mode = JobExecutionMode::Auto;
+        request.execution_mode = JobExecutionMode::Decompose;
         state.submit_job(request, "2".to_string());
 
         for updated_at in ["3", "4", "5", "6"] {
@@ -4415,7 +4551,7 @@ mod tests {
         let mut request = classification_request(
             "Give me a detailed history of Nokia from its origins to today.",
         );
-        request.execution_mode = JobExecutionMode::Auto;
+        request.execution_mode = JobExecutionMode::Decompose;
         state.submit_job(request, "2".to_string());
 
         for (node_id, output, updated_at) in [
@@ -4502,7 +4638,7 @@ mod tests {
         let mut request = classification_request(
             "Give me a detailed history of Nokia from its origins to today.",
         );
-        request.execution_mode = JobExecutionMode::Auto;
+        request.execution_mode = JobExecutionMode::Decompose;
         state.submit_job(request, "2".to_string());
 
         for updated_at in ["3", "4", "5", "6"] {
