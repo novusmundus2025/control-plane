@@ -37,7 +37,7 @@ Optional environment:
 
 ```text
 MUNDUSX_OPERATOR_TOKEN=<only if the target control plane requires auth>
-MUNDUSX_CHAT_DEFAULT_MODEL=Qwen/Qwen2.5-1.5B-Instruct
+MUNDUSX_CHAT_MODEL=<optional explicit model override>
 MUNDUSX_CHAT_TIMEOUT_SECONDS=90
 ```
 
@@ -51,15 +51,16 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_CONTROL_PLANE_URL` | `https://uat.mundusx.ai` | Control-plane API origin |
 | `MUNDUSX_OPERATOR_TOKEN` | unset | Optional bearer token for protected UAT/API deployments |
 | `OPENGPU_OPERATOR_TOKEN` | unset | Deprecated fallback token name |
-| `MUNDUSX_CHAT_DEFAULT_MODEL` | `Qwen/Qwen2.5-1.5B-Instruct` | Default model sent to chat completions |
+| `MUNDUSX_CHAT_MODEL` | unset | Optional explicit model override; unset means control-plane routed contributor models |
+| `MUNDUSX_CHAT_DEFAULT_MODEL` | unset | Deprecated alias for `MUNDUSX_CHAT_MODEL` |
 | `MUNDUSX_CHAT_TIMEOUT_SECONDS` | `90` | Default server-side poll timeout for one chat turn |
 
 ## Current Flow
 
-1. Browser posts a user message to `POST /api/chat`.
-2. Chat app submits an OpenAI-compatible request to `POST /v1/chat/completions`.
-3. Control plane returns a queued MundusX job id.
-4. Chat app polls `GET /v1/jobs/:id`.
-5. Completed output is returned to the browser.
+1. Browser posts a user message to `POST /api/chat/jobs`.
+2. Chat app submits a routed MundusX job to `POST /v1/jobs` with `execution_mode=auto`.
+3. Control plane decides whether the request is single-job or decomposed across graph chunks.
+4. Browser polls `GET /api/chat/jobs/:id`, which reads `GET /v1/jobs/:id`.
+5. Completed output and graph progress are returned to the browser.
 
 Streaming is not enabled yet; the first version uses polling because the control plane already exposes job status and output.

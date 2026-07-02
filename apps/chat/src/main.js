@@ -4,7 +4,6 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_CONTROL_PLANE_URL = "https://uat.mundusx.ai";
-const DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct";
 const DEFAULT_TIMEOUT_SECONDS = 90;
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
@@ -16,7 +15,7 @@ export function configFromEnv(env = process.env) {
     port: Number(env.PORT ?? "3002"),
     controlPlaneUrl: normalizeOrigin(env.MUNDUSX_CONTROL_PLANE_URL ?? DEFAULT_CONTROL_PLANE_URL),
     operatorToken: (env.MUNDUSX_OPERATOR_TOKEN ?? env.OPENGPU_OPERATOR_TOKEN ?? "").trim(),
-    defaultModel: (env.MUNDUSX_CHAT_DEFAULT_MODEL ?? DEFAULT_MODEL).trim() || DEFAULT_MODEL,
+    modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     defaultTimeoutSeconds: positiveInteger(
       env.MUNDUSX_CHAT_TIMEOUT_SECONDS,
       DEFAULT_TIMEOUT_SECONDS,
@@ -780,7 +779,7 @@ export function page(config = configFromEnv()) {
     </aside>
     <main>
       <header>
-        <div class="chat-title">MundusX Chat <span class="model-pill">${escapeHtml(config.defaultModel)}</span></div>
+        <div class="chat-title">MundusX Chat <span class="model-pill">Control-plane routed</span></div>
         <div class="header-actions">
           <div class="status"><span class="dot"></span><span id="runtime-status">Ready</span></div>
           <div class="expand-control">[ &lt;=&gt; ]</div>
@@ -961,7 +960,8 @@ export function createServerApp(config = configFromEnv()) {
         return sendJson(response, 200, {
           status: "ok",
           control_plane_url: config.controlPlaneUrl,
-          default_model: config.defaultModel,
+          model_routing: "control-plane",
+          model_override: config.modelOverride || null,
         });
       }
       if (request.method === "POST" && url.pathname === "/api/chat") {
@@ -998,26 +998,30 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(400, "message is required");
   }
 
-  const model = String(body?.model ?? config.defaultModel).trim() || config.defaultModel;
+  const model = String(body?.model ?? config.modelOverride ?? "").trim();
+  const jobBody = {
+    request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    prompt: message,
+    preferred_backend: "auto",
+    runtime_mode: "local",
+    execution_mode: normalizeExecutionMode(body?.executionMode ?? "auto"),
+    stream: false,
+    system_prompt: buildChatSystemPrompt(),
+    max_tokens: inferMaxTokens(message, body?.maxTokens),
+    temperature: typeof body?.temperature === "number" ? body.temperature : 0.2,
+    top_p: typeof body?.topP === "number" ? body.topP : 0.9,
+  };
+  if (model) {
+    jobBody.model = model;
+  }
+
   const jobResponse = await controlPlaneFetch(
     fetchImpl,
     config,
     "/v1/jobs",
     {
       method: "POST",
-      body: JSON.stringify({
-        request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
-        prompt: message,
-        preferred_backend: "auto",
-        runtime_mode: "local",
-        execution_mode: normalizeExecutionMode(body?.executionMode ?? "auto"),
-        stream: false,
-        model,
-        system_prompt: buildChatSystemPrompt(),
-        max_tokens: inferMaxTokens(message, body?.maxTokens),
-        temperature: typeof body?.temperature === "number" ? body.temperature : 0.2,
-        top_p: typeof body?.topP === "number" ? body.topP : 0.9,
-      }),
+      body: JSON.stringify(jobBody),
     },
   );
 
@@ -1027,7 +1031,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(502, "control plane did not return a job id");
   }
 
-  return formatChatJob(jobId, job, model);
+  return formatChatJob(jobId, job, model || null);
 }
 
 export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = fetch) {
@@ -1036,7 +1040,7 @@ export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = f
   }
   const latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
   const job = latest.job ?? latest;
-  return formatChatJob(jobId, job, job.model ?? config.defaultModel);
+  return formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null);
 }
 
 async function waitForChatJob(jobId, body, config, fetchImpl) {
