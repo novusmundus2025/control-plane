@@ -5,10 +5,12 @@ import {
   cleanChatOutput,
   configFromEnv,
   escapeHtml,
+  extractWeatherLocation,
   fetchNetworkSummary,
   page,
   pollChatJob,
   submitChatJob,
+  submitChatTurn,
 } from "../src/main.js";
 
 test("renders a usable chat page", () => {
@@ -170,6 +172,83 @@ test("sends an explicit model override when configured", async () => {
   assert.equal(result.model, "Qwen/Explicit");
 });
 
+test("routes weather questions to wttr without queuing an LLM job", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    assert.equal(url, "https://wttr.in/Manila?format=j1");
+    return jsonResponse({
+      nearest_area: [
+        {
+          areaName: [{ value: "Manila" }],
+          region: [{ value: "National Capital Region" }],
+          country: [{ value: "Philippines" }],
+        },
+      ],
+      current_condition: [
+        {
+          weatherDesc: [{ value: "Partly cloudy" }],
+          temp_C: "31",
+          temp_F: "88",
+          FeelsLikeC: "36",
+          FeelsLikeF: "97",
+          humidity: "70",
+          windspeedKmph: "12",
+          localObsDateTime: "2026-07-03 05:00 PM",
+        },
+      ],
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "what is the weather in Manila today?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "wttr.in");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "weather");
+  assert.equal(result.assigned_node_id, "weather-tool");
+  assert.match(result.output, /Weather for Manila, National Capital Region, Philippines/);
+  assert.match(result.output, /Partly cloudy, 31C\/88F/);
+});
+
+test("returns immediate weather turns without polling the control plane", async () => {
+  const result = await submitChatTurn(
+    { message: "forecast for Cebu" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url) => {
+      assert.equal(url, "https://wttr.in/Cebu?format=j1");
+      return jsonResponse({
+        nearest_area: [{ areaName: [{ value: "Cebu" }], country: [{ value: "Philippines" }] }],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Sunny" }],
+            temp_C: "30",
+            temp_F: "86",
+            FeelsLikeC: "34",
+            FeelsLikeF: "93",
+            humidity: "65",
+            windspeedKmph: "9",
+          },
+        ],
+      });
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.progress.strategy, "weather_tool");
+});
+
+test("extracts only obvious weather locations", () => {
+  assert.equal(extractWeatherLocation("weather in Warsaw please"), "Warsaw");
+  assert.equal(extractWeatherLocation("temperature for New York right now"), "New York");
+  assert.equal(extractWeatherLocation("Give me a history of Honda"), null);
+});
+
 test("polls chat job progress and final cleaned output", async () => {
   const fetchImpl = async (url) => {
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-1");
@@ -291,6 +370,7 @@ function jsonResponse(payload, ok = true, status = 200) {
   return {
     ok,
     status,
+    json: async () => payload,
     text: async () => JSON.stringify(payload),
   };
 }

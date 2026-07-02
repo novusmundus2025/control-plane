@@ -1,10 +1,14 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
+import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
+import { connect as createTlsConnection } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_CONTROL_PLANE_URL = "https://uat.mundusx.ai";
 const DEFAULT_TIMEOUT_SECONDS = 90;
+const DEFAULT_WEATHER_TTL_SECONDS = 7200;
+const DEFAULT_WEATHER_URL = "https://wttr.in";
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -16,6 +20,17 @@ export function configFromEnv(env = process.env) {
     controlPlaneUrl: normalizeOrigin(env.MUNDUSX_CONTROL_PLANE_URL ?? DEFAULT_CONTROL_PLANE_URL),
     operatorToken: (env.MUNDUSX_OPERATOR_TOKEN ?? env.OPENGPU_OPERATOR_TOKEN ?? "").trim(),
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
+    weatherCacheUrl: (
+      env.MUNDUSX_WEATHER_CACHE_URL ??
+      env.VALKEY_URL ??
+      env.REDIS_URL ??
+      ""
+    ).trim(),
+    weatherBaseUrl: normalizeOrigin(env.MUNDUSX_WEATHER_URL ?? DEFAULT_WEATHER_URL),
+    weatherTtlSeconds: positiveInteger(
+      env.MUNDUSX_WEATHER_TTL_SECONDS,
+      DEFAULT_WEATHER_TTL_SECONDS,
+    ),
     defaultTimeoutSeconds: positiveInteger(
       env.MUNDUSX_CHAT_TIMEOUT_SECONDS,
       DEFAULT_TIMEOUT_SECONDS,
@@ -1751,6 +1766,9 @@ export function createServerApp(config = configFromEnv()) {
 
 export async function submitChatTurn(body, config = configFromEnv(), fetchImpl = fetch) {
   const submitted = await submitChatJob(body, config, fetchImpl);
+  if (["completed", "failed"].includes(submitted.status)) {
+    return submitted;
+  }
   return waitForChatJob(submitted.job_id, body, config, fetchImpl);
 }
 
@@ -1758,6 +1776,11 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   const message = String(body?.message ?? "").trim();
   if (!message) {
     throw httpError(400, "message is required");
+  }
+
+  const weatherLocation = extractWeatherLocation(message);
+  if (weatherLocation) {
+    return fetchWeatherJob(message, weatherLocation, config, fetchImpl);
   }
 
   const model = String(body?.model ?? config.modelOverride ?? "").trim();
@@ -1794,6 +1817,260 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   return formatChatJob(jobId, job, model || null);
+}
+
+async function fetchWeatherJob(message, location, config, fetchImpl) {
+  const cacheKey = weatherCacheKey(location);
+  let cacheHit = false;
+  let output = null;
+
+  if (config.weatherCacheUrl) {
+    output = await redisGet(config.weatherCacheUrl, cacheKey);
+    cacheHit = Boolean(output);
+  }
+
+  if (!output) {
+    output = await fetchWeatherSummary(location, config, fetchImpl);
+    if (config.weatherCacheUrl) {
+      await redisSet(config.weatherCacheUrl, cacheKey, output, config.weatherTtlSeconds);
+    }
+  }
+
+  return {
+    job_id: `weather-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "wttr.in",
+    assigned_node_id: "weather-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "weather",
+    cache_hit: cacheHit,
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "weather_tool",
+    },
+  };
+}
+
+export function extractWeatherLocation(message) {
+  const text = String(message ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  const lower = text.toLowerCase();
+  if (!/\b(weather|forecast|temperature|temp)\b/.test(lower)) {
+    return null;
+  }
+
+  const patterns = [
+    /\b(?:weather|forecast|temperature|temp)\s+(?:in|for|at|of)\s+(.+)$/i,
+    /\b(?:what(?:'s| is)?|how(?:'s| is)?)\s+(?:the\s+)?(?:weather|forecast|temperature|temp)(?:\s+like)?\s+(?:in|for|at|of)\s+(.+)$/i,
+    /\b(?:weather|forecast|temperature|temp)\s+(.+)$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const location = cleanWeatherLocation(match?.[1]);
+    if (location) {
+      return location;
+    }
+  }
+  return null;
+}
+
+function cleanWeatherLocation(value) {
+  let location = String(value ?? "")
+    .replace(/[?!.,]+$/g, "")
+    .replace(/\b(?:today|now|right now|currently|please|pls)\b/gi, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  location = location.replace(/^(?:the\s+)?weather\s+(?:in|for|at|of)\s+/i, "").trim();
+  if (!location || location.length < 2 || location.length > 120) {
+    return null;
+  }
+  return location;
+}
+
+async function fetchWeatherSummary(location, config, fetchImpl) {
+  const url = `${config.weatherBaseUrl}/${encodeURIComponent(location)}?format=j1`;
+  const response = await fetchImpl(url, {
+    headers: { Accept: "application/json", "User-Agent": "MundusX-Chat/0.1 weather-router" },
+  });
+  if (!response.ok) {
+    throw httpError(502, `weather lookup failed for ${location}`);
+  }
+  const payload = await response.json();
+  return formatWeatherSummary(location, payload);
+}
+
+function formatWeatherSummary(requestedLocation, payload) {
+  const current = payload?.current_condition?.[0];
+  if (!current) {
+    throw httpError(502, `weather lookup returned no current conditions for ${requestedLocation}`);
+  }
+  const area = payload?.nearest_area?.[0];
+  const areaName = area?.areaName?.[0]?.value ?? requestedLocation;
+  const region = area?.region?.[0]?.value ?? "";
+  const country = area?.country?.[0]?.value ?? "";
+  const place = [areaName, region, country].filter(Boolean).join(", ");
+  const condition = current.weatherDesc?.[0]?.value ?? "current conditions";
+  const tempC = current.temp_C;
+  const tempF = current.temp_F;
+  const feelsC = current.FeelsLikeC;
+  const feelsF = current.FeelsLikeF;
+  const humidity = current.humidity;
+  const windKmph = current.windspeedKmph;
+  const observation = current.localObsDateTime ? ` Observed ${current.localObsDateTime}.` : "";
+  return `Weather for ${place}: ${condition}, ${tempC}C/${tempF}F, feels like ${feelsC}C/${feelsF}F, humidity ${humidity}%, wind ${windKmph} km/h.${observation}`;
+}
+
+function weatherCacheKey(location) {
+  return `mundusx:weather:v1:${location.toLowerCase().replace(/\s+/g, " ").trim()}`;
+}
+
+async function redisGet(redisUrl, key) {
+  try {
+    const result = await redisCommand(redisUrl, ["GET", key]);
+    return typeof result === "string" && result.trim() ? result : null;
+  } catch {
+    return null;
+  }
+}
+
+async function redisSet(redisUrl, key, value, ttlSeconds) {
+  try {
+    await redisCommand(redisUrl, ["SET", key, value, "EX", String(ttlSeconds)]);
+  } catch {
+    // Weather cache is optional; direct wttr.in lookup remains the source of truth.
+  }
+}
+
+function redisCommand(redisUrl, args) {
+  return new Promise((resolve, reject) => {
+    let url;
+    try {
+      url = new URL(redisUrl);
+    } catch (error) {
+      reject(error);
+      return;
+    }
+
+    const isTls = url.protocol === "rediss:";
+    if (!["redis:", "rediss:", "valkey:", "valkeys:"].includes(url.protocol)) {
+      reject(new Error("unsupported cache URL protocol"));
+      return;
+    }
+    const socketFactory = isTls || url.protocol === "valkeys:" ? createTlsConnection : createConnection;
+    const socket = socketFactory({
+      host: url.hostname,
+      port: Number(url.port || 6379),
+      servername: url.hostname,
+    });
+    let buffer = Buffer.alloc(0);
+    let settled = false;
+    let expectedReplies = 1;
+    const done = (error, value) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      if (error) reject(error);
+      else resolve(value);
+    };
+    socket.setTimeout(1500, () => done(new Error("weather cache timed out")));
+    socket.on("error", done);
+    socket.on(isTls || url.protocol === "valkeys:" ? "secureConnect" : "connect", () => {
+      const commands = [];
+      if (url.password) {
+        if (url.username) {
+          commands.push(["AUTH", decodeURIComponent(url.username), decodeURIComponent(url.password)]);
+        } else {
+          commands.push(["AUTH", decodeURIComponent(url.password)]);
+        }
+      }
+      commands.push(args);
+      expectedReplies = commands.length;
+      socket.write(commands.map(encodeRespArray).join(""));
+    });
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      const parsed = parseResp(buffer);
+      if (parsed.complete && parsed.values.length >= expectedReplies) {
+        const values = parsed.values;
+        done(null, values[values.length - 1]);
+      }
+    });
+  });
+}
+
+function encodeRespArray(values) {
+  return `*${values.length}\r\n${values
+    .map((value) => {
+      const text = String(value);
+      return `$${Buffer.byteLength(text)}\r\n${text}\r\n`;
+    })
+    .join("")}`;
+}
+
+function parseResp(buffer) {
+  const values = [];
+  let offset = 0;
+  while (offset < buffer.length) {
+    const parsed = parseRespValue(buffer, offset);
+    if (!parsed) {
+      return { complete: false };
+    }
+    values.push(parsed.value);
+    offset = parsed.offset;
+  }
+  return { complete: values.length > 0, values, value: values.length === 1 ? values[0] : values };
+}
+
+function parseRespValue(buffer, offset) {
+  const type = String.fromCharCode(buffer[offset]);
+  const lineEnd = buffer.indexOf("\r\n", offset);
+  if (lineEnd === -1) {
+    return null;
+  }
+  const line = buffer.toString("utf8", offset + 1, lineEnd);
+  if (type === "+") {
+    return { value: line, offset: lineEnd + 2 };
+  }
+  if (type === "-") {
+    throw new Error(line);
+  }
+  if (type === ":") {
+    return { value: Number(line), offset: lineEnd + 2 };
+  }
+  if (type === "$") {
+    const length = Number(line);
+    if (length < 0) {
+      return { value: null, offset: lineEnd + 2 };
+    }
+    const start = lineEnd + 2;
+    const end = start + length;
+    if (buffer.length < end + 2) {
+      return null;
+    }
+    return { value: buffer.toString("utf8", start, end), offset: end + 2 };
+  }
+  return null;
+}
+
+function hashText(value) {
+  let hash = 2166136261;
+  for (const char of String(value)) {
+    hash ^= char.charCodeAt(0);
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(16);
 }
 
 export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = fetch) {
