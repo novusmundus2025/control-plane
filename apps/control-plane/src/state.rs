@@ -827,11 +827,21 @@ impl ControlPlaneState {
         completion: JobCompletion,
         completed_at: String,
     ) -> Option<JobRecord> {
+        let compact_reducer_node = self
+            .nodes
+            .get(&completion.node_id)
+            .map(|node| reducer_profile(node) == ReducerProfile::Compact)
+            .unwrap_or(false);
         let updated_job = {
             let job = self.jobs.get_mut(&completion.job_id)?;
 
             if job.graph_execution_enabled {
-                complete_graph_execution_job(job, completion.clone(), completed_at.clone())
+                complete_graph_execution_job(
+                    job,
+                    completion.clone(),
+                    completed_at.clone(),
+                    compact_reducer_node,
+                )
             } else {
                 if job.assigned_node_id.as_deref() != Some(completion.node_id.as_str()) {
                     return Some(job.clone());
@@ -1279,8 +1289,21 @@ fn complete_graph_execution_job(
     job: &mut JobRecord,
     completion: JobCompletion,
     completed_at: String,
+    compact_reducer_node: bool,
 ) -> JobRecord {
     let active_node_id = graph_node_assigned_to_node(&job.graph, &completion.node_id);
+    let compact_final_reducer_fallback_output =
+        if completion.status == JobStatus::Failed && compact_reducer_node {
+            active_node_id.as_deref().and_then(|active_node_id| {
+                if job.graph.final_node_id.as_deref() == Some(active_node_id) {
+                    merge_completed_graph_outputs(&job.graph)
+                } else {
+                    None
+                }
+            })
+        } else {
+            None
+        };
     if let Some(active_node_id) = active_node_id.as_deref() {
         if let Some(graph_node) = job
             .graph
@@ -1296,22 +1319,35 @@ fn complete_graph_execution_job(
                 }
                 JobStatus::Failed => {
                     let is_final_node = job.graph.final_node_id.as_deref() == Some(active_node_id);
-                    if !graph_node
-                        .failed_node_ids
-                        .iter()
-                        .any(|node_id| node_id == &completion.node_id)
-                    {
-                        graph_node.failed_node_ids.push(completion.node_id.clone());
-                    }
-
-                    if is_final_node || graph_node.attempt_count >= graph_node.max_attempts {
-                        graph_node.status = JobGraphNodeStatus::Failed;
-                        graph_node.output = completion.output.clone();
-                        graph_node.error = completion.error.clone();
+                    if is_final_node {
+                        if let Some(fallback_output) = compact_final_reducer_fallback_output.clone()
+                        {
+                            graph_node.status = JobGraphNodeStatus::Completed;
+                            graph_node.output = Some(fallback_output);
+                            graph_node.error = None;
+                        } else {
+                            graph_node.status = JobGraphNodeStatus::Failed;
+                            graph_node.output = completion.output.clone();
+                            graph_node.error = completion.error.clone();
+                        }
                     } else {
-                        graph_node.status = JobGraphNodeStatus::Ready;
-                        graph_node.output = None;
-                        graph_node.error = completion.error.clone();
+                        if !graph_node
+                            .failed_node_ids
+                            .iter()
+                            .any(|node_id| node_id == &completion.node_id)
+                        {
+                            graph_node.failed_node_ids.push(completion.node_id.clone());
+                        }
+
+                        if graph_node.attempt_count >= graph_node.max_attempts {
+                            graph_node.status = JobGraphNodeStatus::Failed;
+                            graph_node.output = completion.output.clone();
+                            graph_node.error = completion.error.clone();
+                        } else {
+                            graph_node.status = JobGraphNodeStatus::Ready;
+                            graph_node.output = None;
+                            graph_node.error = completion.error.clone();
+                        }
                     }
                 }
                 _ => {}
@@ -4106,6 +4142,93 @@ mod tests {
                     .any(|reason| reason.contains("deterministic section fallback"))
             }),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn compact_final_reducer_failure_records_section_fallback_as_completed() {
+        let mut state = ControlPlaneState::default();
+        state.register(cuda_registration("node-weak"));
+        state.heartbeat(low_vram_cuda_heartbeat("node-weak", "1"), "1".to_string());
+        let mut request = classification_request(
+            "Give me a detailed history of Nokia from its origins to today.",
+        );
+        request.execution_mode = JobExecutionMode::Auto;
+        state.submit_job(request, "2".to_string());
+
+        for (node_id, output, updated_at) in [
+            ("job.origins", "Origins section text", "3"),
+            ("job.early_development", "Early development text", "4"),
+            ("job.expansion", "Expansion text", "5"),
+            ("job.modern_era", "Modern era text", "6"),
+        ] {
+            state
+                .update_graph_node(
+                    "job-1",
+                    node_id,
+                    JobGraphNodeStatus::Completed,
+                    Some(output.to_string()),
+                    None,
+                    updated_at.to_string(),
+                )
+                .expect("complete section");
+        }
+
+        {
+            let job = state.jobs.get_mut("job-1").expect("job exists");
+            job.status = JobStatus::Assigned;
+            job.assigned_node_id = Some("node-weak".to_string());
+            job.active_graph_node_id = Some("job.final_merge".to_string());
+            let final_node = job
+                .graph
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == "job.final_merge")
+                .expect("final node");
+            final_node.status = JobGraphNodeStatus::Running;
+            final_node.assigned_node_id = Some("node-weak".to_string());
+            final_node.backend = Some(Backend::Cuda);
+            final_node.attempt_count = 1;
+        }
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-weak".to_string(),
+                    worker_id: "worker-weak".to_string(),
+                    backend: Backend::Cuda,
+                    status: JobStatus::Failed,
+                    output: None,
+                    error: Some("llama-cli exited 1".to_string()),
+                    latency_ms: Some(10),
+                },
+                "7".to_string(),
+            )
+            .expect("compact reducer failure falls back");
+
+        assert_eq!(completed.status, JobStatus::Completed);
+        assert!(completed.error.is_none());
+        assert!(completed
+            .output
+            .as_deref()
+            .expect("fallback output")
+            .contains("Origins section text"));
+        let final_node = completed
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == "job.final_merge")
+            .expect("final node");
+        assert_eq!(final_node.status, JobGraphNodeStatus::Completed);
+        assert!(final_node.error.is_none());
+        assert!(completed.graph.merge_error.is_none());
+        assert_eq!(
+            state
+                .nodes
+                .get("node-weak")
+                .map(|node| node.trust.consecutive_failures),
+            Some(1)
         );
     }
 
