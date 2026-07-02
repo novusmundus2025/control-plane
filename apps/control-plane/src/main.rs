@@ -4951,8 +4951,7 @@ fn main() {
                 }
             }
             Err(error) => {
-                eprintln!("startup migration failed: {error}");
-                std::process::exit(1);
+                eprintln!("startup migration failed; continuing with existing schema: {error}");
             }
         }
     }

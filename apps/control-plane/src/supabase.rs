@@ -760,6 +760,11 @@ mod tests {
     }
 
     #[test]
+    fn initializes_rustls_client_config_from_native_roots() {
+        rustls_client_config().expect("rustls client config");
+    }
+
+    #[test]
     fn parses_chunked_supabase_rest_response() {
         let raw = b"HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n";
         let response = parse_http_response(raw).expect("parsed response");
