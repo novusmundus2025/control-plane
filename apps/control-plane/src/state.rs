@@ -582,7 +582,12 @@ impl ControlPlaneState {
         true
     }
 
-    fn scheduler_score(node: &NodeRecord, job: &JobRecord) -> SchedulerDecision {
+    fn scheduler_score(
+        &self,
+        node: &NodeRecord,
+        job: &JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) -> SchedulerDecision {
         let mut score = 0;
         let mut reasons = Vec::new();
         let requirements = &job.scheduling_requirements;
@@ -688,11 +693,13 @@ impl ControlPlaneState {
             node.trust.consecutive_failures
         ));
 
-        SchedulerDecision {
+        let mut decision = SchedulerDecision {
             node_id: node.node_id.clone(),
             score,
             reasons,
-        }
+        };
+        self.apply_node_performance_score(&mut decision, node, job, active_graph_node_id);
+        decision
     }
 
     fn best_scheduler_decision_for_job(&self, job: &JobRecord) -> SchedulerDecision {
@@ -710,8 +717,14 @@ impl ControlPlaneState {
         self.nodes
             .values()
             .filter(|node| {
+                let active_graph_node_id = if job.graph_execution_enabled {
+                    next_ready_graph_node_id_for_node(&job.graph, &node.node_id)
+                } else {
+                    None
+                };
                 node.state == AgentState::Ready
                     && node.policy_allowed
+                    && (!job.graph_execution_enabled || active_graph_node_id.is_some())
                     && Self::node_backend_matches(
                         job,
                         node.backend,
@@ -720,7 +733,14 @@ impl ControlPlaneState {
                     )
                     && Self::node_can_run_job(node, job)
             })
-            .map(|node| Self::scheduler_score(node, job))
+            .map(|node| {
+                let active_graph_node_id = if job.graph_execution_enabled {
+                    next_ready_graph_node_id_for_node(&job.graph, &node.node_id)
+                } else {
+                    None
+                };
+                self.scheduler_score(node, job, active_graph_node_id.as_deref())
+            })
             .max_by(|left, right| {
                 left.score
                     .cmp(&right.score)
@@ -805,9 +825,24 @@ impl ControlPlaneState {
                     )
                     && Self::node_can_run_job(node, job)
                 {
-                    let mut decision = Self::scheduler_score(node, job);
+                    let mut decision =
+                        self.scheduler_score(node, job, active_graph_node_id.as_deref());
                     if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref()) {
                         apply_reducer_scheduler_score(&mut decision, node);
+                    }
+                    if graph_node_latency_weight(&job.graph, active_graph_node_id.as_deref()) > 1 {
+                        if let Some(best_decision) = self
+                            .best_scheduler_decision_for_active_graph_node(
+                                job,
+                                active_graph_node_id.as_deref(),
+                            )
+                        {
+                            if best_decision.node_id != node.node_id
+                                && best_decision.score > decision.score + 8
+                            {
+                                return None;
+                            }
+                        }
                     }
                     Some((job_id.clone(), decision))
                 } else {
@@ -923,6 +958,113 @@ impl ControlPlaneState {
         }
 
         JobClaimResponse { job: None }
+    }
+
+    fn best_scheduler_decision_for_active_graph_node(
+        &self,
+        job: &JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) -> Option<SchedulerDecision> {
+        let active_graph_node_id = active_graph_node_id?;
+        let ready_m_exists = self.nodes.values().any(|candidate| {
+            candidate.state == AgentState::Ready
+                && candidate.policy_allowed
+                && candidate.backend == Backend::M
+        });
+        let ready_cuda_exists = self.nodes.values().any(|candidate| {
+            candidate.state == AgentState::Ready
+                && candidate.policy_allowed
+                && candidate.backend == Backend::Cuda
+        });
+
+        self.nodes
+            .values()
+            .filter(|node| {
+                node.state == AgentState::Ready
+                    && node.policy_allowed
+                    && next_ready_graph_node_id_for_node(&job.graph, &node.node_id).as_deref()
+                        == Some(active_graph_node_id)
+                    && Self::node_backend_matches(
+                        job,
+                        node.backend,
+                        ready_m_exists,
+                        ready_cuda_exists,
+                    )
+                    && Self::node_can_run_job(node, job)
+            })
+            .map(|node| {
+                let mut decision = self.scheduler_score(node, job, Some(active_graph_node_id));
+                if graph_node_is_merge(&job.graph, Some(active_graph_node_id)) {
+                    apply_reducer_scheduler_score(&mut decision, node);
+                }
+                decision
+            })
+            .max_by(|left, right| {
+                left.score
+                    .cmp(&right.score)
+                    .then_with(|| right.node_id.cmp(&left.node_id))
+            })
+    }
+
+    fn apply_node_performance_score(
+        &self,
+        decision: &mut SchedulerDecision,
+        node: &NodeRecord,
+        job: &JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) {
+        let stats = self.recent_graph_node_performance(&node.node_id);
+        if stats.completed_samples == 0 && stats.failed_samples == 0 {
+            decision
+                .reasons
+                .push("performance:no recent chunk telemetry".to_string());
+            return;
+        }
+
+        let latency_weight = graph_node_latency_weight(&job.graph, active_graph_node_id);
+        if stats.latency_samples > 0 {
+            let avg_latency_ms = stats.total_latency_ms / u64::from(stats.latency_samples);
+            let latency_delta = performance_latency_score(avg_latency_ms) * latency_weight;
+            decision.score += latency_delta;
+            decision.reasons.push(format!(
+                "performance:avg_chunk_latency_ms:{} samples:{} score_delta:{}",
+                avg_latency_ms, stats.latency_samples, latency_delta
+            ));
+        }
+
+        if stats.failed_samples > 0 {
+            let failure_penalty = (i32::from(stats.failed_samples).min(5) * 12) * latency_weight;
+            decision.score -= failure_penalty;
+            decision.reasons.push(format!(
+                "performance:recent_chunk_failures:{} score_delta:-{}",
+                stats.failed_samples, failure_penalty
+            ));
+        }
+    }
+
+    fn recent_graph_node_performance(&self, node_id: &str) -> NodePerformanceStats {
+        let mut stats = NodePerformanceStats::default();
+        for graph_node in self
+            .jobs
+            .values()
+            .flat_map(|job| job.graph.nodes.iter())
+            .filter(|graph_node| graph_node.assigned_node_id.as_deref() == Some(node_id))
+        {
+            match graph_node.status {
+                JobGraphNodeStatus::Completed => {
+                    stats.completed_samples = stats.completed_samples.saturating_add(1);
+                    if let Some(latency_ms) = graph_node.latency_ms {
+                        stats.latency_samples = stats.latency_samples.saturating_add(1);
+                        stats.total_latency_ms = stats.total_latency_ms.saturating_add(latency_ms);
+                    }
+                }
+                JobGraphNodeStatus::Failed => {
+                    stats.failed_samples = stats.failed_samples.saturating_add(1);
+                }
+                _ => {}
+            }
+        }
+        stats
     }
 
     pub fn run_maintenance(&mut self, now: &str) -> Vec<JobRecord> {
@@ -1341,6 +1483,42 @@ fn graph_execution_allowed(
 
 fn parse_unix_seconds(value: &str) -> Option<u64> {
     value.parse::<u64>().ok()
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct NodePerformanceStats {
+    completed_samples: u8,
+    latency_samples: u8,
+    failed_samples: u8,
+    total_latency_ms: u64,
+}
+
+fn performance_latency_score(avg_latency_ms: u64) -> i32 {
+    match avg_latency_ms {
+        0..=15_000 => 18,
+        15_001..=30_000 => 10,
+        30_001..=60_000 => 2,
+        60_001..=120_000 => -12,
+        _ => -24,
+    }
+}
+
+fn graph_node_latency_weight(graph: &JobGraph, graph_node_id: Option<&str>) -> i32 {
+    let Some(graph_node_id) = graph_node_id else {
+        return 1;
+    };
+    let Some(graph_node) = graph.nodes.iter().find(|node| node.id == graph_node_id) else {
+        return 1;
+    };
+
+    if graph.final_node_id.as_deref() == Some(graph_node_id)
+        || graph_node.responsibility == "merge"
+        || graph_node.effective_max_tokens.unwrap_or_default() >= 512
+    {
+        2
+    } else {
+        1
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3352,6 +3530,119 @@ mod tests {
         state.register(m_series_registration("node-1"));
         state.heartbeat(ready_heartbeat("node-1", "1"), "1".to_string());
         state
+    }
+
+    fn completed_graph_history_job(
+        job_id: &str,
+        node_id: &str,
+        status: JobGraphNodeStatus,
+        latency_ms: Option<u64>,
+    ) -> JobRecord {
+        let graph_node = JobGraphNode {
+            id: format!("{job_id}.chunk"),
+            name: "Historical chunk".to_string(),
+            responsibility: "section".to_string(),
+            depends_on: Vec::new(),
+            required_output: "historical scheduler telemetry".to_string(),
+            status,
+            blocked_by: Vec::new(),
+            assigned_node_id: Some(node_id.to_string()),
+            assigned_at: Some("1".to_string()),
+            started_at: Some("1".to_string()),
+            completed_at: Some("2".to_string()),
+            worker_id: Some(format!("worker-{node_id}")),
+            backend: Some(Backend::M),
+            model: Some("demo".to_string()),
+            runtime_mode: Some(RuntimeMode::Local.as_str().to_string()),
+            effective_max_tokens: Some(512),
+            queue_wait_ms: Some(0),
+            runtime_ms: latency_ms,
+            latency_ms,
+            output_chars: Some(12),
+            estimated_output_tokens: Some(3),
+            attempt_count: 1,
+            max_attempts: DEFAULT_GRAPH_NODE_MAX_ATTEMPTS,
+            failed_node_ids: Vec::new(),
+            output: if status == JobGraphNodeStatus::Completed {
+                Some("chunk output".to_string())
+            } else {
+                None
+            },
+            error: if status == JobGraphNodeStatus::Failed {
+                Some("runtime failed".to_string())
+            } else {
+                None
+            },
+        };
+        JobRecord {
+            job_id: job_id.to_string(),
+            request_id: job_id.to_string(),
+            prompt: "historical telemetry job".to_string(),
+            preferred_backend: Backend::Auto,
+            runtime_mode: RuntimeMode::Local,
+            stream: false,
+            model: Some("demo".to_string()),
+            system_prompt: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            seed: None,
+            classification: RequestClassification::default(),
+            scheduling_requirements: JobSchedulingRequirements::default(),
+            scheduler_decision: None,
+            fallback_decision: FallbackDecision::default(),
+            plan: JobPlan::default(),
+            graph: JobGraph {
+                graph_id: format!("graph-{job_id}"),
+                request_id: job_id.to_string(),
+                plan_id: format!("plan-{job_id}"),
+                status: if status == JobGraphNodeStatus::Completed {
+                    JobGraphStatus::Completed
+                } else {
+                    JobGraphStatus::Failed
+                },
+                nodes: vec![graph_node],
+                results: Vec::new(),
+                final_output: None,
+                merge_error: None,
+                final_node_id: None,
+                created_at: "1".to_string(),
+                updated_at: "2".to_string(),
+            },
+            execution_mode: JobExecutionMode::Decompose,
+            graph_execution_enabled: true,
+            active_graph_node_id: None,
+            last_completed_graph_node_id: None,
+            status: if status == JobGraphNodeStatus::Completed {
+                JobStatus::Completed
+            } else {
+                JobStatus::Failed
+            },
+            submitted_at: "1".to_string(),
+            assigned_node_id: Some(node_id.to_string()),
+            assigned_at: Some("1".to_string()),
+            completed_at: Some("2".to_string()),
+            worker_id: Some(format!("worker-{node_id}")),
+            backend: Some(Backend::M),
+            output: None,
+            error: None,
+        }
+    }
+
+    fn make_reducer_ready(state: &mut ControlPlaneState, job_id: &str) {
+        let job = state.jobs.get_mut(job_id).expect("job");
+        let final_node_id = job.graph.final_node_id.clone().expect("final node");
+        for node in &mut job.graph.nodes {
+            if node.id != final_node_id {
+                node.status = JobGraphNodeStatus::Completed;
+                node.output = Some(format!("{} complete", node.name));
+                node.error = None;
+                node.completed_at = Some("4".to_string());
+            }
+        }
+        refresh_job_graph(&mut job.graph);
+        job.status = JobStatus::Queued;
+        job.active_graph_node_id = next_ready_graph_node_id(&job.graph);
     }
 
     fn classification_request(prompt: &str) -> JobRequest {
@@ -5930,6 +6221,168 @@ mod tests {
             .job
             .expect("claim");
         assert_eq!(claim.model.as_deref(), Some("Qwen/Qwen2.5-1.5B-Instruct"));
+    }
+
+    #[test]
+    fn scheduler_uses_chunk_latency_telemetry_for_decisions() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+        state.jobs.insert(
+            "history-slow".to_string(),
+            completed_graph_history_job(
+                "history-slow",
+                "node-1",
+                JobGraphNodeStatus::Completed,
+                Some(140_000),
+            ),
+        );
+        state.jobs.insert(
+            "history-fast".to_string(),
+            completed_graph_history_job(
+                "history-fast",
+                "node-2",
+                JobGraphNodeStatus::Completed,
+                Some(8_000),
+            ),
+        );
+
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "Draft a concise public history note.".to_string(),
+                preferred_backend: Backend::M,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: Some("demo".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "5".to_string(),
+        );
+
+        let job = state.jobs.get("job-1").expect("job");
+        let decision = job.scheduler_decision.as_ref().expect("decision");
+        assert_eq!(decision.node_id, "node-2");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("performance:avg_chunk_latency_ms:8000")));
+    }
+
+    #[test]
+    fn slow_nodes_remain_eligible_for_regular_parallel_chunks() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+        state.jobs.insert(
+            "history-slow".to_string(),
+            completed_graph_history_job(
+                "history-slow",
+                "node-1",
+                JobGraphNodeStatus::Completed,
+                Some(140_000),
+            ),
+        );
+        state.jobs.insert(
+            "history-fast".to_string(),
+            completed_graph_history_job(
+                "history-fast",
+                "node-2",
+                JobGraphNodeStatus::Completed,
+                Some(8_000),
+            ),
+        );
+
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "5".to_string());
+
+        let slow_claim = state
+            .claim_job("node-1", "6".to_string())
+            .job
+            .expect("slow node can still claim section work");
+        assert_ne!(
+            slow_claim.active_graph_node_id.as_deref(),
+            Some("job.final_merge")
+        );
+    }
+
+    #[test]
+    fn reducer_waits_for_fastest_ready_node_when_slow_node_polls_first() {
+        let mut state = ready_state();
+        for node_id in ["node-2", "node-3", "node-4"] {
+            state.register(m_series_registration(node_id));
+            state.heartbeat(ready_heartbeat(node_id, "1"), "1".to_string());
+        }
+        state.jobs.insert(
+            "history-slow".to_string(),
+            completed_graph_history_job(
+                "history-slow",
+                "node-1",
+                JobGraphNodeStatus::Completed,
+                Some(140_000),
+            ),
+        );
+        state.jobs.insert(
+            "history-fast".to_string(),
+            completed_graph_history_job(
+                "history-fast",
+                "node-2",
+                JobGraphNodeStatus::Completed,
+                Some(8_000),
+            ),
+        );
+        state.jobs.insert(
+            "history-failed".to_string(),
+            completed_graph_history_job(
+                "history-failed",
+                "node-3",
+                JobGraphNodeStatus::Failed,
+                Some(40_000),
+            ),
+        );
+        state.jobs.insert(
+            "history-medium".to_string(),
+            completed_graph_history_job(
+                "history-medium",
+                "node-4",
+                JobGraphNodeStatus::Completed,
+                Some(45_000),
+            ),
+        );
+
+        let mut request = classification_request(
+            "Give me a detailed history of Honda from its origins to today.",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "5".to_string());
+        make_reducer_ready(&mut state, "job-1");
+
+        assert!(state.claim_job("node-1", "6".to_string()).job.is_none());
+        assert!(state.claim_job("node-3", "6".to_string()).job.is_none());
+
+        let fast_claim = state
+            .claim_job("node-2", "6".to_string())
+            .job
+            .expect("fast node claims reducer");
+        assert_eq!(
+            fast_claim.active_graph_node_id.as_deref(),
+            Some("job.final_merge")
+        );
+        let decision = fast_claim
+            .scheduler_decision
+            .as_ref()
+            .expect("scheduler decision");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("performance:avg_chunk_latency_ms:8000")));
     }
 
     #[test]
