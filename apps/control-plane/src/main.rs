@@ -677,7 +677,7 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
               <div><span class="pill" style="background:{};color:{};">{}</span></div>
               <div>
                 <span class="pill" style="background:{};color:{};">{}</span>
-                <div class="meta" style="margin-top:6px;">{}</div>
+                <div class="meta" style="margin-top:6px;">reported {}</div>
               </div>
               <div>
                 <div>{}</div>
@@ -717,7 +717,7 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
             state_bg,
             state_fg,
             escape_html(&node.state.to_string()),
-            escape_html(&node.state.to_string()),
+            escape_html(&node.reported_state.to_string()),
             escape_html(&power),
             escape_html(&node.public_key_fingerprint),
             worker_health,
@@ -1179,7 +1179,8 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
                 <div><strong>{node_id_html}</strong><div class="meta">node id</div></div>
                 <div><strong>{fingerprint}</strong><div class="meta">public key fingerprint</div></div>
                 <div><strong>{trust_path}</strong><div class="meta">trust path</div></div>
-                <div><strong>{state}</strong><div class="meta">reported status</div></div>
+                <div><strong>{state}</strong><div class="meta">effective status</div></div>
+                <div><strong>{reported_state}</strong><div class="meta">last reported status</div></div>
               </div>
             </div>
             <div class="node-profile-card">
@@ -1225,6 +1226,7 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
         fingerprint = escape_html(&node.public_key_fingerprint),
         trust_path = escape_html(&node.identity_trust_path),
         state = escape_html(&node.state.to_string()),
+        reported_state = escape_html(&node.reported_state.to_string()),
         scheduler_fit = scheduler_fit,
     )
 }
