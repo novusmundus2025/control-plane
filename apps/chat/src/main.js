@@ -941,18 +941,22 @@ export function page(config = configFromEnv()) {
     main {
       height: 100vh;
       min-height: 0;
-      background: transparent;
-      color: var(--mx-text);
+      background:
+        linear-gradient(rgba(0,0,0,0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,0.014) 1px, transparent 1px),
+        #f8f8f4;
+      background-size: 44px 44px;
+      color: #111111;
       grid-template-rows: 82px minmax(0, 1fr) auto;
     }
     header {
       height: 82px;
       border-bottom: 1px solid var(--mx-line);
-      background: rgba(0,0,0,0.2);
+      background: rgba(248,248,244,0.96);
       padding: 0 30px;
     }
     .chat-title {
-      color: #fff;
+      color: #111111;
       font-size: 18px;
     }
     .header-actions {
@@ -961,19 +965,19 @@ export function page(config = configFromEnv()) {
     .settings-button {
       width: auto;
       height: 44px;
-      border: 1px solid var(--mx-line);
+      border: 1px solid rgba(0,0,0,0.22);
       border-radius: 0;
-      background: rgba(255,255,255,0.025);
-      color: var(--mx-text);
+      background: rgba(255,255,255,0.72);
+      color: #111111;
       padding: 0 16px;
       display: inline-flex;
       align-items: center;
       gap: 8px;
     }
     .status {
-      border: 1px solid var(--mx-line);
-      color: var(--mx-text);
-      background: rgba(255,255,255,0.025);
+      border: 1px solid rgba(0,0,0,0.22);
+      color: #111111;
+      background: rgba(255,255,255,0.72);
       border-radius: 0;
       font-size: 14px;
       padding: 12px 16px;
@@ -988,21 +992,21 @@ export function page(config = configFromEnv()) {
       background: transparent;
     }
     .conversation {
-      width: min(900px, calc(100% - 48px));
+      width: min(980px, calc(100% - 48px));
       min-height: 100%;
       padding: 74px 0 28px;
-      gap: 8px;
+      gap: 22px;
     }
     .welcome {
       min-height: 58vh;
-      color: var(--mx-text);
+      color: #111111;
     }
     .welcome-inner {
       width: min(720px, 100%);
       gap: 22px;
     }
     h1 {
-      color: #fff;
+      color: #111111;
       font-size: clamp(36px, 4vw, 44px);
       letter-spacing: 0.5px;
       text-transform: none;
@@ -1010,7 +1014,7 @@ export function page(config = configFromEnv()) {
     }
     .welcome-copy {
       width: min(560px,100%);
-      color: var(--mx-muted);
+      color: #484848;
       font-size: 18px;
       line-height: 1.55;
     }
@@ -1020,17 +1024,17 @@ export function page(config = configFromEnv()) {
     .welcome-rule {
       width: 22px;
       height: 1px;
-      background: var(--mx-line-strong);
+      background: rgba(0,0,0,0.38);
     }
     .examples-heading {
       width: min(650px, 100%);
-      color: var(--mx-muted);
+      color: #5a5a5a;
       font-size: 14px;
       letter-spacing: 1px;
     }
     .examples-heading::before,
     .examples-heading::after {
-      border-top: 1px solid var(--mx-line);
+      border-top: 1px solid rgba(0,0,0,0.24);
     }
     .suggestions {
       width: min(650px,100%);
@@ -1038,49 +1042,66 @@ export function page(config = configFromEnv()) {
     }
     .suggestion {
       border: 0;
-      border-top: 1px solid var(--mx-line);
+      border-top: 1px solid rgba(0,0,0,0.18);
       border-radius: 0;
       padding: 20px 8px;
       background: transparent;
-      color: var(--mx-text);
+      color: #111111;
       grid-template-columns: 28px minmax(0, 1fr);
       gap: 16px;
       font-size: 16px;
     }
     .suggestion:last-child {
-      border-bottom: 1px solid var(--mx-line);
+      border-bottom: 1px solid rgba(0,0,0,0.18);
     }
     .suggestion:hover {
-      background: rgba(255,255,255,0.055);
+      background: rgba(0,0,0,0.045);
     }
     .message {
-      color: var(--mx-text);
-      grid-template-columns: 44px minmax(0,1fr);
-      padding: 14px 0;
+      color: #111111;
+      display: flex;
+      align-items: flex-start;
+      grid-template-columns: none;
+      gap: 0;
+      padding: 0;
     }
     .avatar {
-      border: 1px solid var(--mx-line-strong);
-      background: rgba(255,255,255,0.05);
-      color: #fff;
+      display: none;
     }
-    .message.user .avatar {
-      background: #fff;
-      color: #000;
+    .message.user {
+      justify-content: flex-end;
     }
     .message-body {
-      color: var(--mx-text);
+      color: #111111;
+      max-width: min(760px, 78%);
+      padding: 14px 16px;
+      line-height: 1.62;
+    }
+    .message.user .message-body {
+      max-width: min(680px, 72%);
+      background: #ededeb;
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 18px 18px 4px 18px;
     }
     .message.assistant .message-body {
-      border-left: 1px solid var(--mx-line);
-      background: rgba(255,255,255,0.025);
-      max-height: min(52vh, 520px);
+      border-left: 0;
+      background: rgba(255,255,255,0.86);
+      border: 1px solid rgba(0,0,0,0.09);
+      border-radius: 18px 18px 18px 4px;
+      max-height: none;
+      box-shadow: 0 14px 40px rgba(0,0,0,0.04);
+    }
+    .message.error .message-body {
+      color: #8a0d0d;
+      background: #fff1f1;
+      border-color: rgba(138,13,13,0.2);
     }
     .work-trace {
       display: grid;
       gap: 12px;
     }
     .work-title {
-      color: #fff;
+      color: #111111;
       font-weight: 800;
     }
     .chunk-list {
@@ -1088,23 +1109,23 @@ export function page(config = configFromEnv()) {
       gap: 8px;
     }
     .chunk-row {
-      border: 1px solid var(--mx-line);
-      background: rgba(255,255,255,0.02);
+      border: 1px solid rgba(0,0,0,0.12);
+      background: rgba(0,0,0,0.018);
       padding: 10px 12px;
     }
     .chunk-row.is-active {
-      border-color: rgba(255,255,255,0.34);
-      background: rgba(255,255,255,0.045);
+      border-color: rgba(0,0,0,0.28);
+      background: rgba(0,0,0,0.045);
     }
     .chunk-head {
       display: flex;
       align-items: center;
       justify-content: space-between;
       gap: 14px;
-      color: var(--mx-text);
+      color: #111111;
     }
     .chunk-status {
-      color: var(--mx-muted);
+      color: #5a5a5a;
       font-size: 12px;
       text-transform: uppercase;
       white-space: nowrap;
@@ -1113,19 +1134,19 @@ export function page(config = configFromEnv()) {
       display: inline-flex;
       align-items: center;
       gap: 7px;
-      color: #fff;
+      color: #111111;
     }
     .chunk-meta {
       margin-top: 6px;
-      color: var(--mx-muted);
+      color: #626262;
       font-size: 12px;
       overflow-wrap: anywhere;
     }
     .mx-spinner {
       width: 12px;
       height: 12px;
-      border: 1px solid rgba(255,255,255,0.25);
-      border-top-color: #fff;
+      border: 1px solid rgba(0,0,0,0.22);
+      border-top-color: #111111;
       border-radius: 999px;
       animation: mx-spin 0.72s linear infinite;
       flex: 0 0 auto;
@@ -1155,27 +1176,27 @@ export function page(config = configFromEnv()) {
     }
     .chunk-output {
       margin-top: 9px;
-      color: var(--mx-muted);
+      color: #333333;
       white-space: pre-wrap;
       overflow-wrap: anywhere;
       max-height: 160px;
       overflow: auto;
-      border-top: 1px solid var(--mx-line);
+      border-top: 1px solid rgba(0,0,0,0.12);
       padding-top: 9px;
       font-size: 13px;
     }
     .source-chunks {
       margin-top: 16px;
-      border-top: 1px solid var(--mx-line);
+      border-top: 1px solid rgba(0,0,0,0.12);
       padding-top: 12px;
     }
     .source-chunks summary {
       cursor: pointer;
-      color: var(--mx-muted);
+      color: #4a4a4a;
     }
     .meta,
     .fine-print {
-      color: var(--mx-muted);
+      color: #626262;
     }
     form {
       width: min(1100px, calc(100% - 60px));
@@ -1183,10 +1204,10 @@ export function page(config = configFromEnv()) {
       background: transparent;
     }
     .composer {
-      border: 1px solid var(--mx-line-strong);
+      border: 1px solid rgba(0,0,0,0.22);
       border-radius: 0;
-      background: rgba(12,12,12,0.88);
-      box-shadow: inset 0 0 42px rgba(255,255,255,0.025);
+      background: rgba(255,255,255,0.94);
+      box-shadow: 0 18px 50px rgba(0,0,0,0.08);
       grid-template-columns: minmax(0,1fr) 64px;
       padding: 18px 16px;
     }
@@ -1195,33 +1216,33 @@ export function page(config = configFromEnv()) {
       display: none;
     }
     textarea {
-      color: #fff;
+      color: #111111;
       min-height: 54px;
       font-size: 17px;
       padding: 8px 6px;
     }
     textarea::placeholder {
-      color: var(--mx-muted);
+      color: #737373;
     }
     .composer-actions {
-      color: var(--mx-muted);
+      color: #626262;
       text-transform: none;
       font-size: 14px;
     }
     .send {
       width: 64px;
       height: 52px;
-      border: 1px solid var(--mx-line-strong);
+      border: 1px solid #111111;
       border-radius: 0;
-      background: rgba(255,255,255,0.04);
+      background: #111111;
       color: #fff;
     }
     .model-pill {
       display: inline;
-      border: 1px solid var(--mx-line);
+      border: 1px solid rgba(0,0,0,0.16);
       border-radius: 0;
       background: transparent;
-      color: var(--mx-muted);
+      color: #5a5a5a;
       padding: 6px 8px;
       font-size: 12px;
     }
@@ -1324,9 +1345,7 @@ export function page(config = configFromEnv()) {
       document.getElementById("welcome")?.remove();
       const node = document.createElement("div");
       node.className = "message" + (role ? " " + role : "");
-      const avatar = document.createElement("div");
-      avatar.className = "avatar";
-      avatar.textContent = role === "user" ? "You" : "M";
+      node.setAttribute("aria-label", role === "user" ? "Your message" : "MundusX response");
       const body = document.createElement("div");
       body.className = "message-body";
       body.textContent = text;
@@ -1336,7 +1355,6 @@ export function page(config = configFromEnv()) {
         metaNode.textContent = meta;
         body.appendChild(metaNode);
       }
-      node.appendChild(avatar);
       node.appendChild(body);
       messagesEl.appendChild(node);
       document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;

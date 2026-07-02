@@ -29,6 +29,9 @@ test("renders a usable chat page", () => {
   assert.match(html, /Message MundusX/);
   assert.match(html, /\[ \/ \] Commands/);
   assert.match(html, /\.message\.assistant \.message-body/);
+  assert.match(html, /\.message\.user \.message-body/);
+  assert.match(html, /aria-label", role === "user" \? "Your message" : "MundusX response"/);
+  assert.doesNotMatch(html, /avatar\.textContent = role === "user" \? "You" : "M"/);
   assert.match(html, /\/assets\/mundusx-logo\.png/);
   assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /Control-plane routed/);
