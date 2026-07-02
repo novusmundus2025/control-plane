@@ -326,7 +326,7 @@ impl SupabaseMirror {
             "node_id": node_id,
             "job_id": job_id,
             "event_type": event_type,
-            "payload": payload,
+            "payload": payload.clone(),
         });
 
         self.post_json(
@@ -335,6 +335,19 @@ impl SupabaseMirror {
             "resolution=merge-duplicates,return=minimal",
             body,
         )
+        .or_else(|error| {
+            if !error.contains("source_event_id") {
+                return Err(error);
+            }
+
+            let legacy_body = json!({
+                "node_id": node_id,
+                "job_id": job_id,
+                "event_type": event_type,
+                "payload": payload,
+            });
+            self.post_json("job_events", None, "return=minimal", legacy_body)
+        })
     }
 
     fn post_json(
