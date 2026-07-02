@@ -3,12 +3,14 @@ use crate::contracts::{
     NodeRecord,
 };
 use crate::state::ControlPlaneState;
-use native_tls::TlsConnector;
+use rustls::pki_types::ServerName;
+use rustls::{ClientConfig, ClientConnection, RootCertStore, StreamOwned};
 use serde_json::json;
 use std::collections::HashSet;
 use std::env;
 use std::io::{Read, Write};
 use std::net::TcpStream;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug)]
@@ -475,11 +477,11 @@ fn supabase_rest_request(
 
     let tcp = TcpStream::connect((parsed.host.as_str(), parsed.port))
         .map_err(|error| format!("failed to connect to supabase REST API: {error}"))?;
-    let connector =
-        TlsConnector::new().map_err(|error| format!("failed to initialize TLS: {error}"))?;
-    let mut stream = connector
-        .connect(&parsed.host, tcp)
+    let server_name = ServerName::try_from(parsed.host.clone())
+        .map_err(|_| format!("invalid supabase REST TLS host: {}", parsed.host))?;
+    let connection = ClientConnection::new(rustls_client_config()?, server_name)
         .map_err(|error| format!("failed to negotiate TLS with supabase REST API: {error}"))?;
+    let mut stream = StreamOwned::new(connection, tcp);
     stream
         .write_all(request.as_bytes())
         .map_err(|error| format!("failed to send supabase REST request: {error}"))?;
@@ -492,6 +494,37 @@ fn supabase_rest_request(
         .read_to_end(&mut raw)
         .map_err(|error| format!("failed to read supabase REST response: {error}"))?;
     parse_http_response(&raw)
+}
+
+fn rustls_client_config() -> Result<Arc<ClientConfig>, String> {
+    let mut roots = RootCertStore::empty();
+    let certs = rustls_native_certs::load_native_certs();
+
+    for cert in certs.certs {
+        roots
+            .add(cert)
+            .map_err(|error| format!("failed to load native TLS certificate: {error}"))?;
+    }
+
+    if roots.is_empty() {
+        let details = certs
+            .errors
+            .into_iter()
+            .map(|error| error.to_string())
+            .collect::<Vec<_>>()
+            .join("; ");
+        return Err(if details.is_empty() {
+            "failed to initialize TLS: no native root certificates found".to_string()
+        } else {
+            format!("failed to initialize TLS: no native root certificates found ({details})")
+        });
+    }
+
+    Ok(Arc::new(
+        ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth(),
+    ))
 }
 
 fn parse_https_url(url: &str) -> Result<RestUrl, String> {
