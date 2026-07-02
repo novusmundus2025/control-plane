@@ -9,9 +9,11 @@ use serde_json::json;
 use std::collections::HashSet;
 use std::env;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::Arc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+const SUPABASE_REST_TIMEOUT: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Debug)]
 pub struct SupabaseMirror {
@@ -475,8 +477,17 @@ fn supabase_rest_request(
     request.push_str("\r\n");
     request.push_str(&body);
 
-    let tcp = TcpStream::connect((parsed.host.as_str(), parsed.port))
+    let address = (parsed.host.as_str(), parsed.port)
+        .to_socket_addrs()
+        .map_err(|error| format!("failed to resolve supabase REST API host: {error}"))?
+        .next()
+        .ok_or_else(|| "failed to resolve supabase REST API host".to_string())?;
+    let tcp = TcpStream::connect_timeout(&address, SUPABASE_REST_TIMEOUT)
         .map_err(|error| format!("failed to connect to supabase REST API: {error}"))?;
+    tcp.set_read_timeout(Some(SUPABASE_REST_TIMEOUT))
+        .map_err(|error| format!("failed to set supabase REST read timeout: {error}"))?;
+    tcp.set_write_timeout(Some(SUPABASE_REST_TIMEOUT))
+        .map_err(|error| format!("failed to set supabase REST write timeout: {error}"))?;
     let server_name = ServerName::try_from(parsed.host.clone())
         .map_err(|_| format!("invalid supabase REST TLS host: {}", parsed.host))?;
     let connection = ClientConnection::new(rustls_client_config()?, server_name)
