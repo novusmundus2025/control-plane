@@ -41,6 +41,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /\.history-title \{/);
   assert.match(html, /row\.innerHTML = "<span class='history-title'><\/span><span class='history-time'><\/span>"/);
   assert.match(html, /\.history-item \{[\s\S]*?overflow: visible;/);
+  assert.doesNotMatch(html, /\.history-item span:first-child/);
   assert.doesNotMatch(html, /class="account-card"/);
   assert.doesNotMatch(html, /class="model-pill">Control-plane routed/);
   assert.doesNotMatch(html, /<button class="settings-button"/);
