@@ -109,11 +109,6 @@ pub fn apply_migrations(database_url: &str) -> Result<Vec<MigrationFile>, String
     Ok(applied_files)
 }
 
-pub fn applied_migrations(database_url: &str) -> Result<Vec<String>, String> {
-    let mut client = connect_client(database_url)?;
-    applied_versions(&mut client)
-}
-
 fn connect_client(database_url: &str) -> Result<Client, String> {
     let mut config = Config::from_str(database_url)
         .map_err(|error| format!("failed to parse database url: {error}"))?;

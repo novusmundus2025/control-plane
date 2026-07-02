@@ -11,7 +11,7 @@ use contracts::{
     OperatorContributionPercentUpdate, OperatorNodePolicyOverrideUpdate, RuntimeMode,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-use migrations::{applied_migrations, apply_migrations};
+use migrations::apply_migrations;
 use serde::Serialize;
 use state::{load_state, save_state, ControlPlaneState};
 use std::collections::BTreeMap;
@@ -20,6 +20,7 @@ use std::net::{TcpListener, TcpStream};
 #[cfg(target_os = "macos")]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::thread;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use subtle::ConstantTimeEq;
 use supabase::SupabaseMirror;
@@ -4934,7 +4935,7 @@ fn main() {
     }
 
     if let Ok(database_url) = std::env::var("DATABASE_URL") {
-        match apply_migrations(&database_url) {
+        thread::spawn(move || match apply_migrations(&database_url) {
             Ok(applied) => {
                 if applied.is_empty() {
                     println!("migrations: no pending migrations");
@@ -4947,13 +4948,14 @@ fn main() {
                             migration.path.display()
                         );
                     }
-                    println!("migrations: {} applied at startup", applied.len());
+                    println!("migrations: {} applied in background", applied.len());
                 }
             }
             Err(error) => {
-                eprintln!("startup migration failed; continuing with existing schema: {error}");
+                eprintln!("background migration failed; continuing with existing schema: {error}");
             }
-        }
+        });
+        println!("migrations: background startup check queued");
     }
 
     let supabase = SupabaseMirror::from_env();
@@ -4998,12 +5000,6 @@ fn main() {
         sync_status.lock().expect("sync status lock").summary()
     );
     println!("storage_source: {}", storage_source.as_str());
-    if let Ok(database_url) = std::env::var("DATABASE_URL") {
-        match applied_migrations(&database_url) {
-            Ok(applied) => println!("migrations: {} applied", applied.len()),
-            Err(error) => eprintln!("migration status unavailable: {error}"),
-        }
-    }
     if let Some(error) = operator_auth_startup_error() {
         eprintln!("operatorAuth error: {error}");
         std::process::exit(1);
