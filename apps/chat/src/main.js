@@ -1056,6 +1056,10 @@ export function page(config = configFromEnv()) {
       background: rgba(255,255,255,0.02);
       padding: 10px 12px;
     }
+    .chunk-row.is-active {
+      border-color: rgba(255,255,255,0.34);
+      background: rgba(255,255,255,0.045);
+    }
     .chunk-head {
       display: flex;
       align-items: center;
@@ -1068,6 +1072,44 @@ export function page(config = configFromEnv()) {
       font-size: 12px;
       text-transform: uppercase;
       white-space: nowrap;
+    }
+    .chunk-status.is-active {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      color: #fff;
+    }
+    .mx-spinner {
+      width: 12px;
+      height: 12px;
+      border: 1px solid rgba(255,255,255,0.25);
+      border-top-color: #fff;
+      border-radius: 999px;
+      animation: mx-spin 0.72s linear infinite;
+      flex: 0 0 auto;
+    }
+    .thinking-dots {
+      display: inline-flex;
+      gap: 4px;
+      align-items: center;
+      margin-left: 8px;
+    }
+    .thinking-dots span {
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: currentColor;
+      opacity: 0.25;
+      animation: mx-dot 1s ease-in-out infinite;
+    }
+    .thinking-dots span:nth-child(2) { animation-delay: 0.14s; }
+    .thinking-dots span:nth-child(3) { animation-delay: 0.28s; }
+    @keyframes mx-spin {
+      to { transform: rotate(360deg); }
+    }
+    @keyframes mx-dot {
+      0%, 80%, 100% { opacity: 0.25; transform: translateY(0); }
+      40% { opacity: 1; transform: translateY(-2px); }
     }
     .chunk-output {
       margin-top: 9px;
@@ -1358,6 +1400,9 @@ export function page(config = configFromEnv()) {
       const title = document.createElement("div");
       title.className = "work-title";
       title.textContent = formatProgressText(payload);
+      if (!["completed", "failed"].includes(payload.status)) {
+        title.appendChild(createThinkingDots());
+      }
       wrapper.appendChild(title);
 
       if (progress.nodes?.length) {
@@ -1389,14 +1434,21 @@ export function page(config = configFromEnv()) {
 
     function createChunkRow(chunk) {
       const row = document.createElement("div");
-      row.className = "chunk-row";
+      const active = isActiveChunkStatus(chunk.status);
+      row.className = "chunk-row" + (active ? " is-active" : "");
       const head = document.createElement("div");
       head.className = "chunk-head";
       const name = document.createElement("span");
       name.textContent = chunk.name || chunk.id || "Chunk";
       const status = document.createElement("span");
-      status.className = "chunk-status";
-      status.textContent = chunk.status || "waiting";
+      status.className = "chunk-status" + (active ? " is-active" : "");
+      if (active) {
+        const spinner = document.createElement("span");
+        spinner.className = "mx-spinner";
+        spinner.setAttribute("aria-hidden", "true");
+        status.appendChild(spinner);
+      }
+      status.appendChild(document.createTextNode(chunk.status || "waiting"));
       head.appendChild(name);
       head.appendChild(status);
       row.appendChild(head);
@@ -1407,6 +1459,21 @@ export function page(config = configFromEnv()) {
         row.appendChild(output);
       }
       return row;
+    }
+
+    function isActiveChunkStatus(status) {
+      return ["ready", "queued", "assigned", "running", "waiting", "processing", "merging"]
+        .includes(String(status || "").toLowerCase());
+    }
+
+    function createThinkingDots() {
+      const dots = document.createElement("span");
+      dots.className = "thinking-dots";
+      dots.setAttribute("aria-hidden", "true");
+      for (let index = 0; index < 3; index += 1) {
+        dots.appendChild(document.createElement("span"));
+      }
+      return dots;
     }
 
     function formatProgressText(payload) {
