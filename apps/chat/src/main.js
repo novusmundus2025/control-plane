@@ -617,6 +617,9 @@ export function page(config = configFromEnv()) {
     }
     .message {
       grid-template-columns: 44px minmax(0, 1fr);
+      width: min(900px, 100%);
+      margin: 0 auto;
+      padding: 14px 0;
     }
     .avatar {
       width: 40px;
@@ -630,6 +633,9 @@ export function page(config = configFromEnv()) {
     .message-body {
       color: #050505;
       padding: 10px 0 0;
+      min-width: 0;
+      overflow-wrap: anywhere;
+      white-space: pre-wrap;
     }
     .message.user .avatar {
       background: #050505;
@@ -638,9 +644,18 @@ export function page(config = configFromEnv()) {
     .message.error {
       color: #8a0d0d;
     }
+    .message.assistant .message-body {
+      max-height: min(52vh, 520px);
+      overflow: auto;
+      border-left: 2px solid #050505;
+      padding: 10px 18px;
+      background: rgba(255, 255, 255, 0.42);
+    }
     form {
       width: min(1120px, calc(100% - 48px));
       padding: 0 0 34px;
+      background: #f7f7f3;
+      z-index: 2;
     }
     .composer {
       position: relative;
@@ -851,7 +866,7 @@ export function page(config = configFromEnv()) {
       promptEl.value = "";
       sendEl.disabled = true;
       statusEl.textContent = "Working";
-      const pending = addMessage("Submitting to MundusX...", "", "Queued");
+      const pending = addMessage("Submitting to MundusX...", "assistant", "Queued");
 
       try {
         const response = await fetch("/api/chat", {
@@ -1042,6 +1057,7 @@ export function cleanChatOutput(value) {
 
   output = stripWorkerTrace(output);
   output = stripRolePrefixes(output);
+  output = stripEmbeddedRoleLeak(output);
   output = collapseRepeatedSentences(output);
   output = collapseRepeatedLines(output);
   output = output.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -1074,6 +1090,25 @@ function stripRolePrefixes(value) {
   return output;
 }
 
+function stripEmbeddedRoleLeak(value) {
+  const roleMatch = value.match(/\s(?:system|assistant|user)\s*:\s*/i);
+  if (!roleMatch || roleMatch.index === undefined) {
+    return value;
+  }
+
+  const before = value.slice(0, roleMatch.index).trim();
+  const after = value.slice(roleMatch.index + roleMatch[0].length).trim();
+  if (!after) {
+    return before;
+  }
+
+  if (!before || before.endsWith("?") || before.length < 24) {
+    return after;
+  }
+
+  return before;
+}
+
 function collapseRepeatedSentences(value) {
   const sentences = value.match(/[^.!?\n]+[.!?]+(?:\s+|$)|[^.!?\n]+(?:\n|$)/g);
   if (!sentences || sentences.length < 3) {
@@ -1081,8 +1116,7 @@ function collapseRepeatedSentences(value) {
   }
 
   const collapsed = [];
-  let previousKey = "";
-  let repeatCount = 0;
+  const seen = new Set();
 
   for (const sentence of sentences) {
     const trimmed = sentence.trim();
@@ -1090,14 +1124,11 @@ function collapseRepeatedSentences(value) {
       continue;
     }
     const key = normalizeRepeatKey(trimmed);
-    if (key && key === previousKey) {
-      repeatCount += 1;
-      if (repeatCount > 1) {
-        continue;
-      }
-    } else {
-      previousKey = key;
-      repeatCount = 1;
+    if (key && seen.has(key)) {
+      continue;
+    }
+    if (key) {
+      seen.add(key);
     }
     collapsed.push(trimmed);
   }

@@ -17,6 +17,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /id="chat-form"/);
   assert.match(html, /Message MundusX/);
   assert.match(html, /\[ \/ \] Commands/);
+  assert.match(html, /\.message\.assistant \.message-body/);
   assert.match(html, /\/assets\/mundusx-logo\.png/);
   assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /Qwen\/Test/);
@@ -49,6 +50,18 @@ test("cleans worker metadata and repeated role-prefixed output", () => {
     "The President of the United States is Donald Trump. He is the 47th President of the United States.",
   );
   assert.doesNotMatch(output, /llama\.cpp|path=|response=|system:/i);
+});
+
+test("cleans embedded role leakage and repeated answer spam", () => {
+  const output = cleanChatOutput(
+    "So what is the point of this article? system: The article is about election coverage. The article is about election coverage. The article is written in a balanced way.",
+  );
+
+  assert.equal(
+    output,
+    "The article is about election coverage. The article is written in a balanced way.",
+  );
+  assert.doesNotMatch(output, /system:|So what is the point/i);
 });
 
 test("returns a user-facing fallback for empty cleaned responses", () => {
