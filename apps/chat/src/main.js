@@ -792,11 +792,38 @@ export function page(config = configFromEnv()) {
       letter-spacing: 1.2px;
     }
     .network-summary {
+      position: relative;
       display: flex;
       align-items: center;
-      gap: 14px;
+      min-height: 34px;
       color: var(--mx-muted);
-      font-size: 15px;
+      font-size: 14px;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+    }
+    .network-summary::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: -9px;
+      height: 1px;
+      background: linear-gradient(90deg, rgba(255, 153, 51, 0.95), rgba(255, 153, 51, 0.36), transparent);
+      box-shadow: 0 0 16px rgba(255, 153, 51, 0.28);
+    }
+    .network-summary.is-online::after {
+      background: linear-gradient(90deg, rgba(31, 227, 125, 0.95), rgba(31, 227, 125, 0.28), transparent);
+      box-shadow: 0 0 16px rgba(31, 227, 125, 0.22);
+    }
+    .network-summary.is-offline::after {
+      background: linear-gradient(90deg, rgba(255, 80, 80, 0.95), rgba(255, 80, 80, 0.28), transparent);
+      box-shadow: 0 0 16px rgba(255, 80, 80, 0.22);
+    }
+    .network-signal {
+      display: inline-flex;
+      align-items: center;
+      min-width: 0;
+      gap: 8px;
     }
     .online-dot,
     .network-dot {
@@ -808,10 +835,19 @@ export function page(config = configFromEnv()) {
       margin-right: 8px;
       border: 0;
     }
-    .divider {
-      width: 1px;
-      height: 18px;
-      background: var(--mx-line);
+    .network-summary .online-dot {
+      flex: 0 0 auto;
+      margin-right: 0;
+      background: #ff9933;
+      box-shadow: 0 0 14px rgba(255, 153, 51, 0.48);
+    }
+    .network-summary.is-online .online-dot {
+      background: var(--mx-green);
+      box-shadow: 0 0 14px rgba(31, 227, 125, 0.36);
+    }
+    .network-summary.is-offline .online-dot {
+      background: #ff5050;
+      box-shadow: 0 0 14px rgba(255, 80, 80, 0.34);
     }
     .new-chat {
       height: 58px;
@@ -1205,9 +1241,7 @@ export function page(config = configFromEnv()) {
         </div>
       </div>
       <div class="network-summary">
-        <span><i class="online-dot"></i><span id="network-state">Checking</span></span>
-        <span class="divider"></span>
-        <span id="node-count">-- nodes connected</span>
+        <span class="network-signal"><i class="online-dot"></i><span id="network-state">Checking network</span></span>
       </div>
       <button class="new-chat" id="new-chat" type="button"><span>+ New Chat</span><span>Ctrl + K</span></button>
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
@@ -1504,15 +1538,20 @@ export function page(config = configFromEnv()) {
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "network unavailable");
         const latency = Math.max(1, Math.round(performance.now() - started));
-        setText("network-state", payload.online_count > 0 ? "Online" : "No ready nodes");
-        setText("node-count", payload.online_count + " nodes connected");
+        const summary = document.querySelector(".network-summary");
+        summary?.classList.toggle("is-online", payload.online_count > 0);
+        summary?.classList.toggle("is-waiting", payload.online_count === 0);
+        summary?.classList.remove("is-offline");
+        setText("network-state", payload.online_count > 0 ? "Online - nodes ready" : "Standby - no ready nodes");
         setText("network-card-state", payload.online_count > 0 ? "ONLINE" : "WAITING");
         setText("network-card-metrics", payload.online_count + " nodes - " + payload.queued_job_count + " queued - " + payload.model_routing);
         setText("network-latency", latency + " ms");
         setText("network-jobs", payload.completed_job_count + " completed");
       } catch {
-        setText("network-state", "Offline");
-        setText("node-count", "0 nodes connected");
+        const summary = document.querySelector(".network-summary");
+        summary?.classList.remove("is-online", "is-waiting");
+        summary?.classList.add("is-offline");
+        setText("network-state", "Control plane offline");
         setText("network-card-state", "OFFLINE");
         setText("network-card-metrics", "control plane unavailable");
         setText("network-latency", "-- ms");
