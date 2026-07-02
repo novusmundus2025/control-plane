@@ -230,6 +230,12 @@ impl ControlPlaneState {
                     .iter()
                     .find(|node| &node.id == graph_node_id)
             });
+        if graph_node
+            .map(|node| node.status != JobGraphNodeStatus::Completed)
+            .unwrap_or(false)
+        {
+            return None;
+        }
         let node_id = graph_node
             .and_then(|node| node.assigned_node_id.clone())
             .or_else(|| job.assigned_node_id.clone())?;
@@ -237,9 +243,11 @@ impl ControlPlaneState {
         let prompt_text = graph_node
             .map(|node| node.responsibility.as_str())
             .unwrap_or(job.prompt.as_str());
-        let output_text = graph_node
-            .and_then(|node| node.output.as_deref())
-            .or(job.output.as_deref());
+        let output_text = if let Some(node) = graph_node {
+            node.output.as_deref()
+        } else {
+            job.output.as_deref()
+        };
         let prompt_chars = prompt_text.chars().count() as f64;
         let output_chars = output_text
             .map(|output| output.chars().count() as f64)
@@ -1370,19 +1378,19 @@ fn graph_node_execution_prompt(job: &JobRecord, active_node_id: &str) -> String 
             .join("\n\n");
 
         return format!(
-            "Original user request:\n{}\n\nCompleted subjob outputs:\n{}\n\nProduce the final answer. Preserve useful details, remove duplication, and return only the final response. If the section notes conflict, prefer widely established facts and omit uncertain claims.",
+            "Original user request:\n{}\n\nCompleted section notes:\n{}\n\nWrite one concise final answer. Use only useful factual content from the notes, remove duplication, ignore repeated instructions or boilerplate, and omit uncertain claims.",
             job.prompt, sections
         );
     }
 
     format!(
-        "Original user request:\n{}\n\nYou are executing one validated MundusX subjob.\nSubjob: {}\nResponsibility: {}\nRequired output: {}\n\nReturn only this subjob's useful output. Do not solve unrelated sections.",
+        "Original user request:\n{}\n\nMundusX subjob:\nName: {}\nResponsibility: {}\nRequired output: {}\n\nWrite the factual content for this section only, in plain prose or compact bullets.",
         job.prompt, node.name, node.responsibility, node.required_output
     )
 }
 
 fn reducer_section_text(output: &str) -> String {
-    const MAX_SECTION_CHARS: usize = 2_400;
+    const MAX_SECTION_CHARS: usize = 900;
     let cleaned = clean_worker_output(output);
     truncate_chars(cleaned.trim(), MAX_SECTION_CHARS)
 }
@@ -1397,8 +1405,21 @@ fn clean_worker_output(output: &str) -> String {
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
+        .filter(|line| !is_reducer_boilerplate_line(line))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn is_reducer_boilerplate_line(line: &str) -> bool {
+    let lower = line.to_ascii_lowercase();
+    lower.starts_with("do not ")
+        || lower.starts_with("don't ")
+        || lower.starts_with("not return ")
+        || lower.starts_with("return \"output")
+        || lower.starts_with("return only ")
+        || lower.starts_with("you are executing ")
+        || lower.starts_with("original user request:")
+        || lower.starts_with("mundusx subjob:")
 }
 
 fn truncate_chars(value: &str, max_chars: usize) -> String {
@@ -3147,8 +3168,8 @@ mod tests {
             .claim_job("node-1", "2".to_string())
             .job
             .expect("scope claim");
-        assert!(first_claim.prompt.contains("validated MundusX subjob"));
-        assert!(first_claim.prompt.contains("Subjob: Scope and constraints"));
+        assert!(first_claim.prompt.contains("MundusX subjob"));
+        assert!(first_claim.prompt.contains("Name: Scope and constraints"));
         assert_eq!(
             state
                 .jobs
@@ -3185,12 +3206,10 @@ mod tests {
             .expect("implementation claim");
         assert!(second_claim.prompt.contains("Original user request"));
         assert!(
-            second_claim
-                .prompt
-                .contains("Subjob: Backend implementation")
+            second_claim.prompt.contains("Name: Backend implementation")
                 || second_claim
                     .prompt
-                    .contains("Subjob: Frontend implementation")
+                    .contains("Name: Frontend implementation")
         );
     }
 
@@ -3230,7 +3249,7 @@ mod tests {
             .clone()
             .expect("first active graph node");
         assert!(first_claim.prompt.contains("Original user request"));
-        assert!(first_claim.prompt.contains("Subjob:"));
+        assert!(first_claim.prompt.contains("MundusX subjob"));
 
         let first_completed = state
             .complete_job(
@@ -3702,18 +3721,18 @@ mod tests {
             .claim_job("node-1", "6".to_string())
             .job
             .expect("final claim");
-        assert!(claim.prompt.contains("Completed subjob outputs"));
+        assert!(claim.prompt.contains("Completed section notes"));
         assert!(claim.prompt.contains("scope accepted"));
         assert!(claim.prompt.contains("backend complete"));
         assert!(claim.prompt.contains("frontend complete"));
         assert!(claim.prompt.contains("tests complete"));
-        assert!(claim.prompt.contains("Produce the final answer"));
+        assert!(claim.prompt.contains("Write one concise final answer"));
     }
 
     #[test]
     fn reducer_prompt_strips_worker_metadata_and_caps_sections() {
         let noisy_output = format!(
-            "llama.cpp mode=cuda; model=demo; path=C:\\models\\demo.gguf; response={} [end of text]",
+            "llama.cpp mode=cuda; model=demo; path=C:\\models\\demo.gguf; response=Do not include any introduction.\nDo not return output.\n{} [end of text]",
             "BMW began as an aircraft engine maker. ".repeat(200)
         );
 
@@ -3748,9 +3767,11 @@ mod tests {
         assert!(claim
             .prompt
             .contains("BMW began as an aircraft engine maker."));
+        assert!(!claim.prompt.contains("Do not include any introduction"));
+        assert!(!claim.prompt.contains("Do not return output"));
         assert!(!claim.prompt.contains("llama.cpp mode=cuda"));
         assert!(!claim.prompt.contains("C:\\models\\demo.gguf"));
-        assert!(claim.prompt.len() < noisy_output.len() * 4);
+        assert!(claim.prompt.len() < 5_000);
     }
 
     #[test]
@@ -3831,6 +3852,9 @@ mod tests {
             .as_deref()
             .expect("merge warning")
             .contains("Final synthesis: llama-cli exited 1"));
+        assert!(state
+            .award_job_reward(&completed, "8".to_string())
+            .is_none());
     }
 
     #[test]
