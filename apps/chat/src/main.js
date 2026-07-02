@@ -730,10 +730,380 @@ export function page(config = configFromEnv()) {
       .chat-title { font-size: 18px; }
       .status { padding: 8px 10px; }
     }
+    :root {
+      color-scheme: dark;
+      --mx-bg: #050505;
+      --mx-panel: #090909;
+      --mx-panel-soft: #111111;
+      --mx-line: rgba(255,255,255,0.22);
+      --mx-line-strong: rgba(255,255,255,0.72);
+      --mx-text: #f4f4f0;
+      --mx-muted: #aaa9a3;
+      --mx-green: #18d97a;
+    }
+    body {
+      background:
+        radial-gradient(circle at 50% 32%, rgba(255,255,255,0.055), transparent 32%),
+        linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px),
+        linear-gradient(rgba(255,255,255,0.018) 1px, transparent 1px),
+        var(--mx-bg);
+      background-size: auto, 48px 48px, 48px 48px, auto;
+      color: var(--mx-text);
+      font-family: "Courier New", Consolas, "Lucida Console", monospace;
+      overflow: hidden;
+    }
+    .shell {
+      height: 100vh;
+      min-height: 0;
+      grid-template-columns: 372px minmax(0, 1fr);
+      border: 0;
+      background: transparent;
+      font-family: "Courier New", Consolas, "Lucida Console", monospace;
+    }
+    aside {
+      height: 100vh;
+      min-height: 0;
+      padding: 28px 26px;
+      border-right: 1px solid var(--mx-line);
+      background: rgba(0,0,0,0.78);
+      color: var(--mx-text);
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+      gap: 22px;
+    }
+    .brand-block {
+      grid-template-columns: 68px minmax(0,1fr);
+      gap: 16px;
+      padding: 0;
+    }
+    .brand-block .brand-logo {
+      width: 64px;
+      height: 64px;
+      filter: grayscale(1) brightness(0) invert(1);
+    }
+    .brand-name {
+      font-size: 28px;
+      letter-spacing: 1px;
+      color: #fff;
+    }
+    .brand-kicker {
+      margin-top: 10px;
+      color: var(--mx-muted);
+      font-size: 13px;
+      letter-spacing: 1.2px;
+    }
+    .network-summary {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      color: var(--mx-muted);
+      font-size: 15px;
+    }
+    .online-dot,
+    .network-dot {
+      display: inline-block;
+      width: 11px;
+      height: 11px;
+      border-radius: 50%;
+      background: var(--mx-green);
+      margin-right: 8px;
+      border: 0;
+    }
+    .divider {
+      width: 1px;
+      height: 18px;
+      background: var(--mx-line);
+    }
+    .new-chat {
+      height: 58px;
+      min-height: 58px;
+      border: 1px solid var(--mx-line-strong);
+      border-radius: 0;
+      background: rgba(255,255,255,0.025);
+      color: #fff;
+      box-shadow: inset 0 0 22px rgba(255,255,255,0.025);
+      justify-content: space-between;
+      padding: 0 20px;
+      font-size: 16px;
+      text-transform: none;
+    }
+    .rail-list {
+      gap: 18px;
+      padding-right: 2px;
+    }
+    .history-group {
+      border-top: 1px solid var(--mx-line);
+      padding-top: 12px;
+      gap: 4px;
+    }
+    .history-label {
+      color: var(--mx-muted);
+      font-size: 14px;
+      letter-spacing: 0.5px;
+    }
+    .history-item {
+      width: 100%;
+      border: 0;
+      border-radius: 0;
+      background: transparent;
+      color: var(--mx-text);
+      padding: 10px 4px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 82px;
+      gap: 12px;
+      text-align: left;
+      font-size: 15px;
+    }
+    .history-item:hover,
+    .history-item:focus-visible {
+      background: rgba(255,255,255,0.1);
+      outline: 0;
+    }
+    .history-time {
+      color: var(--mx-muted);
+      justify-self: end;
+      font-size: 13px;
+    }
+    .history-empty {
+      border-top: 1px solid var(--mx-line);
+      padding-top: 14px;
+      color: var(--mx-muted);
+      font-size: 14px;
+    }
+    .rail-footer,
+    .account-card {
+      border: 1px solid var(--mx-line);
+      color: var(--mx-text);
+      padding: 16px;
+      background: rgba(255,255,255,0.018);
+      box-shadow: none;
+    }
+    .network-line {
+      font-size: 14px;
+      letter-spacing: 0.3px;
+    }
+    .network-line span:last-child {
+      color: var(--mx-green);
+    }
+    .account-card {
+      grid-template-columns: 56px minmax(0, 1fr) auto;
+      gap: 12px;
+    }
+    .avatar-chip {
+      width: 54px;
+      height: 54px;
+      border: 1px solid var(--mx-line-strong);
+      background: rgba(255,255,255,0.055);
+    }
+    .account-name {
+      color: #fff;
+      text-transform: none;
+    }
+    .account-role {
+      color: var(--mx-muted);
+      text-transform: none;
+    }
+    main {
+      height: 100vh;
+      min-height: 0;
+      background: transparent;
+      color: var(--mx-text);
+      grid-template-rows: 82px minmax(0, 1fr) auto;
+    }
+    header {
+      height: 82px;
+      border-bottom: 1px solid var(--mx-line);
+      background: rgba(0,0,0,0.2);
+      padding: 0 30px;
+    }
+    .chat-title {
+      color: #fff;
+      font-size: 18px;
+    }
+    .header-actions {
+      gap: 16px;
+    }
+    .settings-button {
+      width: auto;
+      height: 44px;
+      border: 1px solid var(--mx-line);
+      border-radius: 0;
+      background: rgba(255,255,255,0.025);
+      color: var(--mx-text);
+      padding: 0 16px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .status {
+      border: 1px solid var(--mx-line);
+      color: var(--mx-text);
+      background: rgba(255,255,255,0.025);
+      border-radius: 0;
+      font-size: 14px;
+      padding: 12px 16px;
+    }
+    .dot {
+      background: var(--mx-green);
+      border-radius: 50%;
+    }
+    .messages {
+      min-height: 0;
+      overflow: auto;
+      background: transparent;
+    }
+    .conversation {
+      width: min(900px, calc(100% - 48px));
+      min-height: 100%;
+      padding: 74px 0 28px;
+      gap: 8px;
+    }
+    .welcome {
+      min-height: 58vh;
+      color: var(--mx-text);
+    }
+    .welcome-inner {
+      width: min(720px, 100%);
+      gap: 22px;
+    }
+    h1 {
+      color: #fff;
+      font-size: clamp(36px, 4vw, 44px);
+      letter-spacing: 0.5px;
+      text-transform: none;
+      font-weight: 800;
+    }
+    .welcome-copy {
+      width: min(560px,100%);
+      color: var(--mx-muted);
+      font-size: 18px;
+      line-height: 1.55;
+    }
+    .tip-box {
+      display: none;
+    }
+    .welcome-rule {
+      width: 22px;
+      height: 1px;
+      background: var(--mx-line-strong);
+    }
+    .examples-heading {
+      width: min(650px, 100%);
+      color: var(--mx-muted);
+      font-size: 14px;
+      letter-spacing: 1px;
+    }
+    .examples-heading::before,
+    .examples-heading::after {
+      border-top: 1px solid var(--mx-line);
+    }
+    .suggestions {
+      width: min(650px,100%);
+      gap: 0;
+    }
+    .suggestion {
+      border: 0;
+      border-top: 1px solid var(--mx-line);
+      border-radius: 0;
+      padding: 20px 8px;
+      background: transparent;
+      color: var(--mx-text);
+      grid-template-columns: 28px minmax(0, 1fr);
+      gap: 16px;
+      font-size: 16px;
+    }
+    .suggestion:last-child {
+      border-bottom: 1px solid var(--mx-line);
+    }
+    .suggestion:hover {
+      background: rgba(255,255,255,0.055);
+    }
+    .message {
+      color: var(--mx-text);
+      grid-template-columns: 44px minmax(0,1fr);
+      padding: 14px 0;
+    }
+    .avatar {
+      border: 1px solid var(--mx-line-strong);
+      background: rgba(255,255,255,0.05);
+      color: #fff;
+    }
+    .message.user .avatar {
+      background: #fff;
+      color: #000;
+    }
+    .message-body {
+      color: var(--mx-text);
+    }
+    .message.assistant .message-body {
+      border-left: 1px solid var(--mx-line);
+      background: rgba(255,255,255,0.025);
+      max-height: min(52vh, 520px);
+    }
+    .meta,
+    .fine-print {
+      color: var(--mx-muted);
+    }
+    form {
+      width: min(1100px, calc(100% - 60px));
+      padding: 0 0 30px;
+      background: transparent;
+    }
+    .composer {
+      border: 1px solid var(--mx-line-strong);
+      border-radius: 0;
+      background: rgba(12,12,12,0.88);
+      box-shadow: inset 0 0 42px rgba(255,255,255,0.025);
+      grid-template-columns: minmax(0,1fr) 64px;
+      padding: 18px 16px;
+    }
+    .composer::before,
+    .composer::after {
+      display: none;
+    }
+    textarea {
+      color: #fff;
+      min-height: 54px;
+      font-size: 17px;
+      padding: 8px 6px;
+    }
+    textarea::placeholder {
+      color: var(--mx-muted);
+    }
+    .composer-actions {
+      color: var(--mx-muted);
+      text-transform: none;
+      font-size: 14px;
+    }
+    .send {
+      width: 64px;
+      height: 52px;
+      border: 1px solid var(--mx-line-strong);
+      border-radius: 0;
+      background: rgba(255,255,255,0.04);
+      color: #fff;
+    }
+    .model-pill {
+      display: inline;
+      border: 1px solid var(--mx-line);
+      border-radius: 0;
+      background: transparent;
+      color: var(--mx-muted);
+      padding: 6px 8px;
+      font-size: 12px;
+    }
+    @media (max-width: 920px) {
+      .shell { grid-template-columns: 1fr; }
+      aside { display: none; }
+      main { grid-template-rows: 72px minmax(0,1fr) auto; }
+      .conversation { width: calc(100% - 28px); padding-top: 42px; }
+      form { width: calc(100% - 28px); padding-bottom: 18px; }
+      .settings-button,
+      .model-pill { display: none; }
+    }
   </style>
 </head>
 <body>
-  <div class="shell">
+  <div class="shell" data-control-plane="${escapeHtml(config.controlPlaneUrl)}">
     <aside>
       <div class="brand-block">
         <img class="brand-logo" src="/assets/mundusx-logo.png" alt="" />
@@ -742,37 +1112,23 @@ export function page(config = configFromEnv()) {
           <div class="brand-kicker">DECENTRALIZED AI NETWORK</div>
         </div>
       </div>
-      <button class="new-chat" type="button"><span>[+] NEW CHAT</span><span>CTRL+K</span></button>
-      <div class="rail-list" aria-label="Conversation history">
-        <div class="history-group">
-          <div class="history-label">Today</div>
-          <div class="history-item active"><span>&gt;New conversation</span><span class="history-time">10:42</span></div>
-          <div class="history-item"><span>Honda history draft</span><span class="history-time">09:15</span></div>
-          <div class="history-item"><span>GPU node troubleshooting</span><span class="history-time">Yesterday</span></div>
-          <div class="history-item"><span>MundusX architecture</span><span class="history-time">Yesterday</span></div>
-        </div>
-        <div class="history-group">
-          <div class="history-label">Yesterday</div>
-          <div class="history-item"><span>Control-plane summary</span><span class="history-time">May 27</span></div>
-          <div class="history-item"><span>CUDA node jobs</span><span class="history-time">May 27</span></div>
-        </div>
-        <div class="history-group">
-          <div class="history-label">Previous 7 days</div>
-          <div class="history-item"><span>Product description draft</span><span class="history-time">May 25</span></div>
-          <div class="history-item"><span>Contributor onboarding</span><span class="history-time">May 24</span></div>
-          <div class="history-item"><span>Node performance analysis</span><span class="history-time">May 23</span></div>
-          <div class="history-item"><span>...</span><span class="history-time"></span></div>
-        </div>
+      <div class="network-summary">
+        <span><i class="online-dot"></i><span id="network-state">Checking</span></span>
+        <span class="divider"></span>
+        <span id="node-count">-- nodes connected</span>
       </div>
+      <button class="new-chat" id="new-chat" type="button"><span>+ New Chat</span><span>Ctrl + K</span></button>
+      <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
       <div class="rail-footer">
-        <div class="network-line"><span><span class="network-dot"></span>MundusX Network</span><span>Online</span></div>
-        <div>${escapeHtml(config.controlPlaneUrl.replace(/^https?:\/\//, ""))} <span style="float:right">[^]</span></div>
+        <div class="network-line"><span><span class="network-dot"></span>MundusX Network</span><span id="network-card-state">Syncing</span></div>
+        <div id="network-card-metrics">-- nodes - -- queued - routed</div>
+        <div>Latency <span id="network-latency">-- ms</span> - Jobs <span id="network-jobs">--</span></div>
       </div>
       <div class="account-card">
-        <div class="avatar-chip">DB</div>
+        <div class="avatar-chip">MX</div>
         <div>
-          <div class="account-name">Dave Batalla</div>
-          <div class="account-role">Contributor</div>
+          <div class="account-name">MundusX</div>
+          <div class="account-role">Control-plane routed</div>
         </div>
         <div>v</div>
       </div>
@@ -781,8 +1137,8 @@ export function page(config = configFromEnv()) {
       <header>
         <div class="chat-title">MundusX Chat <span class="model-pill">Control-plane routed</span></div>
         <div class="header-actions">
+          <button class="settings-button" type="button" aria-label="Settings">Settings</button>
           <div class="status"><span class="dot"></span><span id="runtime-status">Ready</span></div>
-          <div class="expand-control">[ &lt;=&gt; ]</div>
         </div>
       </header>
       <section class="messages" id="messages" aria-live="polite">
@@ -824,10 +1180,16 @@ export function page(config = configFromEnv()) {
     const sendEl = document.getElementById("send");
     const messagesEl = document.getElementById("conversation");
     const statusEl = document.getElementById("runtime-status");
-    const welcomeEl = document.getElementById("welcome");
+    const historyListEl = document.getElementById("history-list");
+    const newChatEl = document.getElementById("new-chat");
+    const historyKey = "mundusx.chat.history.v1";
+
+    renderHistory();
+    hydrateNetwork();
+    setInterval(hydrateNetwork, 15000);
 
     function addMessage(text, role, meta) {
-      welcomeEl?.remove();
+      document.getElementById("welcome")?.remove();
       const node = document.createElement("div");
       node.className = "message" + (role ? " " + role : "");
       const avatar = document.createElement("div");
@@ -856,11 +1218,21 @@ export function page(config = configFromEnv()) {
       });
     });
 
+    newChatEl?.addEventListener("click", () => {
+      messagesEl.querySelectorAll(".message").forEach((node) => node.remove());
+      if (!document.getElementById("welcome")) {
+        messagesEl.prepend(createWelcome());
+      }
+      promptEl.value = "";
+      promptEl.focus();
+    });
+
     form.addEventListener("submit", async (event) => {
       event.preventDefault();
       const message = promptEl.value.trim();
       if (!message) return;
 
+      saveHistory(message);
       addMessage(message, "user");
       promptEl.value = "";
       sendEl.disabled = true;
@@ -941,6 +1313,131 @@ export function page(config = configFromEnv()) {
     function sleep(ms) {
       return new Promise((resolve) => setTimeout(resolve, ms));
     }
+
+    async function hydrateNetwork() {
+      const started = performance.now();
+      try {
+        const response = await fetch("/api/network");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "network unavailable");
+        const latency = Math.max(1, Math.round(performance.now() - started));
+        setText("network-state", payload.online_count > 0 ? "Online" : "No ready nodes");
+        setText("node-count", payload.online_count + " nodes connected");
+        setText("network-card-state", payload.online_count > 0 ? "ONLINE" : "WAITING");
+        setText("network-card-metrics", payload.online_count + " nodes - " + payload.queued_job_count + " queued - " + payload.model_routing);
+        setText("network-latency", latency + " ms");
+        setText("network-jobs", payload.completed_job_count + " completed");
+      } catch {
+        setText("network-state", "Offline");
+        setText("node-count", "0 nodes connected");
+        setText("network-card-state", "OFFLINE");
+        setText("network-card-metrics", "control plane unavailable");
+        setText("network-latency", "-- ms");
+        setText("network-jobs", "--");
+      }
+    }
+
+    function saveHistory(message) {
+      const items = readHistory();
+      const now = Date.now();
+      const next = [
+        { id: String(now), title: message.slice(0, 72), createdAt: now },
+        ...items.filter((item) => item.title !== message).slice(0, 29),
+      ];
+      localStorage.setItem(historyKey, JSON.stringify(next));
+      renderHistory();
+    }
+
+    function readHistory() {
+      try {
+        const items = JSON.parse(localStorage.getItem(historyKey) || "[]");
+        return Array.isArray(items) ? items : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function renderHistory() {
+      const items = readHistory();
+      historyListEl.innerHTML = "";
+      if (!items.length) {
+        const empty = document.createElement("div");
+        empty.className = "history-empty";
+        empty.textContent = "No conversations yet.";
+        historyListEl.appendChild(empty);
+        return;
+      }
+      for (const [label, groupItems] of groupHistory(items)) {
+        const group = document.createElement("div");
+        group.className = "history-group";
+        const heading = document.createElement("div");
+        heading.className = "history-label";
+        heading.textContent = label;
+        group.appendChild(heading);
+        for (const item of groupItems) {
+          const row = document.createElement("button");
+          row.className = "history-item";
+          row.type = "button";
+          row.innerHTML = "<span></span><span class='history-time'></span>";
+          row.children[0].textContent = item.title || "Untitled";
+          row.children[1].textContent = formatHistoryTime(item.createdAt);
+          row.addEventListener("click", () => {
+            promptEl.value = item.title || "";
+            promptEl.focus();
+          });
+          group.appendChild(row);
+        }
+        historyListEl.appendChild(group);
+      }
+    }
+
+    function groupHistory(items) {
+      const today = [];
+      const yesterday = [];
+      const older = [];
+      const startToday = new Date();
+      startToday.setHours(0, 0, 0, 0);
+      const startYesterday = startToday.getTime() - 86400000;
+      for (const item of items) {
+        if (item.createdAt >= startToday.getTime()) today.push(item);
+        else if (item.createdAt >= startYesterday) yesterday.push(item);
+        else older.push(item);
+      }
+      return [
+        ["Today", today],
+        ["Yesterday", yesterday],
+        ["Previous", older],
+      ].filter(([, groupItems]) => groupItems.length);
+    }
+
+    function formatHistoryTime(value) {
+      const date = new Date(value);
+      const startToday = new Date();
+      startToday.setHours(0, 0, 0, 0);
+      if (value >= startToday.getTime()) {
+        return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+      }
+      return date.toLocaleDateString([], { month: "short", day: "numeric" });
+    }
+
+    function setText(id, value) {
+      const node = document.getElementById(id);
+      if (node) node.textContent = value;
+    }
+
+    function createWelcome() {
+      const wrapper = document.createElement("div");
+      wrapper.className = "welcome";
+      wrapper.id = "welcome";
+      wrapper.innerHTML = '<div class="welcome-inner"><h1>Welcome to MundusX Chat</h1><div class="welcome-rule"></div><p class="welcome-copy">Ask anything about MundusX - contributors, architecture, nodes, jobs, or anything else.</p><div class="examples-heading"><span>Example Questions</span></div><div class="suggestions"><button class="suggestion" type="button"><span>-&gt;</span><span>Give me a detailed history of Honda from its origins to today.</span></button><button class="suggestion" type="button"><span>-&gt;</span><span>Explain why a CUDA node can claim a job and fail.</span></button><button class="suggestion" type="button"><span>-&gt;</span><span>Draft a product description for MundusX contributors.</span></button><button class="suggestion" type="button"><span>-&gt;</span><span>Summarize the current control-plane architecture.</span></button></div></div>';
+      wrapper.querySelectorAll(".suggestion").forEach((button) => {
+        button.addEventListener("click", () => {
+          promptEl.value = (button.querySelector("span:last-child") ?? button).textContent.trim();
+          promptEl.focus();
+        });
+      });
+      return wrapper;
+    }
   </script>
 </body>
 </html>`;
@@ -963,6 +1460,10 @@ export function createServerApp(config = configFromEnv()) {
           model_routing: "control-plane",
           model_override: config.modelOverride || null,
         });
+      }
+      if (request.method === "GET" && url.pathname === "/api/network") {
+        const result = await fetchNetworkSummary(config);
+        return sendJson(response, 200, result);
       }
       if (request.method === "POST" && url.pathname === "/api/chat") {
         const body = await readJsonBody(request);
@@ -1175,6 +1676,47 @@ async function controlPlaneFetch(fetchImpl, config, path, init = {}) {
     throw httpError(response.status, payload.error || `control plane returned ${response.status}`);
   }
   return payload;
+}
+
+export async function fetchNetworkSummary(config = configFromEnv(), fetchImpl = fetch) {
+  const started = Date.now();
+  try {
+    const status = await controlPlaneFetch(fetchImpl, config, "/v1/status");
+    const snapshot = status.snapshot ?? status;
+    return {
+      status: "ok",
+      control_plane_url: config.controlPlaneUrl,
+      model_routing: "control-plane",
+      latency_ms: Math.max(1, Date.now() - started),
+      online_count: numberField(snapshot.online_count),
+      trusted_count: numberField(snapshot.trusted_count),
+      paused_count: numberField(snapshot.paused_count),
+      queued_job_count: numberField(snapshot.queued_job_count),
+      assigned_job_count: numberField(snapshot.assigned_job_count),
+      completed_job_count: numberField(snapshot.completed_job_count),
+      failed_job_count: numberField(snapshot.failed_job_count),
+    };
+  } catch (error) {
+    return {
+      status: "degraded",
+      control_plane_url: config.controlPlaneUrl,
+      model_routing: "control-plane",
+      error: error.message ?? "network summary unavailable",
+      latency_ms: Math.max(1, Date.now() - started),
+      online_count: 0,
+      trusted_count: 0,
+      paused_count: 0,
+      queued_job_count: 0,
+      assigned_job_count: 0,
+      completed_job_count: 0,
+      failed_job_count: 0,
+    };
+  }
+}
+
+function numberField(value) {
+  const parsed = Number(value ?? 0);
+  return Number.isFinite(parsed) ? parsed : 0;
 }
 
 function readJsonBody(request) {

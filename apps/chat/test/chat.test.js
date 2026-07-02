@@ -5,6 +5,7 @@ import {
   cleanChatOutput,
   configFromEnv,
   escapeHtml,
+  fetchNetworkSummary,
   page,
   pollChatJob,
   submitChatJob,
@@ -21,6 +22,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /MundusX Chat/);
   assert.match(html, /Welcome to MundusX Chat/);
   assert.match(html, /id="chat-form"/);
+  assert.match(html, /id="history-list"/);
+  assert.match(html, /id="network-state"/);
   assert.match(html, /Message MundusX/);
   assert.match(html, /\[ \/ \] Commands/);
   assert.match(html, /\.message\.assistant \.message-body/);
@@ -28,6 +31,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /Control-plane routed/);
   assert.doesNotMatch(html, /Qwen\/Test/);
+  assert.doesNotMatch(html, /Honda history draft|Dave Batalla|57 nodes/);
   assert.match(html, /MundusX may produce inaccurate information/);
 });
 
@@ -54,6 +58,31 @@ test("accepts an explicit chat model override without making it a default", () =
 
 test("escapes runtime values rendered into html", () => {
   assert.equal(escapeHtml("<script>"), "&lt;script&gt;");
+});
+
+test("summarizes live control-plane network counts", async () => {
+  const fetchImpl = async (url) => {
+    assert.equal(url, "https://uat.mundusx.ai/v1/status");
+    return jsonResponse({
+      online_count: 3,
+      trusted_count: 2,
+      paused_count: 1,
+      queued_job_count: 4,
+      assigned_job_count: 5,
+      completed_job_count: 6,
+      failed_job_count: 1,
+    });
+  };
+
+  const result = await fetchNetworkSummary(
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "ok");
+  assert.equal(result.online_count, 3);
+  assert.equal(result.queued_job_count, 4);
+  assert.equal(result.model_routing, "control-plane");
 });
 
 test("submits chat work as an auto execution job", async () => {
