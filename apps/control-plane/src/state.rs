@@ -1513,12 +1513,23 @@ fn graph_node_latency_weight(graph: &JobGraph, graph_node_id: Option<&str>) -> i
 
     if graph.final_node_id.as_deref() == Some(graph_node_id)
         || graph_node.responsibility == "merge"
+        || graph_node_is_long_running_stage(graph_node)
         || graph_node.effective_max_tokens.unwrap_or_default() >= 512
     {
         2
     } else {
         1
     }
+}
+
+fn graph_node_is_long_running_stage(graph_node: &JobGraphNode) -> bool {
+    matches!(
+        graph_node.responsibility.as_str(),
+        "backend" | "frontend" | "implementation" | "code" | "tests" | "validation"
+    ) || graph_node.id.contains("implementation")
+        || graph_node.id.contains("backend")
+        || graph_node.id.contains("frontend")
+        || graph_node.id.contains("code_implementation")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -6383,6 +6394,105 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("performance:avg_chunk_latency_ms:8000")));
+    }
+
+    #[test]
+    fn long_implementation_chunk_waits_for_fast_ready_node() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+        state.jobs.insert(
+            "history-slow".to_string(),
+            completed_graph_history_job(
+                "history-slow",
+                "node-1",
+                JobGraphNodeStatus::Completed,
+                Some(140_000),
+            ),
+        );
+        state.jobs.insert(
+            "history-fast".to_string(),
+            completed_graph_history_job(
+                "history-fast",
+                "node-2",
+                JobGraphNodeStatus::Completed,
+                Some(8_000),
+            ),
+        );
+
+        let mut request = classification_request(
+            "Give me a complete Turbo C program to handle enrollment of students save in binary file",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "5".to_string());
+        state
+            .update_graph_node(
+                "job-1",
+                "job.code_outline",
+                JobGraphNodeStatus::Completed,
+                Some("outline complete".to_string()),
+                None,
+                "6".to_string(),
+            )
+            .expect("outline complete");
+
+        assert!(state.claim_job("node-1", "7".to_string()).job.is_none());
+
+        let fast_claim = state
+            .claim_job("node-2", "7".to_string())
+            .job
+            .expect("fast node claims implementation");
+        assert_eq!(
+            fast_claim.active_graph_node_id.as_deref(),
+            Some("job.code_implementation")
+        );
+        let decision = fast_claim
+            .scheduler_decision
+            .as_ref()
+            .expect("scheduler decision");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("performance:avg_chunk_latency_ms:8000")));
+    }
+
+    #[test]
+    fn single_node_still_claims_long_chunk_without_waiting() {
+        let mut state = ready_state();
+        state.jobs.insert(
+            "history-slow".to_string(),
+            completed_graph_history_job(
+                "history-slow",
+                "node-1",
+                JobGraphNodeStatus::Completed,
+                Some(140_000),
+            ),
+        );
+
+        let mut request = classification_request(
+            "Give me a complete Turbo C program to handle enrollment of students save in binary file",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "5".to_string());
+        state
+            .update_graph_node(
+                "job-1",
+                "job.code_outline",
+                JobGraphNodeStatus::Completed,
+                Some("outline complete".to_string()),
+                None,
+                "6".to_string(),
+            )
+            .expect("outline complete");
+
+        let claim = state
+            .claim_job("node-1", "7".to_string())
+            .job
+            .expect("only ready node claims implementation");
+        assert_eq!(
+            claim.active_graph_node_id.as_deref(),
+            Some("job.code_implementation")
+        );
     }
 
     #[test]
