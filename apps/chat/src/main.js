@@ -880,6 +880,8 @@ export function page(config = configFromEnv()) {
     .rail-list {
       gap: 18px;
       padding: 0 6px 0 0;
+      overflow-x: hidden;
+      overflow-y: auto;
     }
     .history-group {
       border-top: 1px solid var(--mx-line);
@@ -893,23 +895,25 @@ export function page(config = configFromEnv()) {
     }
     .history-item {
       width: 100%;
+      min-width: 0;
+      max-width: 100%;
       border: 0;
       border-radius: 0;
       background: transparent;
       color: var(--mx-text);
-      padding: 10px 14px;
+      padding: 10px 10px;
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 14px;
-      overflow: visible;
+      gap: 10px;
+      overflow: hidden;
       white-space: normal;
       text-align: left;
       font-size: 15px;
     }
     .history-title {
       display: block;
-      flex: 1 1 auto;
+      flex: 1 1 0;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -922,7 +926,11 @@ export function page(config = configFromEnv()) {
     }
     .history-time {
       color: var(--mx-muted);
-      flex: 0 0 auto;
+      flex: 0 1 54px;
+      min-width: 0;
+      max-width: 54px;
+      overflow: hidden;
+      text-overflow: ellipsis;
       font-size: 13px;
       white-space: nowrap;
     }

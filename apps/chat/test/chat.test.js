@@ -40,7 +40,9 @@ test("renders a usable chat page", () => {
   assert.match(html, /class="runtime-status-sentinel" id="runtime-status"/);
   assert.match(html, /\.history-title \{/);
   assert.match(html, /row\.innerHTML = "<span class='history-title'><\/span><span class='history-time'><\/span>"/);
-  assert.match(html, /\.history-item \{[\s\S]*?overflow: visible;/);
+  assert.match(html, /\.rail-list \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
+  assert.match(html, /\.history-item \{[\s\S]*?overflow: hidden;/);
+  assert.match(html, /\.history-time \{[\s\S]*?text-overflow: ellipsis;/);
   assert.doesNotMatch(html, /\.history-item span:first-child/);
   assert.doesNotMatch(html, /class="account-card"/);
   assert.doesNotMatch(html, /class="model-pill">Control-plane routed/);
