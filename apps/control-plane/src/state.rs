@@ -653,6 +653,20 @@ impl ControlPlaneState {
                 reasons.push("requested model is already present".to_string());
             }
 
+            if requirements.model.is_none() {
+                if let Some(model_name) = worker_health.model_name.as_deref() {
+                    let tier = model_tier_for_name(model_name);
+                    let (tier_score, tier_reason) = model_tier_score_for_job(job, tier);
+                    score += tier_score;
+                    reasons.push(format!(
+                        "model routing:{} tier {} ({})",
+                        model_name,
+                        tier.as_str(),
+                        tier_reason
+                    ));
+                }
+            }
+
             if worker_health.streaming_supported {
                 score += 3;
                 reasons.push("streaming capable".to_string());
@@ -812,6 +826,17 @@ impl ControlPlaneState {
         };
 
         if let Some(job) = self.jobs.get_mut(&job_id) {
+            if job.model.is_none() {
+                if let Some(selected_model) = claiming_node
+                    .worker_health
+                    .as_ref()
+                    .and_then(|health| health.model_name.clone())
+                    .filter(|model| !model.trim().is_empty())
+                {
+                    job.model = Some(selected_model);
+                }
+            }
+
             let active_graph_node_id = if job.graph_execution_enabled {
                 next_ready_graph_node_id_for_node(&job.graph, node_id)
             } else {
@@ -1316,6 +1341,77 @@ fn graph_execution_allowed(
 
 fn parse_unix_seconds(value: &str) -> Option<u64> {
     value.parse::<u64>().ok()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ModelTier {
+    Tiny,
+    Small,
+    Normal,
+    Strong,
+}
+
+impl ModelTier {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Tiny => "tiny",
+            Self::Small => "small",
+            Self::Normal => "normal",
+            Self::Strong => "strong",
+        }
+    }
+}
+
+fn model_tier_for_name(model_name: &str) -> ModelTier {
+    let lower = model_name.to_ascii_lowercase();
+    if contains_any(&lower, &["135m", "0.1b", "0.2b", "tiny", "smollm"]) {
+        ModelTier::Tiny
+    } else if contains_any(&lower, &["0.5b", "500m", "0_5b"]) {
+        ModelTier::Small
+    } else if contains_any(&lower, &["3b", "4b", "7b", "8b", "14b", "32b"]) {
+        ModelTier::Strong
+    } else {
+        ModelTier::Normal
+    }
+}
+
+fn model_tier_score_for_job(job: &JobRecord, tier: ModelTier) -> (i32, &'static str) {
+    let requirements = &job.scheduling_requirements;
+    let latency_sensitive_simple = requirements.context_size == ContextSize::Small
+        && matches!(
+            requirements.task_type,
+            RequestTaskType::Chat | RequestTaskType::Inference
+        )
+        && !looks_sectionable_prompt(&job.prompt);
+    let needs_stronger_model = requirements.context_size == ContextSize::Large
+        || requirements.task_type == RequestTaskType::Coding
+        || looks_sectionable_prompt(&job.prompt)
+        || job.graph_execution_enabled;
+
+    if latency_sensitive_simple {
+        return match tier {
+            ModelTier::Tiny | ModelTier::Small => {
+                (12, "lightweight model preferred for simple request")
+            }
+            ModelTier::Normal => (6, "normal model acceptable for simple request"),
+            ModelTier::Strong => (-4, "strong model deprioritized for simple request"),
+        };
+    }
+
+    if needs_stronger_model {
+        return match tier {
+            ModelTier::Strong => (14, "strong model preferred for long or code work"),
+            ModelTier::Normal => (8, "normal model acceptable for long or code work"),
+            ModelTier::Small => (-8, "small model deprioritized for long or code work"),
+            ModelTier::Tiny => (-14, "tiny model avoided for long or code work"),
+        };
+    }
+
+    match tier {
+        ModelTier::Tiny | ModelTier::Small => (6, "lightweight model acceptable"),
+        ModelTier::Normal => (8, "normal model preferred"),
+        ModelTier::Strong => (2, "strong model available"),
+    }
 }
 
 fn elapsed_ms_between(start: &str, end: &str) -> Option<u64> {
@@ -5729,6 +5825,111 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.starts_with("trust:90")));
+    }
+
+    #[test]
+    fn scheduler_routes_simple_jobs_to_lightweight_advertised_model() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        state
+            .nodes
+            .get_mut("node-1")
+            .and_then(|node| node.worker_health.as_mut())
+            .expect("node-1 health")
+            .model_name = Some("Qwen/Qwen2.5-0.5B-Instruct".to_string());
+        state
+            .nodes
+            .get_mut("node-2")
+            .and_then(|node| node.worker_health.as_mut())
+            .expect("node-2 health")
+            .model_name = Some("Qwen/Qwen2.5-3B-Instruct".to_string());
+
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "Answer in one word: 4+3?".to_string(),
+                preferred_backend: Backend::M,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        let job = state.jobs.get("job-1").expect("job");
+        let decision = job.scheduler_decision.as_ref().expect("scheduler decision");
+        assert_eq!(decision.node_id, "node-1");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("tier small")));
+
+        let claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claim");
+        assert_eq!(claim.model.as_deref(), Some("Qwen/Qwen2.5-0.5B-Instruct"));
+    }
+
+    #[test]
+    fn scheduler_avoids_tiny_models_for_long_generation_when_normal_model_is_ready() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        state
+            .nodes
+            .get_mut("node-1")
+            .and_then(|node| node.worker_health.as_mut())
+            .expect("node-1 health")
+            .model_name = Some("HuggingFaceTB/SmolLM2-135M-Instruct".to_string());
+        state
+            .nodes
+            .get_mut("node-2")
+            .and_then(|node| node.worker_health.as_mut())
+            .expect("node-2 health")
+            .model_name = Some("Qwen/Qwen2.5-1.5B-Instruct".to_string());
+
+        state.submit_job(
+            JobRequest {
+                request_id: "job-1".to_string(),
+                prompt: "Give me a detailed history of Honda from its origins to today."
+                    .to_string(),
+                preferred_backend: Backend::M,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        let job = state.jobs.get("job-1").expect("job");
+        let decision = job.scheduler_decision.as_ref().expect("scheduler decision");
+        assert_eq!(decision.node_id, "node-2");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("normal model acceptable")));
+
+        let claim = state
+            .claim_job("node-2", "3".to_string())
+            .job
+            .expect("claim");
+        assert_eq!(claim.model.as_deref(), Some("Qwen/Qwen2.5-1.5B-Instruct"));
     }
 
     #[test]
