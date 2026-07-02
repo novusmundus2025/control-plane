@@ -754,6 +754,13 @@ impl ControlPlaneState {
             } else {
                 None
             };
+            if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref())
+                && reducer_profile(&claiming_node) == ReducerProfile::Compact
+                && complete_compact_reducer_fallback(job, node_id, node_backend, claimed_at.clone())
+            {
+                self.reevaluate_queued_jobs();
+                return JobClaimResponse { job: None };
+            }
             if let Some(active_node_id) = active_graph_node_id.as_ref() {
                 if let Some(graph_node) = job
                     .graph
@@ -1424,6 +1431,66 @@ fn graph_node_execution_prompt(
         "Original user request:\n{}\n\nMundusX subjob:\nName: {}\nResponsibility: {}\nRequired output: {}\n\nWrite the factual content for this section only, in plain prose or compact bullets.",
         job.prompt, node.name, node.responsibility, node.required_output
     )
+}
+
+fn complete_compact_reducer_fallback(
+    job: &mut JobRecord,
+    node_id: &str,
+    backend: Backend,
+    completed_at: String,
+) -> bool {
+    let Some(final_node_id) = job.graph.final_node_id.clone() else {
+        return false;
+    };
+    let Some(fallback_output) = merge_completed_graph_outputs(&job.graph) else {
+        return false;
+    };
+
+    let Some(graph_node) = job
+        .graph
+        .nodes
+        .iter_mut()
+        .find(|node| node.id == final_node_id)
+    else {
+        return false;
+    };
+
+    graph_node.status = JobGraphNodeStatus::Completed;
+    graph_node.blocked_by.clear();
+    graph_node.assigned_node_id = Some(node_id.to_string());
+    graph_node.assigned_at = Some(completed_at.clone());
+    graph_node.worker_id = Some("control-plane-fallback".to_string());
+    graph_node.backend = Some(backend);
+    graph_node.output = Some(fallback_output);
+    graph_node.error = None;
+    graph_node.attempt_count = graph_node.attempt_count.saturating_add(1);
+
+    refresh_job_graph(&mut job.graph);
+    refresh_graph_results(
+        &mut job.graph,
+        job.classification.output_format,
+        Some("control-plane-fallback"),
+        Some(node_id),
+        None,
+    );
+
+    job.status = JobStatus::Completed;
+    job.assigned_node_id = Some(node_id.to_string());
+    job.assigned_at = Some(completed_at.clone());
+    job.worker_id = Some("control-plane-fallback".to_string());
+    job.backend = Some(backend);
+    job.output = job.graph.final_output.clone();
+    job.error = job.graph.merge_error.clone();
+    job.completed_at = Some(completed_at.clone());
+    job.active_graph_node_id = None;
+    job.last_completed_graph_node_id = Some(final_node_id);
+    job.scheduler_decision = Some(SchedulerDecision {
+        node_id: node_id.to_string(),
+        score: 0,
+        reasons: vec!["reducer: compact node triggered deterministic section fallback".to_string()],
+    });
+    job.graph.updated_at = completed_at;
+    true
 }
 
 fn reducer_section_text(output: &str) -> String {
@@ -3972,7 +4039,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_node_can_claim_reducer_when_no_strong_node_is_available() {
+    fn compact_node_completes_reducer_with_section_fallback_when_no_strong_node_is_available() {
         let noisy_output = format!(
             "llama.cpp mode=cuda; response={}",
             "Nokia factual section. ".repeat(200)
@@ -4012,23 +4079,31 @@ mod tests {
                 .expect("section completion");
         }
 
-        let reducer_claim = state
-            .claim_job("node-weak", "7".to_string())
-            .job
-            .expect("weak node can claim reducer as fallback");
+        assert!(state.claim_job("node-weak", "7".to_string()).job.is_none());
 
+        let completed = state.jobs.get("job-1").expect("job exists");
+        assert_eq!(completed.status, JobStatus::Completed);
+        assert_eq!(completed.active_graph_node_id, None);
         assert_eq!(
-            reducer_claim.active_graph_node_id.as_deref(),
+            completed.last_completed_graph_node_id.as_deref(),
             Some("job.final_merge")
         );
-        assert!(reducer_claim.prompt.contains("Completed section notes"));
-        assert!(reducer_claim.prompt.len() < 2_700);
         assert_eq!(
-            reducer_claim.scheduler_decision.as_ref().map(|decision| {
+            completed.worker_id.as_deref(),
+            Some("control-plane-fallback")
+        );
+        assert!(completed
+            .output
+            .as_deref()
+            .expect("fallback output")
+            .contains("Nokia factual section."));
+        assert!(completed.graph.merge_error.is_none());
+        assert_eq!(
+            completed.scheduler_decision.as_ref().map(|decision| {
                 decision
                     .reasons
                     .iter()
-                    .any(|reason| reason.contains("compact fallback"))
+                    .any(|reason| reason.contains("deterministic section fallback"))
             }),
             Some(true)
         );
