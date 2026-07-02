@@ -1129,6 +1129,44 @@ export function page(config = configFromEnv()) {
       max-height: none;
       box-shadow: 0 14px 40px rgba(0,0,0,0.04);
     }
+    .message-body p {
+      margin: 0 0 12px;
+    }
+    .message-body p:last-child {
+      margin-bottom: 0;
+    }
+    .code-block {
+      margin: 12px 0;
+      border: 1px solid rgba(0,0,0,0.14);
+      background: #101214;
+      color: #f7f7f2;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .code-label {
+      border-bottom: 1px solid rgba(255,255,255,0.14);
+      padding: 7px 12px;
+      color: rgba(255,255,255,0.72);
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+    .code-block pre {
+      margin: 0;
+      padding: 14px;
+      overflow: auto;
+      white-space: pre;
+      font-family: "Courier New", Consolas, "Lucida Console", monospace;
+      font-size: 14px;
+      line-height: 1.5;
+      tab-size: 2;
+    }
+    .code-block code {
+      color: inherit;
+      background: transparent;
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+    }
     .message.error .message-body {
       color: #8a0d0d;
       background: #fff1f1;
@@ -1468,7 +1506,10 @@ export function page(config = configFromEnv()) {
 
     function renderCompletedJob(node, payload) {
       const body = node.querySelector(".message-body");
-      body.textContent = payload.output || "(empty response)";
+      const userPrompt = findPreviousUserMessage(node);
+      const output = stripEchoedPrompt(payload.output || "(empty response)", userPrompt);
+      body.textContent = "";
+      appendRichMessage(body, output);
       if (payload.progress?.nodes?.some((chunk) => chunk.output)) {
         body.appendChild(createSourceChunks(payload));
       }
@@ -1476,6 +1517,127 @@ export function page(config = configFromEnv()) {
       meta.className = "meta";
       meta.textContent = formatJobMeta(payload);
       body.appendChild(meta);
+    }
+
+    function findPreviousUserMessage(node) {
+      let cursor = node.previousElementSibling;
+      while (cursor) {
+        if (cursor.classList.contains("user")) {
+          return cursor.querySelector(".message-body")?.textContent?.trim() || "";
+        }
+        cursor = cursor.previousElementSibling;
+      }
+      return "";
+    }
+
+    function stripEchoedPrompt(output, prompt) {
+      let text = String(output || "").trim();
+      const originalPrompt = String(prompt || "").trim();
+      if (!text || !originalPrompt) return text;
+      if (text.toLowerCase().startsWith(originalPrompt.toLowerCase())) {
+        text = text.slice(originalPrompt.length).trim();
+      }
+      text = text
+        .replace(/^please provide the complete code for this program\.?\s*/i, "")
+        .replace(/^here(?:'s| is)\s+(?:the\s+)?(?:complete\s+)?(?:code|program)[:.\s-]*/i, "")
+        .trim();
+      return text || output;
+    }
+
+    function appendRichMessage(container, text) {
+      const parts = splitMarkdownCode(String(text || ""));
+      if (!parts.some((part) => part.type === "code") && looksLikeCode(text)) {
+        container.appendChild(createCodeBlock("code", formatCodeForDisplay(text)));
+        return;
+      }
+      for (const part of parts) {
+        if (part.type === "code") {
+          container.appendChild(createCodeBlock(part.language, formatCodeForDisplay(part.value)));
+        } else {
+          appendTextParagraphs(container, part.value);
+        }
+      }
+    }
+
+    function splitMarkdownCode(text) {
+      const parts = [];
+      const fence = String.fromCharCode(96).repeat(3);
+      let index = 0;
+      while (index < text.length) {
+        const start = text.indexOf(fence, index);
+        if (start === -1) break;
+        if (start > index) {
+          parts.push({ type: "text", value: text.slice(index, start) });
+        }
+        const contentStart = start + fence.length;
+        const end = text.indexOf(fence, contentStart);
+        if (end === -1) break;
+        const raw = text.slice(contentStart, end).replace(/^\n/, "");
+        const firstBreak = raw.indexOf("\n");
+        const firstLine = firstBreak === -1 ? "" : raw.slice(0, firstBreak).trim();
+        const hasLanguage = /^[a-zA-Z0-9_+#.-]{1,24}$/.test(firstLine);
+        parts.push({
+          type: "code",
+          language: hasLanguage ? firstLine : "code",
+          value: hasLanguage ? raw.slice(firstBreak + 1) : raw,
+        });
+        index = end + fence.length;
+      }
+      if (index < text.length) {
+        parts.push({ type: "text", value: text.slice(index) });
+      }
+      return parts.length ? parts : [{ type: "text", value: text }];
+    }
+
+    function appendTextParagraphs(container, text) {
+      const paragraphs = String(text || "").trim().split(/\n{2,}/).filter(Boolean);
+      for (const paragraph of paragraphs) {
+        const node = document.createElement("p");
+        node.textContent = paragraph.trim();
+        container.appendChild(node);
+      }
+    }
+
+    function createCodeBlock(language, code) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "code-block";
+      const label = document.createElement("div");
+      label.className = "code-label";
+      label.textContent = language || "code";
+      const pre = document.createElement("pre");
+      const codeNode = document.createElement("code");
+      codeNode.textContent = code;
+      pre.appendChild(codeNode);
+      wrapper.appendChild(label);
+      wrapper.appendChild(pre);
+      return wrapper;
+    }
+
+    function looksLikeCode(text) {
+      const value = String(text || "");
+      return /\b(public\s+class|class\s+\w+|import\s+java\.|#include\s*<|function\s+\w+\s*\(|const\s+\w+\s*=|def\s+\w+\s*\()/m.test(value) &&
+        (value.match(/[;{}]/g) || []).length >= 4;
+    }
+
+    function formatCodeForDisplay(code) {
+      const raw = String(code || "").trim();
+      if (raw.includes("\n")) return raw;
+      let formatted = raw
+        .replace(/\s*;\s*/g, ";\n")
+        .replace(/\s*\{\s*/g, " {\n")
+        .replace(/\s*\}\s*/g, "\n}\n")
+        .replace(/\n{2,}/g, "\n")
+        .trim();
+      const lines = formatted.split("\n");
+      let depth = 0;
+      return lines.map((line) => {
+        const trimmed = line.trim();
+        if (!trimmed) return "";
+        if (trimmed.startsWith("}")) depth = Math.max(0, depth - 1);
+        const out = "  ".repeat(depth) + trimmed;
+        if (trimmed.endsWith("{")) depth += 1;
+        return out;
+      }).join("\n");
     }
 
     function createWorkTrace(payload) {
