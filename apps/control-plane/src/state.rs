@@ -17,8 +17,18 @@ use std::path::PathBuf;
 const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_GRAPH_NODE_LEASE_SECONDS: u64 = 600;
 const DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS: u64 = 600;
+const REDUCER_SECTION_CHARS_COMPACT: usize = 450;
+const REDUCER_SECTION_CHARS_STANDARD: usize = 900;
+const REDUCER_SECTION_CHARS_STRONG: usize = 1_200;
 const GRAPH_NODE_LEASE_SECONDS_ENV: &str = "MUNDUSX_GRAPH_NODE_LEASE_SECONDS";
 const QUEUED_JOB_TIMEOUT_SECONDS_ENV: &str = "MUNDUSX_QUEUED_JOB_TIMEOUT_SECONDS";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReducerProfile {
+    Compact,
+    Standard,
+    Strong,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ControlPlaneState {
@@ -681,6 +691,7 @@ impl ControlPlaneState {
             return JobClaimResponse { job: None };
         }
 
+        let claiming_node = node.clone();
         let node_backend = node.backend;
         let ready_m_exists = self.nodes.values().any(|candidate| {
             candidate.state == AgentState::Ready
@@ -696,9 +707,19 @@ impl ControlPlaneState {
             .jobs
             .iter()
             .filter_map(|(job_id, job)| {
+                let active_graph_node_id = if job.graph_execution_enabled {
+                    next_ready_graph_node_id_for_node(&job.graph, node_id)
+                } else {
+                    None
+                };
+                if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref())
+                    && reducer_capable_node_available_for_job(self, job)
+                    && reducer_profile(node) != ReducerProfile::Strong
+                {
+                    return None;
+                }
                 if self.job_can_be_claimed(job)
-                    && (!job.graph_execution_enabled
-                        || next_ready_graph_node_id_for_node(&job.graph, node_id).is_some())
+                    && (!job.graph_execution_enabled || active_graph_node_id.is_some())
                     && Self::node_backend_matches(
                         job,
                         node_backend,
@@ -707,7 +728,11 @@ impl ControlPlaneState {
                     )
                     && Self::node_can_run_job(node, job)
                 {
-                    Some((job_id.clone(), Self::scheduler_score(node, job)))
+                    let mut decision = Self::scheduler_score(node, job);
+                    if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref()) {
+                        apply_reducer_scheduler_score(&mut decision, node);
+                    }
+                    Some((job_id.clone(), decision))
                 } else {
                     None
                 }
@@ -770,7 +795,8 @@ impl ControlPlaneState {
             refresh_job_graph(&mut job.graph);
             let mut claim_job = job.clone();
             if let Some(active_node_id) = active_graph_node_id.as_deref() {
-                claim_job.prompt = graph_node_execution_prompt(job, active_node_id);
+                claim_job.prompt =
+                    graph_node_execution_prompt(job, active_node_id, Some(&claiming_node));
             }
 
             let claimed = JobClaimResponse {
@@ -1353,7 +1379,11 @@ fn graph_has_running_nodes(graph: &JobGraph) -> bool {
         .any(|node| node.status == JobGraphNodeStatus::Running)
 }
 
-fn graph_node_execution_prompt(job: &JobRecord, active_node_id: &str) -> String {
+fn graph_node_execution_prompt(
+    job: &JobRecord,
+    active_node_id: &str,
+    assigned_node: Option<&NodeRecord>,
+) -> String {
     let Some(node) = job
         .graph
         .nodes
@@ -1364,6 +1394,9 @@ fn graph_node_execution_prompt(job: &JobRecord, active_node_id: &str) -> String 
     };
 
     if node.responsibility == "merge" {
+        let max_section_chars = assigned_node
+            .map(reducer_section_char_limit)
+            .unwrap_or(REDUCER_SECTION_CHARS_STANDARD);
         let sections = job
             .graph
             .nodes
@@ -1371,7 +1404,11 @@ fn graph_node_execution_prompt(job: &JobRecord, active_node_id: &str) -> String 
             .filter(|candidate| candidate.id != node.id)
             .filter_map(|candidate| {
                 candidate.output.as_ref().map(|output| {
-                    format!("## {}\n{}", candidate.name, reducer_section_text(output))
+                    format!(
+                        "## {}\n{}",
+                        candidate.name,
+                        reducer_section_text_with_limit(output, max_section_chars)
+                    )
                 })
             })
             .collect::<Vec<_>>()
@@ -1390,9 +1427,12 @@ fn graph_node_execution_prompt(job: &JobRecord, active_node_id: &str) -> String 
 }
 
 fn reducer_section_text(output: &str) -> String {
-    const MAX_SECTION_CHARS: usize = 900;
+    reducer_section_text_with_limit(output, REDUCER_SECTION_CHARS_STANDARD)
+}
+
+fn reducer_section_text_with_limit(output: &str, max_section_chars: usize) -> String {
     let cleaned = clean_worker_output(output);
-    truncate_chars(cleaned.trim(), MAX_SECTION_CHARS)
+    truncate_chars(cleaned.trim(), max_section_chars)
 }
 
 fn clean_worker_output(output: &str) -> String {
@@ -1430,6 +1470,118 @@ fn truncate_chars(value: &str, max_chars: usize) -> String {
     } else {
         truncated
     }
+}
+
+fn graph_node_is_merge(graph: &JobGraph, graph_node_id: Option<&str>) -> bool {
+    let Some(graph_node_id) = graph_node_id else {
+        return false;
+    };
+    graph.nodes.iter().any(|node| {
+        node.id == graph_node_id
+            && (node.responsibility == "merge"
+                || graph.final_node_id.as_deref() == Some(graph_node_id))
+    })
+}
+
+fn reducer_capable_node_available_for_job(state: &ControlPlaneState, job: &JobRecord) -> bool {
+    let ready_m_exists = state.nodes.values().any(|candidate| {
+        candidate.state == AgentState::Ready
+            && candidate.policy_allowed
+            && candidate.backend == Backend::M
+    });
+    let ready_cuda_exists = state.nodes.values().any(|candidate| {
+        candidate.state == AgentState::Ready
+            && candidate.policy_allowed
+            && candidate.backend == Backend::Cuda
+    });
+
+    state.nodes.values().any(|candidate| {
+        candidate.state == AgentState::Ready
+            && candidate.policy_allowed
+            && ControlPlaneState::node_backend_matches(
+                job,
+                candidate.backend,
+                ready_m_exists,
+                ready_cuda_exists,
+            )
+            && ControlPlaneState::node_can_run_job(candidate, job)
+            && reducer_profile(candidate) == ReducerProfile::Strong
+            && next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).is_some()
+    })
+}
+
+fn apply_reducer_scheduler_score(decision: &mut SchedulerDecision, node: &NodeRecord) {
+    match reducer_profile(node) {
+        ReducerProfile::Strong => {
+            decision.score += 35;
+            decision
+                .reasons
+                .push("reducer: strong node selected for final synthesis".to_string());
+        }
+        ReducerProfile::Standard => {
+            decision.score += 8;
+            decision
+                .reasons
+                .push("reducer: standard node can attempt compact synthesis".to_string());
+        }
+        ReducerProfile::Compact => {
+            decision.score -= 10;
+            decision.reasons.push(
+                "reducer: compact fallback because no strong reducer is available".to_string(),
+            );
+        }
+    }
+}
+
+fn reducer_section_char_limit(node: &NodeRecord) -> usize {
+    match reducer_profile(node) {
+        ReducerProfile::Strong => REDUCER_SECTION_CHARS_STRONG,
+        ReducerProfile::Standard => REDUCER_SECTION_CHARS_STANDARD,
+        ReducerProfile::Compact => REDUCER_SECTION_CHARS_COMPACT,
+    }
+}
+
+fn reducer_profile(node: &NodeRecord) -> ReducerProfile {
+    let Some(worker_health) = node.worker_health.as_ref() else {
+        return ReducerProfile::Compact;
+    };
+    if !worker_health.runtime_ready || !worker_health.healthy {
+        return ReducerProfile::Compact;
+    }
+
+    if node.backend == Backend::M && worker_health.blas_device_available {
+        return ReducerProfile::Strong;
+    }
+
+    if worker_health
+        .notes
+        .iter()
+        .any(|note| note.to_ascii_lowercase().contains("low-vram"))
+        || worker_health
+            .cuda_device_name
+            .as_deref()
+            .map(is_low_vram_cuda_device_name)
+            .unwrap_or(false)
+    {
+        return ReducerProfile::Compact;
+    }
+
+    if node.backend == Backend::Cuda
+        && worker_health.cuda_driver_available
+        && worker_health.cuda_device_available
+        && node.available_gpu_percent >= 30
+    {
+        return ReducerProfile::Strong;
+    }
+
+    ReducerProfile::Standard
+}
+
+fn is_low_vram_cuda_device_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    ["gtx 1050", "gtx 1060", "gtx 1650", "gtx 1660"]
+        .iter()
+        .any(|needle| lower.contains(needle))
 }
 
 fn normalize_amount(value: f64) -> f64 {
@@ -2523,6 +2675,19 @@ mod tests {
         }
     }
 
+    fn cuda_registration(node_id: &str) -> AgentRegistration {
+        AgentRegistration {
+            node_id: node_id.to_string(),
+            public_key_fingerprint: format!("fingerprint-{node_id}"),
+            public_key_hex: format!("hex-{node_id}"),
+            hostname: format!("host-{node_id}"),
+            identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
+            backend: Backend::Cuda,
+            contribution_percent: 50,
+            agent_version: "0.1.0".to_string(),
+        }
+    }
+
     fn healthy_worker_health(checked_at: &str) -> WorkerHealthReport {
         WorkerHealthReport {
             healthy: true,
@@ -2563,6 +2728,38 @@ mod tests {
             policy_allowed: true,
             policy_reason: None,
             worker_health: healthy_worker_health(updated_at),
+        }
+    }
+
+    fn low_vram_cuda_heartbeat(node_id: &str, updated_at: &str) -> Heartbeat {
+        let mut worker_health = healthy_worker_health(updated_at);
+        worker_health.blas_device_available = false;
+        worker_health.cuda_device_available = true;
+        worker_health.cuda_driver_available = true;
+        worker_health.cuda_device_name = Some("GeForce GTX 1650".to_string());
+        worker_health.runtime_mode = "cuda".to_string();
+        worker_health.supported_runtime_modes = vec![RuntimeMode::Local];
+        worker_health.notes = vec![
+            "CUDA low-VRAM profile selected for 4096 MB; advertise modest workloads only"
+                .to_string(),
+        ];
+
+        Heartbeat {
+            node_id: node_id.to_string(),
+            backend: Backend::Cuda,
+            agent_state: AgentState::Ready,
+            available_memory_mb: 0,
+            available_gpu_percent: 20,
+            updated_at: updated_at.to_string(),
+            contribution_percent: 50,
+            hostname: format!("host-{node_id}"),
+            identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
+            power_source: "AC Power".to_string(),
+            on_battery: false,
+            battery_percent: Some(90),
+            policy_allowed: true,
+            policy_reason: None,
+            worker_health,
         }
     }
 
@@ -3771,7 +3968,130 @@ mod tests {
         assert!(!claim.prompt.contains("Do not return output"));
         assert!(!claim.prompt.contains("llama.cpp mode=cuda"));
         assert!(!claim.prompt.contains("C:\\models\\demo.gguf"));
-        assert!(claim.prompt.len() < 5_000);
+        assert!(claim.prompt.len() < 6_000);
+    }
+
+    #[test]
+    fn compact_node_can_claim_reducer_when_no_strong_node_is_available() {
+        let noisy_output = format!(
+            "llama.cpp mode=cuda; response={}",
+            "Nokia factual section. ".repeat(200)
+        );
+        let mut state = ControlPlaneState::default();
+        state.register(cuda_registration("node-weak"));
+        state.heartbeat(low_vram_cuda_heartbeat("node-weak", "1"), "1".to_string());
+        let mut request = classification_request(
+            "Give me a detailed history of Nokia from its origins to today.",
+        );
+        request.execution_mode = JobExecutionMode::Auto;
+        state.submit_job(request, "2".to_string());
+
+        for updated_at in ["3", "4", "5", "6"] {
+            let claim = state
+                .claim_job("node-weak", updated_at.to_string())
+                .job
+                .expect("section claim");
+            assert_ne!(
+                claim.active_graph_node_id.as_deref(),
+                Some("job.final_merge")
+            );
+            state
+                .complete_job(
+                    JobCompletion {
+                        job_id: "job-1".to_string(),
+                        node_id: "node-weak".to_string(),
+                        worker_id: "worker-weak".to_string(),
+                        backend: Backend::Cuda,
+                        status: JobStatus::Completed,
+                        output: Some(noisy_output.clone()),
+                        error: None,
+                        latency_ms: Some(10),
+                    },
+                    updated_at.to_string(),
+                )
+                .expect("section completion");
+        }
+
+        let reducer_claim = state
+            .claim_job("node-weak", "7".to_string())
+            .job
+            .expect("weak node can claim reducer as fallback");
+
+        assert_eq!(
+            reducer_claim.active_graph_node_id.as_deref(),
+            Some("job.final_merge")
+        );
+        assert!(reducer_claim.prompt.contains("Completed section notes"));
+        assert!(reducer_claim.prompt.len() < 2_700);
+        assert_eq!(
+            reducer_claim.scheduler_decision.as_ref().map(|decision| {
+                decision
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.contains("compact fallback"))
+            }),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn compact_node_defers_reducer_when_strong_node_is_available() {
+        let mut state = ControlPlaneState::default();
+        state.register(cuda_registration("node-weak"));
+        state.heartbeat(low_vram_cuda_heartbeat("node-weak", "1"), "1".to_string());
+        let mut request = classification_request(
+            "Give me a detailed history of Nokia from its origins to today.",
+        );
+        request.execution_mode = JobExecutionMode::Auto;
+        state.submit_job(request, "2".to_string());
+
+        for updated_at in ["3", "4", "5", "6"] {
+            state
+                .claim_job("node-weak", updated_at.to_string())
+                .job
+                .expect("section claim");
+            state
+                .complete_job(
+                    JobCompletion {
+                        job_id: "job-1".to_string(),
+                        node_id: "node-weak".to_string(),
+                        worker_id: "worker-weak".to_string(),
+                        backend: Backend::Cuda,
+                        status: JobStatus::Completed,
+                        output: Some("section complete".to_string()),
+                        error: None,
+                        latency_ms: Some(10),
+                    },
+                    updated_at.to_string(),
+                )
+                .expect("section completion");
+        }
+
+        state.register(m_series_registration("node-strong"));
+        state.heartbeat(ready_heartbeat("node-strong", "7"), "7".to_string());
+
+        assert!(state.claim_job("node-weak", "8".to_string()).job.is_none());
+        let reducer_claim = state
+            .claim_job("node-strong", "9".to_string())
+            .job
+            .expect("strong node claims reducer");
+        assert_eq!(
+            reducer_claim.active_graph_node_id.as_deref(),
+            Some("job.final_merge")
+        );
+        assert_eq!(
+            reducer_claim.assigned_node_id.as_deref(),
+            Some("node-strong")
+        );
+        assert_eq!(
+            reducer_claim.scheduler_decision.as_ref().map(|decision| {
+                decision
+                    .reasons
+                    .iter()
+                    .any(|reason| reason.contains("strong node selected"))
+            }),
+            Some(true)
+        );
     }
 
     #[test]
