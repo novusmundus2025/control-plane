@@ -34,7 +34,13 @@ test("renders a usable chat page", () => {
   assert.doesNotMatch(html, /avatar\.textContent = role === "user" \? "You" : "M"/);
   assert.match(html, /\/assets\/mundusx-logo\.png/);
   assert.match(html, /uat\.mundusx\.ai/);
-  assert.match(html, /Control-plane routed/);
+  assert.match(html, /\.header-actions \{\s*display: none;/);
+  assert.match(html, /class="runtime-status-sentinel" id="runtime-status"/);
+  assert.match(html, /\.history-item span:first-child/);
+  assert.doesNotMatch(html, /class="account-card"/);
+  assert.doesNotMatch(html, /class="model-pill">Control-plane routed/);
+  assert.doesNotMatch(html, /<button class="settings-button"/);
+  assert.doesNotMatch(html, /<div class="status"><span class="dot"><\/span><span id="runtime-status">Ready<\/span><\/div>/);
   assert.doesNotMatch(html, /Qwen\/Test/);
   assert.doesNotMatch(html, /Honda history draft|Dave Batalla|57 nodes/);
   assert.match(html, /MundusX may produce inaccurate information/);
