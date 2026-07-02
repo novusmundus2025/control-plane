@@ -950,10 +950,12 @@ export async function submitChatTurn(body, config = configFromEnv(), fetchImpl =
     latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
     const job = latest.job ?? latest;
     if (job.status === "completed") {
+      const output = cleanChatOutput(job.output ?? "");
       return {
         job_id: jobId,
         status: job.status,
-        output: job.output ?? "",
+        output,
+        output_cleaned: output !== String(job.output ?? ""),
         model: job.model ?? model,
         assigned_node_id: job.assigned_node_id ?? null,
       };
@@ -1031,6 +1033,102 @@ export function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+export function cleanChatOutput(value) {
+  let output = String(value ?? "")
+    .replace(/\r\n/g, "\n")
+    .trim();
+
+  output = stripWorkerTrace(output);
+  output = stripRolePrefixes(output);
+  output = collapseRepeatedSentences(output);
+  output = collapseRepeatedLines(output);
+  output = output.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  if (!output) {
+    return "MundusX returned an empty response. Please try again.";
+  }
+  return output;
+}
+
+function stripWorkerTrace(value) {
+  const responseIndex = value.search(/(?:^|;\s*)response=/i);
+  if (responseIndex === -1) {
+    return value;
+  }
+
+  const responsePrefix = value.slice(responseIndex).match(/^(?:;\s*)?response=/i)?.[0] ?? "";
+  return value.slice(responseIndex + responsePrefix.length).trim();
+}
+
+function stripRolePrefixes(value) {
+  let output = value.trim();
+  for (let i = 0; i < 3; i += 1) {
+    const next = output.replace(/^(?:system|assistant|user)\s*:\s*/i, "").trim();
+    if (next === output) {
+      break;
+    }
+    output = next;
+  }
+  return output;
+}
+
+function collapseRepeatedSentences(value) {
+  const sentences = value.match(/[^.!?\n]+[.!?]+(?:\s+|$)|[^.!?\n]+(?:\n|$)/g);
+  if (!sentences || sentences.length < 3) {
+    return value;
+  }
+
+  const collapsed = [];
+  let previousKey = "";
+  let repeatCount = 0;
+
+  for (const sentence of sentences) {
+    const trimmed = sentence.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const key = normalizeRepeatKey(trimmed);
+    if (key && key === previousKey) {
+      repeatCount += 1;
+      if (repeatCount > 1) {
+        continue;
+      }
+    } else {
+      previousKey = key;
+      repeatCount = 1;
+    }
+    collapsed.push(trimmed);
+  }
+
+  return collapsed.join(" ");
+}
+
+function collapseRepeatedLines(value) {
+  const lines = value.split("\n");
+  const collapsed = [];
+  let previousKey = "";
+
+  for (const line of lines) {
+    const key = normalizeRepeatKey(line);
+    if (key && key === previousKey) {
+      continue;
+    }
+    collapsed.push(line);
+    previousKey = key;
+  }
+
+  return collapsed.join("\n");
+}
+
+function normalizeRepeatKey(value) {
+  return String(value)
+    .toLowerCase()
+    .replace(/[`*_()[\]{}\\]/g, "")
+    .replace(/[^a-z0-9]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 function normalizeOrigin(value) {
