@@ -4933,6 +4933,30 @@ fn main() {
         return;
     }
 
+    if let Ok(database_url) = std::env::var("DATABASE_URL") {
+        match apply_migrations(&database_url) {
+            Ok(applied) => {
+                if applied.is_empty() {
+                    println!("migrations: no pending migrations");
+                } else {
+                    for migration in &applied {
+                        println!(
+                            "applied {}_{} ({})",
+                            migration.version,
+                            migration.name,
+                            migration.path.display()
+                        );
+                    }
+                    println!("migrations: {} applied at startup", applied.len());
+                }
+            }
+            Err(error) => {
+                eprintln!("startup migration failed: {error}");
+                std::process::exit(1);
+            }
+        }
+    }
+
     let supabase = SupabaseMirror::from_env();
     let bind_addr = control_plane_bind_addr().expect("resolve bind address");
     let listener = TcpListener::bind(&bind_addr).expect("bind control plane");
