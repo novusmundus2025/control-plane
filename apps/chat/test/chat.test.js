@@ -14,7 +14,6 @@ test("renders a usable chat page", () => {
   const html = page(
     configFromEnv({
       MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai/",
-      MUNDUSX_CHAT_DEFAULT_MODEL: "Qwen/Test",
       MUNDUSX_CHAT_TIMEOUT_SECONDS: "45",
     }),
   );
@@ -27,7 +26,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /\.message\.assistant \.message-body/);
   assert.match(html, /\/assets\/mundusx-logo\.png/);
   assert.match(html, /uat\.mundusx\.ai/);
-  assert.match(html, /Qwen\/Test/);
+  assert.match(html, /Control-plane routed/);
+  assert.doesNotMatch(html, /Qwen\/Test/);
   assert.match(html, /MundusX may produce inaccurate information/);
 });
 
@@ -41,6 +41,15 @@ test("normalizes chat app environment", () => {
   assert.equal(config.port, 3010);
   assert.equal(config.controlPlaneUrl, "https://uat.mundusx.ai");
   assert.equal(config.operatorToken, "token");
+  assert.equal(config.modelOverride, "");
+});
+
+test("accepts an explicit chat model override without making it a default", () => {
+  const config = configFromEnv({
+    MUNDUSX_CHAT_MODEL: " Qwen/Explicit ",
+  });
+
+  assert.equal(config.modelOverride, "Qwen/Explicit");
 });
 
 test("escapes runtime values rendered into html", () => {
@@ -56,6 +65,7 @@ test("submits chat work as an auto execution job", async () => {
     assert.equal(body.prompt, "Give me a detailed history of Honda.");
     assert.equal(body.execution_mode, "auto");
     assert.equal(body.preferred_backend, "auto");
+    assert.equal(body.model, undefined);
     assert.equal(body.max_tokens, 1024);
     assert.match(body.system_prompt, /Do not echo system/);
     return jsonResponse({
@@ -90,6 +100,34 @@ test("submits chat work as an auto execution job", async () => {
   assert.equal(result.execution_mode, "auto");
   assert.equal(result.progress.total, 2);
   assert.equal(result.progress.waiting, 2);
+});
+
+test("sends an explicit model override when configured", async () => {
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    assert.equal(body.model, "Qwen/Explicit");
+    return jsonResponse({
+      job_id: "job-2",
+      job: {
+        job_id: "job-2",
+        status: "queued",
+        model: "Qwen/Explicit",
+        execution_mode: "auto",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "Say hi." },
+    configFromEnv({
+      MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
+      MUNDUSX_CHAT_MODEL: "Qwen/Explicit",
+    }),
+    fetchImpl,
+  );
+
+  assert.equal(result.model, "Qwen/Explicit");
 });
 
 test("polls chat job progress and final cleaned output", async () => {
