@@ -13,12 +13,14 @@ test("renders a usable chat page", () => {
   );
 
   assert.match(html, /MundusX Chat/);
+  assert.match(html, /Welcome to MundusX Chat/);
   assert.match(html, /id="chat-form"/);
   assert.match(html, /Message MundusX/);
+  assert.match(html, /\[ \/ \] Commands/);
   assert.match(html, /\/assets\/mundusx-logo\.png/);
-  assert.match(html, /https:\/\/uat\.mundusx\.ai/);
+  assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /Qwen\/Test/);
-  assert.match(html, /Default timeout: 45s/);
+  assert.match(html, /MundusX may produce inaccurate information/);
 });
 
 test("normalizes chat app environment", () => {

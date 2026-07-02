@@ -329,40 +329,463 @@ export function page(config = configFromEnv()) {
       .conversation { padding: 24px 14px 20px; }
       form { padding: 12px 14px 18px; }
     }
+
+    .shell {
+      grid-template-columns: 360px minmax(0, 1fr);
+      border: 4px double #050505;
+      background: #f7f7f3;
+      font-family: "Courier New", Consolas, "Lucida Console", monospace;
+      height: 100vh;
+      min-height: 0;
+    }
+    body {
+      overflow: hidden;
+      background: #f7f7f3;
+      color: #050505;
+      font-family: "Courier New", Consolas, "Lucida Console", monospace;
+    }
+    aside {
+      border-right: 4px double #050505;
+      padding: 20px;
+      background: #020202;
+      color: #ffffff;
+      grid-template-rows: auto auto minmax(0, 1fr) auto auto;
+      gap: 22px;
+      overflow: hidden;
+      min-height: 0;
+    }
+    .brand-block {
+      display: grid;
+      grid-template-columns: 62px minmax(0, 1fr);
+      gap: 16px;
+      align-items: center;
+      padding: 12px 10px 6px;
+    }
+    .brand-block .brand-logo {
+      width: 58px;
+      height: 58px;
+      object-fit: contain;
+      filter: grayscale(1) brightness(0) invert(1);
+    }
+    .brand-name {
+      font-size: 30px;
+      line-height: 1;
+      font-weight: 900;
+      letter-spacing: 1px;
+    }
+    .brand-kicker {
+      margin-top: 10px;
+      color: #c9c9c1;
+      font-size: 14px;
+      letter-spacing: 1px;
+      white-space: nowrap;
+    }
+    .new-chat {
+      min-height: 48px;
+      border: 2px solid #ffffff;
+      border-radius: 0;
+      color: #ffffff;
+      background: #050505;
+      justify-content: space-between;
+      padding: 0 16px;
+      font-weight: 800;
+      text-transform: uppercase;
+      box-shadow: inset 0 0 0 1px #777777;
+    }
+    .rail-list {
+      gap: 14px;
+      padding-right: 4px;
+    }
+    .history-group {
+      display: grid;
+      gap: 8px;
+      border-top: 1px dashed #d6d6d0;
+      padding-top: 10px;
+    }
+    .history-label {
+      color: #c9c9c1;
+      font-size: 14px;
+      text-transform: uppercase;
+    }
+    .history-item {
+      border-radius: 0;
+      padding: 9px 10px;
+      color: #ffffff;
+      font-size: 15px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 82px;
+      gap: 10px;
+    }
+    .history-item span:first-child {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .history-item.active {
+      background: #ffffff;
+      color: #000000;
+    }
+    .history-time {
+      color: inherit;
+      opacity: 0.78;
+      font-size: 13px;
+      justify-self: end;
+    }
+    .rail-footer,
+    .account-card {
+      border: 2px solid #ffffff;
+      padding: 14px;
+      color: #ffffff;
+      box-shadow: inset 0 0 0 1px #777777;
+    }
+    .network-line {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      font-weight: 800;
+      text-transform: uppercase;
+    }
+    .network-dot {
+      width: 12px;
+      height: 12px;
+      border: 2px solid #ffffff;
+      background: #0c8f4e;
+      display: inline-block;
+      margin-right: 8px;
+      vertical-align: -1px;
+    }
+    .account-card {
+      display: grid;
+      grid-template-columns: 56px minmax(0, 1fr) auto;
+      gap: 12px;
+      align-items: center;
+    }
+    .avatar-chip {
+      width: 52px;
+      height: 52px;
+      display: grid;
+      place-items: center;
+      border: 1px solid #ffffff;
+      font-weight: 900;
+      font-size: 18px;
+    }
+    .account-name {
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .account-role {
+      margin-top: 5px;
+      color: #c9c9c1;
+      font-size: 14px;
+      text-transform: uppercase;
+    }
+    main {
+      background: #f7f7f3;
+      color: #050505;
+      min-height: 0;
+    }
+    header {
+      height: 70px;
+      padding: 0 24px;
+      border-bottom: 3px double #050505;
+      background: #f7f7f3;
+    }
+    .chat-title {
+      color: #050505;
+      font-size: 20px;
+      font-weight: 900;
+    }
+    .model-pill {
+      display: none;
+    }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 18px;
+    }
+    .status {
+      border: 2px dashed #050505;
+      border-radius: 0;
+      padding: 10px 18px;
+      color: #050505;
+      background: transparent;
+      font-size: 16px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .expand-control {
+      color: #050505;
+      font-size: 20px;
+      font-weight: 900;
+    }
+    .dot {
+      width: 11px;
+      height: 11px;
+      background: #050505;
+      margin-right: 10px;
+    }
+    .messages {
+      background:
+        linear-gradient(rgba(0,0,0,0.018) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(0,0,0,0.012) 1px, transparent 1px),
+        #f7f7f3;
+      background-size: 22px 22px;
+    }
+    .conversation {
+      width: min(900px, 100%);
+      min-height: 100%;
+      padding: 42px 24px 20px;
+      align-content: start;
+    }
+    .welcome {
+      color: #050505;
+    }
+    .welcome-inner {
+      width: min(780px, 100%);
+      gap: 12px;
+      justify-items: center;
+    }
+    h1 {
+      font-size: clamp(28px, 4.4vw, 38px);
+      line-height: 1.1;
+      letter-spacing: 1px;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .welcome-rule {
+      width: 22px;
+      height: 2px;
+      background: #050505;
+    }
+    .welcome-copy {
+      width: min(560px, 100%);
+      margin: 0;
+      font-size: 18px;
+      line-height: 1.45;
+    }
+    .tip-box {
+      border: 2px dotted #050505;
+      padding: 10px 16px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      font-size: 16px;
+      text-align: left;
+    }
+    .tip-tag {
+      background: #050505;
+      color: #f7f7f3;
+      padding: 3px 8px;
+      font-weight: 900;
+    }
+    .examples-heading {
+      width: min(660px, 100%);
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 20px;
+      margin-top: 6px;
+      color: #050505;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+    .examples-heading::before,
+    .examples-heading::after {
+      content: "";
+      border-top: 2px solid #050505;
+    }
+    .suggestions {
+      width: min(700px, 100%);
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      margin-top: 4px;
+    }
+    .suggestion {
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      background: transparent;
+      color: #050505;
+      text-align: left;
+      font-size: 16px;
+      line-height: 1.4;
+      display: grid;
+      grid-template-columns: 24px minmax(0, 1fr);
+      gap: 14px;
+    }
+    .message {
+      grid-template-columns: 44px minmax(0, 1fr);
+    }
+    .avatar {
+      width: 40px;
+      height: 40px;
+      border-radius: 0;
+      border: 2px solid #050505;
+      background: #f7f7f3;
+      color: #050505;
+      font-weight: 900;
+    }
+    .message-body {
+      color: #050505;
+      padding: 10px 0 0;
+    }
+    .message.user .avatar {
+      background: #050505;
+      color: #f7f7f3;
+    }
+    .message.error {
+      color: #8a0d0d;
+    }
+    form {
+      width: min(1120px, calc(100% - 48px));
+      padding: 0 0 34px;
+    }
+    .composer {
+      position: relative;
+      border: 3px solid #050505;
+      border-radius: 0;
+      background: #f7f7f3;
+      grid-template-columns: minmax(0, 1fr) auto;
+      grid-template-rows: auto auto;
+      gap: 10px 18px;
+      padding: 18px 18px 14px;
+      box-shadow: inset 0 0 0 2px #f7f7f3, inset 0 0 0 4px #050505;
+    }
+    .composer::before,
+    .composer::after {
+      content: "";
+      position: absolute;
+      width: 9px;
+      height: 9px;
+      border: 2px solid #050505;
+      background: #f7f7f3;
+      top: -5px;
+    }
+    .composer::before { left: -5px; }
+    .composer::after { right: -5px; }
+    textarea {
+      min-height: 54px;
+      padding: 6px 6px 0;
+      color: #050505;
+      font-size: 18px;
+      grid-column: 1;
+    }
+    textarea::placeholder {
+      color: #4d4d49;
+      opacity: 1;
+    }
+    .send {
+      width: 58px;
+      height: 48px;
+      align-self: end;
+      border: 2px solid #050505;
+      border-radius: 0;
+      color: #ffffff;
+      background: #050505;
+      font-weight: 900;
+      font-size: 24px;
+      display: grid;
+      place-items: center;
+      grid-column: 2;
+      grid-row: 1 / span 2;
+    }
+    .composer-actions {
+      grid-column: 1;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      color: #050505;
+      font-size: 15px;
+      text-transform: uppercase;
+    }
+    .fine-print {
+      text-align: center;
+      color: #5a5a55;
+      font-size: 13px;
+      margin-top: 18px;
+    }
+    @media (max-width: 920px) {
+      .shell { grid-template-columns: 1fr; }
+      aside { display: none; }
+      .conversation { padding: 70px 18px 28px; }
+      form { width: calc(100% - 28px); padding-bottom: 18px; }
+      .composer-actions { display: none; }
+      .chat-title { font-size: 18px; }
+      .status { padding: 8px 10px; }
+    }
   </style>
 </head>
 <body>
   <div class="shell">
     <aside>
-      <button class="new-chat" type="button"><span>+</span><span>New chat</span></button>
+      <div class="brand-block">
+        <img class="brand-logo" src="/assets/mundusx-logo.png" alt="" />
+        <div>
+          <div class="brand-name">MUNDUSX</div>
+          <div class="brand-kicker">DECENTRALIZED AI NETWORK</div>
+        </div>
+      </div>
+      <button class="new-chat" type="button"><span>[+] NEW CHAT</span><span>CTRL+K</span></button>
       <div class="rail-list" aria-label="Conversation history">
-        <div class="history-item active">New conversation</div>
-        <div class="history-item">Honda history draft</div>
-        <div class="history-item">GPU node troubleshooting</div>
-        <div class="history-item">MundusX architecture</div>
+        <div class="history-group">
+          <div class="history-label">Today</div>
+          <div class="history-item active"><span>&gt;New conversation</span><span class="history-time">10:42</span></div>
+          <div class="history-item"><span>Honda history draft</span><span class="history-time">09:15</span></div>
+          <div class="history-item"><span>GPU node troubleshooting</span><span class="history-time">Yesterday</span></div>
+          <div class="history-item"><span>MundusX architecture</span><span class="history-time">Yesterday</span></div>
+        </div>
+        <div class="history-group">
+          <div class="history-label">Yesterday</div>
+          <div class="history-item"><span>Control-plane summary</span><span class="history-time">May 27</span></div>
+          <div class="history-item"><span>CUDA node jobs</span><span class="history-time">May 27</span></div>
+        </div>
+        <div class="history-group">
+          <div class="history-label">Previous 7 days</div>
+          <div class="history-item"><span>Product description draft</span><span class="history-time">May 25</span></div>
+          <div class="history-item"><span>Contributor onboarding</span><span class="history-time">May 24</span></div>
+          <div class="history-item"><span>Node performance analysis</span><span class="history-time">May 23</span></div>
+          <div class="history-item"><span>...</span><span class="history-time"></span></div>
+        </div>
       </div>
       <div class="rail-footer">
-        <div class="brand"><img class="brand-logo" src="/assets/mundusx-logo.png" alt="" /><span>MundusX</span></div>
-        <div>Connected to <code>${escapeHtml(config.controlPlaneUrl)}</code></div>
+        <div class="network-line"><span><span class="network-dot"></span>MundusX Network</span><span>Online</span></div>
+        <div>${escapeHtml(config.controlPlaneUrl.replace(/^https?:\/\//, ""))} <span style="float:right">[^]</span></div>
+      </div>
+      <div class="account-card">
+        <div class="avatar-chip">DB</div>
+        <div>
+          <div class="account-name">Dave Batalla</div>
+          <div class="account-role">Contributor</div>
+        </div>
+        <div>v</div>
       </div>
     </aside>
     <main>
       <header>
         <div class="chat-title">MundusX Chat <span class="model-pill">${escapeHtml(config.defaultModel)}</span></div>
-        <div class="status"><span class="dot"></span><span id="runtime-status">Ready</span></div>
+        <div class="header-actions">
+          <div class="status"><span class="dot"></span><span id="runtime-status">Ready</span></div>
+          <div class="expand-control">[ &lt;=&gt; ]</div>
+        </div>
       </header>
       <section class="messages" id="messages" aria-live="polite">
         <div class="conversation" id="conversation">
           <div class="welcome" id="welcome">
             <div class="welcome-inner">
-              <h1>What can MundusX help with?</h1>
+              <h1>Welcome to MundusX Chat</h1>
+              <div class="welcome-rule"></div>
+              <p class="welcome-copy">Ask anything about MundusX - contributors, architecture, nodes, jobs, or anything else.</p>
+              <div class="tip-box"><span class="tip-tag">TIP</span><span>Type your question below or use / to open commands</span></div>
+              <div class="examples-heading"><span>Example Questions</span></div>
               <div class="suggestions">
-                <button class="suggestion" type="button">Give me a detailed history of Honda from its origins to today.</button>
-                <button class="suggestion" type="button">Explain why a CUDA node can claim a job and fail.</button>
-                <button class="suggestion" type="button">Draft a product description for MundusX contributors.</button>
-                <button class="suggestion" type="button">Summarize the current control-plane architecture.</button>
+                <button class="suggestion" type="button"><span>-&gt;</span><span>Give me a detailed history of Honda from its origins to today.</span></button>
+                <button class="suggestion" type="button"><span>-&gt;</span><span>Explain why a CUDA node can claim a job and fail.</span></button>
+                <button class="suggestion" type="button"><span>-&gt;</span><span>Draft a product description for MundusX contributors.</span></button>
+                <button class="suggestion" type="button"><span>-&gt;</span><span>Summarize the current control-plane architecture.</span></button>
               </div>
-              <div class="meta">Default timeout: ${config.defaultTimeoutSeconds}s</div>
             </div>
           </div>
         </div>
@@ -370,8 +793,14 @@ export function page(config = configFromEnv()) {
       <form id="chat-form">
         <div class="composer">
           <textarea id="prompt" name="prompt" placeholder="Message MundusX..." autocomplete="off" required></textarea>
-          <button id="send" type="submit" aria-label="Send">&uarr;</button>
+          <div class="composer-actions">
+            <span>[ / ] Commands</span>
+            <span>[ @ ] Web Search</span>
+            <span>[ Enter to Send ]</span>
+          </div>
+          <button class="send" id="send" type="submit" aria-label="Send">&gt;</button>
         </div>
+        <div class="fine-print">MundusX may produce inaccurate information.</div>
       </form>
     </main>
   </div>
@@ -408,7 +837,7 @@ export function page(config = configFromEnv()) {
 
     document.querySelectorAll(".suggestion").forEach((button) => {
       button.addEventListener("click", () => {
-        promptEl.value = button.textContent.trim();
+        promptEl.value = (button.querySelector("span:last-child") ?? button).textContent.trim();
         promptEl.focus();
       });
     });
