@@ -897,14 +897,19 @@ export function page(config = configFromEnv()) {
       border-radius: 0;
       background: transparent;
       color: var(--mx-text);
-      padding: 10px 8px;
-      display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 10px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      overflow: visible;
+      white-space: normal;
       text-align: left;
       font-size: 15px;
     }
-    .history-item span:first-child {
+    .history-title {
+      display: block;
+      flex: 1 1 auto;
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -917,8 +922,9 @@ export function page(config = configFromEnv()) {
     }
     .history-time {
       color: var(--mx-muted);
-      justify-self: end;
+      flex: 0 0 auto;
       font-size: 13px;
+      white-space: nowrap;
     }
     .history-empty {
       border-top: 1px solid var(--mx-line);
@@ -1654,7 +1660,7 @@ export function page(config = configFromEnv()) {
           const row = document.createElement("button");
           row.className = "history-item";
           row.type = "button";
-          row.innerHTML = "<span></span><span class='history-time'></span>";
+          row.innerHTML = "<span class='history-title'></span><span class='history-time'></span>";
           row.children[0].textContent = item.title || "Untitled";
           row.children[1].textContent = formatHistoryTime(item.createdAt);
           row.addEventListener("click", () => {
