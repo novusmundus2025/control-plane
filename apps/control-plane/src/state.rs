@@ -1317,6 +1317,35 @@ fn looks_sectionable_prompt(prompt: &str) -> bool {
     )
 }
 
+fn looks_like_complete_code_prompt(lower_prompt: &str) -> bool {
+    contains_any(
+        lower_prompt,
+        &[
+            "complete program",
+            "complete source",
+            "complete code",
+            "full program",
+            "full source",
+            "entire program",
+            "working program",
+            "turbo c program",
+        ],
+    ) || (contains_any(
+        lower_prompt,
+        &["write a program", "create a program", "make a program"],
+    ) && contains_any(
+        lower_prompt,
+        &[
+            "c program",
+            "turbo c",
+            "source",
+            "code",
+            "binary file",
+            "file handling",
+        ],
+    ))
+}
+
 fn next_ready_graph_node_id(graph: &JobGraph) -> Option<String> {
     graph
         .nodes
@@ -1760,23 +1789,28 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
     );
     let lower = combined.to_ascii_lowercase();
     let prompt_chars = request.prompt.chars().count();
+    let complete_code_prompt = looks_like_complete_code_prompt(&lower);
 
-    let task_type = if contains_any(
-        &lower,
-        &[
-            "code",
-            "bug",
-            "test",
-            "rust",
-            "javascript",
-            "typescript",
-            "python",
-            "function",
-            "api",
-            "stack trace",
-            "compile",
-        ],
-    ) {
+    let task_type = if complete_code_prompt
+        || contains_any(
+            &lower,
+            &[
+                "code",
+                "bug",
+                "test",
+                "rust",
+                "javascript",
+                "typescript",
+                "python",
+                "turbo c",
+                "#include",
+                "struct",
+                "function",
+                "api",
+                "stack trace",
+                "compile",
+            ],
+        ) {
         RequestTaskType::Coding
     } else if contains_any(
         &lower,
@@ -1802,6 +1836,7 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
     };
 
     let complexity = if prompt_chars > 4_000
+        || complete_code_prompt
         || contains_any(
             &lower,
             &[
@@ -1856,31 +1891,35 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
         PrivacyLevel::Public
     };
 
-    let output_format = if contains_any(&lower, &["json", "schema", "object"]) {
-        ExpectedOutputFormat::Json
-    } else if task_type == RequestTaskType::Coding
-        || contains_any(&lower, &["code block", "patch", "diff"])
-    {
-        ExpectedOutputFormat::Code
-    } else if contains_any(
-        &lower,
-        &[
-            "markdown",
-            "table",
-            "bullets",
-            "checklist",
-            "report",
-            "memo",
-        ],
-    ) {
-        ExpectedOutputFormat::Markdown
-    } else {
-        ExpectedOutputFormat::Text
-    };
+    let output_format =
+        if contains_any(&lower, &["json", "schema", "object"]) && !complete_code_prompt {
+            ExpectedOutputFormat::Json
+        } else if task_type == RequestTaskType::Coding
+            || contains_any(&lower, &["code block", "patch", "diff"])
+        {
+            ExpectedOutputFormat::Code
+        } else if contains_any(
+            &lower,
+            &[
+                "markdown",
+                "table",
+                "bullets",
+                "checklist",
+                "report",
+                "memo",
+            ],
+        ) {
+            ExpectedOutputFormat::Markdown
+        } else {
+            ExpectedOutputFormat::Text
+        };
 
     let context_size = if prompt_chars > 4_000 || request.max_tokens.unwrap_or_default() > 4_096 {
         ContextSize::Large
-    } else if prompt_chars > 800 || request.max_tokens.unwrap_or_default() > 1_024 {
+    } else if prompt_chars > 800
+        || complete_code_prompt
+        || request.max_tokens.unwrap_or_default() > 1_024
+    {
         ContextSize::Medium
     } else {
         ContextSize::Small
@@ -1898,6 +1937,9 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
     }
     if matches!(complexity, RequestComplexity::High) {
         execution_constraints.push("planner_recommended".to_string());
+    }
+    if complete_code_prompt {
+        execution_constraints.push("complete_code_output".to_string());
     }
 
     RequestClassification {
@@ -1925,6 +1967,8 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
     .to_ascii_lowercase();
 
     let decomposition_needed = classification.complexity == RequestComplexity::High
+        || (classification.task_type == RequestTaskType::Coding
+            && looks_like_complete_code_prompt(&lower))
         || looks_sectionable_prompt(&request.prompt)
         || contains_any(
             &lower,
@@ -2019,6 +2063,18 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
                 "Planned {} sectioned research units plus a final reducer.",
                 jobs.len().saturating_sub(1)
             ),
+            jobs,
+        };
+    }
+
+    if classification.task_type == RequestTaskType::Coding
+        && looks_like_complete_code_prompt(&lower)
+    {
+        let jobs = complete_code_plan_jobs();
+        return JobPlan {
+            plan_id: format!("plan-{}", request.request_id),
+            strategy: "complete_code_generation".to_string(),
+            summary: "Planned a complete code deliverable with outline, implementation, validation notes, and final assembly.".to_string(),
             jobs,
         };
     }
@@ -2525,6 +2581,51 @@ fn push_planned_job(
         required_output: required_output.to_string(),
         reason: reason.to_string(),
     });
+}
+
+fn complete_code_plan_jobs() -> Vec<PlannedJob> {
+    let mut jobs = Vec::new();
+    push_planned_job(
+        &mut jobs,
+        "job.code_outline",
+        "Program outline",
+        "analysis",
+        Vec::new(),
+        "Identify data structures, menu flow, file format, and required functions for the complete program.",
+        "Complete program requests need a compact design before source generation.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.code_implementation",
+        "Complete source code",
+        "implementation",
+        vec!["job.code_outline".to_string()],
+        "Produce the full source code in one coherent code block without truncating required functions.",
+        "The user asked for a complete program, so the implementation must be the primary deliverable.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.compile_notes",
+        "Compile and usage notes",
+        "validation",
+        vec!["job.code_implementation".to_string()],
+        "Add concise compiler, runtime, and file-handling notes relevant to the requested language/toolchain.",
+        "Legacy or file-based programs need usage notes so the answer is actionable.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.final_merge",
+        "Final answer",
+        "merge",
+        vec![
+            "job.code_outline".to_string(),
+            "job.code_implementation".to_string(),
+            "job.compile_notes".to_string(),
+        ],
+        "Return the complete final response with the full program first and concise notes after it.",
+        "The reducer must preserve the full code block and avoid cutting the final source.",
+    );
+    jobs
 }
 
 fn contains_any(input: &str, needles: &[&str]) -> bool {
@@ -3433,6 +3534,36 @@ mod tests {
         assert!(final_merge.depends_on.contains(&"job.backend".to_string()));
         assert!(final_merge.depends_on.contains(&"job.frontend".to_string()));
         assert!(final_merge.depends_on.contains(&"job.tests".to_string()));
+    }
+
+    #[test]
+    fn complete_program_requests_use_code_generation_plan() {
+        let request = classification_request(
+            "Give me a complete Turbo C program to handle enrollment of students save in binary file",
+        );
+        let classification = classify_job_request(&request);
+
+        assert_eq!(classification.task_type, RequestTaskType::Coding);
+        assert_eq!(classification.complexity, RequestComplexity::High);
+        assert_eq!(classification.output_format, ExpectedOutputFormat::Code);
+        assert_eq!(classification.context_size, ContextSize::Medium);
+        assert!(classification
+            .execution_constraints
+            .contains(&"complete_code_output".to_string()));
+
+        let plan = plan_job_request(&request, &classification);
+        let responsibilities = plan
+            .jobs
+            .iter()
+            .map(|job| job.responsibility.as_str())
+            .collect::<Vec<_>>();
+
+        assert_eq!(plan.strategy, "complete_code_generation");
+        assert_eq!(plan.jobs.len(), 4);
+        assert!(responsibilities.contains(&"analysis"));
+        assert!(responsibilities.contains(&"implementation"));
+        assert!(responsibilities.contains(&"validation"));
+        assert!(responsibilities.contains(&"merge"));
     }
 
     #[test]
