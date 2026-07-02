@@ -867,6 +867,7 @@ impl ControlPlaneState {
             if let Some(active_node_id) = active_graph_node_id.as_deref() {
                 claim_job.prompt =
                     graph_node_execution_prompt(job, active_node_id, Some(&claiming_node));
+                claim_job.max_tokens = Some(graph_node_max_tokens(job, active_node_id));
             }
 
             let claimed = JobClaimResponse {
@@ -1613,6 +1614,53 @@ fn graph_node_execution_prompt(
         "Original user request:\n{}\n\nMundusX subjob:\nName: {}\nResponsibility: {}\nRequired output: {}\n\nWrite the factual content for this section only, in plain prose or compact bullets.",
         job.prompt, node.name, node.responsibility, node.required_output
     )
+}
+
+fn graph_node_max_tokens(job: &JobRecord, active_node_id: &str) -> u32 {
+    let requested = job.max_tokens.unwrap_or(0);
+    let Some(node) = job
+        .graph
+        .nodes
+        .iter()
+        .find(|node| node.id == active_node_id)
+    else {
+        return requested.max(384);
+    };
+
+    let stage_budget = match job.plan.strategy.as_str() {
+        "sectioned_research" => {
+            if node.responsibility == "merge" {
+                if requested > 1_024 {
+                    768
+                } else {
+                    512
+                }
+            } else if requested > 1_024 {
+                320
+            } else {
+                256
+            }
+        }
+        "complete_code_generation" => match node.id.as_str() {
+            "job.code_implementation" => 2_048,
+            "job.final_merge" => 3_072,
+            "job.code_outline" | "job.compile_notes" => 384,
+            _ => 768,
+        },
+        _ => match node.responsibility.as_str() {
+            "merge" => 768,
+            "analysis" | "scope" => 256,
+            "backend" | "frontend" | "implementation" => 768,
+            "tests" | "documentation" | "security" | "validation" => 512,
+            _ => 384,
+        },
+    };
+
+    if requested > 0 {
+        requested.min(stage_budget)
+    } else {
+        stage_budget
+    }
 }
 
 fn complete_compact_reducer_fallback(
@@ -4003,6 +4051,200 @@ mod tests {
         assert!(running
             .iter()
             .any(|node| node.assigned_node_id.as_deref() == Some("node-2")));
+    }
+
+    #[test]
+    fn sectioned_research_claims_use_stage_token_budgets() {
+        let mut state = ready_state();
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.max_tokens = Some(1_024);
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first section claim");
+        assert_eq!(first_claim.max_tokens, Some(256));
+
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("origins complete".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("first section completion");
+
+        for (index, section_output) in [
+            "early development complete",
+            "expansion complete",
+            "modern era complete",
+        ]
+        .iter()
+        .enumerate()
+        {
+            let claim = state
+                .claim_job("node-1", (index + 5).to_string())
+                .job
+                .expect("section claim");
+            assert_eq!(claim.max_tokens, Some(256));
+            state
+                .complete_job(
+                    JobCompletion {
+                        job_id: "job-1".to_string(),
+                        node_id: "node-1".to_string(),
+                        worker_id: format!("worker-{}", index + 2),
+                        backend: Backend::M,
+                        status: JobStatus::Completed,
+                        output: Some((*section_output).to_string()),
+                        error: None,
+                        latency_ms: Some(10),
+                    },
+                    (index + 8).to_string(),
+                )
+                .expect("section completion");
+        }
+
+        let reducer_claim = state
+            .claim_job("node-1", "12".to_string())
+            .job
+            .expect("reducer claim");
+        assert_eq!(
+            reducer_claim.active_graph_node_id.as_deref(),
+            Some("job.final_merge")
+        );
+        assert_eq!(reducer_claim.max_tokens, Some(512));
+    }
+
+    #[test]
+    fn large_sectioned_research_uses_larger_section_and_reducer_caps() {
+        let mut state = ready_state();
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.max_tokens = Some(2_048);
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first section claim");
+        assert_eq!(first_claim.max_tokens, Some(320));
+
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("origins output".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("first section completion");
+
+        for (index, graph_node_id) in ["job.early_development", "job.expansion", "job.modern_era"]
+            .iter()
+            .enumerate()
+        {
+            state
+                .update_graph_node(
+                    "job-1",
+                    graph_node_id,
+                    JobGraphNodeStatus::Completed,
+                    Some(format!("{graph_node_id} output")),
+                    None,
+                    (index + 5).to_string(),
+                )
+                .expect("section graph update");
+        }
+
+        let reducer_claim = state
+            .claim_job("node-1", "9".to_string())
+            .job
+            .expect("reducer claim");
+        assert_eq!(
+            reducer_claim.active_graph_node_id.as_deref(),
+            Some("job.final_merge")
+        );
+        assert_eq!(reducer_claim.max_tokens, Some(768));
+    }
+
+    #[test]
+    fn complete_code_generation_claims_keep_implementation_room() {
+        let mut state = ready_state();
+        let mut request = classification_request(
+            "Give me a complete Turbo C program to handle enrollment of students save in binary file",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.max_tokens = Some(4_096);
+        state.submit_job(request, "2".to_string());
+
+        let outline_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("outline claim");
+        assert_eq!(
+            outline_claim.active_graph_node_id.as_deref(),
+            Some("job.code_outline")
+        );
+        assert_eq!(outline_claim.max_tokens, Some(384));
+
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("outline complete".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("outline completion");
+
+        let implementation_claim = state
+            .claim_job("node-1", "5".to_string())
+            .job
+            .expect("implementation claim");
+        assert_eq!(
+            implementation_claim.active_graph_node_id.as_deref(),
+            Some("job.code_implementation")
+        );
+        assert_eq!(implementation_claim.max_tokens, Some(2_048));
+    }
+
+    #[test]
+    fn small_explicit_graph_budget_remains_an_upper_bound() {
+        let mut state = ready_state();
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.max_tokens = Some(64);
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first section claim");
+
+        assert_eq!(first_claim.max_tokens, Some(64));
     }
 
     #[test]
