@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { configFromEnv, escapeHtml, page } from "../src/main.js";
+import { cleanChatOutput, configFromEnv, escapeHtml, page } from "../src/main.js";
 
 test("renders a usable chat page", () => {
   const html = page(
@@ -37,4 +37,23 @@ test("normalizes chat app environment", () => {
 
 test("escapes runtime values rendered into html", () => {
   assert.equal(escapeHtml("<script>"), "&lt;script&gt;");
+});
+
+test("cleans worker metadata and repeated role-prefixed output", () => {
+  const output = cleanChatOutput(
+    "llama.cpp mode=cuda; model=Qwen/Qwen2.5-1.5B-Instruct; path=C:\\Users\\batal\\.opengpu\\models\\qwen.gguf; max_tokens=512; response=system: The President of the United States is Donald Trump. He is the 47th President of the United States. He is the 47th President of the United States. He is the 47th President of the United States.",
+  );
+
+  assert.equal(
+    output,
+    "The President of the United States is Donald Trump. He is the 47th President of the United States.",
+  );
+  assert.doesNotMatch(output, /llama\.cpp|path=|response=|system:/i);
+});
+
+test("returns a user-facing fallback for empty cleaned responses", () => {
+  assert.equal(
+    cleanChatOutput("llama.cpp mode=cuda; response=system:"),
+    "MundusX returned an empty response. Please try again.",
+  );
 });
