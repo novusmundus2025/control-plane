@@ -4252,18 +4252,24 @@ fn handle_connection(
     }
 
     if request.method == "GET" {
-        let changed_jobs = state
+        let maintenance = state
             .lock()
             .expect("state lock")
-            .run_maintenance(&now_unix_seconds());
-        if !changed_jobs.is_empty() {
+            .run_maintenance_with_nodes(&now_unix_seconds());
+        if !maintenance.changed_jobs.is_empty() || !maintenance.changed_nodes.is_empty() {
             if let Ok(guard) = state.lock() {
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
                 }
             }
             if let Some(db) = supabase.as_ref() {
-                for job in &changed_jobs {
+                for node in &maintenance.changed_nodes {
+                    if let Err(error) = db.record_node_snapshot(node) {
+                        eprintln!("database maintenance node sync skipped: {error}");
+                        note_supabase_failure(&sync_status, error);
+                    }
+                }
+                for job in &maintenance.changed_jobs {
                     if let Err(error) = db.record_job(job) {
                         eprintln!("database maintenance job sync skipped: {error}");
                         note_supabase_failure(&sync_status, error);
