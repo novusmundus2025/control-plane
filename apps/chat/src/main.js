@@ -767,7 +767,7 @@ export function page(config = configFromEnv()) {
       border-right: 1px solid var(--mx-line);
       background: rgba(0,0,0,0.78);
       color: var(--mx-text);
-      grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+      grid-template-rows: auto auto auto minmax(0, 1fr) auto;
       gap: 22px;
     }
     .brand-block {
@@ -864,7 +864,7 @@ export function page(config = configFromEnv()) {
     }
     .rail-list {
       gap: 18px;
-      padding-right: 2px;
+      padding: 0 6px 0 0;
     }
     .history-group {
       border-top: 1px solid var(--mx-line);
@@ -882,12 +882,18 @@ export function page(config = configFromEnv()) {
       border-radius: 0;
       background: transparent;
       color: var(--mx-text);
-      padding: 10px 4px;
+      padding: 10px 8px;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) 82px;
-      gap: 12px;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 10px;
       text-align: left;
       font-size: 15px;
+    }
+    .history-item span:first-child {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .history-item:hover,
     .history-item:focus-visible {
@@ -921,8 +927,7 @@ export function page(config = configFromEnv()) {
       color: var(--mx-green);
     }
     .account-card {
-      grid-template-columns: 56px minmax(0, 1fr) auto;
-      gap: 12px;
+      display: none;
     }
     .avatar-chip {
       width: 54px;
@@ -947,20 +952,24 @@ export function page(config = configFromEnv()) {
         #f8f8f4;
       background-size: 44px 44px;
       color: #111111;
-      grid-template-rows: 82px minmax(0, 1fr) auto;
+      grid-template-rows: 68px minmax(0, 1fr) auto;
     }
     header {
-      height: 82px;
-      border-bottom: 1px solid var(--mx-line);
+      height: 68px;
+      border-bottom: 1px solid rgba(0,0,0,0.08);
       background: rgba(248,248,244,0.96);
       padding: 0 30px;
     }
     .chat-title {
       color: #111111;
-      font-size: 18px;
+      font-size: 19px;
+      font-weight: 800;
     }
     .header-actions {
-      gap: 16px;
+      display: none;
+    }
+    .runtime-status-sentinel {
+      display: none;
     }
     .settings-button {
       width: auto;
@@ -994,7 +1003,7 @@ export function page(config = configFromEnv()) {
     .conversation {
       width: min(980px, calc(100% - 48px));
       min-height: 100%;
-      padding: 74px 0 28px;
+      padding: 56px 0 28px;
       gap: 22px;
     }
     .welcome {
@@ -1238,7 +1247,7 @@ export function page(config = configFromEnv()) {
       color: #fff;
     }
     .model-pill {
-      display: inline;
+      display: none;
       border: 1px solid rgba(0,0,0,0.16);
       border-radius: 0;
       background: transparent;
@@ -1277,22 +1286,11 @@ export function page(config = configFromEnv()) {
         <div id="network-card-metrics">-- nodes - -- queued - routed</div>
         <div>Latency <span id="network-latency">-- ms</span> - Jobs <span id="network-jobs">--</span></div>
       </div>
-      <div class="account-card">
-        <div class="avatar-chip">MX</div>
-        <div>
-          <div class="account-name">MundusX</div>
-          <div class="account-role">Control-plane routed</div>
-        </div>
-        <div>v</div>
-      </div>
     </aside>
     <main>
       <header>
-        <div class="chat-title">MundusX Chat <span class="model-pill">Control-plane routed</span></div>
-        <div class="header-actions">
-          <button class="settings-button" type="button" aria-label="Settings">Settings</button>
-          <div class="status"><span class="dot"></span><span id="runtime-status">Ready</span></div>
-        </div>
+        <div class="chat-title">MundusX Chat</div>
+        <span class="runtime-status-sentinel" id="runtime-status">Ready</span>
       </header>
       <section class="messages" id="messages" aria-live="polite">
         <div class="conversation" id="conversation">
