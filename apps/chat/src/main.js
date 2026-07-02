@@ -430,7 +430,7 @@ export function page(config = configFromEnv()) {
       grid-template-columns: minmax(0, 1fr) 82px;
       gap: 10px;
     }
-    .history-item span:first-child {
+    .history-title {
       min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
