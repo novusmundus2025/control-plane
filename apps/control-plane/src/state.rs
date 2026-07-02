@@ -1781,13 +1781,7 @@ fn normalize_amount(value: f64) -> f64 {
 }
 
 pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
-    let combined = format!(
-        "{}\n{}\n{}",
-        request.system_prompt.as_deref().unwrap_or(""),
-        request.prompt,
-        request.model.as_deref().unwrap_or("")
-    );
-    let lower = combined.to_ascii_lowercase();
+    let lower = request.prompt.to_ascii_lowercase();
     let prompt_chars = request.prompt.chars().count();
     let complete_code_prompt = looks_like_complete_code_prompt(&lower);
 
@@ -1959,12 +1953,7 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
 }
 
 pub fn plan_job_request(request: &JobRequest, classification: &RequestClassification) -> JobPlan {
-    let lower = format!(
-        "{}\n{}",
-        request.system_prompt.as_deref().unwrap_or(""),
-        request.prompt
-    )
-    .to_ascii_lowercase();
+    let lower = request.prompt.to_ascii_lowercase();
 
     let decomposition_needed = classification.complexity == RequestComplexity::High
         || (classification.task_type == RequestTaskType::Coding
@@ -3072,6 +3061,28 @@ mod tests {
         assert_eq!(classification.task_type, RequestTaskType::Coding);
         assert_eq!(classification.complexity, RequestComplexity::Medium);
         assert_eq!(classification.output_format, ExpectedOutputFormat::Code);
+    }
+
+    #[test]
+    fn chat_system_prompt_does_not_force_history_requests_into_code_plans() {
+        let mut request =
+            classification_request("Now tell me the history of Mercedes-Benz from its origins.");
+        request.execution_mode = JobExecutionMode::Auto;
+        request.system_prompt = Some(
+            "If the request asks for a full program or code, provide complete useful code."
+                .to_string(),
+        );
+
+        let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
+
+        assert_ne!(classification.task_type, RequestTaskType::Coding);
+        assert_eq!(plan.strategy, "sectioned_research");
+        assert!(plan.jobs.iter().any(|job| job.name == "Origins and founders"));
+        assert!(!plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Complete source code"));
     }
 
     #[test]
