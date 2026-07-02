@@ -765,6 +765,21 @@ fn graph_node_status_label(status: contracts::JobGraphNodeStatus) -> &'static st
     }
 }
 
+fn format_duration_ms(value: Option<u64>) -> String {
+    value
+        .map(|millis| format!("{millis} ms"))
+        .unwrap_or_else(|| "not recorded".to_string())
+}
+
+fn format_output_telemetry(chars: Option<usize>, tokens: Option<usize>) -> String {
+    match (chars, tokens) {
+        (Some(chars), Some(tokens)) => format!("{chars} chars / ~{tokens} tokens"),
+        (Some(chars), None) => format!("{chars} chars"),
+        (None, Some(tokens)) => format!("~{tokens} tokens"),
+        (None, None) => "not recorded".to_string(),
+    }
+}
+
 fn trust_grade(score: u8) -> &'static str {
     match score {
         90..=100 => "A",
@@ -1370,6 +1385,14 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
                 } else {
                     node.depends_on.join(", ")
                 };
+                let queue_wait = format_duration_ms(node.queue_wait_ms);
+                let runtime = format_duration_ms(node.runtime_ms);
+                let output_size =
+                    format_output_telemetry(node.output_chars, node.estimated_output_tokens);
+                let token_budget = node
+                    .effective_max_tokens
+                    .map(|tokens| tokens.to_string())
+                    .unwrap_or_else(|| "not assigned".to_string());
                 html.push_str(&format!(
                     r#"<div class="row subjob-row">
                       <div>
@@ -1392,11 +1415,13 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
                       </div>
                       <div>
                         <div class="meta">assigned {}</div>
-                        <div class="meta">depends on {}</div>
+                        <div class="meta">queue wait {}</div>
+                        <div class="meta">runtime {}</div>
                       </div>
                       <div>
                         <strong>{}</strong>
-                        <div class="meta">chunk output</div>
+                        <div class="meta">{} &middot; max tokens {}</div>
+                        <div class="meta">depends on {}</div>
                       </div>
                     </div>"#,
                     escape_html(&node.name),
@@ -1413,8 +1438,12 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
                     node.attempt_count,
                     node.max_attempts,
                     escape_html(node.assigned_at.as_deref().unwrap_or("not assigned")),
-                    escape_html(&depends_on),
+                    escape_html(&queue_wait),
+                    escape_html(&runtime),
                     escape_html(&sub_result),
+                    escape_html(&output_size),
+                    escape_html(&token_budget),
+                    escape_html(&depends_on),
                 ));
             }
         }
@@ -1630,10 +1659,18 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
                 node.blocked_by.join(", ")
             };
             let result = graph_result_for_node(job, &node.id);
-            let latency = result
-                .and_then(|result| result.latency_ms)
-                .map(|latency| format!("{latency} ms"))
+            let latency = format_duration_ms(result.and_then(|result| result.latency_ms));
+            let queue_wait = format_duration_ms(result.and_then(|result| result.queue_wait_ms));
+            let runtime = format_duration_ms(result.and_then(|result| result.runtime_ms));
+            let output_size = result
+                .map(|result| {
+                    format_output_telemetry(result.output_chars, result.estimated_output_tokens)
+                })
                 .unwrap_or_else(|| "not recorded".to_string());
+            let token_budget = result
+                .and_then(|result| result.effective_max_tokens)
+                .map(|tokens| tokens.to_string())
+                .unwrap_or_else(|| "not assigned".to_string());
             let verification = result
                 .map(|result| format!("{:?}", result.verification_status))
                 .unwrap_or_else(|| "not verified".to_string());
@@ -1689,10 +1726,13 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
                     <strong>{attempts}/{max_attempts}</strong>
                     <div class="meta">failed nodes {failed_nodes}</div>
                     <div class="meta">latency {latency}</div>
+                    <div class="meta">queue wait {queue_wait}</div>
+                    <div class="meta">runtime {runtime}</div>
                   </div>
                   <div>
                     <div class="meta">depends on {depends_on}</div>
                     <div class="meta">blocked by {blocked_by}</div>
+                    <div class="meta">max tokens {token_budget}</div>
                   </div>
                   <div>
                     <a class="inline-link" href="{payout_href}">{payout:.2}</a>
@@ -1700,6 +1740,7 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
                   </div>
                   <div>
                     <strong>{result_preview}</strong>
+                    <div class="meta">output {output_size}</div>
                     <div class="meta">required {required}</div>
                   </div>
                 </div>"#,
@@ -1724,11 +1765,15 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
                 max_attempts = node.max_attempts,
                 failed_nodes = failed_nodes,
                 latency = escape_html(&latency),
+                queue_wait = escape_html(&queue_wait),
+                runtime = escape_html(&runtime),
                 depends_on = escape_html(&depends_on),
                 blocked_by = escape_html(&blocked_by),
+                token_budget = escape_html(&token_budget),
                 payout_href = escape_html(&payout_href),
                 payout = payout,
                 result_preview = escape_html(&result_preview),
+                output_size = escape_html(&output_size),
                 required = escape_html(&compact_preview(Some(&node.required_output))),
             ));
         }
@@ -5954,6 +5999,11 @@ mod tests {
         assert!(html.contains(r#"href="/nodes/node-1""#));
         assert!(html.contains(r#"href="/nodes/node-2""#));
         assert!(html.contains("BMW chunk output"));
+        assert!(html.contains("latency 25 ms"));
+        assert!(html.contains("queue wait 3000 ms"));
+        assert!(html.contains("runtime 25 ms"));
+        assert!(html.contains("16 chars / ~4 tokens"));
+        assert!(html.contains("max tokens 256"));
         assert!(html.contains("credits paid"));
         assert!(html.contains("Total payout"));
         assert!(html.contains(&format!(

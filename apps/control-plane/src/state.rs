@@ -825,6 +825,10 @@ impl ControlPlaneState {
                 return JobClaimResponse { job: None };
             }
             if let Some(active_node_id) = active_graph_node_id.as_ref() {
+                let effective_max_tokens = graph_node_max_tokens(job, active_node_id);
+                let queue_wait_ms = elapsed_ms_between(&job.submitted_at, &claimed_at);
+                let model = job.model.clone();
+                let runtime_mode = Some(job.runtime_mode.as_str().to_string());
                 if let Some(graph_node) = job
                     .graph
                     .nodes
@@ -835,8 +839,18 @@ impl ControlPlaneState {
                     graph_node.blocked_by.clear();
                     graph_node.assigned_node_id = Some(node_id.to_string());
                     graph_node.assigned_at = Some(claimed_at.clone());
+                    graph_node.started_at = Some(claimed_at.clone());
+                    graph_node.completed_at = None;
                     graph_node.worker_id = None;
                     graph_node.backend = Some(node_backend);
+                    graph_node.model = model;
+                    graph_node.runtime_mode = runtime_mode;
+                    graph_node.effective_max_tokens = Some(effective_max_tokens);
+                    graph_node.queue_wait_ms = queue_wait_ms;
+                    graph_node.runtime_ms = None;
+                    graph_node.latency_ms = None;
+                    graph_node.output_chars = None;
+                    graph_node.estimated_output_tokens = None;
                     graph_node.output = None;
                     graph_node.error = None;
                     graph_node.attempt_count = graph_node.attempt_count.saturating_add(1);
@@ -867,7 +881,13 @@ impl ControlPlaneState {
             if let Some(active_node_id) = active_graph_node_id.as_deref() {
                 claim_job.prompt =
                     graph_node_execution_prompt(job, active_node_id, Some(&claiming_node));
-                claim_job.max_tokens = Some(graph_node_max_tokens(job, active_node_id));
+                claim_job.max_tokens = job
+                    .graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == active_node_id)
+                    .and_then(|node| node.effective_max_tokens)
+                    .or_else(|| Some(graph_node_max_tokens(job, active_node_id)));
             }
 
             let claimed = JobClaimResponse {
@@ -1298,6 +1318,16 @@ fn parse_unix_seconds(value: &str) -> Option<u64> {
     value.parse::<u64>().ok()
 }
 
+fn elapsed_ms_between(start: &str, end: &str) -> Option<u64> {
+    let start = parse_unix_seconds(start)?;
+    let end = parse_unix_seconds(end)?;
+    Some(end.saturating_sub(start).saturating_mul(1_000))
+}
+
+fn estimate_tokens_from_chars(chars: usize) -> usize {
+    chars.saturating_add(3) / 4
+}
+
 fn graph_node_lease_seconds() -> u64 {
     std::env::var(GRAPH_NODE_LEASE_SECONDS_ENV)
         .ok()
@@ -1501,6 +1531,15 @@ fn complete_graph_execution_job(
             }
             graph_node.worker_id = Some(completion.worker_id.clone());
             graph_node.backend = Some(completion.backend);
+            graph_node.completed_at = Some(completed_at.clone());
+            graph_node.latency_ms = completion.latency_ms;
+            graph_node.runtime_ms = completion.latency_ms;
+            let output_chars = graph_node
+                .output
+                .as_ref()
+                .map(|output| output.chars().count());
+            graph_node.output_chars = output_chars;
+            graph_node.estimated_output_tokens = output_chars.map(estimate_tokens_from_chars);
         }
     } else {
         return job.clone();
@@ -2371,8 +2410,18 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
                 blocked_by: job.depends_on.clone(),
                 assigned_node_id: None,
                 assigned_at: None,
+                started_at: None,
+                completed_at: None,
                 worker_id: None,
                 backend: None,
+                model: None,
+                runtime_mode: None,
+                effective_max_tokens: None,
+                queue_wait_ms: None,
+                runtime_ms: None,
+                latency_ms: None,
+                output_chars: None,
+                estimated_output_tokens: None,
                 attempt_count: 0,
                 max_attempts: DEFAULT_GRAPH_NODE_MAX_ATTEMPTS,
                 failed_node_ids: Vec::new(),
@@ -2435,8 +2484,18 @@ fn refresh_job_graph(graph: &mut JobGraph) {
         };
         node.assigned_node_id = None;
         node.assigned_at = None;
+        node.started_at = None;
+        node.completed_at = None;
         node.worker_id = None;
         node.backend = None;
+        node.model = None;
+        node.runtime_mode = None;
+        node.effective_max_tokens = None;
+        node.queue_wait_ms = None;
+        node.runtime_ms = None;
+        node.latency_ms = None;
+        node.output_chars = None;
+        node.estimated_output_tokens = None;
     }
 
     graph.status = if !failed_ids.is_empty() {
@@ -2520,9 +2579,9 @@ fn apply_job_completion_to_graph(job: &mut JobRecord, completion: &JobCompletion
 fn refresh_graph_results(
     graph: &mut JobGraph,
     expected_format: ExpectedOutputFormat,
-    source_worker_id: Option<&str>,
-    source_node_id: Option<&str>,
-    latency_ms: Option<u64>,
+    _source_worker_id: Option<&str>,
+    _source_node_id: Option<&str>,
+    _latency_ms: Option<u64>,
 ) {
     graph.results = graph
         .nodes
@@ -2543,9 +2602,20 @@ fn refresh_graph_results(
                 status: node.status,
                 output: node.output.clone(),
                 error: node.error.clone(),
-                source_worker_id: source_worker_id.map(str::to_string),
-                source_node_id: source_node_id.map(str::to_string),
-                latency_ms,
+                source_worker_id: node.worker_id.clone(),
+                source_node_id: node.assigned_node_id.clone(),
+                latency_ms: node.latency_ms,
+                assigned_at: node.assigned_at.clone(),
+                started_at: node.started_at.clone(),
+                completed_at: node.completed_at.clone(),
+                backend: node.backend,
+                model: node.model.clone(),
+                runtime_mode: node.runtime_mode.clone(),
+                effective_max_tokens: node.effective_max_tokens,
+                queue_wait_ms: node.queue_wait_ms,
+                runtime_ms: node.runtime_ms,
+                output_chars: node.output_chars,
+                estimated_output_tokens: node.estimated_output_tokens,
                 verification_status,
                 verification_reason,
             }
@@ -4535,12 +4605,39 @@ mod tests {
                     status: JobStatus::Completed,
                     output: Some("node two output".to_string()),
                     error: None,
-                    latency_ms: Some(10),
+                    latency_ms: Some(25),
                 },
                 "5".to_string(),
             )
             .expect("second completion");
         assert_eq!(second_completed.status, JobStatus::Queued);
+
+        let first_result = second_completed
+            .graph
+            .results
+            .iter()
+            .find(|result| result.node_id == first_graph_node)
+            .expect("first result");
+        let second_result = second_completed
+            .graph
+            .results
+            .iter()
+            .find(|result| result.node_id == second_graph_node)
+            .expect("second result");
+        assert_eq!(first_result.source_node_id.as_deref(), Some("node-1"));
+        assert_eq!(first_result.latency_ms, Some(10));
+        assert_eq!(first_result.queue_wait_ms, Some(1_000));
+        assert_eq!(
+            first_result.output_chars,
+            Some("node one output".chars().count())
+        );
+        assert_eq!(second_result.source_node_id.as_deref(), Some("node-2"));
+        assert_eq!(second_result.latency_ms, Some(25));
+        assert_eq!(second_result.queue_wait_ms, Some(1_000));
+        assert_eq!(
+            second_result.output_chars,
+            Some("node two output".chars().count())
+        );
     }
 
     #[test]

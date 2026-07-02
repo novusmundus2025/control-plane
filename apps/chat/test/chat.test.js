@@ -217,6 +217,12 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
               id: "job.origins",
               name: "Origins",
               status: "completed",
+              assigned_node_id: "node-1",
+              latency_ms: 18000,
+              queue_wait_ms: 500,
+              output_chars: 48,
+              estimated_output_tokens: 12,
+              effective_max_tokens: 256,
               output: "llama.cpp mode=cuda; response=assistant: Founded in 1916. Founded in 1916.",
             },
             { id: "job.modern", name: "Modern era", status: "running" },
@@ -238,6 +244,12 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
   );
 
   assert.equal(result.progress.nodes[0].output, "Founded in 1916.");
+  assert.equal(result.progress.nodes[0].assigned_node_id, "node-1");
+  assert.equal(result.progress.nodes[0].latency_ms, 18000);
+  assert.equal(result.progress.nodes[0].queue_wait_ms, 500);
+  assert.equal(result.progress.nodes[0].output_chars, 48);
+  assert.equal(result.progress.nodes[0].estimated_output_tokens, 12);
+  assert.equal(result.progress.nodes[0].effective_max_tokens, 256);
   assert.equal(result.progress.nodes[1].output, "");
   assert.equal(result.progress.nodes[2].output, "");
 });

@@ -1115,6 +1115,12 @@ export function page(config = configFromEnv()) {
       gap: 7px;
       color: #fff;
     }
+    .chunk-meta {
+      margin-top: 6px;
+      color: var(--mx-muted);
+      font-size: 12px;
+      overflow-wrap: anywhere;
+    }
     .mx-spinner {
       width: 12px;
       height: 12px;
@@ -1486,6 +1492,13 @@ export function page(config = configFromEnv()) {
       head.appendChild(name);
       head.appendChild(status);
       row.appendChild(head);
+      const telemetry = formatChunkTelemetry(chunk);
+      if (telemetry) {
+        const meta = document.createElement("div");
+        meta.className = "chunk-meta";
+        meta.textContent = telemetry;
+        row.appendChild(meta);
+      }
       if (chunk.output) {
         const output = document.createElement("div");
         output.className = "chunk-output";
@@ -1493,6 +1506,16 @@ export function page(config = configFromEnv()) {
         row.appendChild(output);
       }
       return row;
+    }
+
+    function formatChunkTelemetry(chunk) {
+      const parts = [];
+      if (chunk.assigned_node_id) parts.push("node " + chunk.assigned_node_id);
+      if (Number.isFinite(chunk.latency_ms)) parts.push("latency " + chunk.latency_ms + " ms");
+      if (Number.isFinite(chunk.queue_wait_ms)) parts.push("queue " + chunk.queue_wait_ms + " ms");
+      if (Number.isFinite(chunk.output_chars)) parts.push(chunk.output_chars + " chars");
+      if (Number.isFinite(chunk.effective_max_tokens)) parts.push("max " + chunk.effective_max_tokens + " tokens");
+      return parts.join(" - ");
     }
 
     function isActiveChunkStatus(status) {
@@ -1842,9 +1865,20 @@ function summarizeChatProgress(job) {
       name: node.name,
       status: node.status,
       assigned_node_id: node.assigned_node_id ?? null,
+      latency_ms: numberOrNull(node.latency_ms),
+      queue_wait_ms: numberOrNull(node.queue_wait_ms),
+      runtime_ms: numberOrNull(node.runtime_ms),
+      output_chars: numberOrNull(node.output_chars),
+      estimated_output_tokens: numberOrNull(node.estimated_output_tokens),
+      effective_max_tokens: numberOrNull(node.effective_max_tokens),
       output: node.status === "completed" && node.output ? compactChunkOutput(node.output) : "",
     })),
   };
+}
+
+function numberOrNull(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function compactChunkOutput(value) {
