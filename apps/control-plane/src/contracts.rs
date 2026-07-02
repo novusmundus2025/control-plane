@@ -433,9 +433,29 @@ pub struct JobGraphNode {
     #[serde(default)]
     pub assigned_at: Option<String>,
     #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
     pub worker_id: Option<String>,
     #[serde(default)]
     pub backend: Option<Backend>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub runtime_mode: Option<String>,
+    #[serde(default)]
+    pub effective_max_tokens: Option<u32>,
+    #[serde(default)]
+    pub queue_wait_ms: Option<u64>,
+    #[serde(default)]
+    pub runtime_ms: Option<u64>,
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
+    #[serde(default)]
+    pub output_chars: Option<usize>,
+    #[serde(default)]
+    pub estimated_output_tokens: Option<usize>,
     #[serde(default)]
     pub attempt_count: u32,
     #[serde(default = "default_graph_node_max_attempts")]
@@ -461,6 +481,28 @@ pub struct JobResultRecord {
     pub source_worker_id: Option<String>,
     pub source_node_id: Option<String>,
     pub latency_ms: Option<u64>,
+    #[serde(default)]
+    pub assigned_at: Option<String>,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub backend: Option<Backend>,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub runtime_mode: Option<String>,
+    #[serde(default)]
+    pub effective_max_tokens: Option<u32>,
+    #[serde(default)]
+    pub queue_wait_ms: Option<u64>,
+    #[serde(default)]
+    pub runtime_ms: Option<u64>,
+    #[serde(default)]
+    pub output_chars: Option<usize>,
+    #[serde(default)]
+    pub estimated_output_tokens: Option<usize>,
     #[serde(default)]
     pub verification_status: JobResultVerificationStatus,
     #[serde(default)]
