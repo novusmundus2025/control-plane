@@ -481,21 +481,14 @@ impl ControlPlaneState {
     }
 
     fn node_can_run_job(node: &NodeRecord, job: &JobRecord) -> bool {
-        let allowed_override_active = node
-            .operator_policy_override
-            .as_ref()
-            .map(|value| value.target == NodePolicyOverrideTarget::Allowed)
-            .unwrap_or(false);
-
-        if allowed_override_active {
-            return true;
-        }
-
         let Some(worker_health) = node.worker_health.as_ref() else {
             return false;
         };
 
-        if !worker_health.runtime_ready {
+        if !worker_health.healthy
+            || !worker_health.runtime_ready
+            || !worker_health.llama_cli_available
+        {
             return false;
         }
 
@@ -2745,6 +2738,10 @@ pub fn evaluate_policy(
         ));
     }
 
+    if !worker_health.llama_cli_available {
+        reasons.push("llama-cli is unavailable".to_string());
+    }
+
     if runtime_mode.eq_ignore_ascii_case("cuda") {
         if !worker_health.cuda_driver_available {
             reasons.push("CUDA driver is unavailable".to_string());
@@ -2753,10 +2750,6 @@ pub fn evaluate_policy(
             reasons.push("CUDA device is unavailable".to_string());
         }
     } else {
-        if !worker_health.llama_cli_available {
-            reasons.push("llama-cli is unavailable".to_string());
-        }
-
         if !worker_health.blas_device_available {
             reasons.push("BLAS device acceleration is unavailable".to_string());
         }
@@ -5323,7 +5316,7 @@ mod tests {
                         r"C:\Users\batal\.opengpu\models\qwen_qwen2_5-0_5b-instruct\qwen.gguf"
                             .to_string(),
                     ),
-                    llama_cli_available: false,
+                    llama_cli_available: true,
                     blas_device_available: false,
                     cuda_device_available: true,
                     cuda_driver_available: true,
@@ -5344,6 +5337,23 @@ mod tests {
 
         assert!(node.policy_allowed);
         assert_eq!(node.policy_reason, None);
+    }
+
+    #[test]
+    fn blocks_windows_cuda_node_when_llama_cli_is_missing() {
+        let mut state = ControlPlaneState::default();
+        state.register(cuda_registration("node-win"));
+        let mut heartbeat = low_vram_cuda_heartbeat("node-win", "2");
+        heartbeat.worker_health.llama_cli_available = false;
+
+        let node = state.heartbeat(heartbeat, "2".to_string());
+
+        assert!(!node.policy_allowed);
+        assert!(node
+            .policy_reason
+            .as_deref()
+            .expect("policy reason")
+            .contains("llama-cli is unavailable"));
     }
 
     #[test]
@@ -5619,12 +5629,13 @@ mod tests {
     }
 
     #[test]
-    fn override_allowed_unblocks_claim_routing_immediately() {
+    fn override_allowed_does_not_bypass_runtime_health_for_claims() {
         let mut state = ControlPlaneState::default();
         state.register(m_series_registration("node-1"));
         let mut heartbeat = ready_heartbeat("node-1", "1");
         heartbeat.worker_health.healthy = false;
         heartbeat.worker_health.runtime_ready = false;
+        heartbeat.worker_health.llama_cli_available = false;
         state.heartbeat(heartbeat, "1".to_string());
         state.submit_job(
             JobRequest {
@@ -5657,8 +5668,7 @@ mod tests {
             .expect("override");
 
         let claim = state.claim_job("node-1", "4".to_string());
-        let job = claim.job.expect("claimed job");
-        assert_eq!(job.assigned_node_id.as_deref(), Some("node-1"));
+        assert!(claim.job.is_none());
 
         let node = state.nodes.get("node-1").expect("node exists");
         assert_eq!(
@@ -5673,6 +5683,10 @@ mod tests {
             Some("operator override: operator verified local recovery")
         );
         assert!(!node.computed_policy_allowed);
+        assert_eq!(
+            state.jobs.get("job-1").map(|job| job.status),
+            Some(JobStatus::Queued)
+        );
     }
 
     #[test]
