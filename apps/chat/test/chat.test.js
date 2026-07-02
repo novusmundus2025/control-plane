@@ -32,6 +32,10 @@ test("renders a usable chat page", () => {
   assert.match(html, /\[ \/ \] Commands/);
   assert.match(html, /\.message\.assistant \.message-body/);
   assert.match(html, /\.message\.user \.message-body/);
+  assert.match(html, /\.code-block/);
+  assert.match(html, /function stripEchoedPrompt/);
+  assert.match(html, /function appendRichMessage/);
+  assert.match(html, /function formatCodeForDisplay/);
   assert.match(html, /aria-label", role === "user" \? "Your message" : "MundusX response"/);
   assert.doesNotMatch(html, /avatar\.textContent = role === "user" \? "You" : "M"/);
   assert.match(html, /\/assets\/mundusx-logo\.png/);
