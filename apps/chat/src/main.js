@@ -1039,6 +1039,56 @@ export function page(config = configFromEnv()) {
       background: rgba(255,255,255,0.025);
       max-height: min(52vh, 520px);
     }
+    .work-trace {
+      display: grid;
+      gap: 12px;
+    }
+    .work-title {
+      color: #fff;
+      font-weight: 800;
+    }
+    .chunk-list {
+      display: grid;
+      gap: 8px;
+    }
+    .chunk-row {
+      border: 1px solid var(--mx-line);
+      background: rgba(255,255,255,0.02);
+      padding: 10px 12px;
+    }
+    .chunk-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      color: var(--mx-text);
+    }
+    .chunk-status {
+      color: var(--mx-muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .chunk-output {
+      margin-top: 9px;
+      color: var(--mx-muted);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      max-height: 160px;
+      overflow: auto;
+      border-top: 1px solid var(--mx-line);
+      padding-top: 9px;
+      font-size: 13px;
+    }
+    .source-chunks {
+      margin-top: 16px;
+      border-top: 1px solid var(--mx-line);
+      padding-top: 12px;
+    }
+    .source-chunks summary {
+      cursor: pointer;
+      color: var(--mx-muted);
+    }
     .meta,
     .fine-print {
       color: var(--mx-muted);
@@ -1266,12 +1316,7 @@ export function page(config = configFromEnv()) {
           throw new Error(payload.error || "MundusX job failed");
         }
 
-        const body = pending.querySelector(".message-body");
-        body.textContent = payload.output || "(empty response)";
-        const meta = document.createElement("div");
-        meta.className = "meta";
-        meta.textContent = formatJobMeta(payload);
-        body.appendChild(meta);
+        renderCompletedJob(pending, payload);
         statusEl.textContent = "Ready";
       } catch (error) {
         pending.className = "message error";
@@ -1286,11 +1331,82 @@ export function page(config = configFromEnv()) {
 
     function renderPendingJob(node, payload) {
       const body = node.querySelector(".message-body");
-      body.textContent = formatProgressText(payload);
+      body.textContent = "";
+      body.appendChild(createWorkTrace(payload));
       const meta = document.createElement("div");
       meta.className = "meta";
       meta.textContent = formatJobMeta(payload);
       body.appendChild(meta);
+    }
+
+    function renderCompletedJob(node, payload) {
+      const body = node.querySelector(".message-body");
+      body.textContent = payload.output || "(empty response)";
+      if (payload.progress?.nodes?.some((chunk) => chunk.output)) {
+        body.appendChild(createSourceChunks(payload));
+      }
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = formatJobMeta(payload);
+      body.appendChild(meta);
+    }
+
+    function createWorkTrace(payload) {
+      const progress = payload.progress || {};
+      const wrapper = document.createElement("div");
+      wrapper.className = "work-trace";
+      const title = document.createElement("div");
+      title.className = "work-title";
+      title.textContent = formatProgressText(payload);
+      wrapper.appendChild(title);
+
+      if (progress.nodes?.length) {
+        const list = document.createElement("div");
+        list.className = "chunk-list";
+        for (const chunk of progress.nodes) {
+          list.appendChild(createChunkRow(chunk));
+        }
+        wrapper.appendChild(list);
+      }
+
+      return wrapper;
+    }
+
+    function createSourceChunks(payload) {
+      const details = document.createElement("details");
+      details.className = "source-chunks";
+      const summary = document.createElement("summary");
+      summary.textContent = "Source chunks";
+      details.appendChild(summary);
+      const list = document.createElement("div");
+      list.className = "chunk-list";
+      for (const chunk of payload.progress.nodes.filter((node) => node.output)) {
+        list.appendChild(createChunkRow(chunk));
+      }
+      details.appendChild(list);
+      return details;
+    }
+
+    function createChunkRow(chunk) {
+      const row = document.createElement("div");
+      row.className = "chunk-row";
+      const head = document.createElement("div");
+      head.className = "chunk-head";
+      const name = document.createElement("span");
+      name.textContent = chunk.name || chunk.id || "Chunk";
+      const status = document.createElement("span");
+      status.className = "chunk-status";
+      status.textContent = chunk.status || "waiting";
+      head.appendChild(name);
+      head.appendChild(status);
+      row.appendChild(head);
+      if (chunk.output) {
+        const output = document.createElement("div");
+        output.className = "chunk-output";
+        output.textContent = chunk.output;
+        row.appendChild(output);
+      }
+      return row;
     }
 
     function formatProgressText(payload) {
@@ -1620,8 +1736,21 @@ function summarizeChatProgress(job) {
       name: node.name,
       status: node.status,
       assigned_node_id: node.assigned_node_id ?? null,
+      output: node.status === "completed" && node.output ? compactChunkOutput(node.output) : "",
     })),
   };
+}
+
+function compactChunkOutput(value) {
+  return truncateText(cleanChatOutput(value), 900);
+}
+
+function truncateText(value, maxLength) {
+  const text = String(value ?? "").trim();
+  if (text.length <= maxLength) {
+    return text;
+  }
+  return `${text.slice(0, maxLength).trimEnd()}...`;
 }
 
 function normalizeExecutionMode(value) {
