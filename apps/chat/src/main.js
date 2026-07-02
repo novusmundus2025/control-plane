@@ -869,20 +869,37 @@ export function page(config = configFromEnv()) {
       const pending = addMessage("Submitting to MundusX...", "assistant", "Queued");
 
       try {
-        const response = await fetch("/api/chat", {
+        const created = await fetch("/api/chat/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message }),
+          body: JSON.stringify({ message, executionMode: "auto" }),
         });
-        const payload = await response.json();
-        if (!response.ok) {
-          throw new Error(payload.error || "chat request failed");
+        const submitted = await created.json();
+        if (!created.ok) {
+          throw new Error(submitted.error || "chat request failed");
         }
+
+        renderPendingJob(pending, submitted);
+        let payload = submitted;
+        while (!["completed", "failed"].includes(payload.status)) {
+          await sleep(1500);
+          const polled = await fetch("/api/chat/jobs/" + encodeURIComponent(submitted.job_id));
+          payload = await polled.json();
+          if (!polled.ok) {
+            throw new Error(payload.error || "chat poll failed");
+          }
+          renderPendingJob(pending, payload);
+        }
+
+        if (payload.status === "failed") {
+          throw new Error(payload.error || "MundusX job failed");
+        }
+
         const body = pending.querySelector(".message-body");
         body.textContent = payload.output || "(empty response)";
         const meta = document.createElement("div");
         meta.className = "meta";
-        meta.textContent = "job " + payload.job_id + " / " + payload.status;
+        meta.textContent = formatJobMeta(payload);
         body.appendChild(meta);
         statusEl.textContent = "Ready";
       } catch (error) {
@@ -895,6 +912,36 @@ export function page(config = configFromEnv()) {
         promptEl.focus();
       }
     });
+
+    function renderPendingJob(node, payload) {
+      const body = node.querySelector(".message-body");
+      body.textContent = formatProgressText(payload);
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = formatJobMeta(payload);
+      body.appendChild(meta);
+    }
+
+    function formatProgressText(payload) {
+      const progress = payload.progress || {};
+      if (payload.status === "completed") return "Final answer ready.";
+      if (progress.merging) return "Merging final synthesis...";
+      if (progress.processing) return "Processing: " + progress.processing;
+      if (progress.total) {
+        return "Queued " + progress.completed + "/" + progress.total + " chunks complete.";
+      }
+      return "Queued with MundusX...";
+    }
+
+    function formatJobMeta(payload) {
+      const progress = payload.progress || {};
+      const chunks = progress.total ? " / " + progress.completed + "/" + progress.total + " chunks" : "";
+      return "job " + payload.job_id + " / " + payload.status + " / mode " + payload.execution_mode + chunks;
+    }
+
+    function sleep(ms) {
+      return new Promise((resolve) => setTimeout(resolve, ms));
+    }
   </script>
 </body>
 </html>`;
@@ -922,6 +969,16 @@ export function createServerApp(config = configFromEnv()) {
         const result = await submitChatTurn(body, config);
         return sendJson(response, 200, result);
       }
+      if (request.method === "POST" && url.pathname === "/api/chat/jobs") {
+        const body = await readJsonBody(request);
+        const result = await submitChatJob(body, config);
+        return sendJson(response, 202, result);
+      }
+      if (request.method === "GET" && url.pathname.startsWith("/api/chat/jobs/")) {
+        const jobId = decodeURIComponent(url.pathname.slice("/api/chat/jobs/".length));
+        const result = await pollChatJob(jobId, config);
+        return sendJson(response, 200, result);
+      }
       return sendJson(response, 404, { error: "not found" });
     } catch (error) {
       const status = error.statusCode ?? 500;
@@ -931,58 +988,173 @@ export function createServerApp(config = configFromEnv()) {
 }
 
 export async function submitChatTurn(body, config = configFromEnv(), fetchImpl = fetch) {
+  const submitted = await submitChatJob(body, config, fetchImpl);
+  return waitForChatJob(submitted.job_id, body, config, fetchImpl);
+}
+
+export async function submitChatJob(body, config = configFromEnv(), fetchImpl = fetch) {
   const message = String(body?.message ?? "").trim();
   if (!message) {
     throw httpError(400, "message is required");
   }
 
-  const timeoutSeconds = positiveInteger(body?.timeoutSeconds, config.defaultTimeoutSeconds);
   const model = String(body?.model ?? config.defaultModel).trim() || config.defaultModel;
-  const chatResponse = await controlPlaneFetch(
+  const jobResponse = await controlPlaneFetch(
     fetchImpl,
     config,
-    "/v1/chat/completions",
+    "/v1/jobs",
     {
       method: "POST",
       body: JSON.stringify({
-        model,
-        messages: [{ role: "user", content: message }],
-        max_tokens: positiveInteger(body?.maxTokens, 512),
-        temperature: typeof body?.temperature === "number" ? body.temperature : 0.2,
+        request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+        prompt: message,
+        preferred_backend: "auto",
+        runtime_mode: "local",
+        execution_mode: normalizeExecutionMode(body?.executionMode ?? "auto"),
         stream: false,
+        model,
+        system_prompt: buildChatSystemPrompt(),
+        max_tokens: inferMaxTokens(message, body?.maxTokens),
+        temperature: typeof body?.temperature === "number" ? body.temperature : 0.2,
+        top_p: typeof body?.topP === "number" ? body.topP : 0.9,
       }),
     },
   );
 
-  const jobId = chatResponse?.mundusx?.job_id;
+  const job = jobResponse.job ?? jobResponse;
+  const jobId = jobResponse.job_id ?? job.job_id;
   if (!jobId) {
     throw httpError(502, "control plane did not return a job id");
   }
 
+  return formatChatJob(jobId, job, model);
+}
+
+export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = fetch) {
+  if (!jobId) {
+    throw httpError(400, "job id is required");
+  }
+  const latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
+  const job = latest.job ?? latest;
+  return formatChatJob(jobId, job, job.model ?? config.defaultModel);
+}
+
+async function waitForChatJob(jobId, body, config, fetchImpl) {
+  const timeoutSeconds = positiveInteger(body?.timeoutSeconds, config.defaultTimeoutSeconds);
   const deadline = Date.now() + timeoutSeconds * 1000;
   let latest = null;
   while (Date.now() <= deadline) {
-    latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
-    const job = latest.job ?? latest;
-    if (job.status === "completed") {
-      const output = cleanChatOutput(job.output ?? "");
-      return {
-        job_id: jobId,
-        status: job.status,
-        output,
-        output_cleaned: output !== String(job.output ?? ""),
-        model: job.model ?? model,
-        assigned_node_id: job.assigned_node_id ?? null,
-      };
+    latest = await pollChatJob(jobId, config, fetchImpl);
+    if (latest.status === "completed") {
+      return latest;
     }
-    if (job.status === "failed") {
-      throw httpError(502, job.error || "MundusX job failed");
+    if (latest.status === "failed") {
+      throw httpError(502, latest.error || "MundusX job failed");
     }
     await delay(POLL_INTERVAL_MS);
   }
 
-  const status = latest?.job?.status ?? latest?.status ?? "unknown";
+  const status = latest?.status ?? "unknown";
   throw httpError(504, `timed out waiting for job ${jobId} while status was ${status}`);
+}
+
+function formatChatJob(jobId, job, fallbackModel) {
+  const output = job.status === "completed" ? cleanChatOutput(job.output ?? "") : "";
+  return {
+    job_id: jobId,
+    status: job.status,
+    output,
+    output_cleaned: job.status === "completed" && output !== String(job.output ?? ""),
+    error: job.error ?? null,
+    model: job.model ?? fallbackModel,
+    assigned_node_id: job.assigned_node_id ?? null,
+    execution_mode: job.execution_mode ?? "single",
+    graph_execution_enabled: Boolean(job.graph_execution_enabled),
+    progress: summarizeChatProgress(job),
+  };
+}
+
+function summarizeChatProgress(job) {
+  const graph = job.graph ?? {};
+  const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  if (!nodes.length) {
+    return {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: job.plan?.strategy ?? "single_job",
+    };
+  }
+
+  const completed = nodes.filter((node) => node.status === "completed").length;
+  const runningNodes = nodes.filter((node) => node.status === "running" || node.status === "assigned");
+  const failed = nodes.filter((node) => node.status === "failed").length;
+  const waiting = nodes.filter((node) => node.status === "waiting" || node.status === "ready").length;
+  const activeNode =
+    nodes.find((node) => node.id === job.active_graph_node_id) ?? runningNodes[0] ?? null;
+  const finalNodeId = graph.final_node_id ?? null;
+  const merging =
+    Boolean(activeNode) &&
+    (activeNode.id === finalNodeId || String(activeNode.responsibility ?? "") === "merge");
+
+  return {
+    total: nodes.length,
+    completed,
+    running: runningNodes.length,
+    failed,
+    waiting,
+    processing: activeNode?.name ?? null,
+    merging,
+    strategy: job.plan?.strategy ?? graph.strategy ?? "graph",
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      name: node.name,
+      status: node.status,
+      assigned_node_id: node.assigned_node_id ?? null,
+    })),
+  };
+}
+
+function normalizeExecutionMode(value) {
+  const normalized = String(value ?? "auto").trim().toLowerCase();
+  if (["single", "auto", "decompose"].includes(normalized)) {
+    return normalized;
+  }
+  return "auto";
+}
+
+function inferMaxTokens(message, explicitValue) {
+  const explicit = positiveInteger(explicitValue, 0);
+  if (explicit > 0) {
+    return explicit;
+  }
+
+  const lower = message.toLowerCase();
+  if (containsAny(lower, ["detailed", "complete", "full", "comprehensive", "history of", "report"])) {
+    return 1024;
+  }
+  if (message.length > 600) {
+    return 768;
+  }
+  return 384;
+}
+
+function buildChatSystemPrompt() {
+  return [
+    "You are MundusX Chat.",
+    "Answer the user's request directly.",
+    "Do not echo system, assistant, or user role labels.",
+    "Do not repeat the same sentence.",
+    "If the request asks for a full program or long explanation, provide the complete useful answer.",
+  ].join(" ");
+}
+
+function containsAny(value, needles) {
+  return needles.some((needle) => value.includes(needle));
 }
 
 async function controlPlaneFetch(fetchImpl, config, path, init = {}) {
@@ -1111,7 +1283,7 @@ function stripEmbeddedRoleLeak(value) {
 
 function collapseRepeatedSentences(value) {
   const sentences = value.match(/[^.!?\n]+[.!?]+(?:\s+|$)|[^.!?\n]+(?:\n|$)/g);
-  if (!sentences || sentences.length < 3) {
+  if (!sentences || sentences.length < 2) {
     return value;
   }
 
