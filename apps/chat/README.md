@@ -39,6 +39,7 @@ Optional environment:
 MUNDUSX_OPERATOR_TOKEN=<only if the target control plane requires auth>
 MUNDUSX_CHAT_MODEL=<optional explicit model override>
 MUNDUSX_CHAT_TIMEOUT_SECONDS=90
+MUNDUSX_WEATHER_CACHE_URL=<optional redis://, rediss://, valkey://, or valkeys:// URL>
 ```
 
 Railway provides `PORT`; the app reads it automatically.
@@ -54,13 +55,19 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_CHAT_MODEL` | unset | Optional explicit model override; unset means control-plane routed contributor models |
 | `MUNDUSX_CHAT_DEFAULT_MODEL` | unset | Deprecated alias for `MUNDUSX_CHAT_MODEL` |
 | `MUNDUSX_CHAT_TIMEOUT_SECONDS` | `90` | Default server-side poll timeout for one chat turn |
+| `MUNDUSX_WEATHER_URL` | `https://wttr.in` | Weather API origin for direct weather answers |
+| `MUNDUSX_WEATHER_CACHE_URL` | unset | Optional Redis/Valkey URL for weather response caching |
+| `VALKEY_URL` | unset | Fallback cache URL when `MUNDUSX_WEATHER_CACHE_URL` is unset |
+| `REDIS_URL` | unset | Fallback cache URL when `MUNDUSX_WEATHER_CACHE_URL` and `VALKEY_URL` are unset |
+| `MUNDUSX_WEATHER_TTL_SECONDS` | `7200` | Weather cache TTL; default is 2 hours |
 
 ## Current Flow
 
 1. Browser posts a user message to `POST /api/chat/jobs`.
-2. Chat app submits a routed MundusX job to `POST /v1/jobs` with `execution_mode=auto`.
-3. Control plane decides whether the request is single-job or decomposed across graph chunks.
-4. Browser polls `GET /api/chat/jobs/:id`, which reads `GET /v1/jobs/:id`.
-5. Completed output and graph progress are returned to the browser.
+2. Obvious weather questions are answered directly through `wttr.in`; if Redis/Valkey is configured the response is cached for 2 hours.
+3. Other requests are submitted as routed MundusX jobs to `POST /v1/jobs` with `execution_mode=auto`.
+4. Control plane decides whether the request is single-job or decomposed across graph chunks.
+5. Browser polls `GET /api/chat/jobs/:id`, which reads `GET /v1/jobs/:id`.
+6. Completed output and graph progress are returned to the browser.
 
 Streaming is not enabled yet; the first version uses polling because the control plane already exposes job status and output.
