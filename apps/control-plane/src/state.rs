@@ -17,11 +17,13 @@ use std::path::PathBuf;
 const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_GRAPH_NODE_LEASE_SECONDS: u64 = 600;
 const DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS: u64 = 600;
+const DEFAULT_NODE_HEARTBEAT_STALE_SECONDS: u64 = 60;
 const REDUCER_SECTION_CHARS_COMPACT: usize = 450;
 const REDUCER_SECTION_CHARS_STANDARD: usize = 900;
 const REDUCER_SECTION_CHARS_STRONG: usize = 1_200;
 const GRAPH_NODE_LEASE_SECONDS_ENV: &str = "MUNDUSX_GRAPH_NODE_LEASE_SECONDS";
 const QUEUED_JOB_TIMEOUT_SECONDS_ENV: &str = "MUNDUSX_QUEUED_JOB_TIMEOUT_SECONDS";
+const NODE_HEARTBEAT_STALE_SECONDS_ENV: &str = "MUNDUSX_NODE_HEARTBEAT_STALE_SECONDS";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReducerProfile {
@@ -817,6 +819,7 @@ impl ControlPlaneState {
     }
 
     pub fn run_maintenance(&mut self, now: &str) -> Vec<JobRecord> {
+        self.mark_stale_nodes_stopped(now);
         let mut changed_jobs = self.release_expired_queued_jobs(now);
         changed_jobs.extend(self.release_stale_graph_claims(now));
         changed_jobs
@@ -957,6 +960,37 @@ impl ControlPlaneState {
             self.reevaluate_queued_jobs();
         }
         changed_jobs
+    }
+
+    fn mark_stale_nodes_stopped(&mut self, now: &str) {
+        let Some(now_seconds) = parse_unix_seconds(now) else {
+            return;
+        };
+        let stale_seconds = node_heartbeat_stale_seconds();
+
+        for node in self.nodes.values_mut() {
+            if matches!(node.state, AgentState::Paused | AgentState::Stopped)
+                || matches!(
+                    node.reported_state,
+                    AgentState::Paused | AgentState::Stopped
+                )
+            {
+                continue;
+            }
+            let Some(last_seen_seconds) = parse_unix_seconds(&node.updated_at) else {
+                continue;
+            };
+            if now_seconds.saturating_sub(last_seen_seconds) < stale_seconds {
+                continue;
+            }
+
+            node.state = AgentState::Stopped;
+            node.policy_allowed = false;
+            node.policy_reason = Some(format!(
+                "heartbeat stale: last seen {}s ago",
+                now_seconds.saturating_sub(last_seen_seconds)
+            ));
+        }
     }
 
     fn release_stale_graph_claims(&mut self, now: &str) -> Vec<JobRecord> {
@@ -1202,6 +1236,14 @@ fn queued_job_timeout_seconds() -> u64 {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS)
+}
+
+fn node_heartbeat_stale_seconds() -> u64 {
+    std::env::var(NODE_HEARTBEAT_STALE_SECONDS_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_NODE_HEARTBEAT_STALE_SECONDS)
 }
 
 fn update_node_trust(
@@ -3131,6 +3173,49 @@ mod tests {
     }
 
     #[test]
+    fn stale_busy_node_is_marked_stopped_and_not_counted_online() {
+        let mut state = ControlPlaneState::default();
+        state.register(m_series_registration("node-1"));
+        let mut heartbeat = ready_heartbeat("node-1", "1");
+        heartbeat.agent_state = AgentState::Busy;
+        state.heartbeat(heartbeat, "1".to_string());
+
+        state.run_maintenance("62");
+
+        let node = state.nodes.get("node-1").expect("node exists");
+        assert_eq!(node.reported_state, AgentState::Busy);
+        assert_eq!(node.state, AgentState::Stopped);
+        assert!(!node.policy_allowed);
+        assert!(node
+            .policy_reason
+            .as_deref()
+            .expect("stale reason")
+            .contains("heartbeat stale"));
+        let snapshot = state.snapshot("memory");
+        assert_eq!(snapshot["online_count"].as_u64(), Some(0));
+        assert_eq!(snapshot["stopped_count"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn fresh_heartbeat_restores_stale_node_for_claims() {
+        let mut state = ControlPlaneState::default();
+        state.register(m_series_registration("node-1"));
+        state.heartbeat(ready_heartbeat("node-1", "1"), "1".to_string());
+        state.run_maintenance("62");
+        state.submit_job(classification_request("hello world"), "63".to_string());
+
+        assert!(state.claim_job("node-1", "64".to_string()).job.is_none());
+
+        state.heartbeat(ready_heartbeat("node-1", "65"), "65".to_string());
+        let claim = state.claim_job("node-1", "66".to_string()).job;
+        assert!(claim.is_some());
+        assert_eq!(
+            state.nodes.get("node-1").map(|node| node.state),
+            Some(AgentState::Busy)
+        );
+    }
+
+    #[test]
     fn paused_policy_node_does_not_satisfy_queued_job() {
         let mut state = ControlPlaneState::default();
         state.submit_job(classification_request("hello world"), "1".to_string());
@@ -3692,6 +3777,7 @@ mod tests {
             .clone()
             .expect("stale graph node");
 
+        state.heartbeat(ready_heartbeat("node-2", "604"), "604".to_string());
         let retry_claim = state
             .claim_job("node-2", "604".to_string())
             .job
