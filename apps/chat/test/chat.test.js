@@ -15,6 +15,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /MundusX Chat/);
   assert.match(html, /id="chat-form"/);
   assert.match(html, /Message MundusX/);
+  assert.match(html, /\/assets\/mundusx-logo\.png/);
   assert.match(html, /https:\/\/uat\.mundusx\.ai/);
   assert.match(html, /Qwen\/Test/);
   assert.match(html, /Default timeout: 45s/);

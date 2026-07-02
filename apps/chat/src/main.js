@@ -1,12 +1,15 @@
 import { createServer } from "node:http";
-import { resolve } from "node:path";
-import { pathToFileURL } from "node:url";
+import { readFile } from "node:fs/promises";
+import { dirname, resolve } from "node:path";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_CONTROL_PLANE_URL = "https://uat.mundusx.ai";
 const DEFAULT_MODEL = "Qwen/Qwen2.5-1.5B-Instruct";
 const DEFAULT_TIMEOUT_SECONDS = 90;
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
+const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
+const LOGO_PATH = resolve(MODULE_DIR, "../public/mundusx-logo.png");
 
 export function configFromEnv(env = process.env) {
   return {
@@ -117,14 +120,11 @@ export function page(config = configFromEnv()) {
       color: var(--text);
       font-weight: 800;
     }
-    .mark {
-      width: 30px;
-      height: 30px;
-      border-radius: 8px;
-      background: linear-gradient(135deg, #2aa8ff, #7d45ff);
-      display: grid;
-      place-items: center;
-      font-weight: 900;
+    .brand-logo {
+      width: 34px;
+      height: 34px;
+      object-fit: contain;
+      flex: 0 0 auto;
     }
     main {
       min-width: 0;
@@ -342,7 +342,7 @@ export function page(config = configFromEnv()) {
         <div class="history-item">MundusX architecture</div>
       </div>
       <div class="rail-footer">
-        <div class="brand"><span class="mark">M</span><span>MundusX</span></div>
+        <div class="brand"><img class="brand-logo" src="/assets/mundusx-logo.png" alt="" /><span>MundusX</span></div>
         <div>Connected to <code>${escapeHtml(config.controlPlaneUrl)}</code></div>
       </div>
     </aside>
@@ -463,6 +463,9 @@ export function createServerApp(config = configFromEnv()) {
       if (request.method === "GET" && url.pathname === "/") {
         return sendHtml(response, page(config));
       }
+      if (request.method === "GET" && url.pathname === "/assets/mundusx-logo.png") {
+        return sendPng(response, await readFile(LOGO_PATH));
+      }
       if (request.method === "GET" && url.pathname === "/health") {
         return sendJson(response, 200, {
           status: "ok",
@@ -577,6 +580,14 @@ function readJsonBody(request) {
 function sendHtml(response, html) {
   response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
   response.end(html);
+}
+
+function sendPng(response, bytes) {
+  response.writeHead(200, {
+    "Content-Type": "image/png",
+    "Cache-Control": "public, max-age=86400",
+  });
+  response.end(bytes);
 }
 
 function sendJson(response, status, payload) {
