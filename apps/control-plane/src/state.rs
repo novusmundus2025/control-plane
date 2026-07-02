@@ -16,7 +16,9 @@ use std::path::PathBuf;
 
 const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_GRAPH_NODE_LEASE_SECONDS: u64 = 600;
+const DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS: u64 = 600;
 const GRAPH_NODE_LEASE_SECONDS_ENV: &str = "MUNDUSX_GRAPH_NODE_LEASE_SECONDS";
+const QUEUED_JOB_TIMEOUT_SECONDS_ENV: &str = "MUNDUSX_QUEUED_JOB_TIMEOUT_SECONDS";
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ControlPlaneState {
@@ -773,8 +775,10 @@ impl ControlPlaneState {
         JobClaimResponse { job: None }
     }
 
-    pub fn run_maintenance(&mut self, now: &str) {
-        self.release_stale_graph_claims(now);
+    pub fn run_maintenance(&mut self, now: &str) -> Vec<JobRecord> {
+        let mut changed_jobs = self.release_expired_queued_jobs(now);
+        changed_jobs.extend(self.release_stale_graph_claims(now));
+        changed_jobs
     }
 
     pub fn complete_job(
@@ -825,11 +829,91 @@ impl ControlPlaneState {
             && next_ready_graph_node_id(&job.graph).is_some()
     }
 
-    fn release_stale_graph_claims(&mut self, now: &str) {
+    fn release_expired_queued_jobs(&mut self, now: &str) -> Vec<JobRecord> {
+        let Some(now_seconds) = parse_unix_seconds(now) else {
+            return Vec::new();
+        };
+        let timeout_seconds = queued_job_timeout_seconds();
+        let mut changed_jobs = Vec::new();
+
+        for job in self.jobs.values_mut() {
+            if job.status != JobStatus::Queued || job.assigned_at.is_some() {
+                continue;
+            }
+
+            let no_eligible_node = job
+                .scheduler_decision
+                .as_ref()
+                .map(|decision| decision.node_id.trim().is_empty())
+                .unwrap_or(true);
+            if !no_eligible_node {
+                continue;
+            }
+
+            let Some(submitted_at) = parse_unix_seconds(&job.submitted_at) else {
+                continue;
+            };
+            if now_seconds.saturating_sub(submitted_at) < timeout_seconds {
+                continue;
+            }
+
+            let scheduler_reason = job
+                .scheduler_decision
+                .as_ref()
+                .and_then(|decision| decision.reasons.first())
+                .cloned()
+                .unwrap_or_else(|| "no compatible ready node available".to_string());
+            let error = format!(
+                "queued job expired after {timeout_seconds}s without an eligible worker; {scheduler_reason}"
+            );
+
+            job.status = JobStatus::Failed;
+            job.completed_at = Some(now.to_string());
+            job.assigned_node_id = None;
+            job.assigned_at = None;
+            job.worker_id = None;
+            job.backend = None;
+            job.output = None;
+            job.error = Some(error.clone());
+            job.active_graph_node_id = None;
+
+            if job.graph_execution_enabled {
+                for node in &mut job.graph.nodes {
+                    if matches!(
+                        node.status,
+                        JobGraphNodeStatus::Ready
+                            | JobGraphNodeStatus::Waiting
+                            | JobGraphNodeStatus::Running
+                    ) {
+                        node.status = JobGraphNodeStatus::Failed;
+                        node.error = Some(error.clone());
+                        node.output = None;
+                        node.assigned_node_id = None;
+                        node.assigned_at = None;
+                        node.worker_id = None;
+                        node.backend = None;
+                    }
+                }
+                refresh_job_graph(&mut job.graph);
+                job.graph.updated_at = now.to_string();
+                job.graph.merge_error = Some(error.clone());
+            }
+
+            changed_jobs.push(job.clone());
+        }
+
+        if !changed_jobs.is_empty() {
+            self.reevaluate_queued_jobs();
+        }
+        changed_jobs
+    }
+
+    fn release_stale_graph_claims(&mut self, now: &str) -> Vec<JobRecord> {
         let Some(now) = parse_unix_seconds(now) else {
-            return;
+            return Vec::new();
         };
         let lease_seconds = graph_node_lease_seconds();
+        let mut changed_jobs = Vec::new();
 
         for job in self.jobs.values_mut() {
             if !job.graph_execution_enabled || !matches!(job.status, JobStatus::Assigned) {
@@ -903,9 +987,13 @@ impl ControlPlaneState {
                 job.status = JobStatus::Queued;
                 job.completed_at = None;
             }
+            changed_jobs.push(job.clone());
         }
 
-        self.reevaluate_queued_jobs();
+        if !changed_jobs.is_empty() {
+            self.reevaluate_queued_jobs();
+        }
+        changed_jobs
     }
 
     pub fn update_graph_node(
@@ -1055,6 +1143,14 @@ fn graph_node_lease_seconds() -> u64 {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_GRAPH_NODE_LEASE_SECONDS)
+}
+
+fn queued_job_timeout_seconds() -> u64 {
+    std::env::var(QUEUED_JOB_TIMEOUT_SECONDS_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS)
 }
 
 fn update_node_trust(
@@ -2588,6 +2684,63 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("no compatible ready node")));
+    }
+
+    #[test]
+    fn unassigned_graph_job_expires_when_no_worker_arrives() {
+        let mut state = ControlPlaneState::default();
+        let record = state.submit_job(
+            JobRequest {
+                request_id: "job-queued-graph".to_string(),
+                prompt: "Give me a detailed history of apple from its origins to today."
+                    .to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Auto,
+                stream: false,
+                model: Some("Qwen/Qwen2.5-1.5B-Instruct".to_string()),
+                system_prompt: None,
+                max_tokens: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "1".to_string(),
+        );
+
+        assert_eq!(record.status, JobStatus::Queued);
+        assert!(record.graph_execution_enabled);
+        assert_eq!(
+            record
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.status == JobGraphNodeStatus::Ready)
+                .count(),
+            4
+        );
+
+        let changed = state.run_maintenance("601");
+
+        assert_eq!(changed.len(), 1);
+        let job = state.jobs.get("job-queued-graph").expect("job");
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(job.completed_at.as_deref(), Some("601"));
+        assert!(job
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("queued job expired after 600s"));
+        assert!(job
+            .error
+            .as_deref()
+            .unwrap_or_default()
+            .contains("no compatible ready node"));
+        assert!(job
+            .graph
+            .nodes
+            .iter()
+            .all(|node| node.status == JobGraphNodeStatus::Failed));
     }
 
     #[test]
