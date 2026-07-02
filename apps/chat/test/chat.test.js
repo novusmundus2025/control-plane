@@ -24,6 +24,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /id="chat-form"/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
+  assert.match(html, /\.work-trace/);
+  assert.match(html, /Source chunks/);
   assert.match(html, /Message MundusX/);
   assert.match(html, /\[ \/ \] Commands/);
   assert.match(html, /\.message\.assistant \.message-body/);
@@ -180,6 +182,7 @@ test("polls chat job progress and final cleaned output", async () => {
               name: "Final synthesis",
               status: "running",
               responsibility: "merge",
+              output: "llama.cpp mode=cuda; response=assistant: Final notes.",
             },
           ],
         },
@@ -197,6 +200,39 @@ test("polls chat job progress and final cleaned output", async () => {
   assert.equal(result.progress.total, 2);
   assert.equal(result.progress.completed, 1);
   assert.equal(result.progress.merging, true);
+  assert.equal(result.progress.nodes[1].output, "");
+});
+
+test("returns compact completed chunk outputs for decomposed jobs", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-2",
+        status: "assigned",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        graph: {
+          nodes: [
+            {
+              id: "job.origins",
+              name: "Origins",
+              status: "completed",
+              output: "llama.cpp mode=cuda; response=assistant: Founded in 1916. Founded in 1916.",
+            },
+            { id: "job.modern", name: "Modern era", status: "running" },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-2",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.progress.nodes[0].output, "Founded in 1916.");
+  assert.equal(result.progress.nodes[1].output, "");
 });
 
 test("cleans worker metadata and repeated role-prefixed output", () => {
