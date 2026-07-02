@@ -1848,7 +1848,7 @@ function summarizeChatProgress(job) {
 }
 
 function compactChunkOutput(value) {
-  const cleaned = cleanChatOutput(value);
+  const cleaned = cleanChatOutputInternal(value, false);
   if (isInstructionOnlyChunkOutput(cleaned)) {
     return "";
   }
@@ -2027,6 +2027,10 @@ export function escapeHtml(value) {
 }
 
 export function cleanChatOutput(value) {
+  return cleanChatOutputInternal(value, true);
+}
+
+function cleanChatOutputInternal(value, emptyFallback) {
   let output = String(value ?? "")
     .replace(/\r\n/g, "\n")
     .trim();
@@ -2034,12 +2038,13 @@ export function cleanChatOutput(value) {
   output = stripWorkerTrace(output);
   output = stripRolePrefixes(output);
   output = stripEmbeddedRoleLeak(output);
+  output = stripPromptInstructionLeak(output);
   output = collapseRepeatedSentences(output);
   output = collapseRepeatedLines(output);
   output = output.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 
   if (!output) {
-    return "MundusX returned an empty response. Please try again.";
+    return emptyFallback ? "MundusX returned an empty response. Please try again." : "";
   }
   return output;
 }
@@ -2083,6 +2088,38 @@ function stripEmbeddedRoleLeak(value) {
   }
 
   return before;
+}
+
+function stripPromptInstructionLeak(value) {
+  let output = value.trim();
+  if (!output) {
+    return output;
+  }
+
+  const requiredOutputIndex = output.search(/\brequired output\s*:/i);
+  if (requiredOutputIndex !== -1) {
+    const afterRequiredOutput = output.slice(requiredOutputIndex);
+    const headingPattern = /\b([A-Z][A-Za-z0-9 &,'-]{2,80})\s*:\s+(?=[A-Z0-9])/g;
+    let match;
+    while ((match = headingPattern.exec(afterRequiredOutput)) !== null) {
+      const heading = match[1].trim().toLowerCase();
+      if (!["required output", "name", "responsibility", "subject"].includes(heading)) {
+        return afterRequiredOutput.slice(match.index).trim();
+      }
+    }
+  }
+
+  output = output.replace(
+    /^(?:(?:do not|don't|avoid|never|return only|write only|only include)[^.!?\n]*[.!?]\s*){1,12}/i,
+    "",
+  ).trim();
+
+  output = output.replace(
+    /^(?:mundusx subjob|subject|name|responsibility)\s*:[\s\S]{0,700}?\brequired output\s*:\s*/i,
+    "",
+  ).trim();
+
+  return output;
 }
 
 function collapseRepeatedSentences(value) {

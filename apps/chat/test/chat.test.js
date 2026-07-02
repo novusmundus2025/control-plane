@@ -254,6 +254,18 @@ test("cleans worker metadata and repeated role-prefixed output", () => {
   assert.doesNotMatch(output, /llama\.cpp|path=|response=|system:/i);
 });
 
+test("removes leaked subjob instructions while keeping chunk content", () => {
+  const output = cleanChatOutput(
+    "Do not include any external links or references. Do not generate any output that is not factual and directly related to the user's request. MundusX subjob: Name: History Responsibility: section Required output: Explain the history of Mercedes-Benz from its origins to today. Write the factual content for this section only, in plain prose or compact bullets. Origins and founders: Mercedes-Benz was founded in 1926 by Gottlieb Daimler and Wilhelm Maybach.",
+  );
+
+  assert.equal(
+    output,
+    "Origins and founders: Mercedes-Benz was founded in 1926 by Gottlieb Daimler and Wilhelm Maybach.",
+  );
+  assert.doesNotMatch(output, /Do not include|Required output|MundusX subjob|Write the factual/i);
+});
+
 function jsonResponse(payload, ok = true, status = 200) {
   return {
     ok,
