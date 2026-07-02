@@ -40,6 +40,12 @@ pub struct ControlPlaneState {
     pub credits_ledger: Vec<CreditsLedgerRecord>,
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct MaintenanceResult {
+    pub changed_jobs: Vec<JobRecord>,
+    pub changed_nodes: Vec<NodeRecord>,
+}
+
 impl ControlPlaneState {
     fn apply_policy_override(node: &mut NodeRecord) {
         node.state = node.reported_state;
@@ -819,10 +825,17 @@ impl ControlPlaneState {
     }
 
     pub fn run_maintenance(&mut self, now: &str) -> Vec<JobRecord> {
-        self.mark_stale_nodes_stopped(now);
+        self.run_maintenance_with_nodes(now).changed_jobs
+    }
+
+    pub fn run_maintenance_with_nodes(&mut self, now: &str) -> MaintenanceResult {
+        let changed_nodes = self.mark_stale_nodes_stopped(now);
         let mut changed_jobs = self.release_expired_queued_jobs(now);
         changed_jobs.extend(self.release_stale_graph_claims(now));
-        changed_jobs
+        MaintenanceResult {
+            changed_jobs,
+            changed_nodes,
+        }
     }
 
     pub fn complete_job(
@@ -962,11 +975,12 @@ impl ControlPlaneState {
         changed_jobs
     }
 
-    fn mark_stale_nodes_stopped(&mut self, now: &str) {
+    fn mark_stale_nodes_stopped(&mut self, now: &str) -> Vec<NodeRecord> {
         let Some(now_seconds) = parse_unix_seconds(now) else {
-            return;
+            return Vec::new();
         };
         let stale_seconds = node_heartbeat_stale_seconds();
+        let mut changed_nodes = Vec::new();
 
         for node in self.nodes.values_mut() {
             if matches!(node.state, AgentState::Paused | AgentState::Stopped)
@@ -990,7 +1004,13 @@ impl ControlPlaneState {
                 "heartbeat stale: last seen {}s ago",
                 now_seconds.saturating_sub(last_seen_seconds)
             ));
+            changed_nodes.push(node.clone());
         }
+
+        if !changed_nodes.is_empty() {
+            self.reevaluate_queued_jobs();
+        }
+        changed_nodes
     }
 
     fn release_stale_graph_claims(&mut self, now: &str) -> Vec<JobRecord> {
@@ -3194,6 +3214,27 @@ mod tests {
         let snapshot = state.snapshot("memory");
         assert_eq!(snapshot["online_count"].as_u64(), Some(0));
         assert_eq!(snapshot["stopped_count"].as_u64(), Some(1));
+    }
+
+    #[test]
+    fn maintenance_reports_stale_nodes_for_persistence() {
+        let mut state = ControlPlaneState::default();
+        state.register(m_series_registration("node-1"));
+        state.heartbeat(ready_heartbeat("node-1", "1"), "1".to_string());
+
+        let maintenance = state.run_maintenance_with_nodes("62");
+
+        assert!(maintenance.changed_jobs.is_empty());
+        assert_eq!(maintenance.changed_nodes.len(), 1);
+        let node = maintenance.changed_nodes.first().expect("changed node");
+        assert_eq!(node.node_id, "node-1");
+        assert_eq!(node.state, AgentState::Stopped);
+        assert!(!node.policy_allowed);
+        assert!(node
+            .policy_reason
+            .as_deref()
+            .expect("stale reason")
+            .contains("heartbeat stale"));
     }
 
     #[test]
