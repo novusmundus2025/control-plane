@@ -1812,7 +1812,8 @@ function extractEntityClaimId(entity, propertyId) {
 }
 
 function entityEnglishLabel(entity, fallback) {
-  return entity?.labels?.en?.value ?? fallback;
+  const labels = entity?.labels ?? {};
+  return labels.en?.value ?? labels.mul?.value ?? labels["en-us"]?.value ?? labels["en-gb"]?.value ?? fallback;
 }
 
 export function extractFactualSummaryTopic(message) {
