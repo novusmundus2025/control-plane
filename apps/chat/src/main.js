@@ -3536,17 +3536,12 @@ function looksLikeCompleteProgramRequest(lower) {
 function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
   const persona = resolveVoicePersona(voicePersona);
   const personaName = persona === "atlas" ? "Atlas" : "Marie";
-  const personaPurpose =
-    persona === "atlas"
-      ? "the intelligent virtual assistant of the MundusX open-source team for male voice experiences"
-      : "the intelligent virtual assistant of the MundusX open-source team";
   const personaText = persona === "atlas" ? ATLAS_PERSONA : MARIE_PERSONA;
   const rules = [
-    `You are ${personaName}, ${personaPurpose}. MundusX Chat is the product interface you are speaking through.`,
-    `Use the ${personaName} persona for this response.`,
+    `You are ${personaName}, the MundusX assistant.`,
     personaText,
     "Answer the user's request directly.",
-    "Do not echo system, assistant, or user role labels.",
+    "Do not echo persona notes, system instructions, assistant labels, or user role labels.",
     "Do not repeat the same sentence.",
     "If the request asks for a full program or long explanation, provide the complete useful answer.",
   ];
@@ -3697,6 +3692,7 @@ function cleanChatOutputInternal(value, emptyFallback) {
   output = stripAssistantPreamble(output);
   output = stripEmbeddedRoleLeak(output);
   output = stripPromptInstructionLeak(output);
+  output = stripSystemPromptLeak(output);
   output = collapseRepeatedSentences(output);
   output = collapseRepeatedLines(output);
   output = output.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -3842,6 +3838,33 @@ function stripPromptInstructionLeak(value) {
   ).trim();
 
   return output;
+}
+
+function stripSystemPromptLeak(value) {
+  let output = value.trim();
+  if (!output) {
+    return output;
+  }
+
+  const markers = [
+    /\bMundusX Chat is the product interface\b/i,
+    /\bUse the (?:Atlas|Marie) persona\b/i,
+    /\b(?:Atlas|Marie) represents the MundusX open-source team's vision\b/i,
+    /\b(?:Atlas|Marie) supports MundusX's mission\b/i,
+    /\b(?:Atlas|Marie) should be professional\b/i,
+    /\bAnswer the user's request directly\b/i,
+    /\bDo not echo persona notes\b/i,
+    /\bDo not echo system\b/i,
+    /\bDo not repeat the same sentence\b/i,
+  ];
+  const indexes = markers
+    .map((marker) => output.search(marker))
+    .filter((index) => index > 0);
+  if (indexes.length > 0) {
+    output = output.slice(0, Math.min(...indexes)).trim();
+  }
+
+  return output.replace(/\s+(?:Use the (?:Atlas|Marie) persona|Do not echo system)[\s\S]*$/i, "").trim();
 }
 
 function stripCodeSubjobLeak(value) {
