@@ -1488,7 +1488,7 @@ export function page(config = configFromEnv()) {
       if (chunk.output) {
         const output = document.createElement("div");
         output.className = "chunk-output";
-        output.textContent = chunk.output;
+        appendRichMessage(output, chunk.output);
         row.appendChild(output);
       }
       return row;
@@ -2898,6 +2898,14 @@ function stripPromptInstructionLeak(value) {
     return output;
   }
 
+  const codeSubjobIndex = output.search(/\bmundusx code subjob\s*:/i);
+  if (codeSubjobIndex !== -1) {
+    const codeOutput = stripCodeSubjobLeak(output.slice(codeSubjobIndex));
+    if (codeOutput) {
+      return codeOutput;
+    }
+  }
+
   const requiredOutputIndex = output.search(/\brequired output\s*:/i);
   if (requiredOutputIndex !== -1) {
     const afterRequiredOutput = output.slice(requiredOutputIndex);
@@ -2917,11 +2925,36 @@ function stripPromptInstructionLeak(value) {
   ).trim();
 
   output = output.replace(
-    /^(?:mundusx subjob|subject|name|responsibility)\s*:[\s\S]{0,700}?\brequired output\s*:\s*/i,
+    /^(?:mundusx(?: code)? subjob|subject|name|responsibility)\s*:[\s\S]{0,900}?\brequired output\s*:\s*/i,
     "",
   ).trim();
 
   return output;
+}
+
+function stripCodeSubjobLeak(value) {
+  const afterRequiredOutput = value.replace(
+    /^mundusx code subjob\s*:[\s\S]{0,900}?\brequired output\s*:\s*/i,
+    "",
+  ).trim();
+  if (!afterRequiredOutput) {
+    return "";
+  }
+
+  const codeMatch = afterRequiredOutput.match(
+    /(?:```|#include\s*<|\/\/\s*\w|\/\*|typedef\s+|struct\s+\w+\s*\{|(?:int|void|char|float|double|long|short|static)\s+\w+\s*\([^)]*\)\s*\{)/i,
+  );
+  if (codeMatch?.index !== undefined) {
+    return afterRequiredOutput
+      .slice(codeMatch.index)
+      .replace(/^h>\s*/i, "")
+      .trim();
+  }
+
+  return afterRequiredOutput
+    .replace(/^(?:implement|add|produce|return)\b[\s\S]{0,500}?(?=(?:#include|\/\/|\/\*|typedef|struct\s+\w+\s*\{|(?:int|void|char|float|double|long|short|static)\s+\w+\s*\())/i, "")
+    .replace(/^h>\s*/i, "")
+    .trim();
 }
 
 function collapseRepeatedSentences(value) {

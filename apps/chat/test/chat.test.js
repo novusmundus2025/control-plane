@@ -787,6 +787,16 @@ test("removes leaked subjob instructions while keeping chunk content", () => {
   assert.doesNotMatch(output, /Do not include|Required output|MundusX subjob|Write the factual/i);
 });
 
+test("removes leaked code subjob instructions and keeps C code", () => {
+  const output = cleanChatOutput(
+    "MundusX code subjob: Name: Student record storage Responsibility: implementation Required output: Implement a function to store student records in a list. - The function should return the list of student records. h> // Helper function to validate input void validate_input(char *input) { /* validation */ }",
+  );
+
+  assert.match(output, /^\/\/ Helper function/);
+  assert.match(output, /void validate_input\(char \*input\)/);
+  assert.doesNotMatch(output, /MundusX code subjob|Required output|Responsibility|The function should/i);
+});
+
 function jsonResponse(payload, ok = true, status = 200) {
   return {
     ok,
