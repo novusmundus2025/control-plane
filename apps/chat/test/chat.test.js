@@ -39,6 +39,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /Transcript ready/);
   assert.match(html, /function speakAssistantReply/);
   assert.match(html, /function selectJennyVoice/);
+  assert.match(html, /function selectedAssistantPersona/);
   assert.match(html, /Microsoft Jenny/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
@@ -153,7 +154,7 @@ test("submits chat work as an auto execution job", async () => {
     assert.equal(body.model, undefined);
     assert.equal(body.max_tokens, 128);
     assert.match(body.system_prompt, /You are Marie/);
-    assert.match(body.system_prompt, /Voice gender, accent, or browser voice availability/);
+    assert.match(body.system_prompt, /Use the Marie persona/);
     assert.match(body.system_prompt, /David Batalla's vision/);
     assert.match(body.system_prompt, /Do not echo system/);
     return jsonResponse({
@@ -189,6 +190,36 @@ test("submits chat work as an auto execution job", async () => {
   assert.equal(result.progress.total, 2);
   assert.equal(result.progress.waiting, 2);
   assert.equal(result.progress.final_synthesis, true);
+});
+
+test("uses Atlas persona for male voice chat jobs", async () => {
+  const fetchImpl = async (_url, init) => {
+    const body = JSON.parse(init.body);
+    assert.equal(body.prompt, "Explain MundusX in one paragraph.");
+    assert.match(body.system_prompt, /You are Atlas/);
+    assert.match(body.system_prompt, /male voice experiences/);
+    assert.match(body.system_prompt, /Use the Atlas persona/);
+    assert.match(body.system_prompt, /I exist to represent David Batalla's vision/);
+    assert.doesNotMatch(body.system_prompt, /You are Marie/);
+    return jsonResponse({
+      job_id: "job-atlas",
+      status: "queued",
+      job: {
+        job_id: "job-atlas",
+        status: "queued",
+        graph_execution_enabled: false,
+      },
+    });
+  };
+
+  await submitChatJob(
+    {
+      message: "Explain MundusX in one paragraph.",
+      voicePersona: "atlas",
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
 });
 
 test("uses compact token budgets for direct chat prompts", async () => {
