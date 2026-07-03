@@ -5103,7 +5103,7 @@ mod tests {
     };
     use crate::contracts::{
         AgentRegistration, AgentState, Backend, Heartbeat, JobCompletion, JobExecutionMode,
-        JobRequest, JobStatus, RuntimeMode, WorkerHealthReport,
+        JobGraphNodeStatus, JobRequest, JobStatus, RuntimeMode, WorkerHealthReport,
     };
     use crate::state::ControlPlaneState;
     use ed25519_dalek::{Signer, SigningKey};
@@ -5918,7 +5918,9 @@ mod tests {
         state.submit_job(
             JobRequest {
                 request_id: "job-graph".to_string(),
-                prompt: "Give me a detailed history of BMW from its origins to today.".to_string(),
+                prompt:
+                    "Give me a complete Turbo C program to handle enrollment of students save in binary file."
+                        .to_string(),
                 preferred_backend: Backend::Auto,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
@@ -6142,7 +6144,9 @@ mod tests {
         state.submit_job(
             JobRequest {
                 request_id: "job-graph-wait".to_string(),
-                prompt: "Give me a detailed history of BMW from its origins to today.".to_string(),
+                prompt:
+                    "Design and implement a backend API plus frontend dashboard and add tests."
+                        .to_string(),
                 preferred_backend: Backend::Auto,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
@@ -6190,7 +6194,9 @@ mod tests {
         state.submit_job(
             JobRequest {
                 request_id: "job-stale-ui".to_string(),
-                prompt: "Give me a detailed history of BMW from its origins to today.".to_string(),
+                prompt:
+                    "Design and implement a backend API plus frontend dashboard and add tests."
+                        .to_string(),
                 preferred_backend: Backend::Auto,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
@@ -6233,7 +6239,9 @@ mod tests {
         state.submit_job(
             JobRequest {
                 request_id: "job-reducer-warning".to_string(),
-                prompt: "Give me a detailed history of BMW from its origins to today.".to_string(),
+                prompt:
+                    "Design and implement a backend API plus frontend dashboard and add tests."
+                        .to_string(),
                 preferred_backend: Backend::Auto,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
@@ -6248,49 +6256,61 @@ mod tests {
             "2".to_string(),
         );
 
-        for timestamp in 3..10 {
-            let claim = state
-                .claim_job("node-1", timestamp.to_string())
-                .job
-                .expect("claim graph chunk");
-            let active_graph_node_id = claim
-                .active_graph_node_id
-                .as_deref()
-                .expect("active graph node")
-                .to_string();
-            let is_final = active_graph_node_id == "job.final_merge";
+        let non_merge_nodes = state
+            .jobs
+            .get("job-reducer-warning")
+            .expect("job exists")
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.responsibility != "merge")
+            .map(|node| node.id.clone())
+            .collect::<Vec<_>>();
+        for (index, node_id) in non_merge_nodes.iter().enumerate() {
             state
-                .complete_job(
-                    JobCompletion {
-                        job_id: "job-reducer-warning".to_string(),
-                        node_id: "node-1".to_string(),
-                        worker_id: "worker-1".to_string(),
-                        backend: Backend::M,
-                        status: if is_final {
-                            JobStatus::Failed
-                        } else {
-                            JobStatus::Completed
-                        },
-                        output: if is_final {
-                            None
-                        } else {
-                            Some(format!("section output for {active_graph_node_id}"))
-                        },
-                        error: if is_final {
-                            Some("llama-cli exited 1".to_string())
-                        } else {
-                            None
-                        },
-                        latency_ms: Some(10),
-                    },
-                    timestamp.to_string(),
+                .update_graph_node(
+                    "job-reducer-warning",
+                    node_id,
+                    JobGraphNodeStatus::Completed,
+                    Some(format!("{node_id} output")),
+                    None,
+                    (index + 3).to_string(),
                 )
-                .expect("complete graph chunk");
-
-            if is_final {
-                break;
-            }
+                .expect("complete graph node");
         }
+        {
+            let job = state
+                .jobs
+                .get_mut("job-reducer-warning")
+                .expect("job exists");
+            job.status = JobStatus::Assigned;
+            job.assigned_node_id = Some("node-1".to_string());
+            job.active_graph_node_id = Some("job.final_merge".to_string());
+            let final_node = job
+                .graph
+                .nodes
+                .iter_mut()
+                .find(|node| node.id == "job.final_merge")
+                .expect("final node");
+            final_node.status = JobGraphNodeStatus::Running;
+            final_node.assigned_node_id = Some("node-1".to_string());
+            final_node.backend = Some(Backend::M);
+        }
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-reducer-warning".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Failed,
+                    output: None,
+                    error: Some("llama-cli exited 1".to_string()),
+                    latency_ms: Some(10),
+                },
+                "6".to_string(),
+            )
+            .expect("complete graph reducer");
 
         let html = control_plane_operator_page(
             &state,

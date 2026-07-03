@@ -2456,7 +2456,7 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
             "section",
             Vec::new(),
             "Cover major growth periods, milestones, and changes in scale or influence.",
-            "Milestones can be drafted independently before final synthesis.",
+            "Milestones can be drafted independently as a user-facing section.",
         );
         push_planned_job(
             &mut jobs,
@@ -2465,26 +2465,15 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
             "section",
             Vec::new(),
             "Cover recent developments, current positioning, and future-facing themes.",
-            "Modern context should be isolated from historical background before reduction.",
-        );
-
-        let final_dependencies = jobs.iter().map(|job| job.id.clone()).collect::<Vec<_>>();
-        push_planned_job(
-            &mut jobs,
-            "job.final_merge",
-            "Final synthesis",
-            "merge",
-            final_dependencies,
-            "Merge section outputs into one coherent final answer for the original prompt.",
-            "A reducer is required to remove duplication and produce the user-facing answer.",
+            "Modern context should be isolated from historical background as a user-facing section.",
         );
 
         return JobPlan {
             plan_id: format!("plan-{}", request.request_id),
             strategy: "sectioned_research".to_string(),
             summary: format!(
-                "Planned {} sectioned research units plus a final reducer.",
-                jobs.len().saturating_sub(1)
+                "Planned {} sectioned research units. Sections are returned directly; final synthesis is optional.",
+                jobs.len()
             ),
             jobs,
         };
@@ -2718,8 +2707,7 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
             .jobs
             .iter()
             .find(|job| job.responsibility == "merge")
-            .map(|job| job.id.clone())
-            .or_else(|| plan.jobs.last().map(|job| job.id.clone())),
+            .map(|job| job.id.clone()),
         results: Vec::new(),
         final_output: None,
         merge_error: None,
@@ -3673,6 +3661,12 @@ mod tests {
         }
     }
 
+    fn reducer_fixture_request() -> JobRequest {
+        classification_request(
+            "Design and implement a backend API plus frontend dashboard and add tests.",
+        )
+    }
+
     #[test]
     fn classifies_interactive_chat_requests() {
         let mut request = classification_request("Reply to the user in a short conversation.");
@@ -4522,7 +4516,7 @@ mod tests {
     }
 
     #[test]
-    fn sectioned_research_claims_use_stage_token_budgets() {
+    fn sectioned_research_claims_use_section_token_budgets_and_completes_without_reducer() {
         let mut state = ready_state();
         let mut request =
             classification_request("Give me a detailed history of BMW from its origins to today.");
@@ -4552,6 +4546,7 @@ mod tests {
             )
             .expect("first section completion");
 
+        let mut completed = None;
         for (index, section_output) in [
             "early development complete",
             "expansion complete",
@@ -4565,7 +4560,7 @@ mod tests {
                 .job
                 .expect("section claim");
             assert_eq!(claim.max_tokens, Some(256));
-            state
+            completed = Some(state
                 .complete_job(
                     JobCompletion {
                         job_id: "job-1".to_string(),
@@ -4579,22 +4574,27 @@ mod tests {
                     },
                     (index + 8).to_string(),
                 )
-                .expect("section completion");
+                .expect("section completion"));
         }
 
-        let reducer_claim = state
-            .claim_job("node-1", "12".to_string())
-            .job
-            .expect("reducer claim");
-        assert_eq!(
-            reducer_claim.active_graph_node_id.as_deref(),
-            Some("job.final_merge")
-        );
-        assert_eq!(reducer_claim.max_tokens, Some(512));
+        let completed = completed.expect("last section completion");
+        assert_eq!(completed.status, JobStatus::Completed);
+        assert_eq!(completed.graph.final_node_id, None);
+        assert!(completed
+            .output
+            .as_deref()
+            .expect("sectioned output")
+            .contains("## Origins and founders"));
+        assert!(completed
+            .output
+            .as_deref()
+            .expect("sectioned output")
+            .contains("## Modern era"));
+        assert!(state.claim_job("node-1", "12".to_string()).job.is_none());
     }
 
     #[test]
-    fn large_sectioned_research_uses_larger_section_and_reducer_caps() {
+    fn large_sectioned_research_uses_larger_section_caps_without_reducer() {
         let mut state = ready_state();
         let mut request =
             classification_request("Give me a detailed history of BMW from its origins to today.");
@@ -4624,31 +4624,45 @@ mod tests {
             )
             .expect("first section completion");
 
-        for (index, graph_node_id) in ["job.early_development", "job.expansion", "job.modern_era"]
-            .iter()
-            .enumerate()
+        for (index, section_output) in [
+            "early development output",
+            "expansion output",
+            "modern era output",
+        ]
+        .iter()
+        .enumerate()
         {
+            let claim = state
+                .claim_job("node-1", (index + 5).to_string())
+                .job
+                .expect("section claim");
+            assert_eq!(claim.max_tokens, Some(320));
             state
-                .update_graph_node(
-                    "job-1",
-                    graph_node_id,
-                    JobGraphNodeStatus::Completed,
-                    Some(format!("{graph_node_id} output")),
-                    None,
-                    (index + 5).to_string(),
+                .complete_job(
+                    JobCompletion {
+                        job_id: "job-1".to_string(),
+                        node_id: "node-1".to_string(),
+                        worker_id: format!("worker-{}", index + 2),
+                        backend: Backend::M,
+                        status: JobStatus::Completed,
+                        output: Some((*section_output).to_string()),
+                        error: None,
+                        latency_ms: Some(10),
+                    },
+                    (index + 8).to_string(),
                 )
-                .expect("section graph update");
+                .expect("section completion");
         }
 
-        let reducer_claim = state
-            .claim_job("node-1", "9".to_string())
-            .job
-            .expect("reducer claim");
-        assert_eq!(
-            reducer_claim.active_graph_node_id.as_deref(),
-            Some("job.final_merge")
-        );
-        assert_eq!(reducer_claim.max_tokens, Some(768));
+        let job = state.jobs.get("job-1").expect("job");
+        assert_eq!(job.status, JobStatus::Completed);
+        assert_eq!(job.graph.final_node_id, None);
+        assert!(job
+            .output
+            .as_deref()
+            .expect("sectioned output")
+            .contains("## Expansion and milestones"));
+        assert!(state.claim_job("node-1", "9".to_string()).job.is_none());
     }
 
     #[test]
@@ -5172,16 +5186,15 @@ mod tests {
         );
 
         let mut state = ready_state();
-        let mut request =
-            classification_request("Write a detailed history of BMW from its origins to today.");
+        let mut request = reducer_fixture_request();
         request.execution_mode = JobExecutionMode::Decompose;
         state.submit_job(request, "1".to_string());
 
         for (node_id, updated_at) in [
-            ("job.origins", "2"),
-            ("job.early_development", "3"),
-            ("job.expansion", "4"),
-            ("job.modern_era", "5"),
+            ("job.scope", "2"),
+            ("job.backend", "3"),
+            ("job.frontend", "4"),
+            ("job.tests", "5"),
         ] {
             state
                 .update_graph_node(
@@ -5218,9 +5231,7 @@ mod tests {
         let mut state = ControlPlaneState::default();
         state.register(cuda_registration("node-weak"));
         state.heartbeat(low_vram_cuda_heartbeat("node-weak", "1"), "1".to_string());
-        let mut request = classification_request(
-            "Give me a detailed history of Nokia from its origins to today.",
-        );
+        let mut request = reducer_fixture_request();
         request.execution_mode = JobExecutionMode::Decompose;
         state.submit_job(request, "2".to_string());
 
@@ -5229,10 +5240,7 @@ mod tests {
                 .claim_job("node-weak", updated_at.to_string())
                 .job
                 .expect("section claim");
-            assert_ne!(
-                claim.active_graph_node_id.as_deref(),
-                Some("job.final_merge")
-            );
+            assert_ne!(claim.active_graph_node_id.as_deref(), Some("job.final_merge"));
             state
                 .complete_job(
                     JobCompletion {
@@ -5285,17 +5293,15 @@ mod tests {
         let mut state = ControlPlaneState::default();
         state.register(cuda_registration("node-weak"));
         state.heartbeat(low_vram_cuda_heartbeat("node-weak", "1"), "1".to_string());
-        let mut request = classification_request(
-            "Give me a detailed history of Nokia from its origins to today.",
-        );
+        let mut request = reducer_fixture_request();
         request.execution_mode = JobExecutionMode::Decompose;
         state.submit_job(request, "2".to_string());
 
         for (node_id, output, updated_at) in [
-            ("job.origins", "Origins section text", "3"),
-            ("job.early_development", "Early development text", "4"),
-            ("job.expansion", "Expansion text", "5"),
-            ("job.modern_era", "Modern era text", "6"),
+            ("job.scope", "Scope section text", "3"),
+            ("job.backend", "Backend section text", "4"),
+            ("job.frontend", "Frontend section text", "5"),
+            ("job.tests", "Tests section text", "6"),
         ] {
             state
                 .update_graph_node(
@@ -5348,7 +5354,7 @@ mod tests {
             .output
             .as_deref()
             .expect("fallback output")
-            .contains("Origins section text"));
+            .contains("Scope section text"));
         let final_node = completed
             .graph
             .nodes
@@ -5372,9 +5378,7 @@ mod tests {
         let mut state = ControlPlaneState::default();
         state.register(cuda_registration("node-weak"));
         state.heartbeat(low_vram_cuda_heartbeat("node-weak", "1"), "1".to_string());
-        let mut request = classification_request(
-            "Give me a detailed history of Nokia from its origins to today.",
-        );
+        let mut request = reducer_fixture_request();
         request.execution_mode = JobExecutionMode::Decompose;
         state.submit_job(request, "2".to_string());
 
@@ -5430,16 +5434,15 @@ mod tests {
     #[test]
     fn final_reducer_failure_completes_with_section_fallback() {
         let mut state = ready_state();
-        let mut request =
-            classification_request("Give me a detailed history of BMW from its origins to today.");
+        let mut request = reducer_fixture_request();
         request.execution_mode = JobExecutionMode::Decompose;
         state.submit_job(request, "1".to_string());
 
         for (expected_node, output, updated_at) in [
-            ("job.origins", "Origins section text", "2"),
-            ("job.early_development", "Early section text", "3"),
-            ("job.expansion", "Expansion section text", "4"),
-            ("job.modern_era", "Modern section text", "5"),
+            ("job.scope", "Scope section text", "2"),
+            ("job.backend", "Backend section text", "3"),
+            ("job.frontend", "Frontend section text", "4"),
+            ("job.tests", "Tests section text", "5"),
         ] {
             let claim = state
                 .claim_job("node-1", updated_at.to_string())
@@ -5498,7 +5501,7 @@ mod tests {
             .output
             .as_deref()
             .expect("fallback output")
-            .contains("Origins section text"));
+            .contains("Scope section text"));
         assert!(completed
             .graph
             .merge_error
@@ -6368,9 +6371,7 @@ mod tests {
             ),
         );
 
-        let mut request = classification_request(
-            "Give me a detailed history of Honda from its origins to today.",
-        );
+        let mut request = reducer_fixture_request();
         request.execution_mode = JobExecutionMode::Decompose;
         state.submit_job(request, "5".to_string());
         make_reducer_ready(&mut state, "job-1");

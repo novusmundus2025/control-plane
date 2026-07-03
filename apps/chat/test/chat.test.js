@@ -30,7 +30,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);
-  assert.match(html, /Source chunks/);
+  assert.match(html, /Completed source sections/);
   assert.match(html, /Message MundusX/);
   assert.match(html, /<span class="kbd">\/<\/span>Commands/);
   assert.match(html, /\.message\.assistant \.message-body/);
@@ -41,6 +41,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /function normalizeAssistantDisplayText/);
   assert.match(html, /function appendInlineMarkdown/);
   assert.match(html, /function formatCodeForDisplay/);
+  assert.match(html, /function shouldShowSourceSections/);
+  assert.match(html, /function progressUnit/);
   assert.match(html, /\.message-body ol/);
   assert.match(html, /\.message-body strong/);
   assert.ok(html.includes('replace(/^\\n/, "")'));
@@ -170,6 +172,7 @@ test("submits chat work as an auto execution job", async () => {
   assert.equal(result.execution_mode, "auto");
   assert.equal(result.progress.total, 2);
   assert.equal(result.progress.waiting, 2);
+  assert.equal(result.progress.final_synthesis, true);
 });
 
 test("uses compact token budgets for direct chat prompts", async () => {
@@ -510,6 +513,7 @@ test("polls chat job progress and final cleaned output", async () => {
   assert.equal(result.progress.total, 2);
   assert.equal(result.progress.completed, 1);
   assert.equal(result.progress.merging, true);
+  assert.equal(result.progress.final_synthesis, true);
   assert.equal(result.progress.nodes[1].output, "");
 });
 
@@ -565,6 +569,7 @@ test("uses parent status for single direct chat job progress", async () => {
 
   assert.equal(completed.progress.completed, 1);
   assert.equal(completed.progress.waiting, 0);
+  assert.equal(completed.progress.final_synthesis, false);
   assert.equal(completed.progress.nodes[0].status, "completed");
   assert.equal(completed.progress.nodes[0].output, "9");
   assert.equal(completed.progress.nodes[0].output_chars, 1);
@@ -620,6 +625,7 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
   assert.equal(result.progress.nodes[0].effective_max_tokens, 256);
   assert.equal(result.progress.nodes[1].output, "");
   assert.equal(result.progress.nodes[2].output, "");
+  assert.equal(result.progress.final_synthesis, false);
 });
 
 test("derives completed chunk metrics when the control plane reports zeros", async () => {

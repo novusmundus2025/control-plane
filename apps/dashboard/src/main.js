@@ -536,6 +536,12 @@ function graphProgress(graph) {
   return { nodes, completed, running, total: nodes.length };
 }
 
+function graphProgressUnit(job) {
+  const strategy = String(job?.plan?.strategy ?? job?.graph?.strategy ?? "");
+  const hasFinalSynthesis = Boolean(job?.graph?.final_node_id);
+  return strategy === "sectioned_research" && !hasFinalSynthesis ? "sections" : "chunks";
+}
+
 function renderJobs(jobs = []) {
   if (!jobs.length) {
     return `<div class="empty">No jobs have been recorded yet.</div>`;
@@ -562,6 +568,7 @@ function renderJobs(jobs = []) {
           const executionMode = String(job.execution_mode ?? "single");
           const graphExecution = job.graph_execution_enabled ? "enabled" : "advisory";
           const graph = graphProgress(job.graph);
+          const graphUnit = graphProgressUnit(job);
           const graphNodes = graph.nodes.length ? graph.nodes : planJobs;
           return `
             <article class="job-card">
@@ -606,7 +613,7 @@ function renderJobs(jobs = []) {
                 <div>${escapeHtml(planSummary)}</div>
                 ${
                   job.graph_execution_enabled && graph.total
-                    ? `<div class="job-progress"><strong>${graph.completed}/${graph.total} chunks complete</strong><span>${graph.running} running</span></div>`
+                    ? `<div class="job-progress"><strong>${graph.completed}/${graph.total} ${graphUnit} complete</strong><span>${graph.running} running</span></div>`
                     : planJobs.length
                       ? `<div class="job-progress"><strong>planned only</strong><span>not chunk-executed</span></div>`
                     : ""
