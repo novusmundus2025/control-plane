@@ -2400,11 +2400,27 @@ function inferMaxTokens(message, explicitValue) {
   }
 
   const lower = message.toLowerCase();
+  if (
+    containsAny(lower, [
+      "one word",
+      "one-word",
+      "answer only",
+      "only with",
+      "final number",
+      "just the number",
+      "single sentence",
+    ])
+  ) {
+    return 48;
+  }
   if (containsAny(lower, ["detailed", "complete", "full", "comprehensive", "history of", "report"])) {
     return 1024;
   }
   if (message.length > 600) {
     return 768;
+  }
+  if (message.length <= 160) {
+    return 128;
   }
   return 384;
 }
