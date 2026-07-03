@@ -153,6 +153,36 @@ test("submits chat work as an auto execution job", async () => {
   assert.equal(result.progress.waiting, 2);
 });
 
+test("uses compact token budgets for direct chat prompts", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-short",
+      job: {
+        job_id: "job-short",
+        status: "queued",
+        execution_mode: "auto",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  await submitChatJob(
+    { message: "Answer in one word: 2+2?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+  await submitChatJob(
+    { message: "Say hi." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].max_tokens, 48);
+  assert.equal(calls[1].max_tokens, 128);
+});
+
 test("sends an explicit model override when configured", async () => {
   const fetchImpl = async (_url, init) => {
     const body = JSON.parse(init.body);
