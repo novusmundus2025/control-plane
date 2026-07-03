@@ -1853,6 +1853,11 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     return fetchLinearEquationJob(message, linearEquation);
   }
 
+  const polynomialDerivative = extractPolynomialDerivative(message);
+  if (polynomialDerivative) {
+    return fetchPolynomialDerivativeJob(message, polynomialDerivative);
+  }
+
   const polynomialIntegral = extractPolynomialIntegral(message);
   if (polynomialIntegral) {
     return fetchPolynomialIntegralJob(message, polynomialIntegral);
@@ -2151,6 +2156,51 @@ export function extractPolynomialIntegral(message) {
   };
 }
 
+export function extractPolynomialDerivative(message) {
+  const text = String(message ?? "").trim();
+  if (!/\b(?:derivative|differentiate|d\/dx)\b/i.test(text)) {
+    return null;
+  }
+
+  const normalizedText = text.replace(/\s+/g, " ");
+  const expression =
+    normalizedText.match(/\bf\s*\(\s*x\s*\)\s*=\s*(.+?)(?=\s+\bis\b|\?|$)/i)?.[1] ??
+    normalizedText.match(/\b(?:derivative|differentiate)\s+(?:of\s+)?\(?\s*(.+?)\s*\)?(?:\s+with\s+respect\s+to\s+x|\?|$)/i)?.[1] ??
+    normalizedText.match(/\bd\/dx\s*\(?\s*(.+?)\s*\)?(?:\?|$)/i)?.[1];
+  if (!expression || !/[xX]/.test(expression)) {
+    return null;
+  }
+
+  const terms = parsePolynomialTerms(expression);
+  if (!terms.length) {
+    return null;
+  }
+
+  const derivativeTerms = combinePolynomialTerms(terms
+    .filter((term) => term.power > 0)
+    .map((term) => ({
+      coefficient: term.coefficient * term.power,
+      power: term.power - 1,
+    })));
+  const result = derivativeTerms.length ? formatPolynomial(derivativeTerms) : "0";
+  const proposedExpression =
+    normalizedText.match(/\bis\s+(?:f\s*'?\s*\(\s*x\s*\)\s*=\s*)?(.+?)(?:\s+is\s+this\s+true|\s+true|\?|$)/i)?.[1] ?? null;
+  const proposedTerms = proposedExpression && /[xX0-9]/.test(proposedExpression)
+    ? parsePolynomialTerms(proposedExpression)
+    : [];
+  const proposed = proposedTerms.length ? formatPolynomial(proposedTerms) : null;
+  const isCorrect = proposed ? polynomialsEqual(derivativeTerms, proposedTerms) : null;
+
+  return {
+    variable: "x",
+    expression: formatPolynomial(terms),
+    result,
+    terms,
+    proposed,
+    isCorrect,
+  };
+}
+
 function parsePolynomialTerms(expression) {
   const normalized = String(expression)
     .replace(/\s+/g, "")
@@ -2170,6 +2220,18 @@ function parsePolynomialTerms(expression) {
     terms.push(term);
   }
   return combinePolynomialTerms(terms);
+}
+
+function polynomialsEqual(leftTerms, rightTerms) {
+  const left = combinePolynomialTerms(leftTerms);
+  const right = combinePolynomialTerms(rightTerms);
+  if (left.length !== right.length) {
+    return false;
+  }
+  return left.every((term, index) => (
+    term.power === right[index].power &&
+    Math.abs(term.coefficient - right[index].coefficient) < 1e-12
+  ));
 }
 
 function parsePolynomialTerm(piece) {
@@ -2287,6 +2349,56 @@ function fetchPolynomialIntegralJob(message, integral) {
       processing: null,
       merging: false,
       strategy: "math_tool",
+    },
+  };
+}
+
+function fetchPolynomialDerivativeJob(message, derivative) {
+  const answer = derivative.isCorrect === null
+    ? `f'(x) = ${derivative.result}`
+    : derivative.isCorrect
+      ? `Yes. f'(x) = ${derivative.result}.`
+      : `No. The correct derivative is f'(x) = ${derivative.result}.`;
+  const compareLine = derivative.proposed
+    ? `Proposed derivative: ${derivative.proposed}`
+    : null;
+  const output = [
+    `Function: f(x) = ${derivative.expression}`,
+    compareLine,
+    `Answer: ${answer}`,
+    "Rule used: differentiate each term a*x^n as a*n*x^(n-1); constants become 0.",
+  ].filter(Boolean).join("\n\n");
+
+  return {
+    job_id: `math-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "math-tool",
+    assigned_node_id: "math-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "polynomial_derivative",
+    response: {
+      type: "math_solution",
+      title: "Polynomial derivative",
+      answer,
+      steps: [
+        `Start with f(x) = ${derivative.expression}.`,
+        "Differentiate each term using d/dx(a*x^n) = a*n*x^(n-1).",
+        `So f'(x) = ${derivative.result}.`,
+      ],
+    },
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "polynomial_derivative_tool",
     },
   };
 }

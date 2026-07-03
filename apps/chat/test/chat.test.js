@@ -8,6 +8,7 @@ import {
   extractCurrentOfficeQuery,
   extractFactualSummaryTopic,
   extractLinearEquation,
+  extractPolynomialDerivative,
   extractPolynomialIntegral,
   extractWeatherLocation,
   fetchNetworkSummary,
@@ -308,6 +309,30 @@ test("routes simple linear equations to the math tool", async () => {
   assert.doesNotMatch(result.output, /\\frac|Certainly|To solve/i);
 });
 
+test("routes simple polynomial derivatives to the math tool", async () => {
+  const result = await submitChatJob(
+    { message: "derivative of the polynomial function f(x) = 3x^2 + 5x is f(x) = 6x + 5 ? is this true" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("derivative tool requests should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "math-tool");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "polynomial_derivative");
+  assert.equal(result.response.type, "math_solution");
+  assert.equal(result.response.answer, "Yes. f'(x) = 6x + 5.");
+  assert.deepEqual(result.response.steps, [
+    "Start with f(x) = 3x^2 + 5x.",
+    "Differentiate each term using d/dx(a*x^n) = a*n*x^(n-1).",
+    "So f'(x) = 6x + 5.",
+  ]);
+  assert.match(result.output, /Answer: Yes\. f'\(x\) = 6x \+ 5\./);
+  assert.doesNotMatch(result.output, /Certainly|To solve|\\frac/i);
+});
+
 test("routes weather questions to wttr without queuing an LLM job", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
@@ -531,6 +556,39 @@ test("extracts simple linear equations", () => {
   });
   assert.equal(extractLinearEquation("solve x^2 = 4"), null);
   assert.equal(extractLinearEquation("write a story with x=3"), null);
+});
+
+test("extracts simple polynomial derivatives", () => {
+  assert.deepEqual(
+    extractPolynomialDerivative("derivative of the polynomial function f(x) = 3x^2 + 5x is f(x) = 6x + 5 ? is this true"),
+    {
+      variable: "x",
+      expression: "3x^2 + 5x",
+      result: "6x + 5",
+      terms: [
+        { coefficient: 3, power: 2 },
+        { coefficient: 5, power: 1 },
+      ],
+      proposed: "6x + 5",
+      isCorrect: true,
+    },
+  );
+  assert.deepEqual(
+    extractPolynomialDerivative("differentiate 4x^3 - 2x"),
+    {
+      variable: "x",
+      expression: "4x^3 - 2x",
+      result: "12x^2 - 2",
+      terms: [
+        { coefficient: 4, power: 3 },
+        { coefficient: -2, power: 1 },
+      ],
+      proposed: null,
+      isCorrect: null,
+    },
+  );
+  assert.equal(extractPolynomialDerivative("derivative of sin(x)"), null);
+  assert.equal(extractPolynomialDerivative("write a history of derivatives"), null);
 });
 
 test("extracts only factual summary topics", () => {
