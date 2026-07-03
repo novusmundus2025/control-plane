@@ -1711,6 +1711,46 @@ fn looks_product_plan_prompt(lower_prompt: &str) -> bool {
     matches >= 2
 }
 
+fn looks_like_document_summary_prompt(lower_prompt: &str) -> bool {
+    contains_any(
+        lower_prompt,
+        &[
+            "summarize",
+            "summary",
+            "explain",
+            "overview",
+            "document",
+            "documentation",
+            "architecture",
+            "how does",
+            "what is",
+        ],
+    )
+}
+
+fn contains_ordered_implementation_work(lower_prompt: &str) -> bool {
+    contains_any(
+        lower_prompt,
+        &[
+            "implement",
+            "build",
+            "create",
+            "code",
+            "backend",
+            "frontend",
+            "api",
+            "tests",
+            "test",
+            "regression",
+            "security review",
+            "migration",
+            "refactor",
+            "update docs",
+            "update documentation",
+        ],
+    )
+}
+
 fn looks_like_complete_code_prompt(lower_prompt: &str) -> bool {
     contains_any(
         lower_prompt,
@@ -2566,6 +2606,28 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
             strategy: "complete_code_generation".to_string(),
             summary: "Planned a complete code deliverable with outline, implementation, validation notes, and final assembly.".to_string(),
             jobs,
+        };
+    }
+
+    if classification.task_type == RequestTaskType::Document
+        && looks_like_document_summary_prompt(&lower)
+        && !contains_ordered_implementation_work(&lower)
+    {
+        return JobPlan {
+            plan_id: format!("plan-{}", request.request_id),
+            strategy: "documentation_summary".to_string(),
+            summary: "Single documentation summary selected; no implementation or test dependencies are required.".to_string(),
+            jobs: vec![PlannedJob {
+                id: "job.documentation_summary".to_string(),
+                name: "Documentation summary".to_string(),
+                responsibility: "documentation".to_string(),
+                depends_on: Vec::new(),
+                required_output:
+                    "Summarize the requested documentation or architecture topic directly for the user."
+                        .to_string(),
+                reason: "Documentation summary prompts do not need scope, implementation, test, or reducer dependencies."
+                    .to_string(),
+            }],
         };
     }
 
@@ -3886,10 +3948,7 @@ mod tests {
             .execution_constraints
             .contains(&"complete_code_output".to_string()));
         assert_eq!(plan.strategy, "complete_code_generation");
-        assert!(plan
-            .jobs
-            .iter()
-            .any(|job| job.name == "Code contract"));
+        assert!(plan.jobs.iter().any(|job| job.name == "Code contract"));
         assert!(plan
             .jobs
             .iter()
@@ -4365,6 +4424,21 @@ mod tests {
         assert!(final_merge.depends_on.contains(&"job.backend".to_string()));
         assert!(final_merge.depends_on.contains(&"job.frontend".to_string()));
         assert!(final_merge.depends_on.contains(&"job.tests".to_string()));
+    }
+
+    #[test]
+    fn plans_documentation_summaries_without_blocked_dependency_chain() {
+        let request = classification_request("Summarize the current control-plane architecture.");
+        let classification = classify_job_request(&request);
+
+        let plan = plan_job_request(&request, &classification);
+
+        assert_eq!(classification.task_type, RequestTaskType::Document);
+        assert_eq!(plan.strategy, "documentation_summary");
+        assert_eq!(plan.jobs.len(), 1);
+        assert_eq!(plan.jobs[0].id, "job.documentation_summary");
+        assert_eq!(plan.jobs[0].responsibility, "documentation");
+        assert!(plan.jobs[0].depends_on.is_empty());
     }
 
     #[test]
