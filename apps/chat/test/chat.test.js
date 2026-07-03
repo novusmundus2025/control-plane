@@ -31,8 +31,6 @@ test("renders a usable chat page", () => {
   assert.match(html, /id="chat-form"/);
   assert.match(html, /id="voice-mic"/);
   assert.match(html, /id="voice-speak"/);
-  assert.match(html, /id="voice-select"/);
-  assert.match(html, /Auto voice/);
   assert.match(html, /id="voice-status"/);
   assert.match(html, /SpeechRecognition/);
   assert.match(html, /speechSynthesis/);
@@ -40,11 +38,13 @@ test("renders a usable chat page", () => {
   assert.match(html, /No speech heard/);
   assert.match(html, /Transcript ready/);
   assert.match(html, /function speakAssistantReply/);
-  assert.match(html, /function populateVoiceOptions/);
   assert.match(html, /function selectSpokenVoice/);
-  assert.match(html, /function selectJennyVoice/);
+  assert.match(html, /function selectAtlasVoice/);
   assert.match(html, /function selectedAssistantPersona/);
-  assert.match(html, /Microsoft Jenny/);
+  assert.match(html, /Microsoft David/);
+  assert.match(html, /Speaking with Atlas/);
+  assert.doesNotMatch(html, /id="voice-select"/);
+  assert.doesNotMatch(html, /Auto voice/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);
@@ -157,10 +157,12 @@ test("submits chat work as an auto execution job", async () => {
     assert.equal(body.preferred_backend, "auto");
     assert.equal(body.model, undefined);
     assert.equal(body.max_tokens, 128);
-    assert.match(body.system_prompt, /You are Marie/);
-    assert.match(body.system_prompt, /Use the Marie persona/);
+    assert.match(body.system_prompt, /You are Atlas/);
+    assert.match(body.system_prompt, /Use the Atlas persona/);
+    assert.match(body.system_prompt, /male voice experiences/);
     assert.match(body.system_prompt, /MundusX open-source team's vision/);
     assert.match(body.system_prompt, /Do not echo system/);
+    assert.doesNotMatch(body.system_prompt, /You are Marie/);
     return jsonResponse({
       job_id: "job-1",
       status: "queued",
