@@ -826,6 +826,56 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
   assert.equal(result.progress.final_synthesis, false);
 });
 
+test("exposes blocked graph dependencies in chat progress", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-code",
+        status: "assigned",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        active_graph_node_id: "job.scope",
+        graph: {
+          nodes: [
+            {
+              id: "job.scope",
+              name: "Scope and constraints",
+              status: "running",
+              responsibility: "analysis",
+            },
+            {
+              id: "job.backend",
+              name: "Backend implementation",
+              status: "waiting",
+              responsibility: "backend",
+              depends_on: ["job.scope"],
+              blocked_by: ["job.scope"],
+            },
+            {
+              id: "job.tests",
+              name: "Regression tests",
+              status: "waiting",
+              responsibility: "tests",
+              depends_on: ["job.backend"],
+              blocked_by: ["job.backend"],
+            },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-code",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.progress.processing, "Scope and constraints");
+  assert.deepEqual(result.progress.nodes[1].blocked_by, ["Scope and constraints"]);
+  assert.deepEqual(result.progress.nodes[2].depends_on, ["Backend implementation"]);
+  assert.deepEqual(result.progress.nodes[2].blocked_by, ["Backend implementation"]);
+});
+
 test("derives completed chunk metrics when the control plane reports zeros", async () => {
   const fetchImpl = async () =>
     jsonResponse({

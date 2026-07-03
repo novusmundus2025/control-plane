@@ -1566,6 +1566,7 @@ export function page(config = configFromEnv()) {
 
     function createChunkRow(chunk) {
       const row = document.createElement("div");
+      const statusText = formatChunkStatusText(chunk);
       const active = isActiveChunkStatus(chunk.status);
       row.className = "chunk-row" + (active ? " is-active" : "");
       const head = document.createElement("div");
@@ -1580,7 +1581,7 @@ export function page(config = configFromEnv()) {
         spinner.setAttribute("aria-hidden", "true");
         status.appendChild(spinner);
       }
-      status.appendChild(document.createTextNode(chunk.status || "waiting"));
+      status.appendChild(document.createTextNode(statusText));
       head.appendChild(name);
       head.appendChild(status);
       row.appendChild(head);
@@ -1600,9 +1601,18 @@ export function page(config = configFromEnv()) {
       return row;
     }
 
+    function formatChunkStatusText(chunk) {
+      if (String(chunk.status || "").toLowerCase() === "waiting" && chunk.blocked_by?.length) {
+        return "blocked";
+      }
+      return chunk.status || "waiting";
+    }
+
     function formatChunkTelemetry(chunk) {
       const parts = [];
       if (chunk.assigned_node_id) parts.push("node " + chunk.assigned_node_id);
+      if (chunk.blocked_by?.length) parts.push("blocked by " + chunk.blocked_by.join(", "));
+      else if (chunk.depends_on?.length) parts.push("depends on " + chunk.depends_on.join(", "));
       if (Number.isFinite(chunk.latency_ms)) parts.push("latency " + chunk.latency_ms + " ms");
       if (Number.isFinite(chunk.queue_wait_ms)) parts.push("queue " + chunk.queue_wait_ms + " ms");
       if (Number.isFinite(chunk.output_chars)) parts.push(chunk.output_chars + " chars");
@@ -1611,7 +1621,7 @@ export function page(config = configFromEnv()) {
     }
 
     function isActiveChunkStatus(status) {
-      return ["ready", "queued", "assigned", "running", "waiting", "processing", "merging"]
+      return ["assigned", "running", "processing", "merging"]
         .includes(String(status || "").toLowerCase());
     }
 
@@ -3052,6 +3062,9 @@ function summarizeChatProgress(job) {
   const merging =
     Boolean(activeNode) &&
     (activeNode.id === finalNodeId || String(activeNode.responsibility ?? "") === "merge");
+  const nodeNameById = Object.fromEntries(
+    effectiveNodes.map((node) => [node.id, node.name || node.id]),
+  );
 
     return {
       total: effectiveNodes.length,
@@ -3063,11 +3076,11 @@ function summarizeChatProgress(job) {
       merging,
       final_synthesis: Boolean(finalNodeId),
       strategy: job.plan?.strategy ?? graph.strategy ?? "graph",
-      nodes: effectiveNodes.map((node) => formatChatProgressNode(node, job)),
+      nodes: effectiveNodes.map((node) => formatChatProgressNode(node, job, nodeNameById)),
     };
 }
 
-function formatChatProgressNode(node, job) {
+function formatChatProgressNode(node, job, nodeNameById = {}) {
   const completed = node.status === "completed";
   const rawOutput = completed ? String(node.output ?? "") : "";
   const compactOutput = rawOutput ? compactChunkOutput(rawOutput) : "";
@@ -3084,6 +3097,8 @@ function formatChatProgressNode(node, job) {
     name: node.name,
     status: node.status,
     responsibility: node.responsibility ?? null,
+    depends_on: Array.isArray(node.depends_on) ? node.depends_on.map((id) => nodeNameById[id] || id) : [],
+    blocked_by: Array.isArray(node.blocked_by) ? node.blocked_by.map((id) => nodeNameById[id] || id) : [],
     assigned_node_id: node.assigned_node_id ?? null,
     latency_ms: positiveNumberOrNull(node.latency_ms),
     queue_wait_ms: positiveNumberOrNull(node.queue_wait_ms),
