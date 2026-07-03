@@ -1538,8 +1538,8 @@ export function page(config = configFromEnv()) {
         text = text.slice(originalPrompt.length).trim();
       }
       text = text
-        .replace(/^please provide the complete code for this program\.?\s*/i, "")
-        .replace(/^here(?:'s| is)\s+(?:the\s+)?(?:complete\s+)?(?:code|program)[:.\s-]*/i, "")
+        .replace(/^please provide the complete code for this program\\.?\\s*/i, "")
+        .replace(/^here(?:'s| is)\\s+(?:the\\s+)?(?:complete\\s+)?(?:code|program)[:.\\s-]*/i, "")
         .trim();
       return text || output;
     }
@@ -1572,8 +1572,8 @@ export function page(config = configFromEnv()) {
         const contentStart = start + fence.length;
         const end = text.indexOf(fence, contentStart);
         if (end === -1) break;
-        const raw = text.slice(contentStart, end).replace(/^\n/, "");
-        const firstBreak = raw.indexOf("\n");
+        const raw = text.slice(contentStart, end).replace(/^\\n/, "");
+        const firstBreak = raw.indexOf("\\n");
         const firstLine = firstBreak === -1 ? "" : raw.slice(0, firstBreak).trim();
         const hasLanguage = /^[a-zA-Z0-9_+#.-]{1,24}$/.test(firstLine);
         parts.push({
@@ -1590,7 +1590,7 @@ export function page(config = configFromEnv()) {
     }
 
     function appendTextParagraphs(container, text) {
-      const paragraphs = String(text || "").trim().split(/\n{2,}/).filter(Boolean);
+      const paragraphs = String(text || "").trim().split(/\\n{2,}/).filter(Boolean);
       for (const paragraph of paragraphs) {
         const node = document.createElement("p");
         node.textContent = paragraph.trim();
@@ -1615,20 +1615,20 @@ export function page(config = configFromEnv()) {
 
     function looksLikeCode(text) {
       const value = String(text || "");
-      return /\b(public\s+class|class\s+\w+|import\s+java\.|#include\s*<|function\s+\w+\s*\(|const\s+\w+\s*=|def\s+\w+\s*\()/m.test(value) &&
+      return /\\b(public\\s+class|class\\s+\\w+|import\\s+java\\.|#include\\s*<|function\\s+\\w+\\s*\\(|const\\s+\\w+\\s*=|def\\s+\\w+\\s*\\()/m.test(value) &&
         (value.match(/[;{}]/g) || []).length >= 4;
     }
 
     function formatCodeForDisplay(code) {
       const raw = String(code || "").trim();
-      if (raw.includes("\n")) return raw;
+      if (raw.includes("\\n")) return raw;
       let formatted = raw
-        .replace(/\s*;\s*/g, ";\n")
-        .replace(/\s*\{\s*/g, " {\n")
-        .replace(/\s*\}\s*/g, "\n}\n")
-        .replace(/\n{2,}/g, "\n")
+        .replace(/\\s*;\\s*/g, ";\\n")
+        .replace(/\\s*\\{\\s*/g, " {\\n")
+        .replace(/\\s*\\}\\s*/g, "\\n}\\n")
+        .replace(/\\n{2,}/g, "\\n")
         .trim();
-      const lines = formatted.split("\n");
+      const lines = formatted.split("\\n");
       let depth = 0;
       return lines.map((line) => {
         const trimmed = line.trim();
@@ -1637,7 +1637,7 @@ export function page(config = configFromEnv()) {
         const out = "  ".repeat(depth) + trimmed;
         if (trimmed.endsWith("{")) depth += 1;
         return out;
-      }).join("\n");
+      }).join("\\n");
     }
 
     function createWorkTrace(payload) {
