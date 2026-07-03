@@ -41,6 +41,7 @@ MUNDUSX_CHAT_MODEL=<optional explicit model override>
 MUNDUSX_CHAT_TIMEOUT_SECONDS=90
 MUNDUSX_WEATHER_CACHE_URL=<optional redis://, rediss://, valkey://, or valkeys:// URL>
 MUNDUSX_FACTUAL_SUMMARY_URL=<optional factual summary API origin>
+MUNDUSX_WIKIDATA_ENTITY_URL=<optional Wikidata entity API origin>
 ```
 
 Railway provides `PORT`; the app reads it automatically.
@@ -62,15 +63,17 @@ Railway provides `PORT`; the app reads it automatically.
 | `REDIS_URL` | unset | Fallback cache URL when `MUNDUSX_WEATHER_CACHE_URL` and `VALKEY_URL` are unset |
 | `MUNDUSX_WEATHER_TTL_SECONDS` | `7200` | Weather cache TTL; default is 2 hours |
 | `MUNDUSX_FACTUAL_SUMMARY_URL` | `https://en.wikipedia.org/api/rest_v1/page/summary` | Factual summary API used before LLM jobs for obvious history/who/what questions |
+| `MUNDUSX_WIKIDATA_ENTITY_URL` | `https://www.wikidata.org/wiki/Special:EntityData` | Wikidata entity API used for current office-holder questions |
 
 ## Current Flow
 
 1. Browser posts a user message to `POST /api/chat/jobs`.
 2. Obvious weather questions are answered directly through `wttr.in`; if Redis/Valkey is configured the response is cached for 2 hours.
-3. Obvious factual history/who/what questions are answered from the factual summary source before using local LLM jobs.
-4. Other requests are submitted as routed MundusX jobs to `POST /v1/jobs` with `execution_mode=auto`.
-5. Control plane decides whether the request is single-job or decomposed across graph chunks.
-6. Browser polls `GET /api/chat/jobs/:id`, which reads `GET /v1/jobs/:id`.
-7. Completed output and graph progress are returned to the browser.
+3. Current office-holder questions such as "current president of USA" are answered through Wikidata before using local LLM jobs.
+4. Obvious factual history/who/what questions are answered from the factual summary source before using local LLM jobs.
+5. Other requests are submitted as routed MundusX jobs to `POST /v1/jobs` with `execution_mode=auto`.
+6. Control plane decides whether the request is single-job or decomposed across graph chunks.
+7. Browser polls `GET /api/chat/jobs/:id`, which reads `GET /v1/jobs/:id`.
+8. Completed output and graph progress are returned to the browser.
 
 Streaming is not enabled yet; the first version uses polling because the control plane already exposes job status and output.
