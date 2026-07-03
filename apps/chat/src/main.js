@@ -1892,7 +1892,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     runtime_mode: "local",
     execution_mode: normalizeExecutionMode(body?.executionMode ?? "auto"),
     stream: false,
-    system_prompt: buildChatSystemPrompt(),
+    system_prompt: buildChatSystemPrompt(message),
     max_tokens: inferMaxTokens(message, body?.maxTokens),
     temperature: typeof body?.temperature === "number" ? body.temperature : 0.2,
     top_p: typeof body?.topP === "number" ? body.topP : 0.9,
@@ -3196,26 +3196,61 @@ function looksLikeCompleteProgramRequest(lower) {
     "complete program",
     "complete source",
     "complete code",
+    "detailed code",
     "full program",
+    "full source",
+    "full code",
     "entire program",
     "working program",
     "detailed program",
     "deatailed program",
     "turbo c program",
   ]) || (
-    containsAny(lower, ["write a program", "create a program", "make a program", "need a program", "program in c"]) &&
-    containsAny(lower, ["c program", "program in c", "source", "code", "binary file", "file handling"])
+    containsAny(lower, [
+      "write a program",
+      "create a program",
+      "make a program",
+      "need a program",
+      "show me a program",
+      "show me a code",
+      "program in c",
+      "program in java",
+      "java program",
+      "python program",
+      "javascript program",
+    ]) &&
+    containsAny(lower, [
+      "source",
+      "code",
+      "cli",
+      "binary file",
+      "property file",
+      "properties file",
+      "file handling",
+      "save",
+      "delete",
+      "update",
+      "student",
+    ])
   );
 }
 
-function buildChatSystemPrompt() {
-  return [
+function buildChatSystemPrompt(message = "") {
+  const rules = [
     "You are MundusX Chat.",
     "Answer the user's request directly.",
     "Do not echo system, assistant, or user role labels.",
     "Do not repeat the same sentence.",
     "If the request asks for a full program or long explanation, provide the complete useful answer.",
-  ].join(" ");
+  ];
+  if (looksLikeCompleteProgramRequest(String(message).toLowerCase())) {
+    rules.push(
+      "For complete code requests, return a complete compilable source file in a fenced code block.",
+      "Do not use ellipses, TODO comments, placeholder bodies, omitted implementation notes, or pseudo-code.",
+      "Include all imports, classes, methods, file operations, menu/input handling, and error handling needed for the requested program.",
+    );
+  }
+  return rules.join(" ");
 }
 
 function containsAny(value, needles) {
@@ -3346,10 +3381,41 @@ function cleanChatOutputInternal(value, emptyFallback) {
   output = collapseRepeatedLines(output);
   output = output.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
 
+  if (isIncompletePlaceholderCode(output)) {
+    return "MundusX returned incomplete placeholder code. Please retry the request; complete-code jobs must return a full compilable source file, not stubs or ellipses.";
+  }
+
   if (!output) {
     return emptyFallback ? "MundusX returned an empty response. Please try again." : "";
   }
   return output;
+}
+
+function isIncompletePlaceholderCode(value) {
+  const text = String(value ?? "").trim();
+  if (!text || !looksLikeCodeOutput(text)) {
+    return false;
+  }
+  const placeholderMatches = text.match(
+    /(?:\/\/\s*(?:\.\.\.|todo|add .* here|implement .* here|save\.\.\.|load\.\.\.|delete .* here)|\/\*\s*(?:\.\.\.|todo|implement|placeholder)[\s\S]*?\*\/|\b(?:TODO|TBD)\b|\.{3,})/gi,
+  ) ?? [];
+  if (placeholderMatches.length < 2) {
+    return false;
+  }
+  const substantiveLines = text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line && !/^```/.test(line));
+  const placeholderLineCount = substantiveLines.filter((line) =>
+    /(?:\/\/\s*(?:\.\.\.|todo|add .* here|implement .* here|save\.\.\.|load\.\.\.|delete .* here)|\/\*|\b(?:TODO|TBD)\b|\.{3,})/i.test(line),
+  ).length;
+  return placeholderLineCount >= 2 || placeholderMatches.length >= 2;
+}
+
+function looksLikeCodeOutput(value) {
+  const text = String(value ?? "");
+  return /\b(public\s+class|class\s+\w+|import\s+java\.|#include\s*<|function\s+\w+\s*\(|const\s+\w+\s*=|def\s+\w+\s*\()/m.test(text) &&
+    (text.match(/[;{}]/g) || []).length >= 4;
 }
 
 function stripWorkerTrace(value) {

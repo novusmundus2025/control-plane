@@ -230,8 +230,19 @@ test("uses larger token budgets for complete program prompts", async () => {
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     fetchImpl,
   );
+  await submitChatJob(
+    {
+      message:
+        "show me a detailed code of java program cli, i want to enter students information and save them to a property file, i shud be able to delete as well",
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
 
   assert.equal(calls[0].max_tokens, 4096);
+  assert.equal(calls[1].max_tokens, 4096);
+  assert.match(calls[1].system_prompt, /complete compilable source file/i);
+  assert.match(calls[1].system_prompt, /Do not use ellipses, TODO comments, placeholder bodies/i);
 });
 
 test("sends an explicit model override when configured", async () => {
@@ -903,6 +914,15 @@ test("removes leaked code subjob instructions and keeps C code", () => {
   assert.match(output, /^\/\/ Helper function/);
   assert.match(output, /void validate_input\(char \*input\)/);
   assert.doesNotMatch(output, /MundusX code subjob|Required output|Responsibility|The function should/i);
+});
+
+test("rejects placeholder-only code as incomplete", () => {
+  const output = cleanChatOutput(
+    "```java\nFile:\nIOException;\nScanner;\npublic class StudentManager {\n  properties;\n  public void addStudent(String id, String name, String bdate) {\n    // Add student to properties file // ...\n  }\n  public void deleteStudent(String id) {\n    // Delete student from properties file // ...\n  }\n  private void saveToFile() {\n    // Save...\n  }\n}\n```",
+  );
+
+  assert.match(output, /incomplete placeholder code/i);
+  assert.doesNotMatch(output, /public class StudentManager/);
 });
 
 function jsonResponse(payload, ok = true, status = 200) {
