@@ -454,6 +454,10 @@ test("routes factual history questions to a grounded summary source", async () =
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(url);
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=BMW/);
+      return jsonResponse(["BMW", ["BMW"], [""], ["https://en.wikipedia.org/wiki/BMW"]]);
+    }
     assert.equal(url, "https://en.wikipedia.org/api/rest_v1/page/summary/BMW");
     return jsonResponse({
       title: "BMW",
@@ -469,7 +473,7 @@ test("routes factual history questions to a grounded summary source", async () =
     fetchImpl,
   );
 
-  assert.equal(calls.length, 1);
+  assert.equal(calls.length, 2);
   assert.equal(result.status, "completed");
   assert.equal(result.model, "wikipedia-summary");
   assert.equal(result.execution_mode, "tool");
@@ -477,6 +481,34 @@ test("routes factual history questions to a grounded summary source", async () =
   assert.equal(result.assigned_node_id, "facts-tool");
   assert.match(result.output, /Bayerische Motoren Werke AG/);
   assert.match(result.output, /founded in 1916/);
+});
+
+test("resolves the real Wikipedia title via search before fetching a summary", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=sara%20duterte/);
+      return jsonResponse(["sara duterte", ["Sara Duterte"], [""], ["https://en.wikipedia.org/wiki/Sara_Duterte"]]);
+    }
+    assert.equal(url, "https://en.wikipedia.org/api/rest_v1/page/summary/Sara%20Duterte");
+    return jsonResponse({
+      title: "Sara Duterte",
+      description: "Vice President of the Philippines",
+      extract: "Sara Zimmerman Duterte-Carpio is a Filipino lawyer and politician.",
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "who is sara duterte from ph?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "factual_summary");
+  assert.match(result.output, /Sara Zimmerman Duterte-Carpio/);
 });
 
 test("routes current president questions to Wikidata instead of the LLM", async () => {
@@ -531,6 +563,9 @@ test("falls back to MundusX jobs when factual summary lookup misses", async () =
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
     calls.push({ url, init });
+    if (url.includes("opensearch")) {
+      return jsonResponse(["UnknownThing", [], [], []]);
+    }
     if (url.includes("/page/summary/")) {
       return jsonResponse({ error: "not found" }, { status: 404 });
     }
@@ -552,7 +587,7 @@ test("falls back to MundusX jobs when factual summary lookup misses", async () =
     fetchImpl,
   );
 
-  assert.equal(calls.length, 2);
+  assert.equal(calls.length, 3);
   assert.equal(result.job_id, "job-fallback");
   assert.equal(result.status, "queued");
 });
@@ -717,6 +752,7 @@ test("extracts simple polynomial derivatives", () => {
 test("extracts only factual summary topics", () => {
   assert.equal(extractFactualSummaryTopic("Give me a detailed history of BMW from its origins to today."), "BMW");
   assert.equal(extractFactualSummaryTopic("Who is Ada Lovelace?"), "Ada Lovelace");
+  assert.equal(extractFactualSummaryTopic("who is sara duterte from ph?"), "sara duterte");
   assert.equal(extractFactualSummaryTopic("Write code for BMW inventory"), null);
   assert.equal(extractFactualSummaryTopic("Explain why a CUDA node can claim a job and fail."), null);
 });

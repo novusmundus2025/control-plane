@@ -3119,6 +3119,7 @@ export function extractFactualSummaryTopic(message) {
 function cleanFactualTopic(value) {
   const topic = String(value ?? "")
     .replace(/\b(?:today|now|please|pls|in detail|from its origins to today|from origins to today)\b/gi, "")
+    .replace(/\s+from\s+(?:the\s+)?.+$/i, "")
     .replace(/[?!.,]+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -3159,7 +3160,9 @@ async function fetchFactualSummaryJob(message, topic, config, fetchImpl) {
 }
 
 async function fetchFactualSummary(topic, config, fetchImpl) {
-  const url = `${config.factualSummaryBaseUrl}/${encodeURIComponent(topic)}`;
+  const resolvedTitle = await resolveWikipediaTitle(topic, config, fetchImpl);
+  const lookupTitle = resolvedTitle ?? topic;
+  const url = `${config.factualSummaryBaseUrl}/${encodeURIComponent(lookupTitle)}`;
   const response = await fetchImpl(url, {
     headers: { Accept: "application/json", "User-Agent": "MundusX-Chat/0.1 factual-router" },
   });
@@ -3167,13 +3170,31 @@ async function fetchFactualSummary(topic, config, fetchImpl) {
     throw httpError(502, `factual lookup failed for ${topic}`);
   }
   const payload = await response.json();
-  const title = payload.title ?? topic;
+  const title = payload.title ?? lookupTitle;
   const extract = String(payload.extract ?? "").trim();
   if (!extract || payload.type === "disambiguation") {
     throw httpError(502, `factual lookup returned no summary for ${topic}`);
   }
   const description = payload.description ? ` ${payload.description}.` : "";
   return `${title}:${description} ${extract}`.replace(/\s+/g, " ").trim();
+}
+
+async function resolveWikipediaTitle(topic, config, fetchImpl) {
+  try {
+    const searchOrigin = new URL(config.factualSummaryBaseUrl).origin;
+    const searchUrl = `${searchOrigin}/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=${encodeURIComponent(topic)}`;
+    const response = await fetchImpl(searchUrl, {
+      headers: { Accept: "application/json", "User-Agent": "MundusX-Chat/0.1 factual-router" },
+    });
+    if (!response.ok) {
+      return null;
+    }
+    const payload = await response.json();
+    const bestMatch = Array.isArray(payload) ? payload[1]?.[0] : null;
+    return typeof bestMatch === "string" && bestMatch.trim() ? bestMatch.trim() : null;
+  } catch {
+    return null;
+  }
 }
 
 function weatherCacheKey(location) {
