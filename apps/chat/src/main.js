@@ -779,6 +779,20 @@ export function page(config = configFromEnv()) {
     }
 
     .work-trace { display: grid; gap: 12px; }
+    .live-sections {
+      display: grid;
+      gap: 16px;
+      margin-bottom: 16px;
+    }
+    .live-section {
+      border-left: 3px solid rgba(124, 108, 246, 0.38);
+      padding-left: 14px;
+    }
+    .live-section h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+      line-height: 1.35;
+    }
     .work-title {
       display: flex;
       align-items: center;
@@ -1175,6 +1189,10 @@ export function page(config = configFromEnv()) {
     function renderPendingJob(node, payload) {
       const body = node.querySelector(".message-body");
       body.textContent = "";
+      const liveSections = createLiveSections(payload);
+      if (liveSections) {
+        body.appendChild(liveSections);
+      }
       body.appendChild(createWorkTrace(payload));
       const meta = document.createElement("div");
       meta.className = "meta";
@@ -1195,6 +1213,35 @@ export function page(config = configFromEnv()) {
       meta.className = "meta";
       meta.textContent = formatJobMeta(payload);
       body.appendChild(meta);
+    }
+
+    function createLiveSections(payload) {
+      const sections = completedDisplaySections(payload);
+      if (!sections.length) return null;
+      const wrapper = document.createElement("div");
+      wrapper.className = "live-sections";
+      for (const section of sections) {
+        const article = document.createElement("section");
+        article.className = "live-section";
+        const heading = document.createElement("h3");
+        heading.textContent = section.name;
+        article.appendChild(heading);
+        appendRichMessage(article, section.output);
+        wrapper.appendChild(article);
+      }
+      return wrapper;
+    }
+
+    function completedDisplaySections(payload) {
+      const nodes = payload.progress?.nodes || [];
+      return nodes
+        .filter((node) => node.status === "completed")
+        .filter((node) => String(node.responsibility || "section") !== "merge")
+        .filter((node) => String(node.output || "").trim())
+        .map((node) => ({
+          name: node.name || node.id || "Section",
+          output: String(node.output || "").trim(),
+        }));
     }
 
     function findPreviousUserMessage(node) {
