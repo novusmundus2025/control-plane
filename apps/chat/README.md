@@ -68,12 +68,13 @@ Railway provides `PORT`; the app reads it automatically.
 ## Current Flow
 
 1. Browser posts a user message to `POST /api/chat/jobs`.
-2. Obvious weather questions are answered directly through `wttr.in`; if Redis/Valkey is configured the response is cached for 2 hours.
-3. Current office-holder questions such as "current president of USA" are answered through Wikidata before using local LLM jobs.
-4. Obvious factual history/who/what questions are answered from the factual summary source before using local LLM jobs.
-5. Other requests are submitted as routed MundusX jobs to `POST /v1/jobs` with `execution_mode=auto`.
-6. Control plane decides whether the request is single-job or decomposed across graph chunks.
-7. Browser polls `GET /api/chat/jobs/:id`, which reads `GET /v1/jobs/:id`.
-8. Completed output and graph progress are returned to the browser.
+2. Simple polynomial indefinite integrals are answered directly through the math tool.
+3. Obvious weather questions are answered directly through `wttr.in`; if Redis/Valkey is configured the response is cached for 2 hours.
+4. Current office-holder questions such as "current president of USA" are answered through Wikidata before using local LLM jobs.
+5. Obvious factual history/who/what questions are answered from the factual summary source before using local LLM jobs.
+6. Other requests are submitted as routed MundusX jobs to `POST /v1/jobs` with `execution_mode=auto`.
+7. Control plane decides whether the request is single-job or decomposed across graph chunks.
+8. Browser polls `GET /api/chat/jobs/:id`, which reads `GET /v1/jobs/:id`.
+9. Completed output and graph progress are returned to the browser.
 
 Streaming is not enabled yet; the first version uses polling because the control plane already exposes job status and output.

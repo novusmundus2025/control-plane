@@ -7,6 +7,7 @@ import {
   escapeHtml,
   extractCurrentOfficeQuery,
   extractFactualSummaryTopic,
+  extractPolynomialIntegral,
   extractWeatherLocation,
   fetchNetworkSummary,
   page,
@@ -222,6 +223,27 @@ test("sends an explicit model override when configured", async () => {
   assert.equal(result.model, "Qwen/Explicit");
 });
 
+test("routes simple polynomial integrals to the math tool", async () => {
+  const fetchImpl = async () => {
+    throw new Error("math tool requests should not call the control plane");
+  };
+
+  const result = await submitChatJob(
+    { message: "Evaluate the following indefinite integral: int (6x^2 - 4x + 3) dx" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "math-tool");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "polynomial_integral");
+  assert.equal(result.assigned_node_id, "math-tool");
+  assert.match(result.output, /Integral: 6x\^2 - 4x \+ 3/);
+  assert.match(result.output, /Answer: 2x\^3 - 2x\^2 \+ 3x \+ C/);
+  assert.doesNotMatch(result.output, /\\frac|\\int|Certainly/i);
+});
+
 test("routes weather questions to wttr without queuing an LLM job", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
@@ -404,6 +426,24 @@ test("extracts only obvious weather locations", () => {
   assert.equal(extractWeatherLocation("weather in Warsaw please"), "Warsaw");
   assert.equal(extractWeatherLocation("temperature for New York right now"), "New York");
   assert.equal(extractWeatherLocation("Give me a history of Honda"), null);
+});
+
+test("extracts simple polynomial integrals", () => {
+  assert.deepEqual(
+    extractPolynomialIntegral("Evaluate the following indefinite integral: int (6x^2 - 4x + 3) dx"),
+    {
+      variable: "x",
+      expression: "6x^2 - 4x + 3",
+      result: "2x^3 - 2x^2 + 3x + C",
+      terms: [
+        { coefficient: 6, power: 2 },
+        { coefficient: -4, power: 1 },
+        { coefficient: 3, power: 0 },
+      ],
+    },
+  );
+  assert.equal(extractPolynomialIntegral("integrate sin(x) dx"), null);
+  assert.equal(extractPolynomialIntegral("write a history of calculus"), null);
 });
 
 test("extracts only factual summary topics", () => {
