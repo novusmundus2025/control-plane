@@ -30,6 +30,8 @@ const ICON_CPU = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const ICON_EDIT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-5"/><path d="M17.5 3.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 8.5-8.5Z"/></svg>';
 const ICON_LAYERS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3 8l9 5 9-5-9-5Z"/><path d="M3 13l9 5 9-5"/></svg>';
 const ICON_CHAT_BUBBLE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5z"/></svg>';
+const ICON_MIC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 14a3 3 0 0 0 3-3V6a3 3 0 1 0-6 0v5a3 3 0 0 0 3 3Z"/><path d="M19 11a7 7 0 0 1-14 0"/><path d="M12 18v3"/><path d="M8 21h8"/></svg>';
+const ICON_VOLUME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
 
 const WELCOME_INNER_HTML = `<div class="welcome-inner">
               <h1>Welcome to <span class="grad-text">MundusX</span> Chat</h1>
@@ -968,9 +970,68 @@ export function page(config = configFromEnv()) {
       grid-column: 1;
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 16px;
       color: var(--muted-2);
       font-size: 12px;
+    }
+    .voice-controls {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin-left: auto;
+    }
+    .voice-button {
+      width: 32px;
+      height: 32px;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      background: #f8f9ff;
+      color: var(--muted);
+      display: inline-grid;
+      place-items: center;
+      transition:
+        color var(--motion-fast),
+        background var(--motion-fast),
+        border-color var(--motion-fast),
+        transform var(--motion-fast);
+    }
+    .voice-button svg {
+      width: 16px;
+      height: 16px;
+    }
+    .voice-button:hover:not(:disabled),
+    .voice-button:focus-visible {
+      color: var(--blue);
+      border-color: rgba(59, 130, 246, 0.36);
+      background: #eef5ff;
+      transform: translateY(-1px);
+    }
+    .voice-button.is-active {
+      color: #fff;
+      border-color: transparent;
+      background: var(--gradient);
+      box-shadow: 0 8px 18px rgba(90, 90, 240, 0.26);
+    }
+    .voice-button.is-listening {
+      color: #fff;
+      border-color: transparent;
+      background: var(--red);
+      animation: mx-pulse 1.2s ease-in-out infinite;
+    }
+    .voice-button:disabled {
+      opacity: 0.42;
+      cursor: not-allowed;
+    }
+    .voice-status {
+      min-width: 92px;
+      color: var(--muted-2);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+    @keyframes mx-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.36); }
+      50% { box-shadow: 0 0 0 8px rgba(229, 72, 77, 0); }
     }
     .kbd {
       display: inline-flex;
@@ -1096,6 +1157,11 @@ export function page(config = configFromEnv()) {
             <span><span class="kbd">/</span>Commands</span>
             <span><span class="kbd">@</span>Web Search</span>
             <span><span class="kbd">&#8629;</span>Enter to Send</span>
+            <span class="voice-controls" id="voice-controls">
+              <button class="voice-button" id="voice-mic" type="button" aria-label="Start voice input" title="Voice input">${ICON_MIC}</button>
+              <button class="voice-button" id="voice-speak" type="button" aria-label="Speak replies" aria-pressed="false" title="Speak replies">${ICON_VOLUME}</button>
+              <span class="voice-status" id="voice-status">Voice ready</span>
+            </span>
           </div>
           <button class="send" id="send" type="submit" aria-label="Send">${ICON_ARROW_UP}</button>
         </div>
@@ -1114,10 +1180,18 @@ export function page(config = configFromEnv()) {
     const newChatEl = document.getElementById("new-chat");
     const accountBarEl = document.getElementById("account-bar");
     const accountMenuEl = document.getElementById("account-menu");
+    const voiceMicEl = document.getElementById("voice-mic");
+    const voiceSpeakEl = document.getElementById("voice-speak");
+    const voiceStatusEl = document.getElementById("voice-status");
     const historyKey = "mundusx.chat.history.v1";
+    const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition = null;
+    let isListening = false;
+    let speakReplies = localStorage.getItem("mundusx.chat.voice.speakReplies") === "true";
 
     renderHistory();
     hydrateNetwork();
+    setupVoiceControls();
     setInterval(hydrateNetwork, 15000);
 
     accountBarEl?.addEventListener("click", (event) => {
@@ -1167,6 +1241,107 @@ export function page(config = configFromEnv()) {
     function setStatus(state, label) {
       statusEl.dataset.state = state;
       statusTextEl.textContent = label;
+    }
+
+    function setupVoiceControls() {
+      if (!voiceMicEl || !voiceSpeakEl || !voiceStatusEl) return;
+      const canListen = Boolean(SpeechRecognitionCtor);
+      const canSpeak = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+
+      voiceMicEl.disabled = !canListen;
+      voiceSpeakEl.disabled = !canSpeak;
+      voiceSpeakEl.classList.toggle("is-active", speakReplies && canSpeak);
+      voiceSpeakEl.setAttribute("aria-pressed", String(speakReplies && canSpeak));
+      voiceStatusEl.textContent = canListen || canSpeak ? "Voice ready" : "Voice unavailable";
+
+      if (canListen) {
+        recognition = new SpeechRecognitionCtor();
+        recognition.continuous = false;
+        recognition.interimResults = true;
+        recognition.lang = navigator.language || "en-US";
+        recognition.addEventListener("start", () => {
+          isListening = true;
+          voiceMicEl.classList.add("is-listening");
+          voiceMicEl.setAttribute("aria-label", "Stop voice input");
+          voiceStatusEl.textContent = "Listening";
+          setStatus("working", "Listening");
+        });
+        recognition.addEventListener("result", (event) => {
+          let transcript = "";
+          for (let i = event.resultIndex; i < event.results.length; i += 1) {
+            transcript += event.results[i][0]?.transcript ?? "";
+          }
+          promptEl.value = transcript.trim();
+        });
+        recognition.addEventListener("end", () => {
+          isListening = false;
+          voiceMicEl.classList.remove("is-listening");
+          voiceMicEl.setAttribute("aria-label", "Start voice input");
+          voiceStatusEl.textContent = promptEl.value.trim() ? "Voice captured" : "Voice ready";
+          setStatus("ready", "Ready");
+        });
+        recognition.addEventListener("error", (event) => {
+          isListening = false;
+          voiceMicEl.classList.remove("is-listening");
+          voiceStatusEl.textContent = event.error === "not-allowed" ? "Mic blocked" : "Voice error";
+          setStatus("error", "Voice error");
+        });
+      }
+
+      voiceMicEl.addEventListener("click", () => {
+        if (!recognition) return;
+        if (isListening) {
+          recognition.stop();
+          return;
+        }
+        try {
+          promptEl.value = "";
+          recognition.start();
+        } catch {
+          voiceStatusEl.textContent = "Voice busy";
+        }
+      });
+
+      voiceSpeakEl.addEventListener("click", () => {
+        if (!canSpeak) return;
+        speakReplies = !speakReplies;
+        localStorage.setItem("mundusx.chat.voice.speakReplies", String(speakReplies));
+        voiceSpeakEl.classList.toggle("is-active", speakReplies);
+        voiceSpeakEl.setAttribute("aria-pressed", String(speakReplies));
+        voiceStatusEl.textContent = speakReplies ? "Replies on" : "Replies off";
+        if (!speakReplies) window.speechSynthesis.cancel();
+      });
+    }
+
+    function speakAssistantReply(text) {
+      if (!speakReplies || !("speechSynthesis" in window) || !("SpeechSynthesisUtterance" in window)) return;
+      const spoken = normalizeSpokenText(text);
+      if (!spoken) return;
+      window.speechSynthesis.cancel();
+      const utterance = new SpeechSynthesisUtterance(spoken);
+      utterance.rate = 1;
+      utterance.pitch = 1;
+      utterance.addEventListener("start", () => {
+        voiceStatusEl && (voiceStatusEl.textContent = "Speaking");
+      });
+      utterance.addEventListener("end", () => {
+        voiceStatusEl && (voiceStatusEl.textContent = "Voice ready");
+      });
+      utterance.addEventListener("error", () => {
+        voiceStatusEl && (voiceStatusEl.textContent = "Voice error");
+      });
+      window.speechSynthesis.speak(utterance);
+    }
+
+    function normalizeSpokenText(text) {
+      return String(text || "")
+        .replace(new RegExp(String.fromCharCode(96, 96, 96) + "[\\\\s\\\\S]*?" + String.fromCharCode(96, 96, 96), "g"), " code block omitted. ")
+        .replace(new RegExp(String.fromCharCode(96) + "([^" + String.fromCharCode(96) + "]+)" + String.fromCharCode(96), "g"), "$1")
+        .replace(/https?:\\/\\/\\S+/g, " link omitted ")
+        .replace(/[#*_>\\[\\]()]/g, " ")
+        .replace(/\\s+/g, " ")
+        .trim()
+        .slice(0, 1200);
     }
 
     newChatEl?.addEventListener("click", () => {
@@ -1261,6 +1436,15 @@ export function page(config = configFromEnv()) {
       meta.className = "meta";
       meta.textContent = formatJobMeta(payload);
       body.appendChild(meta);
+      speakAssistantReply(spokenTextForPayload(payload, output));
+    }
+
+    function spokenTextForPayload(payload, fallbackOutput) {
+      const response = payload.response;
+      if (response?.answer) return response.answer;
+      if (response?.summary) return response.summary;
+      if (typeof response?.text === "string") return response.text;
+      return fallbackOutput;
     }
 
     function renderTypedResponse(response) {

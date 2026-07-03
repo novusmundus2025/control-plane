@@ -29,6 +29,12 @@ test("renders a usable chat page", () => {
   assert.match(html, /MundusX Chat/);
   assert.match(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
   assert.match(html, /id="chat-form"/);
+  assert.match(html, /id="voice-mic"/);
+  assert.match(html, /id="voice-speak"/);
+  assert.match(html, /id="voice-status"/);
+  assert.match(html, /SpeechRecognition/);
+  assert.match(html, /speechSynthesis/);
+  assert.match(html, /function speakAssistantReply/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);
