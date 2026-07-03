@@ -15,10 +15,13 @@ const MAX_BODY_BYTES = 64 * 1024;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LOGO_PATH = resolve(MODULE_DIR, "../public/mundusx-logo.png");
 
-const ICON_SPARKLE = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 2l1.8 5.2L19 9l-5.2 1.8L12 16l-1.8-5.2L5 9l5.2-1.8L12 2z"/></svg>';
-const ICON_SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
-const ICON_BOOK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5A2.5 2.5 0 0 1 6.5 3H20v15H6.5A2.5 2.5 0 0 0 4 20.5v-15Z"/><path d="M4 20.5A2.5 2.5 0 0 1 6.5 18H20"/></svg>';
-const ICON_HELP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M9.1 9a2.9 2.9 0 1 1 3.8 2.76c-.74.29-1.4.9-1.4 1.74v.5"/><path d="M12 17h.01"/></svg>';
+const ICON_CHEVRON_RIGHT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+const ICON_UPGRADE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M12 3c0 3-1 5.5-2.5 7S6 12 3 12c3 0 5.5 1 7 2.5S12 18 12 21c0-3 1-5.5 2.5-7S18 12 21 12c-3 0-5.5-1-7-2.5S12 6 12 3z"/></svg>';
+const ICON_PERSONALIZATION = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M13 7l-4 6h3l-1 4 4-6h-3l1-4z"/></svg>';
+const ICON_PROFILE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="10" r="2.5"/><path d="M7 17.5c1.2-2 3-3 5-3s3.8 1 5 3"/></svg>';
+const ICON_SETTINGS = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>';
+const ICON_HELP_RING = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="3.5"/><path d="M5.5 5.5l3 3M15.5 15.5l3 3M18.5 5.5l-3 3M8.5 15.5l-3 3"/></svg>';
+const ICON_LOGOUT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M15 16l4-4-4-4"/><path d="M19 12H9"/></svg>';
 const ICON_ARROW_UP = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
 const ICON_ARROW_RIGHT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg>';
 const ICON_CLOCK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>';
@@ -368,31 +371,146 @@ export function page(config = configFromEnv()) {
     .network-line span:last-child { color: var(--cyan); font-size: 12px; font-weight: 700; letter-spacing: 0.03em; }
     #network-latency { color: var(--green); font-weight: 700; }
 
-    .icon-row {
-      display: flex;
-      align-items: center;
-      gap: 10px;
+    .account-widget {
+      position: relative;
       border-top: 1px solid var(--line);
       padding-top: 14px;
     }
-    .icon-btn {
-      width: 34px;
-      height: 34px;
+    .account-bar {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 1px solid transparent;
+      border-radius: 12px;
+      background: #f1f2f9;
+      padding: 8px 10px;
+      text-align: left;
+      transition: background var(--motion-fast);
+    }
+    .account-bar:hover,
+    .account-bar:focus-visible {
+      background: #e7e8f2;
+      outline: 0;
+    }
+    .account-avatar {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: #b8462c;
+      color: #fff;
       display: grid;
       place-items: center;
-      border: 1px solid transparent;
-      border-radius: 8px;
-      color: var(--muted-2);
-      background: transparent;
-      transition: color var(--motion-fast), background var(--motion-fast);
+      font-weight: 700;
+      font-size: 12px;
+      flex: 0 0 auto;
     }
-    .icon-btn:hover,
-    .icon-btn:focus-visible {
+    .account-info {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+    .account-name {
       color: var(--text);
+      font-weight: 600;
+      font-size: 13px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .account-plan {
+      color: var(--muted-2);
+      font-size: 11px;
+    }
+    .account-upgrade {
+      margin-left: auto;
+      flex: 0 0 auto;
+      border: 1px solid var(--line-strong);
+      background: #fff;
+      border-radius: 999px;
+      padding: 5px 12px;
+      font-weight: 700;
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .account-menu {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 100%;
+      margin-bottom: 8px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: 0 20px 45px rgba(15, 23, 42, 0.16);
+      padding: 8px;
+      display: none;
+      z-index: 40;
+    }
+    .account-menu.is-open { display: block; }
+    .account-menu-header {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border: 0;
+      background: transparent;
+      border-radius: 8px;
+      padding: 8px;
+      text-align: left;
+      transition: background var(--motion-fast);
+    }
+    .account-menu-header:hover,
+    .account-menu-header:focus-visible {
       background: #f1f2f9;
       outline: 0;
     }
-    .icon-btn svg { width: 18px; height: 18px; }
+    .account-menu-header-text {
+      display: grid;
+      gap: 1px;
+      min-width: 0;
+    }
+    .account-menu-name {
+      color: var(--text);
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .account-menu-plan {
+      color: var(--muted-2);
+      font-size: 12px;
+    }
+    .account-menu-divider {
+      border-top: 1px solid var(--line);
+      margin: 6px 4px;
+    }
+    .account-menu-item {
+      width: 100%;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border: 0;
+      background: transparent;
+      border-radius: 8px;
+      padding: 9px 8px;
+      color: var(--text);
+      font-size: 14px;
+      text-align: left;
+      transition: background var(--motion-fast);
+    }
+    .account-menu-item:hover,
+    .account-menu-item:focus-visible {
+      background: #f1f2f9;
+      outline: 0;
+    }
+    .account-menu-item svg {
+      width: 18px;
+      height: 18px;
+      color: var(--muted);
+      flex: 0 0 auto;
+    }
+    .chevron { margin-left: auto; color: var(--muted-2); flex: 0 0 auto; }
+    .chevron svg { width: 16px; height: 16px; display: block; }
 
     /* ---- Main column ---- */
     main {
@@ -407,29 +525,10 @@ export function page(config = configFromEnv()) {
       padding: 0 24px;
       border-bottom: 1px solid var(--line);
       display: flex;
-      justify-content: space-between;
+      justify-content: flex-end;
       align-items: center;
       gap: 16px;
     }
-    .chat-title {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      color: var(--text);
-      font-weight: 700;
-      font-size: 15px;
-    }
-    .chat-title-icon {
-      width: 28px;
-      height: 28px;
-      display: grid;
-      place-items: center;
-      border-radius: 8px;
-      background: var(--gradient);
-      color: #fff;
-      flex: 0 0 auto;
-    }
-    .chat-title-icon svg { width: 15px; height: 15px; }
     .runtime-status-sentinel {
       display: inline-flex;
       align-items: center;
@@ -854,15 +953,37 @@ export function page(config = configFromEnv()) {
         <div id="network-card-metrics">-- nodes - -- queued - routed</div>
         <div>Latency <span id="network-latency">-- ms</span> - Jobs <span id="network-jobs">--</span></div>
       </div>
-      <div class="icon-row">
-        <button class="icon-btn" id="theme-toggle" type="button" title="Toggle theme" aria-label="Toggle theme">${ICON_SUN}</button>
-        <button class="icon-btn" type="button" title="Documentation" aria-label="Documentation">${ICON_BOOK}</button>
-        <button class="icon-btn" type="button" title="Help" aria-label="Help">${ICON_HELP}</button>
+      <div class="account-widget">
+        <div class="account-menu" id="account-menu">
+          <button class="account-menu-header" type="button">
+            <span class="account-avatar">LB</span>
+            <span class="account-menu-header-text">
+              <span class="account-menu-name">Lichard Baliuag</span>
+              <span class="account-menu-plan">Free</span>
+            </span>
+            <span class="chevron">${ICON_CHEVRON_RIGHT}</span>
+          </button>
+          <div class="account-menu-divider"></div>
+          <button class="account-menu-item" type="button">${ICON_UPGRADE}<span>Upgrade plan</span></button>
+          <button class="account-menu-item" type="button">${ICON_PERSONALIZATION}<span>Personalization</span></button>
+          <button class="account-menu-item" type="button">${ICON_PROFILE}<span>Profile</span></button>
+          <button class="account-menu-item" type="button">${ICON_SETTINGS}<span>Settings</span></button>
+          <div class="account-menu-divider"></div>
+          <button class="account-menu-item" type="button">${ICON_HELP_RING}<span>Help</span><span class="chevron">${ICON_CHEVRON_RIGHT}</span></button>
+          <button class="account-menu-item" type="button">${ICON_LOGOUT}<span>Log out</span></button>
+        </div>
+        <button class="account-bar" id="account-bar" type="button" aria-haspopup="true" aria-expanded="false">
+          <span class="account-avatar">LB</span>
+          <span class="account-info">
+            <span class="account-name">Lichard Baliuag</span>
+            <span class="account-plan">Free</span>
+          </span>
+          <span class="account-upgrade">Upgrade</span>
+        </button>
       </div>
     </aside>
     <main>
       <header>
-        <div class="chat-title"><span class="chat-title-icon">${ICON_SPARKLE}</span>MundusX Chat</div>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="ready"><span class="status-dot"></span><span id="runtime-status-text">Ready</span></span>
       </header>
       <section class="messages" id="messages" aria-live="polite">
@@ -895,11 +1016,30 @@ export function page(config = configFromEnv()) {
     const statusTextEl = document.getElementById("runtime-status-text");
     const historyListEl = document.getElementById("history-list");
     const newChatEl = document.getElementById("new-chat");
+    const accountBarEl = document.getElementById("account-bar");
+    const accountMenuEl = document.getElementById("account-menu");
     const historyKey = "mundusx.chat.history.v1";
 
     renderHistory();
     hydrateNetwork();
     setInterval(hydrateNetwork, 15000);
+
+    accountBarEl?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      const isOpen = accountMenuEl.classList.toggle("is-open");
+      accountBarEl.setAttribute("aria-expanded", String(isOpen));
+    });
+    document.addEventListener("click", (event) => {
+      if (!accountMenuEl?.classList.contains("is-open")) return;
+      if (event.target.closest(".account-widget")) return;
+      accountMenuEl.classList.remove("is-open");
+      accountBarEl?.setAttribute("aria-expanded", "false");
+    });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      accountMenuEl?.classList.remove("is-open");
+      accountBarEl?.setAttribute("aria-expanded", "false");
+    });
 
     function addMessage(text, role, meta) {
       document.getElementById("welcome")?.remove();
