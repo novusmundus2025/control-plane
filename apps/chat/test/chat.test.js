@@ -23,20 +23,24 @@ test("renders a usable chat page", () => {
   );
 
   assert.match(html, /MundusX Chat/);
-  assert.match(html, /Welcome to MundusX Chat/);
+  assert.match(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
   assert.match(html, /id="chat-form"/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);
   assert.match(html, /Source chunks/);
   assert.match(html, /Message MundusX/);
-  assert.match(html, /\[ \/ \] Commands/);
+  assert.match(html, /<span class="kbd">\/<\/span>Commands/);
   assert.match(html, /\.message\.assistant \.message-body/);
   assert.match(html, /\.message\.user \.message-body/);
   assert.match(html, /\.code-block/);
   assert.match(html, /function stripEchoedPrompt/);
   assert.match(html, /function appendRichMessage/);
+  assert.match(html, /function normalizeAssistantDisplayText/);
+  assert.match(html, /function appendInlineMarkdown/);
   assert.match(html, /function formatCodeForDisplay/);
+  assert.match(html, /\.message-body ol/);
+  assert.match(html, /\.message-body strong/);
   assert.ok(html.includes('replace(/^\\n/, "")'));
   assert.ok(html.includes('raw.includes("\\n")'));
   assert.ok(html.includes('/\\b(public\\s+class'));
@@ -519,6 +523,18 @@ test("cleans worker metadata and repeated role-prefixed output", () => {
     "The President of the United States is Donald Trump. He is the 47th President of the United States.",
   );
   assert.doesNotMatch(output, /llama\.cpp|path=|response=|system:/i);
+});
+
+test("removes assistant preambles before rendering chat output", () => {
+  const output = cleanChatOutput(
+    "llama.cpp mode=cuda; response=MundusX Chat: Certainly! Here is a brief history of Apple Company: 1. **Founding**: Apple was founded in 1976. 2. **Early Years**: Apple released the Apple II.",
+  );
+
+  assert.equal(
+    output,
+    "1. **Founding**: Apple was founded in 1976. 2. **Early Years**: Apple released the Apple II.",
+  );
+  assert.doesNotMatch(output, /MundusX Chat|Certainly|Here is/i);
 });
 
 test("removes leaked subjob instructions while keeping chunk content", () => {
