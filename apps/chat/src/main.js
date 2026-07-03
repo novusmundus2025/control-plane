@@ -1139,6 +1139,25 @@ export function page(config = configFromEnv()) {
     .message-body p:last-child {
       margin-bottom: 0;
     }
+    .message-body ol,
+    .message-body ul {
+      margin: 10px 0 12px;
+      padding-left: 24px;
+    }
+    .message-body li {
+      margin: 8px 0;
+      padding-left: 4px;
+    }
+    .message-body strong {
+      font-weight: 800;
+    }
+    .message-body code:not(.code-block code) {
+      background: rgba(0,0,0,0.06);
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-size: 0.94em;
+    }
     .code-block {
       margin: 12px 0;
       border: 1px solid rgba(0,0,0,0.14);
@@ -1594,11 +1613,60 @@ export function page(config = configFromEnv()) {
     }
 
     function appendTextParagraphs(container, text) {
-      const paragraphs = String(text || "").trim().split(/\\n{2,}/).filter(Boolean);
-      for (const paragraph of paragraphs) {
+      const blocks = normalizeAssistantDisplayText(text).split(/\\n{2,}/).filter(Boolean);
+      for (const block of blocks) {
+        const list = createListBlock(block);
+        if (list) {
+          container.appendChild(list);
+          continue;
+        }
         const node = document.createElement("p");
-        node.textContent = paragraph.trim();
+        appendInlineMarkdown(node, block.trim());
         container.appendChild(node);
+      }
+    }
+
+    function normalizeAssistantDisplayText(text) {
+      return String(text || "")
+        .replace(/\\r\\n/g, "\\n")
+        .replace(/\\s+(\\d+)\\.\\s+(?=\\*\\*|[A-Z0-9])/g, "\\n$1. ")
+        .replace(/\\s+[-*]\\s+(?=\\*\\*|[A-Z0-9])/g, "\\n- ")
+        .replace(/\\n{3,}/g, "\\n\\n")
+        .trim();
+    }
+
+    function createListBlock(block) {
+      const lines = String(block || "").split("\\n").map((line) => line.trim()).filter(Boolean);
+      if (lines.length < 2) return null;
+      const ordered = lines.every((line) => /^\\d+\\.\\s+/.test(line));
+      const unordered = lines.every((line) => /^[-*]\\s+/.test(line));
+      if (!ordered && !unordered) return null;
+      const list = document.createElement(ordered ? "ol" : "ul");
+      for (const line of lines) {
+        const item = document.createElement("li");
+        appendInlineMarkdown(item, line.replace(ordered ? /^\\d+\\.\\s+/ : /^[-*]\\s+/, ""));
+        list.appendChild(item);
+      }
+      return list;
+    }
+
+    function appendInlineMarkdown(parent, text) {
+      const value = String(text || "");
+      const tick = String.fromCharCode(96);
+      const pattern = new RegExp("(\\\\*\\\\*[^*]+\\\\*\\\\*|" + tick + "[^" + tick + "]+" + tick + ")", "g");
+      let index = 0;
+      for (const match of value.matchAll(pattern)) {
+        if (match.index > index) {
+          parent.appendChild(document.createTextNode(value.slice(index, match.index)));
+        }
+        const token = match[0];
+        const node = document.createElement(token.startsWith("**") ? "strong" : "code");
+        node.textContent = token.startsWith("**") ? token.slice(2, -2) : token.slice(1, -1);
+        parent.appendChild(node);
+        index = match.index + token.length;
+      }
+      if (index < value.length) {
+        parent.appendChild(document.createTextNode(value.slice(index)));
       }
     }
 
@@ -2671,6 +2739,7 @@ function cleanChatOutputInternal(value, emptyFallback) {
 
   output = stripWorkerTrace(output);
   output = stripRolePrefixes(output);
+  output = stripAssistantPreamble(output);
   output = stripEmbeddedRoleLeak(output);
   output = stripPromptInstructionLeak(output);
   output = collapseRepeatedSentences(output);
@@ -2696,13 +2765,23 @@ function stripWorkerTrace(value) {
 function stripRolePrefixes(value) {
   let output = value.trim();
   for (let i = 0; i < 3; i += 1) {
-    const next = output.replace(/^(?:system|assistant|user)\s*:\s*/i, "").trim();
+    const next = output.replace(/^(?:system|assistant|user|mundusx chat)\s*:\s*/i, "").trim();
     if (next === output) {
       break;
     }
     output = next;
   }
   return output;
+}
+
+function stripAssistantPreamble(value) {
+  return value
+    .trim()
+    .replace(
+      /^(?:(?:certainly|sure|of course)[!.]?\s+)?(?:here(?:'s| is)\s+(?:a|an|the)?\s*(?:brief|detailed|complete)?\s*(?:answer|overview|summary|history|response|program|code)?(?:\s+of\s+[^:]{2,120})?\s*:\s*)/i,
+      "",
+    )
+    .trim();
 }
 
 function stripEmbeddedRoleLeak(value) {
