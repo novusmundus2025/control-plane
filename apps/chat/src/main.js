@@ -1527,6 +1527,11 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(400, "message is required");
   }
 
+  const polynomialIntegral = extractPolynomialIntegral(message);
+  if (polynomialIntegral) {
+    return fetchPolynomialIntegralJob(message, polynomialIntegral);
+  }
+
   const weatherLocation = extractWeatherLocation(message);
   if (weatherLocation) {
     return fetchWeatherJob(message, weatherLocation, config, fetchImpl);
@@ -1582,6 +1587,164 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   return formatChatJob(jobId, job, model || null);
+}
+
+export function extractPolynomialIntegral(message) {
+  const text = String(message ?? "").trim();
+  if (!/\b(?:integral|integrate|int)\b/i.test(text) || !/\bdx\b/i.test(text)) {
+    return null;
+  }
+
+  const expression =
+    text.match(/\bint\b\s*\(?\s*([^)]+?)\s*\)?\s*dx\b/i)?.[1] ??
+    text.match(/\bintegral\s+(?:of\s+)?\(?\s*([^)]+?)\s*\)?\s*dx\b/i)?.[1] ??
+    text.match(/\bintegrate\s+\(?\s*([^)]+?)\s*\)?\s*(?:with\s+respect\s+to\s+x|dx)\b/i)?.[1];
+  if (!expression || !/[xX]/.test(expression)) {
+    return null;
+  }
+
+  const terms = parsePolynomialTerms(expression);
+  if (!terms.length) {
+    return null;
+  }
+  return {
+    variable: "x",
+    expression: formatPolynomial(terms),
+    result: formatPolynomial(terms.map((term) => ({
+      coefficient: term.coefficient / (term.power + 1),
+      power: term.power + 1,
+    })), " + C"),
+    terms,
+  };
+}
+
+function parsePolynomialTerms(expression) {
+  const normalized = String(expression)
+    .replace(/\s+/g, "")
+    .replace(/\*/g, "")
+    .replace(/−/g, "-");
+  if (!normalized || /[^0-9xX^+\-.]/.test(normalized)) {
+    return [];
+  }
+
+  const pieces = normalized.match(/[+-]?[^+-]+/g) ?? [];
+  const terms = [];
+  for (const piece of pieces) {
+    const term = parsePolynomialTerm(piece);
+    if (!term) {
+      return [];
+    }
+    terms.push(term);
+  }
+  return combinePolynomialTerms(terms);
+}
+
+function parsePolynomialTerm(piece) {
+  const value = String(piece ?? "");
+  if (!value) {
+    return null;
+  }
+  const sign = value.startsWith("-") ? -1 : 1;
+  const unsigned = value.replace(/^[+-]/, "");
+  if (/^[0-9]+(?:\.[0-9]+)?$/.test(unsigned)) {
+    return { coefficient: sign * Number(unsigned), power: 0 };
+  }
+
+  const match = unsigned.match(/^([0-9]+(?:\.[0-9]+)?)?[xX](?:\^([0-9]+))?$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    coefficient: sign * Number(match[1] ?? 1),
+    power: Number(match[2] ?? 1),
+  };
+}
+
+function combinePolynomialTerms(terms) {
+  const byPower = new Map();
+  for (const term of terms) {
+    byPower.set(term.power, (byPower.get(term.power) ?? 0) + term.coefficient);
+  }
+  return [...byPower.entries()]
+    .map(([power, coefficient]) => ({ power, coefficient }))
+    .filter((term) => Math.abs(term.coefficient) > 1e-12)
+    .sort((a, b) => b.power - a.power);
+}
+
+function formatPolynomial(terms, suffix = "") {
+  const parts = [];
+  for (const term of terms) {
+    const formatted = formatPolynomialTerm(term);
+    if (!formatted) {
+      continue;
+    }
+    if (!parts.length) {
+      parts.push(formatted);
+    } else if (formatted.startsWith("-")) {
+      parts.push(`- ${formatted.slice(1)}`);
+    } else {
+      parts.push(`+ ${formatted}`);
+    }
+  }
+  return `${parts.join(" ")}${suffix}`;
+}
+
+function formatPolynomialTerm(term) {
+  const coefficient = normalizeNumber(term.coefficient);
+  if (coefficient === 0) {
+    return "";
+  }
+  const sign = coefficient < 0 ? "-" : "";
+  const abs = Math.abs(coefficient);
+  if (term.power === 0) {
+    return `${sign}${formatNumber(abs)}`;
+  }
+  const coefficientText = abs === 1 ? "" : formatNumber(abs);
+  const variable = term.power === 1 ? "x" : `x^${term.power}`;
+  return `${sign}${coefficientText}${variable}`;
+}
+
+function normalizeNumber(value) {
+  const rounded = Math.round(value * 1e12) / 1e12;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function formatNumber(value) {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return String(Number(value.toFixed(6))).replace(/\.0+$/, "");
+}
+
+function fetchPolynomialIntegralJob(message, integral) {
+  const output = [
+    `Integral: ${integral.expression}`,
+    `Answer: ${integral.result}`,
+    "Rule used: integrate each term a*x^n as (a/(n+1))*x^(n+1), then add C.",
+  ].join("\n\n");
+
+  return {
+    job_id: `math-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "math-tool",
+    assigned_node_id: "math-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "polynomial_integral",
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "math_tool",
+    },
+  };
 }
 
 async function fetchWeatherJob(message, location, config, fetchImpl) {
