@@ -51,6 +51,11 @@ test("renders a usable chat page", () => {
   assert.match(html, /Completed source sections/);
   assert.match(html, /Message MundusX/);
   assert.match(html, /<span class="kbd">\/<\/span>Commands/);
+  assert.match(html, /id="web-search-toggle"/);
+  assert.match(html, /id="web-search-label"/);
+  assert.match(html, /toolMode: webSearchEnabled/);
+  assert.match(html, /function renderToolMode/);
+  assert.match(html, /Tools On/);
   assert.match(html, /\.message\.assistant \.message-body/);
   assert.match(html, /\.message\.user \.message-body/);
   assert.match(html, /\.code-block/);
@@ -550,6 +555,60 @@ test("falls back to MundusX jobs when factual summary lookup misses", async () =
   assert.equal(calls.length, 2);
   assert.equal(result.job_id, "job-fallback");
   assert.equal(result.status, "queued");
+});
+
+test("does not fall back to MundusX jobs when explicit tool mode has no matching tool", async () => {
+  const result = await submitChatJob(
+    { message: "latest NVIDIA driver for GTX 1650", toolMode: true },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("tool mode should not call the control plane for unsupported direct tools");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "tool-router");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "unsupported_tool_mode");
+  assert.match(result.output, /Tool mode is on/);
+  assert.match(result.output, /Turn Web Search off/);
+});
+
+test("accepts at-prefixed web search requests for direct tools", async () => {
+  const calls = [];
+  const result = await submitChatJob(
+    { message: "@ weather in Manila", toolMode: true },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url) => {
+      calls.push(url);
+      assert.equal(url, "https://wttr.in/Manila?format=j1");
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Manila" }],
+            region: [{ value: "National Capital Region" }],
+            country: [{ value: "Philippines" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Partly cloudy" }],
+            temp_C: "31",
+            temp_F: "88",
+            FeelsLikeC: "35",
+            FeelsLikeF: "95",
+            humidity: "70",
+            windspeedKmph: "12",
+          },
+        ],
+      });
+    },
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "weather");
+  assert.match(result.output, /Weather for Manila/);
 });
 
 test("returns immediate weather turns without polling the control plane", async () => {

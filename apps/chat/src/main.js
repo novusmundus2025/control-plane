@@ -994,6 +994,31 @@ export function page(config = configFromEnv()) {
       color: var(--muted-2);
       font-size: 12px;
     }
+    .tool-toggle {
+      border: 0;
+      background: transparent;
+      color: var(--muted-2);
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 0;
+      font: inherit;
+      font-size: 12px;
+      cursor: pointer;
+    }
+    .tool-toggle:hover,
+    .tool-toggle:focus-visible {
+      color: var(--blue);
+      outline: none;
+    }
+    .tool-toggle.is-active {
+      color: var(--green);
+    }
+    .tool-toggle.is-active .kbd {
+      border-color: rgba(18, 184, 134, 0.42);
+      background: #e9fbf4;
+      color: var(--green);
+    }
     .voice-controls {
       display: inline-flex;
       align-items: center;
@@ -1174,7 +1199,7 @@ export function page(config = configFromEnv()) {
           <textarea id="prompt" name="prompt" placeholder="Message MundusX..." autocomplete="off" required></textarea>
           <div class="composer-actions">
             <span><span class="kbd">/</span>Commands</span>
-            <span><span class="kbd">@</span>Web Search</span>
+            <button class="tool-toggle" id="web-search-toggle" type="button" aria-pressed="false" title="Use grounded tools when available"><span class="kbd">@</span><span id="web-search-label">Web Search</span></button>
             <span><span class="kbd">&#8629;</span>Enter to Send</span>
             <span class="voice-controls" id="voice-controls">
               <button class="voice-button" id="voice-mic" type="button" aria-label="Start voice input" title="Voice input">${ICON_MIC}</button>
@@ -1199,6 +1224,8 @@ export function page(config = configFromEnv()) {
     const newChatEl = document.getElementById("new-chat");
     const accountBarEl = document.getElementById("account-bar");
     const accountMenuEl = document.getElementById("account-menu");
+    const webSearchToggleEl = document.getElementById("web-search-toggle");
+    const webSearchLabelEl = document.getElementById("web-search-label");
     const voiceMicEl = document.getElementById("voice-mic");
     const voiceSpeakEl = document.getElementById("voice-speak");
     const voiceStatusEl = document.getElementById("voice-status");
@@ -1208,9 +1235,11 @@ export function page(config = configFromEnv()) {
     let isListening = false;
     let heardSpeech = false;
     let speakReplies = localStorage.getItem("mundusx.chat.voice.speakReplies") === "true";
+    let webSearchEnabled = localStorage.getItem("mundusx.chat.toolMode") === "true";
 
     renderHistory();
     hydrateNetwork();
+    renderToolMode();
     setupVoiceControls();
     setInterval(hydrateNetwork, 15000);
 
@@ -1229,6 +1258,12 @@ export function page(config = configFromEnv()) {
       if (event.key !== "Escape") return;
       accountMenuEl?.classList.remove("is-open");
       accountBarEl?.setAttribute("aria-expanded", "false");
+    });
+    webSearchToggleEl?.addEventListener("click", () => {
+      webSearchEnabled = !webSearchEnabled;
+      localStorage.setItem("mundusx.chat.toolMode", String(webSearchEnabled));
+      renderToolMode();
+      promptEl.focus();
     });
 
     function addMessage(text, role, meta) {
@@ -1261,6 +1296,13 @@ export function page(config = configFromEnv()) {
     function setStatus(state, label) {
       statusEl.dataset.state = state;
       statusTextEl.textContent = label;
+    }
+
+    function renderToolMode() {
+      if (!webSearchToggleEl || !webSearchLabelEl) return;
+      webSearchToggleEl.classList.toggle("is-active", webSearchEnabled);
+      webSearchToggleEl.setAttribute("aria-pressed", String(webSearchEnabled));
+      webSearchLabelEl.textContent = webSearchEnabled ? "Tools On" : "Web Search";
     }
 
     function setupVoiceControls() {
@@ -1468,7 +1510,7 @@ export function page(config = configFromEnv()) {
         const created = await fetch("/api/chat/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona() }),
+          body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona(), toolMode: webSearchEnabled }),
         });
         const submitted = await created.json();
         if (!created.ok) {
@@ -2140,41 +2182,47 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   if (!message) {
     throw httpError(400, "message is required");
   }
+  const toolMode = isToolModeEnabled(body);
+  const toolMessage = stripToolModePrefix(message);
 
-  const linearEquation = extractLinearEquation(message);
+  const linearEquation = extractLinearEquation(toolMessage);
   if (linearEquation) {
-    return fetchLinearEquationJob(message, linearEquation);
+    return fetchLinearEquationJob(toolMessage, linearEquation);
   }
 
-  const polynomialDerivative = extractPolynomialDerivative(message);
+  const polynomialDerivative = extractPolynomialDerivative(toolMessage);
   if (polynomialDerivative) {
-    return fetchPolynomialDerivativeJob(message, polynomialDerivative);
+    return fetchPolynomialDerivativeJob(toolMessage, polynomialDerivative);
   }
 
-  const polynomialIntegral = extractPolynomialIntegral(message);
+  const polynomialIntegral = extractPolynomialIntegral(toolMessage);
   if (polynomialIntegral) {
-    return fetchPolynomialIntegralJob(message, polynomialIntegral);
+    return fetchPolynomialIntegralJob(toolMessage, polynomialIntegral);
   }
 
-  const weatherLocation = extractWeatherLocation(message);
+  const weatherLocation = extractWeatherLocation(toolMessage);
   if (weatherLocation) {
-    return fetchWeatherJob(message, weatherLocation, config, fetchImpl);
+    return fetchWeatherJob(toolMessage, weatherLocation, config, fetchImpl);
   }
 
-  const currentOfficeQuery = extractCurrentOfficeQuery(message);
+  const currentOfficeQuery = extractCurrentOfficeQuery(toolMessage);
   if (currentOfficeQuery) {
-    const currentOfficeJob = await fetchCurrentOfficeJob(message, currentOfficeQuery, config, fetchImpl);
+    const currentOfficeJob = await fetchCurrentOfficeJob(toolMessage, currentOfficeQuery, config, fetchImpl);
     if (currentOfficeJob) {
       return currentOfficeJob;
     }
   }
 
-  const factualTopic = extractFactualSummaryTopic(message);
+  const factualTopic = extractFactualSummaryTopic(toolMessage);
   if (factualTopic) {
-    const factualJob = await fetchFactualSummaryJob(message, factualTopic, config, fetchImpl);
+    const factualJob = await fetchFactualSummaryJob(toolMessage, factualTopic, config, fetchImpl);
     if (factualJob) {
       return factualJob;
     }
+  }
+
+  if (toolMode) {
+    return fetchUnsupportedToolModeJob(toolMessage);
   }
 
   const model = String(body?.model ?? config.modelOverride ?? "").trim();
@@ -2211,6 +2259,49 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   return formatChatJob(jobId, job, model || null);
+}
+
+function isToolModeEnabled(body) {
+  const value = body?.toolMode ?? body?.webSearch ?? body?.tool_mode;
+  if (typeof value === "boolean") {
+    return value;
+  }
+  return /^(1|true|yes|on|tools?|web)$/i.test(String(value ?? "").trim());
+}
+
+function stripToolModePrefix(message) {
+  return String(message ?? "")
+    .replace(/^\s*@(?:web(?:\s+search)?|search|tools?)?\s*/i, "")
+    .trim();
+}
+
+function fetchUnsupportedToolModeJob(message) {
+  const output = [
+    "Tool mode is on, but MundusX does not have a direct tool for this request yet.",
+    "Try a supported grounded request such as weather, current president, factual summary, or math. Turn Web Search off to use the local model.",
+  ].join(" ");
+  return {
+    job_id: `tool-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "tool-router",
+    assigned_node_id: "tool-router",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "unsupported_tool_mode",
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "tool_mode_router",
+    },
+  };
 }
 
 export function extractLinearEquation(message) {
