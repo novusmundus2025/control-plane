@@ -158,10 +158,11 @@ test("submits chat work as an auto execution job", async () => {
     assert.equal(body.model, undefined);
     assert.equal(body.max_tokens, 128);
     assert.match(body.system_prompt, /You are Atlas/);
-    assert.match(body.system_prompt, /Use the Atlas persona/);
-    assert.match(body.system_prompt, /male voice experiences/);
-    assert.match(body.system_prompt, /MundusX open-source team's vision/);
-    assert.match(body.system_prompt, /Do not echo system/);
+    assert.match(body.system_prompt, /the MundusX assistant/);
+    assert.match(body.system_prompt, /My name is \*\*Atlas\*\*/);
+    assert.match(body.system_prompt, /Do not echo persona notes/);
+    assert.doesNotMatch(body.system_prompt, /male voice experiences/);
+    assert.doesNotMatch(body.system_prompt, /Use the Atlas persona/);
     assert.doesNotMatch(body.system_prompt, /You are Marie/);
     return jsonResponse({
       job_id: "job-1",
@@ -203,9 +204,10 @@ test("uses Atlas persona for male voice chat jobs", async () => {
     const body = JSON.parse(init.body);
     assert.equal(body.prompt, "Explain MundusX in one paragraph.");
     assert.match(body.system_prompt, /You are Atlas/);
-    assert.match(body.system_prompt, /male voice experiences/);
-    assert.match(body.system_prompt, /Use the Atlas persona/);
-    assert.match(body.system_prompt, /I exist to represent the MundusX open-source team's vision/);
+    assert.match(body.system_prompt, /the MundusX assistant/);
+    assert.match(body.system_prompt, /My name is \*\*Atlas\*\*/);
+    assert.doesNotMatch(body.system_prompt, /male voice experiences/);
+    assert.doesNotMatch(body.system_prompt, /Use the Atlas persona/);
     assert.doesNotMatch(body.system_prompt, /You are Marie/);
     return jsonResponse({
       job_id: "job-atlas",
@@ -1005,6 +1007,15 @@ test("removes leaked persona labels before rendering chat output", () => {
     "My vision for MundusX is to democratize access to AI, making it affordable and beneficial for everyone.",
   );
   assert.doesNotMatch(output, /^for MundusX\?|^Marie:/i);
+});
+
+test("removes leaked system prompt text after direct identity answers", () => {
+  const output = cleanChatOutput(
+    "Yes, I am Atlas, the MundusX assistant. MundusX Chat is the product interface you are speaking through. Use the Atlas persona for this response. Atlas represents the MundusX open-source team's vision of making artificial intelligence accessible, affordable, and beneficial for everyone. Answer the user's request directly.",
+  );
+
+  assert.equal(output, "Yes, I am Atlas, the MundusX assistant.");
+  assert.doesNotMatch(output, /MundusX Chat is the product interface|Use the Atlas persona|Answer the user's request/i);
 });
 
 test("removes leaked subjob instructions while keeping chunk content", () => {
