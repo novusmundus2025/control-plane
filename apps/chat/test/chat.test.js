@@ -49,12 +49,15 @@ test("renders a usable chat page", () => {
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);
   assert.match(html, /Completed source sections/);
-  assert.match(html, /Message MundusX/);
-  assert.match(html, /<span class="kbd">\/<\/span>Commands/);
+  assert.match(html, /Ask everyone/);
+  assert.doesNotMatch(html, /<span class="kbd">\/<\/span>Commands/);
   assert.match(html, /id="web-search-toggle"/);
   assert.match(html, /id="web-search-label"/);
+  assert.match(html, /id="enter-to-send-toggle"/);
+  assert.match(html, /id="enter-to-send-label"/);
   assert.match(html, /toolMode: webSearchEnabled/);
   assert.match(html, /function renderToolMode/);
+  assert.match(html, /function renderEnterToSend/);
   assert.match(html, /Tools On/);
   assert.match(html, /\.message\.assistant \.message-body/);
   assert.match(html, /\.message\.user \.message-body/);

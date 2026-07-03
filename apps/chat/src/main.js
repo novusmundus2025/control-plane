@@ -1196,11 +1196,10 @@ export function page(config = configFromEnv()) {
       </section>
       <form id="chat-form">
         <div class="composer">
-          <textarea id="prompt" name="prompt" placeholder="Message MundusX..." autocomplete="off" required></textarea>
+          <textarea id="prompt" name="prompt" placeholder="Ask everyone..." autocomplete="off" required></textarea>
           <div class="composer-actions">
-            <span><span class="kbd">/</span>Commands</span>
             <button class="tool-toggle" id="web-search-toggle" type="button" aria-pressed="false" title="Use grounded tools when available"><span class="kbd">@</span><span id="web-search-label">Web Search</span></button>
-            <span><span class="kbd">&#8629;</span>Enter to Send</span>
+            <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
             <span class="voice-controls" id="voice-controls">
               <button class="voice-button" id="voice-mic" type="button" aria-label="Start voice input" title="Voice input">${ICON_MIC}</button>
               <button class="voice-button" id="voice-speak" type="button" aria-label="Speak replies" aria-pressed="false" title="Speak replies">${ICON_VOLUME}</button>
@@ -1226,6 +1225,8 @@ export function page(config = configFromEnv()) {
     const accountMenuEl = document.getElementById("account-menu");
     const webSearchToggleEl = document.getElementById("web-search-toggle");
     const webSearchLabelEl = document.getElementById("web-search-label");
+    const enterToSendToggleEl = document.getElementById("enter-to-send-toggle");
+    const enterToSendLabelEl = document.getElementById("enter-to-send-label");
     const voiceMicEl = document.getElementById("voice-mic");
     const voiceSpeakEl = document.getElementById("voice-speak");
     const voiceStatusEl = document.getElementById("voice-status");
@@ -1236,10 +1237,12 @@ export function page(config = configFromEnv()) {
     let heardSpeech = false;
     let speakReplies = localStorage.getItem("mundusx.chat.voice.speakReplies") === "true";
     let webSearchEnabled = localStorage.getItem("mundusx.chat.toolMode") === "true";
+    let enterToSendEnabled = localStorage.getItem("mundusx.chat.enterToSend") !== "false";
 
     renderHistory();
     hydrateNetwork();
     renderToolMode();
+    renderEnterToSend();
     setupVoiceControls();
     setInterval(hydrateNetwork, 15000);
 
@@ -1264,6 +1267,18 @@ export function page(config = configFromEnv()) {
       localStorage.setItem("mundusx.chat.toolMode", String(webSearchEnabled));
       renderToolMode();
       promptEl.focus();
+    });
+    enterToSendToggleEl?.addEventListener("click", () => {
+      enterToSendEnabled = !enterToSendEnabled;
+      localStorage.setItem("mundusx.chat.enterToSend", String(enterToSendEnabled));
+      renderEnterToSend();
+      promptEl.focus();
+    });
+    promptEl?.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter" || event.shiftKey || event.isComposing) return;
+      if (!enterToSendEnabled) return;
+      event.preventDefault();
+      form.requestSubmit();
     });
 
     function addMessage(text, role, meta) {
@@ -1303,6 +1318,13 @@ export function page(config = configFromEnv()) {
       webSearchToggleEl.classList.toggle("is-active", webSearchEnabled);
       webSearchToggleEl.setAttribute("aria-pressed", String(webSearchEnabled));
       webSearchLabelEl.textContent = webSearchEnabled ? "Tools On" : "Web Search";
+    }
+
+    function renderEnterToSend() {
+      if (!enterToSendToggleEl || !enterToSendLabelEl) return;
+      enterToSendToggleEl.classList.toggle("is-active", enterToSendEnabled);
+      enterToSendToggleEl.setAttribute("aria-pressed", String(enterToSendEnabled));
+      enterToSendLabelEl.textContent = enterToSendEnabled ? "Enter to Send" : "Enter to Send: Off";
     }
 
     function setupVoiceControls() {
