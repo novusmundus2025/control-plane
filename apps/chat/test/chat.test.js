@@ -31,6 +31,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /id="chat-form"/);
   assert.match(html, /id="voice-mic"/);
   assert.match(html, /id="voice-speak"/);
+  assert.match(html, /id="voice-select"/);
+  assert.match(html, /Auto voice/);
   assert.match(html, /id="voice-status"/);
   assert.match(html, /SpeechRecognition/);
   assert.match(html, /speechSynthesis/);
@@ -38,6 +40,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /No speech heard/);
   assert.match(html, /Transcript ready/);
   assert.match(html, /function speakAssistantReply/);
+  assert.match(html, /function populateVoiceOptions/);
+  assert.match(html, /function selectSpokenVoice/);
   assert.match(html, /function selectJennyVoice/);
   assert.match(html, /function selectedAssistantPersona/);
   assert.match(html, /Microsoft Jenny/);
