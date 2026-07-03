@@ -737,6 +737,50 @@ export function page(config = configFromEnv()) {
       padding: 1px 5px;
       font-size: 0.94em;
     }
+    .typed-response {
+      display: grid;
+      gap: 12px;
+    }
+    .typed-card {
+      border: 1px solid var(--line);
+      background: var(--panel);
+      border-radius: 12px;
+      padding: 14px 16px;
+    }
+    .typed-kicker {
+      color: var(--muted-2);
+      font-size: 11px;
+      font-weight: 750;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+    .typed-answer {
+      color: var(--text);
+      font-size: 18px;
+      font-weight: 750;
+      line-height: 1.35;
+    }
+    .typed-steps {
+      margin: 0;
+      padding-left: 22px;
+    }
+    .typed-steps li {
+      margin: 7px 0;
+    }
+    .typed-facts {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+    .typed-fact {
+      border: 1px solid var(--line);
+      background: var(--panel-2);
+      border-radius: 999px;
+      padding: 6px 10px;
+      font-size: 12px;
+      color: var(--muted);
+    }
     .code-block {
       margin: 12px 0;
       width: 100%;
@@ -1205,7 +1249,11 @@ export function page(config = configFromEnv()) {
       const userPrompt = findPreviousUserMessage(node);
       const output = stripEchoedPrompt(payload.output || "(empty response)", userPrompt);
       body.textContent = "";
-      appendRichMessage(body, output);
+      if (payload.response) {
+        body.appendChild(renderTypedResponse(payload.response));
+      } else {
+        appendRichMessage(body, output);
+      }
       if (shouldShowSourceSections(payload)) {
         body.appendChild(createSourceSections(payload));
       }
@@ -1213,6 +1261,64 @@ export function page(config = configFromEnv()) {
       meta.className = "meta";
       meta.textContent = formatJobMeta(payload);
       body.appendChild(meta);
+    }
+
+    function renderTypedResponse(response) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "typed-response";
+      if (response.type === "math_solution") {
+        wrapper.appendChild(createTypedCard(response.title || "Math solution", response.answer));
+        if (Array.isArray(response.steps) && response.steps.length) {
+          const stepsCard = document.createElement("div");
+          stepsCard.className = "typed-card";
+          const kicker = document.createElement("div");
+          kicker.className = "typed-kicker";
+          kicker.textContent = "Steps";
+          stepsCard.appendChild(kicker);
+          const list = document.createElement("ol");
+          list.className = "typed-steps";
+          for (const step of response.steps) {
+            const item = document.createElement("li");
+            item.textContent = step;
+            list.appendChild(item);
+          }
+          stepsCard.appendChild(list);
+          wrapper.appendChild(stepsCard);
+        }
+        return wrapper;
+      }
+      if (response.type === "weather_result") {
+        wrapper.appendChild(createTypedCard(response.title || "Weather", response.summary));
+        const facts = Object.entries(response.facts || {}).filter(([, value]) => value !== null && value !== undefined && value !== "");
+        if (facts.length) {
+          const factWrap = document.createElement("div");
+          factWrap.className = "typed-facts";
+          for (const [key, value] of facts) {
+            const fact = document.createElement("span");
+            fact.className = "typed-fact";
+            fact.textContent = key + ": " + value;
+            factWrap.appendChild(fact);
+          }
+          wrapper.appendChild(factWrap);
+        }
+        return wrapper;
+      }
+      appendRichMessage(wrapper, response.text || "");
+      return wrapper;
+    }
+
+    function createTypedCard(kickerText, answerText) {
+      const card = document.createElement("div");
+      card.className = "typed-card";
+      const kicker = document.createElement("div");
+      kicker.className = "typed-kicker";
+      kicker.textContent = kickerText;
+      const answer = document.createElement("div");
+      answer.className = "typed-answer";
+      answer.textContent = answerText || "";
+      card.appendChild(kicker);
+      card.appendChild(answer);
+      return card;
     }
 
     function createLiveSections(payload) {
@@ -2144,9 +2250,10 @@ function formatNumber(value) {
 }
 
 function fetchPolynomialIntegralJob(message, integral) {
+  const answer = integral.result;
   const output = [
     `Integral: ${integral.expression}`,
-    `Answer: ${integral.result}`,
+    `Answer: ${answer}`,
     "Rule used: integrate each term a*x^n as (a/(n+1))*x^(n+1), then add C.",
   ].join("\n\n");
 
@@ -2161,6 +2268,16 @@ function fetchPolynomialIntegralJob(message, integral) {
     execution_mode: "tool",
     graph_execution_enabled: false,
     tool: "polynomial_integral",
+    response: {
+      type: "math_solution",
+      title: "Polynomial integral",
+      answer,
+      steps: [
+        `Start with ${integral.expression}.`,
+        "Integrate each term using a*x^n -> (a/(n+1))*x^(n+1).",
+        `Add the constant of integration: ${answer}.`,
+      ],
+    },
     progress: {
       total: 0,
       completed: 0,
@@ -2177,20 +2294,28 @@ function fetchPolynomialIntegralJob(message, integral) {
 async function fetchWeatherJob(message, location, config, fetchImpl) {
   const cacheKey = weatherCacheKey(location);
   let cacheHit = false;
-  let output = null;
+  let weather = null;
 
   if (config.weatherCacheUrl) {
-    output = await redisGet(config.weatherCacheUrl, cacheKey);
-    cacheHit = Boolean(output);
-  }
-
-  if (!output) {
-    output = await fetchWeatherSummary(location, config, fetchImpl);
-    if (config.weatherCacheUrl) {
-      await redisSet(config.weatherCacheUrl, cacheKey, output, config.weatherTtlSeconds);
+    const cached = await redisGet(config.weatherCacheUrl, cacheKey);
+    if (cached) {
+      try {
+        weather = JSON.parse(cached);
+        cacheHit = true;
+      } catch {
+        weather = null;
+      }
     }
   }
 
+  if (!weather) {
+    weather = await fetchWeatherSummary(location, config, fetchImpl);
+    if (config.weatherCacheUrl) {
+      await redisSet(config.weatherCacheUrl, cacheKey, JSON.stringify(weather), config.weatherTtlSeconds);
+    }
+  }
+
+  const output = weather.output;
   return {
     job_id: `weather-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
     status: "completed",
@@ -2203,6 +2328,7 @@ async function fetchWeatherJob(message, location, config, fetchImpl) {
     graph_execution_enabled: false,
     tool: "weather",
     cache_hit: cacheHit,
+    response: weather.response,
     progress: {
       total: 0,
       completed: 0,
@@ -2217,13 +2343,16 @@ async function fetchWeatherJob(message, location, config, fetchImpl) {
 }
 
 function fetchLinearEquationJob(message, equation) {
+  const answer = `${equation.variable} = ${formatNumber(equation.solution)}`;
+  const reducedCoefficient = normalizeNumber(equation.left.coefficient - equation.right.coefficient);
+  const reducedConstant = normalizeNumber(equation.right.constant - equation.left.constant);
   const output = [
     `Equation: ${equation.equation}`,
-    `Answer: ${equation.variable} = ${formatNumber(equation.solution)}`,
+    `Answer: ${answer}`,
     "",
     "Method:",
-    `Move variable terms and constants to opposite sides: ${formatNumber(equation.left.coefficient - equation.right.coefficient)}${equation.variable} = ${formatNumber(equation.right.constant - equation.left.constant)}`,
-    `Divide both sides by ${formatNumber(equation.left.coefficient - equation.right.coefficient)}.`,
+    `Move variable terms and constants to opposite sides: ${formatNumber(reducedCoefficient)}${equation.variable} = ${formatNumber(reducedConstant)}`,
+    `Divide both sides by ${formatNumber(reducedCoefficient)}.`,
   ].join("\n");
   return {
     job_id: `math-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
@@ -2236,6 +2365,16 @@ function fetchLinearEquationJob(message, equation) {
     execution_mode: "tool",
     graph_execution_enabled: false,
     tool: "linear_equation",
+    response: {
+      type: "math_solution",
+      title: "Linear equation",
+      answer,
+      steps: [
+        equation.equation,
+        `${formatNumber(reducedCoefficient)}${equation.variable} = ${formatNumber(reducedConstant)}`,
+        answer,
+      ],
+    },
     progress: {
       total: 0,
       completed: 0,
@@ -2317,7 +2456,21 @@ function formatWeatherSummary(requestedLocation, payload) {
   const humidity = current.humidity;
   const windKmph = current.windspeedKmph;
   const observation = current.localObsDateTime ? ` Observed ${current.localObsDateTime}.` : "";
-  return `Weather for ${place}: ${condition}, ${tempC}C/${tempF}F, feels like ${feelsC}C/${feelsF}F, humidity ${humidity}%, wind ${windKmph} km/h.${observation}`;
+  const summary = `${condition}, ${tempC}C/${tempF}F`;
+  return {
+    output: `Weather for ${place}: ${summary}, feels like ${feelsC}C/${feelsF}F, humidity ${humidity}%, wind ${windKmph} km/h.${observation}`,
+    response: {
+      type: "weather_result",
+      title: `Weather for ${place}`,
+      summary,
+      facts: {
+        "Feels like": `${feelsC}C/${feelsF}F`,
+        Humidity: `${humidity}%`,
+        Wind: `${windKmph} km/h`,
+        Observed: current.localObsDateTime ?? null,
+      },
+    },
+  };
 }
 
 export function extractCurrentOfficeQuery(message) {
@@ -2710,6 +2863,7 @@ function formatChatJob(jobId, job, fallbackModel) {
     assigned_node_id: job.assigned_node_id ?? null,
     execution_mode: job.execution_mode ?? "single",
     graph_execution_enabled: Boolean(job.graph_execution_enabled),
+    response: job.response ?? null,
     progress,
   };
 }
