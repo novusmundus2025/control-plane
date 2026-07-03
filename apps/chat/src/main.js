@@ -2405,7 +2405,9 @@ async function waitForChatJob(jobId, body, config, fetchImpl) {
 }
 
 function formatChatJob(jobId, job, fallbackModel) {
-  const output = job.status === "completed" ? cleanChatOutput(job.output ?? "") : "";
+  const progress = summarizeChatProgress(job);
+  const rawOutput = job.status === "completed" ? cleanChatOutput(job.output ?? "") : "";
+  const output = job.status === "completed" ? promoteSectionOutputWhenFinalIsThin(rawOutput, progress) : "";
   return {
     job_id: jobId,
     status: job.status,
@@ -2416,8 +2418,38 @@ function formatChatJob(jobId, job, fallbackModel) {
     assigned_node_id: job.assigned_node_id ?? null,
     execution_mode: job.execution_mode ?? "single",
     graph_execution_enabled: Boolean(job.graph_execution_enabled),
-    progress: summarizeChatProgress(job),
+    progress,
   };
+}
+
+function promoteSectionOutputWhenFinalIsThin(output, progress) {
+  if (!isThinFinalOutput(output)) {
+    return output;
+  }
+  const sectionOutput = mergedCompletedSectionOutputs(progress);
+  return sectionOutput || output;
+}
+
+function isThinFinalOutput(output) {
+  const text = String(output ?? "").trim();
+  if (!text) {
+    return true;
+  }
+  const withoutHeadings = text
+    .replace(/^#{1,6}\s+.+$/gm, "")
+    .replace(/[-*_`#\s]/g, "")
+    .trim();
+  return text.length < 120 && withoutHeadings.length < 40;
+}
+
+function mergedCompletedSectionOutputs(progress) {
+  const nodes = Array.isArray(progress?.nodes) ? progress.nodes : [];
+  const sections = nodes
+    .filter((node) => node.status === "completed")
+    .filter((node) => String(node.responsibility ?? "section") !== "merge")
+    .filter((node) => String(node.output ?? "").trim())
+    .map((node) => `## ${node.name || "Section"}\n${node.output.trim()}`);
+  return sections.length ? sections.join("\n\n") : "";
 }
 
 function summarizeChatProgress(job) {
@@ -2479,7 +2511,7 @@ function summarizeChatProgress(job) {
 
 function formatChatProgressNode(node, job) {
   const completed = node.status === "completed";
-  const rawOutput = completed ? String(node.output ?? job.output ?? "") : "";
+  const rawOutput = completed ? String(node.output ?? "") : "";
   const compactOutput = rawOutput ? compactChunkOutput(rawOutput) : "";
   const outputChars = positiveNumberOrNull(node.output_chars) ?? (compactOutput ? compactOutput.length : null);
   const estimatedOutputTokens =
@@ -2493,6 +2525,7 @@ function formatChatProgressNode(node, job) {
     id: node.id,
     name: node.name,
     status: node.status,
+    responsibility: node.responsibility ?? null,
     assigned_node_id: node.assigned_node_id ?? null,
     latency_ms: positiveNumberOrNull(node.latency_ms),
     queue_wait_ms: positiveNumberOrNull(node.queue_wait_ms),
