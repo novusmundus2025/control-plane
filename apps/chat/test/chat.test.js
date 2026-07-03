@@ -34,6 +34,9 @@ test("renders a usable chat page", () => {
   assert.match(html, /id="voice-status"/);
   assert.match(html, /SpeechRecognition/);
   assert.match(html, /speechSynthesis/);
+  assert.match(html, /getUserMedia/);
+  assert.match(html, /No speech heard/);
+  assert.match(html, /Transcript ready/);
   assert.match(html, /function speakAssistantReply/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);

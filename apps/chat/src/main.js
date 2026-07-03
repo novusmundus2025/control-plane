@@ -1187,6 +1187,7 @@ export function page(config = configFromEnv()) {
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let isListening = false;
+    let heardSpeech = false;
     let speakReplies = localStorage.getItem("mundusx.chat.voice.speakReplies") === "true";
 
     renderHistory();
@@ -1258,9 +1259,21 @@ export function page(config = configFromEnv()) {
         recognition = new SpeechRecognitionCtor();
         recognition.continuous = false;
         recognition.interimResults = true;
+        recognition.maxAlternatives = 1;
         recognition.lang = navigator.language || "en-US";
+        recognition.addEventListener("audiostart", () => {
+          voiceStatusEl.textContent = "Mic allowed";
+        });
+        recognition.addEventListener("speechstart", () => {
+          heardSpeech = true;
+          voiceStatusEl.textContent = "Hearing speech";
+        });
+        recognition.addEventListener("speechend", () => {
+          voiceStatusEl.textContent = "Processing voice";
+        });
         recognition.addEventListener("start", () => {
           isListening = true;
+          heardSpeech = false;
           voiceMicEl.classList.add("is-listening");
           voiceMicEl.setAttribute("aria-label", "Stop voice input");
           voiceStatusEl.textContent = "Listening";
@@ -1268,16 +1281,24 @@ export function page(config = configFromEnv()) {
         });
         recognition.addEventListener("result", (event) => {
           let transcript = "";
-          for (let i = event.resultIndex; i < event.results.length; i += 1) {
+          for (let i = 0; i < event.results.length; i += 1) {
             transcript += event.results[i][0]?.transcript ?? "";
           }
           promptEl.value = transcript.trim();
+          voiceStatusEl.textContent = promptEl.value.trim() ? "Transcript ready" : "Listening";
+        });
+        recognition.addEventListener("nomatch", () => {
+          voiceStatusEl.textContent = "No speech matched";
         });
         recognition.addEventListener("end", () => {
           isListening = false;
           voiceMicEl.classList.remove("is-listening");
           voiceMicEl.setAttribute("aria-label", "Start voice input");
-          voiceStatusEl.textContent = promptEl.value.trim() ? "Voice captured" : "Voice ready";
+          voiceStatusEl.textContent = promptEl.value.trim()
+            ? "Transcript ready"
+            : heardSpeech
+              ? "No transcript"
+              : "No speech heard";
           setStatus("ready", "Ready");
         });
         recognition.addEventListener("error", (event) => {
@@ -1288,17 +1309,30 @@ export function page(config = configFromEnv()) {
         });
       }
 
-      voiceMicEl.addEventListener("click", () => {
+      voiceMicEl.addEventListener("click", async () => {
         if (!recognition) return;
         if (isListening) {
           recognition.stop();
           return;
         }
+        if (!window.isSecureContext) {
+          voiceStatusEl.textContent = "HTTPS required";
+          setStatus("error", "Voice error");
+          return;
+        }
         try {
+          if (navigator.mediaDevices?.getUserMedia) {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            stream.getTracks().forEach((track) => track.stop());
+            voiceStatusEl.textContent = "Mic allowed";
+          }
           promptEl.value = "";
           recognition.start();
-        } catch {
-          voiceStatusEl.textContent = "Voice busy";
+        } catch (error) {
+          const name = error?.name || "";
+          voiceStatusEl.textContent =
+            name === "NotAllowedError" || name === "SecurityError" ? "Mic blocked" : "Voice busy";
+          setStatus("error", "Voice error");
         }
       });
 
