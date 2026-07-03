@@ -2244,6 +2244,13 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   if (toolMode) {
+    const generalTopic = extractGeneralLookupTopic(toolMessage);
+    if (generalTopic) {
+      const generalJob = await fetchFactualSummaryJob(toolMessage, generalTopic, config, fetchImpl);
+      if (generalJob) {
+        return generalJob;
+      }
+    }
     return fetchUnsupportedToolModeJob(toolMessage);
   }
 
@@ -3151,6 +3158,34 @@ function cleanFactualTopic(value) {
   return topic;
 }
 
+const GENERIC_LOOKUP_LEAD_IN =
+  /^(?:can|could|would)\s+you\s+(?:please\s+)?(?:provide(?:\s+me)?|give\s+me|share(?:\s+with\s+me)?|find\s+me|look\s+up|search(?:\s+for)?|tell\s+me|show\s+me)\b/i;
+const GENERIC_LOOKUP_FILLER =
+  /\b(?:more\s+)?(?:truthful|accurate|reliable|verified|factual|real|actual|updated|latest)?\s*(?:information|info|details?|facts?|data)\s+(?:about|on|regarding)\b/i;
+const GENERIC_LOOKUP_TRAILER =
+  /\s*(?:with\s+)?(?:reference|references|sources?|citations?)\s+(?:in|from|on)\s+the\s+internet\b.*$/i;
+
+export function extractGeneralLookupTopic(message) {
+  const text = String(message ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  const lower = text.toLowerCase();
+  if (/\b(write|draft|create|generate|code|program|email|poem|story|summarize this|explain why)\b/.test(lower)) {
+    return null;
+  }
+
+  let candidate = text.replace(GENERIC_LOOKUP_LEAD_IN, "").trim();
+  if (candidate === text) {
+    return null;
+  }
+  candidate = candidate.replace(GENERIC_LOOKUP_FILLER, "").trim();
+  candidate = candidate.replace(GENERIC_LOOKUP_TRAILER, "").trim();
+  candidate = candidate.replace(/^(?:about|on|regarding)\s+/i, "").trim();
+
+  return cleanFactualTopic(candidate);
+}
+
 async function fetchFactualSummaryJob(message, topic, config, fetchImpl) {
   try {
     const output = await fetchFactualSummary(topic, config, fetchImpl);
@@ -3213,10 +3248,35 @@ async function resolveWikipediaTitle(topic, config, fetchImpl) {
     }
     const payload = await response.json();
     const bestMatch = Array.isArray(payload) ? payload[1]?.[0] : null;
-    return typeof bestMatch === "string" && bestMatch.trim() ? bestMatch.trim() : null;
+    if (typeof bestMatch !== "string" || !bestMatch.trim()) {
+      return null;
+    }
+    return isPlausibleTitleMatch(topic, bestMatch) ? bestMatch.trim() : null;
   } catch {
     return null;
   }
+}
+
+const TITLE_MATCH_STOPWORDS = new Set([
+  "the", "a", "an", "of", "and", "in", "on", "at", "for", "to", "is", "was",
+]);
+
+function significantWords(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2 && !TITLE_MATCH_STOPWORDS.has(word));
+}
+
+function isPlausibleTitleMatch(topic, resolvedTitle) {
+  const topicWords = significantWords(topic);
+  if (topicWords.length === 0) {
+    return true;
+  }
+  const titleWords = new Set(significantWords(resolvedTitle));
+  const overlap = topicWords.filter((word) => titleWords.has(word)).length;
+  return overlap > topicWords.length / 2;
 }
 
 function weatherCacheKey(location) {

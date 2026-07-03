@@ -72,9 +72,10 @@ Railway provides `PORT`; the app reads it automatically.
 3. Obvious weather questions are answered directly through `wttr.in`; if Redis/Valkey is configured the response is cached for 2 hours.
 4. Current office-holder questions such as "current president of USA" are answered through Wikidata before using local LLM jobs.
 5. Obvious factual history/who/what questions are answered from the factual summary source before using local LLM jobs.
-6. Other requests are submitted as routed MundusX jobs to `POST /v1/jobs` with `execution_mode=auto`.
-7. Control plane decides whether the request is single-job or decomposed across graph chunks.
-8. Browser polls `GET /api/chat/jobs/:id`, which reads `GET /v1/jobs/:id`.
-9. Completed output and graph progress are returned to the browser.
+6. When Web Search/tool mode is on, other free-form "look this up" style requests (e.g. "can you find accurate info about X") also resolve through the factual summary source, using Wikipedia search to find the right page before fetching its summary; a low-confidence match is rejected rather than shown as fact.
+7. Other requests are submitted as routed MundusX jobs to `POST /v1/jobs` with `execution_mode=auto`.
+8. Control plane decides whether the request is single-job or decomposed across graph chunks.
+9. Browser polls `GET /api/chat/jobs/:id`, which reads `GET /v1/jobs/:id`.
+10. Completed output and graph progress are returned to the browser.
 
 Streaming is not enabled yet; the first version uses polling because the control plane already exposes job status and output.

@@ -7,6 +7,7 @@ import {
   escapeHtml,
   extractCurrentOfficeQuery,
   extractFactualSummaryTopic,
+  extractGeneralLookupTopic,
   extractLinearEquation,
   extractPolynomialDerivative,
   extractPolynomialIntegral,
@@ -512,6 +513,76 @@ test("resolves the real Wikipedia title via search before fetching a summary", a
   assert.equal(result.status, "completed");
   assert.equal(result.tool, "factual_summary");
   assert.match(result.output, /Sara Zimmerman Duterte-Carpio/);
+});
+
+test("routes free-form tool-mode requests for a person to a grounded summary", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=Elon%20Musk/);
+      return jsonResponse(["Elon Musk", ["Elon Musk"], [""], ["https://en.wikipedia.org/wiki/Elon_Musk"]]);
+    }
+    assert.equal(url, "https://en.wikipedia.org/api/rest_v1/page/summary/Elon%20Musk");
+    return jsonResponse({
+      title: "Elon Musk",
+      description: "Businessman and public official",
+      extract: "Elon Reeve Musk is a businessman.",
+    });
+  };
+
+  const result = await submitChatJob(
+    {
+      message: "Can you provide more truthful information about Elon Musk with reference in the internet?",
+      toolMode: true,
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "factual_summary");
+  assert.match(result.output, /Elon Reeve Musk/);
+});
+
+test("declines a fuzzy Wikipedia match instead of presenting the wrong subject as fact", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes("opensearch")) {
+      return jsonResponse(["Dave Batalla", ["Dave Tallant"], [""], ["https://en.wikipedia.org/wiki/Dave_Tallant"]]);
+    }
+    return jsonResponse({ error: "not found" }, { status: 404 });
+  };
+
+  const result = await submitChatJob(
+    {
+      message: "Can you provide more truthful information about Dave Batalla with reference in the internet?",
+      toolMode: true,
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.tool, "unsupported_tool_mode");
+  assert.doesNotMatch(result.output, /Tallant/);
+});
+
+test("extracts general lookup topics from free-form tool-mode phrasing", () => {
+  assert.equal(
+    extractGeneralLookupTopic(
+      "Can you provide more truthful information about Dave Batalla with reference in the internet?",
+    ),
+    "Dave Batalla",
+  );
+  assert.equal(extractGeneralLookupTopic("Can you give me accurate details about Elon Musk?"), "Elon Musk");
+  assert.equal(
+    extractGeneralLookupTopic("Could you please look up information about the Eiffel Tower"),
+    "the Eiffel Tower",
+  );
+  assert.equal(extractGeneralLookupTopic("Write code for a login form"), null);
+  assert.equal(extractGeneralLookupTopic("Can you help me plan a trip"), null);
 });
 
 test("routes current president questions to Wikidata instead of the LLM", async () => {
