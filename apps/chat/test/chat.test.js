@@ -36,6 +36,11 @@ test("renders a usable chat page", () => {
   assert.match(html, /function stripEchoedPrompt/);
   assert.match(html, /function appendRichMessage/);
   assert.match(html, /function formatCodeForDisplay/);
+  assert.ok(html.includes('replace(/^\\n/, "")'));
+  assert.ok(html.includes('raw.includes("\\n")'));
+  assert.ok(html.includes('/\\b(public\\s+class'));
+  assert.doesNotMatch(html, /replace\(\/\^\r?\n/);
+  assert.doesNotMatch(html, /raw\.includes\("\r?\n"\)/);
   assert.match(html, /aria-label", role === "user" \? "Your message" : "MundusX response"/);
   assert.doesNotMatch(html, /avatar\.textContent = role === "user" \? "You" : "M"/);
   assert.match(html, /\/assets\/mundusx-logo\.png/);
