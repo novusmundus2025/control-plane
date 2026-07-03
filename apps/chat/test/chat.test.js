@@ -205,6 +205,33 @@ test("uses compact token budgets for direct chat prompts", async () => {
   assert.equal(calls[1].max_tokens, 128);
 });
 
+test("uses larger token budgets for complete program prompts", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-program",
+      job: {
+        job_id: "job-program",
+        status: "queued",
+        execution_mode: "auto",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  await submitChatJob(
+    {
+      message:
+        "i need a deatailed program in C, to store students record, id,fname,lname,bdate, age in binary file",
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].max_tokens, 4096);
+});
+
 test("sends an explicit model override when configured", async () => {
   const fetchImpl = async (_url, init) => {
     const body = JSON.parse(init.body);

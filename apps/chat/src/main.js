@@ -2652,6 +2652,9 @@ function inferMaxTokens(message, explicitValue) {
   }
 
   const lower = message.toLowerCase();
+  if (looksLikeCompleteProgramRequest(lower)) {
+    return 4096;
+  }
   if (
     containsAny(lower, [
       "one word",
@@ -2675,6 +2678,23 @@ function inferMaxTokens(message, explicitValue) {
     return 128;
   }
   return 384;
+}
+
+function looksLikeCompleteProgramRequest(lower) {
+  return containsAny(lower, [
+    "complete program",
+    "complete source",
+    "complete code",
+    "full program",
+    "entire program",
+    "working program",
+    "detailed program",
+    "deatailed program",
+    "turbo c program",
+  ]) || (
+    containsAny(lower, ["write a program", "create a program", "make a program", "need a program", "program in c"]) &&
+    containsAny(lower, ["c program", "program in c", "source", "code", "binary file", "file handling"])
+  );
 }
 
 function buildChatSystemPrompt() {

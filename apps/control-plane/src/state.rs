@@ -1720,16 +1720,25 @@ fn looks_like_complete_code_prompt(lower_prompt: &str) -> bool {
             "full program",
             "full source",
             "entire program",
+            "detailed program",
+            "deatailed program",
             "working program",
             "turbo c program",
         ],
     ) || (contains_any(
         lower_prompt,
-        &["write a program", "create a program", "make a program"],
+        &[
+            "write a program",
+            "create a program",
+            "make a program",
+            "need a program",
+            "program in c",
+        ],
     ) && contains_any(
         lower_prompt,
         &[
             "c program",
+            "program in c",
             "turbo c",
             "source",
             "code",
@@ -3801,6 +3810,31 @@ mod tests {
         assert!(!plan.jobs.iter().any(|job| job.responsibility == "merge"));
         assert_eq!(graph.final_node_id, None);
         assert_eq!(graph.nodes.len(), 3);
+    }
+
+    #[test]
+    fn detailed_c_binary_file_program_uses_complete_code_plan() {
+        let mut request = classification_request(
+            "i need a deatailed program in C, to store students record, id,fname,lname,bdate, age in binary file, and i need to read the file and print the record of a student with id 1001",
+        );
+        request.execution_mode = JobExecutionMode::Auto;
+        request.max_tokens = Some(4_096);
+
+        let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
+        let graph = build_job_graph("job-1", &plan, "1");
+
+        assert_eq!(classification.task_type, RequestTaskType::Coding);
+        assert_eq!(classification.output_format, ExpectedOutputFormat::Code);
+        assert!(classification
+            .execution_constraints
+            .contains(&"complete_code_output".to_string()));
+        assert_eq!(plan.strategy, "complete_code_generation");
+        assert!(plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Complete source code"));
+        assert_eq!(graph.final_node_id.as_deref(), Some("job.final_merge"));
     }
 
     #[test]
