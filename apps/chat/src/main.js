@@ -10,6 +10,7 @@ const DEFAULT_TIMEOUT_SECONDS = 90;
 const DEFAULT_WEATHER_TTL_SECONDS = 7200;
 const DEFAULT_WEATHER_URL = "https://wttr.in";
 const DEFAULT_FACTUAL_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary";
+const DEFAULT_WIKIDATA_ENTITY_URL = "https://www.wikidata.org/wiki/Special:EntityData";
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -55,6 +56,9 @@ export function configFromEnv(env = process.env) {
     weatherBaseUrl: normalizeOrigin(env.MUNDUSX_WEATHER_URL ?? DEFAULT_WEATHER_URL),
     factualSummaryBaseUrl: normalizeOrigin(
       env.MUNDUSX_FACTUAL_SUMMARY_URL ?? DEFAULT_FACTUAL_SUMMARY_URL,
+    ),
+    wikidataEntityBaseUrl: normalizeOrigin(
+      env.MUNDUSX_WIKIDATA_ENTITY_URL ?? DEFAULT_WIKIDATA_ENTITY_URL,
     ),
     weatherTtlSeconds: positiveInteger(
       env.MUNDUSX_WEATHER_TTL_SECONDS,
@@ -1528,6 +1532,14 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     return fetchWeatherJob(message, weatherLocation, config, fetchImpl);
   }
 
+  const currentOfficeQuery = extractCurrentOfficeQuery(message);
+  if (currentOfficeQuery) {
+    const currentOfficeJob = await fetchCurrentOfficeJob(message, currentOfficeQuery, config, fetchImpl);
+    if (currentOfficeJob) {
+      return currentOfficeJob;
+    }
+  }
+
   const factualTopic = extractFactualSummaryTopic(message);
   if (factualTopic) {
     const factualJob = await fetchFactualSummaryJob(message, factualTopic, config, fetchImpl);
@@ -1683,6 +1695,124 @@ function formatWeatherSummary(requestedLocation, payload) {
   const windKmph = current.windspeedKmph;
   const observation = current.localObsDateTime ? ` Observed ${current.localObsDateTime}.` : "";
   return `Weather for ${place}: ${condition}, ${tempC}C/${tempF}F, feels like ${feelsC}C/${feelsF}F, humidity ${humidity}%, wind ${windKmph} km/h.${observation}`;
+}
+
+export function extractCurrentOfficeQuery(message) {
+  const text = String(message ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  const lower = text.toLowerCase();
+  if (!/\b(?:current|now|today|202\d|latest)\b/.test(lower)) {
+    return null;
+  }
+  const match = lower.match(/\b(?:who\s+is\s+)?(?:the\s+)?current\s+president\s+of\s+(.+?)(?:\s+(?:today|now|currently|in\s+202\d|year\s+202\d))*[?.!]*$/i);
+  if (!match) {
+    return null;
+  }
+  const country = cleanCountryName(match[1]);
+  const countryInfo = country ? countryEntityFor(country) : null;
+  if (!countryInfo) {
+    return null;
+  }
+  return {
+    office: "president",
+    relationProperty: "P6",
+    country: countryInfo.name,
+    countryEntityId: countryInfo.entityId,
+  };
+}
+
+function cleanCountryName(value) {
+  return String(value ?? "")
+    .replace(/\b(?:today|now|currently|please|pls|year|in)\b/gi, "")
+    .replace(/\b202\d\b/g, "")
+    .replace(/[?!.,]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function countryEntityFor(country) {
+  const key = String(country ?? "").toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+  const countries = new Map([
+    ["usa", { name: "the United States", entityId: "Q30" }],
+    ["us", { name: "the United States", entityId: "Q30" }],
+    ["u s", { name: "the United States", entityId: "Q30" }],
+    ["america", { name: "the United States", entityId: "Q30" }],
+    ["united states", { name: "the United States", entityId: "Q30" }],
+    ["united states of america", { name: "the United States", entityId: "Q30" }],
+    ["philippines", { name: "the Philippines", entityId: "Q928" }],
+    ["ph", { name: "the Philippines", entityId: "Q928" }],
+  ]);
+  return countries.get(key) ?? null;
+}
+
+async function fetchCurrentOfficeJob(message, query, config, fetchImpl) {
+  try {
+    const output = await fetchCurrentOfficeAnswer(query, config, fetchImpl);
+    return {
+      job_id: `facts-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+      status: "completed",
+      output,
+      output_cleaned: false,
+      error: null,
+      model: "wikidata",
+      assigned_node_id: "facts-tool",
+      execution_mode: "tool",
+      graph_execution_enabled: false,
+      tool: "current_office_holder",
+      progress: {
+        total: 0,
+        completed: 0,
+        running: 0,
+        failed: 0,
+        waiting: 0,
+        processing: null,
+        merging: false,
+        strategy: "current_office_tool",
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCurrentOfficeAnswer(query, config, fetchImpl) {
+  const country = await fetchWikidataEntity(query.countryEntityId, config, fetchImpl);
+  const holderId = extractEntityClaimId(country, query.relationProperty);
+  if (!holderId) {
+    throw httpError(502, `current ${query.office} lookup returned no holder for ${query.country}`);
+  }
+  const holder = await fetchWikidataEntity(holderId, config, fetchImpl);
+  const holderName = entityEnglishLabel(holder, holderId);
+  return `Current ${query.office} of ${query.country}: ${holderName}. Source: Wikidata ${query.countryEntityId} ${query.relationProperty}.`;
+}
+
+async function fetchWikidataEntity(entityId, config, fetchImpl) {
+  const url = `${config.wikidataEntityBaseUrl}/${encodeURIComponent(entityId)}.json`;
+  const response = await fetchImpl(url, {
+    headers: { Accept: "application/json", "User-Agent": "MundusX-Chat/0.1 factual-router" },
+  });
+  if (!response.ok) {
+    throw httpError(502, `wikidata lookup failed for ${entityId}`);
+  }
+  const payload = await response.json();
+  const entity = payload?.entities?.[entityId];
+  if (!entity) {
+    throw httpError(502, `wikidata lookup returned no entity for ${entityId}`);
+  }
+  return entity;
+}
+
+function extractEntityClaimId(entity, propertyId) {
+  const claims = entity?.claims?.[propertyId] ?? [];
+  const ranked = claims.find((claim) => claim.rank === "preferred") ?? claims.find((claim) => claim.rank !== "deprecated");
+  const value = ranked?.mainsnak?.datavalue?.value;
+  return typeof value?.id === "string" ? value.id : null;
+}
+
+function entityEnglishLabel(entity, fallback) {
+  return entity?.labels?.en?.value ?? fallback;
 }
 
 export function extractFactualSummaryTopic(message) {

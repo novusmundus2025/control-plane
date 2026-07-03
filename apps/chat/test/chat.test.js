@@ -5,6 +5,7 @@ import {
   cleanChatOutput,
   configFromEnv,
   escapeHtml,
+  extractCurrentOfficeQuery,
   extractFactualSummaryTopic,
   extractWeatherLocation,
   fetchNetworkSummary,
@@ -294,6 +295,54 @@ test("routes factual history questions to a grounded summary source", async () =
   assert.match(result.output, /founded in 1916/);
 });
 
+test("routes current president questions to Wikidata instead of the LLM", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === "https://www.wikidata.org/wiki/Special:EntityData/Q30.json") {
+      return jsonResponse({
+        entities: {
+          Q30: {
+            claims: {
+              P6: [
+                {
+                  rank: "preferred",
+                  mainsnak: { datavalue: { value: { id: "Q22686" } } },
+                },
+              ],
+            },
+          },
+        },
+      });
+    }
+    assert.equal(url, "https://www.wikidata.org/wiki/Special:EntityData/Q22686.json");
+    return jsonResponse({
+      entities: {
+        Q22686: {
+          labels: { en: { value: "Donald Trump" } },
+        },
+      },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "Who is the current president of USA today 2026?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.deepEqual(calls, [
+    "https://www.wikidata.org/wiki/Special:EntityData/Q30.json",
+    "https://www.wikidata.org/wiki/Special:EntityData/Q22686.json",
+  ]);
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "wikidata");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "current_office_holder");
+  assert.equal(result.assigned_node_id, "facts-tool");
+  assert.match(result.output, /Current president of the United States: Donald Trump/);
+});
+
 test("falls back to MundusX jobs when factual summary lookup misses", async () => {
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
@@ -362,6 +411,17 @@ test("extracts only factual summary topics", () => {
   assert.equal(extractFactualSummaryTopic("Who is Ada Lovelace?"), "Ada Lovelace");
   assert.equal(extractFactualSummaryTopic("Write code for BMW inventory"), null);
   assert.equal(extractFactualSummaryTopic("Explain why a CUDA node can claim a job and fail."), null);
+});
+
+test("extracts current office-holder queries", () => {
+  assert.deepEqual(extractCurrentOfficeQuery("Who is the current president of USA today 2026?"), {
+    office: "president",
+    relationProperty: "P6",
+    country: "the United States",
+    countryEntityId: "Q30",
+  });
+  assert.equal(extractCurrentOfficeQuery("Who is Ada Lovelace?"), null);
+  assert.equal(extractCurrentOfficeQuery("Write a president speech for USA"), null);
 });
 
 test("polls chat job progress and final cleaned output", async () => {
