@@ -7,6 +7,7 @@ import {
   escapeHtml,
   extractCurrentOfficeQuery,
   extractFactualSummaryTopic,
+  extractLinearEquation,
   extractPolynomialIntegral,
   extractWeatherLocation,
   fetchNetworkSummary,
@@ -281,6 +282,23 @@ test("routes simple polynomial integrals to the math tool", async () => {
   assert.doesNotMatch(result.output, /\\frac|\\int|Certainly/i);
 });
 
+test("routes simple linear equations to the math tool", async () => {
+  const result = await submitChatJob(
+    { message: "solve this equation, 13(y+7)=3(y-1)" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("linear equation tool requests should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "math-tool");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "linear_equation");
+  assert.match(result.output, /Answer: y = -9\.4/);
+  assert.doesNotMatch(result.output, /\\frac|Certainly|To solve/i);
+});
+
 test("routes weather questions to wttr without queuing an LLM job", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
@@ -481,6 +499,25 @@ test("extracts simple polynomial integrals", () => {
   );
   assert.equal(extractPolynomialIntegral("integrate sin(x) dx"), null);
   assert.equal(extractPolynomialIntegral("write a history of calculus"), null);
+});
+
+test("extracts simple linear equations", () => {
+  assert.deepEqual(extractLinearEquation("solve this equation, 13(y+7)=3(y-1)"), {
+    variable: "y",
+    equation: "13(y+7)=3(y-1)",
+    solution: -9.4,
+    left: { coefficient: 13, constant: 91, variable: "y" },
+    right: { coefficient: 3, constant: -3, variable: "y" },
+  });
+  assert.deepEqual(extractLinearEquation("find x: 2x + 5 = 11"), {
+    variable: "x",
+    equation: "2x+5=11",
+    solution: 3,
+    left: { coefficient: 2, constant: 5, variable: "x" },
+    right: { coefficient: 0, constant: 11, variable: null },
+  });
+  assert.equal(extractLinearEquation("solve x^2 = 4"), null);
+  assert.equal(extractLinearEquation("write a story with x=3"), null);
 });
 
 test("extracts only factual summary topics", () => {
