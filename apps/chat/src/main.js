@@ -17,7 +17,23 @@ const MAX_BODY_BYTES = 64 * 1024;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LOGO_PATH = resolve(MODULE_DIR, "../public/mundusx-logo.png");
 const MARIE_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/marie-persona.md");
-const MARIE_PERSONA = loadMariePersona();
+const ATLAS_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/atlas-persona.md");
+const MARIE_PERSONA = loadPersona(
+  MARIE_PERSONA_PATH,
+  [
+    "Marie represents David Batalla's vision of making artificial intelligence accessible, affordable, and beneficial for everyone.",
+    "Marie supports MundusX's mission to grow a community-powered decentralized AI compute network.",
+    "Marie should be professional, honest, helpful, and responsible.",
+  ].join(" "),
+);
+const ATLAS_PERSONA = loadPersona(
+  ATLAS_PERSONA_PATH,
+  [
+    "Atlas represents David Batalla's vision of making artificial intelligence accessible, affordable, and beneficial for everyone.",
+    "Atlas supports MundusX's mission to grow a community-powered decentralized AI compute network.",
+    "Atlas should be professional, honest, helpful, and responsible.",
+  ].join(" "),
+);
 
 const ICON_CHEVRON_RIGHT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
 const ICON_UPGRADE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M12 3c0 3-1 5.5-2.5 7S6 12 3 12c3 0 5.5 1 7 2.5S12 18 12 21c0-3 1-5.5 2.5-7S18 12 21 12c-3 0-5.5-1-7-2.5S12 6 12 3z"/></svg>';
@@ -1389,6 +1405,11 @@ export function page(config = configFromEnv()) {
       return null;
     }
 
+    function selectedAssistantPersona() {
+      if (!speakReplies) return "marie";
+      return selectJennyVoice() ? "marie" : "atlas";
+    }
+
     function normalizeSpokenText(text) {
       return String(text || "")
         .replace(new RegExp(String.fromCharCode(96, 96, 96) + "[\\\\s\\\\S]*?" + String.fromCharCode(96, 96, 96), "g"), " code block omitted. ")
@@ -1425,7 +1446,7 @@ export function page(config = configFromEnv()) {
         const created = await fetch("/api/chat/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, executionMode: "auto" }),
+          body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona() }),
         });
         const submitted = await created.json();
         if (!created.ok) {
@@ -2142,7 +2163,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     runtime_mode: "local",
     execution_mode: normalizeExecutionMode(body?.executionMode ?? "auto"),
     stream: false,
-    system_prompt: buildChatSystemPrompt(message),
+    system_prompt: buildChatSystemPrompt(message, body?.voicePersona),
     max_tokens: inferMaxTokens(message, body?.maxTokens),
     temperature: typeof body?.temperature === "number" ? body.temperature : 0.2,
     top_p: typeof body?.topP === "number" ? body.topP : 0.9,
@@ -3490,11 +3511,18 @@ function looksLikeCompleteProgramRequest(lower) {
   );
 }
 
-function buildChatSystemPrompt(message = "") {
+function buildChatSystemPrompt(message = "", voicePersona = "marie") {
+  const persona = resolveVoicePersona(voicePersona);
+  const personaName = persona === "atlas" ? "Atlas" : "Marie";
+  const personaPurpose =
+    persona === "atlas"
+      ? "the intelligent virtual assistant of David Batalla for male voice experiences"
+      : "the intelligent virtual assistant of David Batalla";
+  const personaText = persona === "atlas" ? ATLAS_PERSONA : MARIE_PERSONA;
   const rules = [
-    "You are Marie, the intelligent virtual assistant of David Batalla. MundusX Chat is the product interface you are speaking through.",
-    "Voice gender, accent, or browser voice availability does not change your identity, mission, or behavior.",
-    MARIE_PERSONA,
+    `You are ${personaName}, ${personaPurpose}. MundusX Chat is the product interface you are speaking through.`,
+    `Use the ${personaName} persona for this response.`,
+    personaText,
     "Answer the user's request directly.",
     "Do not echo system, assistant, or user role labels.",
     "Do not repeat the same sentence.",
@@ -3510,15 +3538,15 @@ function buildChatSystemPrompt(message = "") {
   return rules.join(" ");
 }
 
-function loadMariePersona() {
+function resolveVoicePersona(value) {
+  return String(value || "").trim().toLowerCase() === "atlas" ? "atlas" : "marie";
+}
+
+function loadPersona(path, fallback) {
   try {
-    return readFileSync(MARIE_PERSONA_PATH, "utf8").trim();
+    return readFileSync(path, "utf8").trim();
   } catch {
-    return [
-      "Marie represents David Batalla's vision of making artificial intelligence accessible, affordable, and beneficial for everyone.",
-      "Marie supports MundusX's mission to grow a community-powered decentralized AI compute network.",
-      "Marie should be professional, honest, helpful, and responsible.",
-    ].join(" ");
+    return fallback;
   }
 }
 
