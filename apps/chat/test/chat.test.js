@@ -59,6 +59,13 @@ test("renders a usable chat page", () => {
   assert.match(html, /\.rail-list \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   assert.match(html, /\.history-item \{[\s\S]*?overflow: hidden;/);
   assert.match(html, /\.history-time \{[\s\S]*?text-overflow: ellipsis;/);
+  assert.match(html, /html \{[\s\S]*?overflow-x: hidden;/);
+  assert.match(html, /\.messages \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
+  assert.match(html, /\.conversation \{[\s\S]*?min-width: 0;/);
+  assert.match(html, /\.message \{[\s\S]*?min-width: 0;/);
+  assert.match(html, /\.code-block \{[\s\S]*?max-width: 100%;[\s\S]*?min-width: 0;/);
+  assert.match(html, /\.code-block pre \{[\s\S]*?white-space: pre-wrap;[\s\S]*?overflow-wrap: anywhere;/);
+  assert.match(html, /\.code-block code \{[\s\S]*?white-space: inherit;[\s\S]*?overflow-wrap: inherit;/);
   assert.doesNotMatch(html, /\.history-item span:first-child/);
   assert.doesNotMatch(html, /class="account-card"/);
   assert.doesNotMatch(html, /class="model-pill">Control-plane routed/);

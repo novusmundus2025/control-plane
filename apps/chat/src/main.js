@@ -102,6 +102,10 @@ export function page(config = configFromEnv()) {
       --focus-ring: 0 0 0 3px rgba(124, 108, 246, 0.28);
     }
     * { box-sizing: border-box; }
+    html {
+      width: 100%;
+      overflow-x: hidden;
+    }
     body {
       margin: 0;
       height: 100vh;
@@ -463,10 +467,13 @@ export function page(config = configFromEnv()) {
 
     .messages {
       min-height: 0;
-      overflow: auto;
+      min-width: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
     }
     .conversation {
       width: min(880px, 100%);
+      min-width: 0;
       margin: 0 auto;
       padding: 38px 18px 28px;
       display: grid;
@@ -576,6 +583,7 @@ export function page(config = configFromEnv()) {
 
     .message {
       width: 100%;
+      min-width: 0;
       display: flex;
       padding: 10px 0;
     }
@@ -632,6 +640,9 @@ export function page(config = configFromEnv()) {
     }
     .code-block {
       margin: 12px 0;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
       border: 1px solid #1f2430;
       background: #12141c;
       border-radius: 10px;
@@ -648,8 +659,11 @@ export function page(config = configFromEnv()) {
     .code-block pre {
       margin: 0;
       padding: 14px;
-      overflow: auto;
-      white-space: pre;
+      max-width: 100%;
+      overflow: hidden;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
       font-family: "SF Mono", Menlo, Consolas, monospace;
       font-size: 13px;
       line-height: 1.5;
@@ -660,6 +674,9 @@ export function page(config = configFromEnv()) {
       border: 0;
       border-radius: 0;
       padding: 0;
+      white-space: inherit;
+      overflow-wrap: inherit;
+      word-break: inherit;
     }
 
     .work-trace { display: grid; gap: 12px; }
