@@ -9,6 +9,7 @@ const DEFAULT_CONTROL_PLANE_URL = "https://uat.mundusx.ai";
 const DEFAULT_TIMEOUT_SECONDS = 90;
 const DEFAULT_WEATHER_TTL_SECONDS = 7200;
 const DEFAULT_WEATHER_URL = "https://wttr.in";
+const DEFAULT_FACTUAL_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary";
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -27,6 +28,9 @@ export function configFromEnv(env = process.env) {
       ""
     ).trim(),
     weatherBaseUrl: normalizeOrigin(env.MUNDUSX_WEATHER_URL ?? DEFAULT_WEATHER_URL),
+    factualSummaryBaseUrl: normalizeOrigin(
+      env.MUNDUSX_FACTUAL_SUMMARY_URL ?? DEFAULT_FACTUAL_SUMMARY_URL,
+    ),
     weatherTtlSeconds: positiveInteger(
       env.MUNDUSX_WEATHER_TTL_SECONDS,
       DEFAULT_WEATHER_TTL_SECONDS,
@@ -1959,6 +1963,14 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     return fetchWeatherJob(message, weatherLocation, config, fetchImpl);
   }
 
+  const factualTopic = extractFactualSummaryTopic(message);
+  if (factualTopic) {
+    const factualJob = await fetchFactualSummaryJob(message, factualTopic, config, fetchImpl);
+    if (factualJob) {
+      return factualJob;
+    }
+  }
+
   const model = String(body?.model ?? config.modelOverride ?? "").trim();
   const jobBody = {
     request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
@@ -2106,6 +2118,94 @@ function formatWeatherSummary(requestedLocation, payload) {
   const windKmph = current.windspeedKmph;
   const observation = current.localObsDateTime ? ` Observed ${current.localObsDateTime}.` : "";
   return `Weather for ${place}: ${condition}, ${tempC}C/${tempF}F, feels like ${feelsC}C/${feelsF}F, humidity ${humidity}%, wind ${windKmph} km/h.${observation}`;
+}
+
+export function extractFactualSummaryTopic(message) {
+  const text = String(message ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  const lower = text.toLowerCase();
+  if (!/\b(history|who is|what is|tell me about|overview of|background of)\b/.test(lower)) {
+    return null;
+  }
+  if (/\b(write|draft|create|generate|code|program|email|poem|story|summarize this|explain why)\b/.test(lower)) {
+    return null;
+  }
+
+  const patterns = [
+    /\b(?:give me|tell me|show me)?\s*(?:a\s+)?(?:brief\s+|detailed\s+)?history\s+of\s+(.+?)(?:\s+from\s+.+)?[?.!]*$/i,
+    /\b(?:who|what)\s+is\s+(.+?)[?.!]*$/i,
+    /\b(?:tell me about|overview of|background of)\s+(.+?)[?.!]*$/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const topic = cleanFactualTopic(match?.[1]);
+    if (topic) {
+      return topic;
+    }
+  }
+  return null;
+}
+
+function cleanFactualTopic(value) {
+  const topic = String(value ?? "")
+    .replace(/\b(?:today|now|please|pls|in detail|from its origins to today|from origins to today)\b/gi, "")
+    .replace(/[?!.,]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!topic || topic.length < 2 || topic.length > 100) {
+    return null;
+  }
+  return topic;
+}
+
+async function fetchFactualSummaryJob(message, topic, config, fetchImpl) {
+  try {
+    const output = await fetchFactualSummary(topic, config, fetchImpl);
+    return {
+      job_id: `facts-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+      status: "completed",
+      output,
+      output_cleaned: false,
+      error: null,
+      model: "wikipedia-summary",
+      assigned_node_id: "facts-tool",
+      execution_mode: "tool",
+      graph_execution_enabled: false,
+      tool: "factual_summary",
+      progress: {
+        total: 0,
+        completed: 0,
+        running: 0,
+        failed: 0,
+        waiting: 0,
+        processing: null,
+        merging: false,
+        strategy: "factual_summary_tool",
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchFactualSummary(topic, config, fetchImpl) {
+  const url = `${config.factualSummaryBaseUrl}/${encodeURIComponent(topic)}`;
+  const response = await fetchImpl(url, {
+    headers: { Accept: "application/json", "User-Agent": "MundusX-Chat/0.1 factual-router" },
+  });
+  if (!response.ok) {
+    throw httpError(502, `factual lookup failed for ${topic}`);
+  }
+  const payload = await response.json();
+  const title = payload.title ?? topic;
+  const extract = String(payload.extract ?? "").trim();
+  if (!extract || payload.type === "disambiguation") {
+    throw httpError(502, `factual lookup returned no summary for ${topic}`);
+  }
+  const description = payload.description ? ` ${payload.description}.` : "";
+  return `${title}:${description} ${extract}`.replace(/\s+/g, " ").trim();
 }
 
 function weatherCacheKey(location) {
