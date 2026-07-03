@@ -5,6 +5,7 @@ import {
   cleanChatOutput,
   configFromEnv,
   escapeHtml,
+  extractFactualSummaryTopic,
   extractWeatherLocation,
   fetchNetworkSummary,
   page,
@@ -118,11 +119,11 @@ test("submits chat work as an auto execution job", async () => {
     calls.push({ url, init });
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
     const body = JSON.parse(init.body);
-    assert.equal(body.prompt, "Give me a detailed history of Honda.");
+    assert.equal(body.prompt, "Explain why a CUDA node can claim a job and fail.");
     assert.equal(body.execution_mode, "auto");
     assert.equal(body.preferred_backend, "auto");
     assert.equal(body.model, undefined);
-    assert.equal(body.max_tokens, 1024);
+    assert.equal(body.max_tokens, 128);
     assert.match(body.system_prompt, /Do not echo system/);
     return jsonResponse({
       job_id: "job-1",
@@ -146,7 +147,7 @@ test("submits chat work as an auto execution job", async () => {
   };
 
   const result = await submitChatJob(
-    { message: "Give me a detailed history of Honda." },
+    { message: "Explain why a CUDA node can claim a job and fail." },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     fetchImpl,
   );
@@ -260,6 +261,65 @@ test("routes weather questions to wttr without queuing an LLM job", async () => 
   assert.match(result.output, /Partly cloudy, 31C\/88F/);
 });
 
+test("routes factual history questions to a grounded summary source", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    assert.equal(url, "https://en.wikipedia.org/api/rest_v1/page/summary/BMW");
+    return jsonResponse({
+      title: "BMW",
+      description: "German multinational manufacturer of luxury vehicles and motorcycles",
+      extract:
+        "Bayerische Motoren Werke AG, commonly abbreviated to BMW, is a German multinational manufacturer of luxury vehicles and motorcycles headquartered in Munich, Bavaria, Germany. The company was founded in 1916 as a manufacturer of aircraft engines.",
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "Give me a detailed history of BMW from its origins to today." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls.length, 1);
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "wikipedia-summary");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "factual_summary");
+  assert.equal(result.assigned_node_id, "facts-tool");
+  assert.match(result.output, /Bayerische Motoren Werke AG/);
+  assert.match(result.output, /founded in 1916/);
+});
+
+test("falls back to MundusX jobs when factual summary lookup misses", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url.includes("/page/summary/")) {
+      return jsonResponse({ error: "not found" }, { status: 404 });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    return jsonResponse({
+      job_id: "job-fallback",
+      job: {
+        job_id: "job-fallback",
+        status: "queued",
+        execution_mode: "auto",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "Give me a detailed history of UnknownThing." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls.length, 2);
+  assert.equal(result.job_id, "job-fallback");
+  assert.equal(result.status, "queued");
+});
+
 test("returns immediate weather turns without polling the control plane", async () => {
   const result = await submitChatTurn(
     { message: "forecast for Cebu" },
@@ -291,6 +351,13 @@ test("extracts only obvious weather locations", () => {
   assert.equal(extractWeatherLocation("weather in Warsaw please"), "Warsaw");
   assert.equal(extractWeatherLocation("temperature for New York right now"), "New York");
   assert.equal(extractWeatherLocation("Give me a history of Honda"), null);
+});
+
+test("extracts only factual summary topics", () => {
+  assert.equal(extractFactualSummaryTopic("Give me a detailed history of BMW from its origins to today."), "BMW");
+  assert.equal(extractFactualSummaryTopic("Who is Ada Lovelace?"), "Ada Lovelace");
+  assert.equal(extractFactualSummaryTopic("Write code for BMW inventory"), null);
+  assert.equal(extractFactualSummaryTopic("Explain why a CUDA node can claim a job and fail."), null);
 });
 
 test("polls chat job progress and final cleaned output", async () => {
