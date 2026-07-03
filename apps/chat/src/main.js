@@ -1048,6 +1048,28 @@ export function page(config = configFromEnv()) {
       font-size: 11px;
       white-space: nowrap;
     }
+    .voice-select {
+      width: 168px;
+      min-width: 128px;
+      height: 32px;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      background: #f8f9ff;
+      color: var(--muted);
+      padding: 0 28px 0 12px;
+      font: inherit;
+      font-size: 12px;
+      outline: none;
+      appearance: auto;
+    }
+    .voice-select:focus-visible {
+      box-shadow: var(--focus-ring);
+      border-color: rgba(124, 108, 246, 0.42);
+    }
+    .voice-select:disabled {
+      opacity: 0.42;
+      cursor: not-allowed;
+    }
     @keyframes mx-pulse {
       0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.36); }
       50% { box-shadow: 0 0 0 8px rgba(229, 72, 77, 0); }
@@ -1179,6 +1201,9 @@ export function page(config = configFromEnv()) {
             <span class="voice-controls" id="voice-controls">
               <button class="voice-button" id="voice-mic" type="button" aria-label="Start voice input" title="Voice input">${ICON_MIC}</button>
               <button class="voice-button" id="voice-speak" type="button" aria-label="Speak replies" aria-pressed="false" title="Speak replies">${ICON_VOLUME}</button>
+              <select class="voice-select" id="voice-select" aria-label="Voice selection" title="Choose voice">
+                <option value="">Auto voice</option>
+              </select>
               <span class="voice-status" id="voice-status">Voice ready</span>
             </span>
           </div>
@@ -1201,6 +1226,7 @@ export function page(config = configFromEnv()) {
     const accountMenuEl = document.getElementById("account-menu");
     const voiceMicEl = document.getElementById("voice-mic");
     const voiceSpeakEl = document.getElementById("voice-speak");
+    const voiceSelectEl = document.getElementById("voice-select");
     const voiceStatusEl = document.getElementById("voice-status");
     const historyKey = "mundusx.chat.history.v1";
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1208,6 +1234,7 @@ export function page(config = configFromEnv()) {
     let isListening = false;
     let heardSpeech = false;
     let speakReplies = localStorage.getItem("mundusx.chat.voice.speakReplies") === "true";
+    let selectedVoiceName = localStorage.getItem("mundusx.chat.voice.selectedVoice") || "";
 
     renderHistory();
     hydrateNetwork();
@@ -1264,15 +1291,20 @@ export function page(config = configFromEnv()) {
     }
 
     function setupVoiceControls() {
-      if (!voiceMicEl || !voiceSpeakEl || !voiceStatusEl) return;
+      if (!voiceMicEl || !voiceSpeakEl || !voiceSelectEl || !voiceStatusEl) return;
       const canListen = Boolean(SpeechRecognitionCtor);
       const canSpeak = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
 
       voiceMicEl.disabled = !canListen;
       voiceSpeakEl.disabled = !canSpeak;
+      voiceSelectEl.disabled = !canSpeak;
       voiceSpeakEl.classList.toggle("is-active", speakReplies && canSpeak);
       voiceSpeakEl.setAttribute("aria-pressed", String(speakReplies && canSpeak));
       voiceStatusEl.textContent = canListen || canSpeak ? "Voice ready" : "Voice unavailable";
+      if (canSpeak) {
+        populateVoiceOptions();
+        window.speechSynthesis.addEventListener?.("voiceschanged", populateVoiceOptions);
+      }
 
       if (canListen) {
         recognition = new SpeechRecognitionCtor();
@@ -1364,6 +1396,13 @@ export function page(config = configFromEnv()) {
         voiceStatusEl.textContent = speakReplies ? "Replies on" : "Replies off";
         if (!speakReplies) window.speechSynthesis.cancel();
       });
+
+      voiceSelectEl.addEventListener("change", () => {
+        selectedVoiceName = voiceSelectEl.value;
+        localStorage.setItem("mundusx.chat.voice.selectedVoice", selectedVoiceName);
+        const selectedVoice = selectSpokenVoice();
+        voiceStatusEl.textContent = selectedVoice ? selectedVoice.name : "Auto voice";
+      });
     }
 
     function speakAssistantReply(text) {
@@ -1372,7 +1411,7 @@ export function page(config = configFromEnv()) {
       if (!spoken) return;
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(spoken);
-      const preferredVoice = selectJennyVoice();
+      const preferredVoice = selectSpokenVoice();
       if (preferredVoice) {
         utterance.voice = preferredVoice;
         utterance.lang = preferredVoice.lang || utterance.lang;
@@ -1391,6 +1430,44 @@ export function page(config = configFromEnv()) {
       window.speechSynthesis.speak(utterance);
     }
 
+    function populateVoiceOptions() {
+      if (!voiceSelectEl || !("speechSynthesis" in window)) return;
+      const voices = sortedSpeechVoices();
+      const previousValue = selectedVoiceName;
+      voiceSelectEl.innerHTML = "";
+      voiceSelectEl.appendChild(new Option("Auto voice", ""));
+      for (const voice of voices) {
+        const label = voice.lang ? voice.name + " - " + voice.lang : voice.name;
+        voiceSelectEl.appendChild(new Option(label, voice.name));
+      }
+      const hasPrevious = voices.some((voice) => voice.name === previousValue);
+      voiceSelectEl.value = hasPrevious ? previousValue : "";
+      selectedVoiceName = voiceSelectEl.value;
+      if (selectedVoiceName) {
+        localStorage.setItem("mundusx.chat.voice.selectedVoice", selectedVoiceName);
+      } else {
+        localStorage.removeItem("mundusx.chat.voice.selectedVoice");
+      }
+    }
+
+    function sortedSpeechVoices() {
+      if (!("speechSynthesis" in window)) return [];
+      const voices = window.speechSynthesis.getVoices();
+      if (!Array.isArray(voices)) return [];
+      return voices.slice().sort((a, b) => a.name.localeCompare(b.name));
+    }
+
+    function selectSpokenVoice() {
+      if (!("speechSynthesis" in window)) return null;
+      const voices = window.speechSynthesis.getVoices();
+      if (!Array.isArray(voices) || voices.length === 0) return null;
+      if (selectedVoiceName) {
+        const selected = voices.find((voice) => voice.name === selectedVoiceName);
+        if (selected) return selected;
+      }
+      return selectJennyVoice();
+    }
+
     function selectJennyVoice() {
       if (!("speechSynthesis" in window)) return null;
       const voices = window.speechSynthesis.getVoices();
@@ -1407,7 +1484,15 @@ export function page(config = configFromEnv()) {
 
     function selectedAssistantPersona() {
       if (!speakReplies) return "marie";
-      return selectJennyVoice() ? "marie" : "atlas";
+      const voice = selectSpokenVoice();
+      if (!voice) return "atlas";
+      return isFemaleVoiceName(voice.name) ? "marie" : "atlas";
+    }
+
+    function isFemaleVoiceName(name) {
+      return /jenny|zira|aria|samantha|susan|hazel|heather|catherine|victoria|female/i.test(
+        String(name || ""),
+      );
     }
 
     function normalizeSpokenText(text) {
