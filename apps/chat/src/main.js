@@ -1742,6 +1742,11 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(400, "message is required");
   }
 
+  const linearEquation = extractLinearEquation(message);
+  if (linearEquation) {
+    return fetchLinearEquationJob(message, linearEquation);
+  }
+
   const polynomialIntegral = extractPolynomialIntegral(message);
   if (polynomialIntegral) {
     return fetchPolynomialIntegralJob(message, polynomialIntegral);
@@ -1802,6 +1807,213 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   return formatChatJob(jobId, job, model || null);
+}
+
+export function extractLinearEquation(message) {
+  const text = String(message ?? "").trim();
+  if (!/\b(?:solve|equation|find)\b/i.test(text) || !text.includes("=")) {
+    return null;
+  }
+
+  const equation = cleanEquationText(text);
+  const sides = equation.split("=");
+  if (sides.length !== 2) {
+    return null;
+  }
+
+  const left = parseLinearExpression(sides[0]);
+  const right = parseLinearExpression(sides[1]);
+  const variable = mergeLinearVariable(left?.variable, right?.variable);
+  if (!left || !right || variable === false) {
+    return null;
+  }
+
+  const coefficient = left.coefficient - right.coefficient;
+  const constant = right.constant - left.constant;
+  if (Math.abs(coefficient) < 1e-12) {
+    return null;
+  }
+
+  const solution = normalizeNumber(constant / coefficient);
+  return {
+    variable,
+    equation,
+    solution,
+    left,
+    right,
+  };
+}
+
+function cleanEquationText(text) {
+  const normalized = String(text)
+    .replace(/[，]/g, ",")
+    .replace(/[−–—]/g, "-")
+    .replace(/\s+/g, "");
+  const match = normalized.match(/[0-9a-zA-Z+\-*/().^]+=[0-9a-zA-Z+\-*/().^]+/);
+  return match ? match[0] : normalized;
+}
+
+function parseLinearExpression(expression) {
+  const tokens = tokenizeLinearExpression(expression);
+  if (!tokens.length) {
+    return null;
+  }
+  const parser = createLinearParser(tokens);
+  const parsed = parser.parseExpression();
+  if (!parsed || parser.index !== tokens.length) {
+    return null;
+  }
+  return parsed;
+}
+
+function tokenizeLinearExpression(expression) {
+  const compact = String(expression ?? "").replace(/\s+/g, "");
+  const tokens = [];
+  let index = 0;
+  while (index < compact.length) {
+    const char = compact[index];
+    if (/[0-9.]/.test(char)) {
+      const match = compact.slice(index).match(/^\d+(?:\.\d+)?/);
+      if (!match) return [];
+      pushLinearToken(tokens, { type: "number", value: Number(match[0]) });
+      index += match[0].length;
+      continue;
+    }
+    if (/[a-zA-Z]/.test(char)) {
+      pushLinearToken(tokens, { type: "variable", value: char.toLowerCase() });
+      index += 1;
+      continue;
+    }
+    if ("+-*/()".includes(char)) {
+      pushLinearToken(tokens, { type: "operator", value: char });
+      index += 1;
+      continue;
+    }
+    return [];
+  }
+  return tokens;
+}
+
+function pushLinearToken(tokens, token) {
+  const previous = tokens[tokens.length - 1];
+  if (
+    previous &&
+    token.value !== ")" &&
+    token.value !== "*" &&
+    token.value !== "/" &&
+    token.value !== "+" &&
+    token.value !== "-" &&
+    (previous.type === "number" || previous.type === "variable" || previous.value === ")") &&
+    (token.type === "variable" || token.value === "(")
+  ) {
+    tokens.push({ type: "operator", value: "*" });
+  }
+  tokens.push(token);
+}
+
+function createLinearParser(tokens) {
+  return {
+    tokens,
+    index: 0,
+    peek() {
+      return this.tokens[this.index];
+    },
+    take(value) {
+      if (this.peek()?.value === value) {
+        this.index += 1;
+        return true;
+      }
+      return false;
+    },
+    parseExpression() {
+      let value = this.parseTerm();
+      if (!value) return null;
+      while (this.peek()?.value === "+" || this.peek()?.value === "-") {
+        const operator = this.peek().value;
+        this.index += 1;
+        const right = this.parseTerm();
+        if (!right) return null;
+        value = addLinear(value, operator === "-" ? scaleLinear(right, -1) : right);
+        if (!value) return null;
+      }
+      return value;
+    },
+    parseTerm() {
+      let value = this.parseFactor();
+      if (!value) return null;
+      while (this.peek()?.value === "*" || this.peek()?.value === "/") {
+        const operator = this.peek().value;
+        this.index += 1;
+        const right = this.parseFactor();
+        if (!right) return null;
+        value = operator === "*" ? multiplyLinear(value, right) : divideLinear(value, right);
+        if (!value) return null;
+      }
+      return value;
+    },
+    parseFactor() {
+      if (this.take("+")) return this.parseFactor();
+      if (this.take("-")) {
+        const factor = this.parseFactor();
+        return factor ? scaleLinear(factor, -1) : null;
+      }
+      const token = this.peek();
+      if (!token) return null;
+      if (token.type === "number") {
+        this.index += 1;
+        return { coefficient: 0, constant: token.value, variable: null };
+      }
+      if (token.type === "variable") {
+        this.index += 1;
+        return { coefficient: 1, constant: 0, variable: token.value };
+      }
+      if (this.take("(")) {
+        const expression = this.parseExpression();
+        if (!expression || !this.take(")")) return null;
+        return expression;
+      }
+      return null;
+    },
+  };
+}
+
+function addLinear(left, right) {
+  const variable = mergeLinearVariable(left.variable, right.variable);
+  if (variable === false) return null;
+  return {
+    coefficient: left.coefficient + right.coefficient,
+    constant: left.constant + right.constant,
+    variable,
+  };
+}
+
+function scaleLinear(value, factor) {
+  return {
+    coefficient: value.coefficient * factor,
+    constant: value.constant * factor,
+    variable: value.variable,
+  };
+}
+
+function multiplyLinear(left, right) {
+  if (left.variable && right.variable) {
+    return null;
+  }
+  if (left.variable) return scaleLinear(left, right.constant);
+  if (right.variable) return scaleLinear(right, left.constant);
+  return { coefficient: 0, constant: left.constant * right.constant, variable: null };
+}
+
+function divideLinear(left, right) {
+  if (right.variable || Math.abs(right.constant) < 1e-12) {
+    return null;
+  }
+  return scaleLinear(left, 1 / right.constant);
+}
+
+function mergeLinearVariable(left, right) {
+  if (left && right && left !== right) return false;
+  return left || right || null;
 }
 
 export function extractPolynomialIntegral(message) {
@@ -2000,6 +2212,39 @@ async function fetchWeatherJob(message, location, config, fetchImpl) {
       processing: null,
       merging: false,
       strategy: "weather_tool",
+    },
+  };
+}
+
+function fetchLinearEquationJob(message, equation) {
+  const output = [
+    `Equation: ${equation.equation}`,
+    `Answer: ${equation.variable} = ${formatNumber(equation.solution)}`,
+    "",
+    "Method:",
+    `Move variable terms and constants to opposite sides: ${formatNumber(equation.left.coefficient - equation.right.coefficient)}${equation.variable} = ${formatNumber(equation.right.constant - equation.left.constant)}`,
+    `Divide both sides by ${formatNumber(equation.left.coefficient - equation.right.coefficient)}.`,
+  ].join("\n");
+  return {
+    job_id: `math-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "math-tool",
+    assigned_node_id: "math-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "linear_equation",
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "linear_equation_tool",
     },
   };
 }
