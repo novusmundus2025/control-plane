@@ -2296,32 +2296,47 @@ function formatChatJob(jobId, job, fallbackModel) {
 function summarizeChatProgress(job) {
   const graph = job.graph ?? {};
   const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
+  const parentStatus = String(job.status ?? "").toLowerCase();
   if (!nodes.length) {
     return {
       total: 0,
       completed: 0,
-      running: 0,
+      running: ["assigned", "running"].includes(parentStatus) ? 1 : 0,
       failed: 0,
-      waiting: 0,
-      processing: null,
+      waiting: parentStatus === "queued" ? 1 : 0,
+      processing: ["assigned", "running"].includes(parentStatus)
+        ? `Direct response${job.assigned_node_id ? ` on ${job.assigned_node_id}` : ""}`
+        : null,
       merging: false,
       strategy: job.plan?.strategy ?? "single_job",
     };
   }
 
-  const completed = nodes.filter((node) => node.status === "completed").length;
-  const runningNodes = nodes.filter((node) => node.status === "running" || node.status === "assigned");
-  const failed = nodes.filter((node) => node.status === "failed").length;
-  const waiting = nodes.filter((node) => node.status === "waiting" || node.status === "ready").length;
+  const graphExecutionEnabled = Boolean(job.graph_execution_enabled);
+  const singleDirectNode = !graphExecutionEnabled && nodes.length === 1;
+  const effectiveNodes = singleDirectNode
+    ? nodes.map((node) => ({
+        ...node,
+        status: parentStatus || node.status,
+        assigned_node_id: node.assigned_node_id ?? job.assigned_node_id ?? null,
+        completed_at: node.completed_at ?? job.completed_at ?? null,
+        output: node.output ?? job.output ?? null,
+      }))
+    : nodes;
+
+  const completed = effectiveNodes.filter((node) => node.status === "completed").length;
+  const runningNodes = effectiveNodes.filter((node) => node.status === "running" || node.status === "assigned");
+  const failed = effectiveNodes.filter((node) => node.status === "failed").length;
+  const waiting = effectiveNodes.filter((node) => node.status === "waiting" || node.status === "ready" || node.status === "queued").length;
   const activeNode =
-    nodes.find((node) => node.id === job.active_graph_node_id) ?? runningNodes[0] ?? null;
+    effectiveNodes.find((node) => node.id === job.active_graph_node_id) ?? runningNodes[0] ?? null;
   const finalNodeId = graph.final_node_id ?? null;
   const merging =
     Boolean(activeNode) &&
     (activeNode.id === finalNodeId || String(activeNode.responsibility ?? "") === "merge");
 
   return {
-    total: nodes.length,
+    total: effectiveNodes.length,
     completed,
     running: runningNodes.length,
     failed,
@@ -2329,7 +2344,7 @@ function summarizeChatProgress(job) {
     processing: activeNode?.name ?? null,
     merging,
     strategy: job.plan?.strategy ?? graph.strategy ?? "graph",
-    nodes: nodes.map((node) => ({
+    nodes: effectiveNodes.map((node) => ({
       id: node.id,
       name: node.name,
       status: node.status,

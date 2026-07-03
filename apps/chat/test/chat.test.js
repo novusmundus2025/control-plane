@@ -335,6 +335,62 @@ test("polls chat job progress and final cleaned output", async () => {
   assert.equal(result.progress.nodes[1].output, "");
 });
 
+test("uses parent status for single direct chat job progress", async () => {
+  const assigned = await pollChatJob(
+    "job-single",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () =>
+      jsonResponse({
+        job: {
+          job_id: "job-single",
+          status: "assigned",
+          assigned_node_id: "node-7",
+          execution_mode: "auto",
+          graph_execution_enabled: false,
+          plan: { strategy: "single_job" },
+          graph: {
+            nodes: [
+              { id: "job.direct_response", name: "Direct response", status: "ready" },
+            ],
+          },
+        },
+      }),
+  );
+
+  assert.equal(assigned.progress.total, 1);
+  assert.equal(assigned.progress.running, 1);
+  assert.equal(assigned.progress.waiting, 0);
+  assert.equal(assigned.progress.processing, "Direct response");
+  assert.equal(assigned.progress.nodes[0].status, "assigned");
+  assert.equal(assigned.progress.nodes[0].assigned_node_id, "node-7");
+
+  const completed = await pollChatJob(
+    "job-single",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () =>
+      jsonResponse({
+        job: {
+          job_id: "job-single",
+          status: "completed",
+          assigned_node_id: "node-7",
+          execution_mode: "auto",
+          graph_execution_enabled: false,
+          output: "llama.cpp mode=cuda; response=9",
+          graph: {
+            nodes: [
+              { id: "job.direct_response", name: "Direct response", status: "ready" },
+            ],
+          },
+        },
+      }),
+  );
+
+  assert.equal(completed.progress.completed, 1);
+  assert.equal(completed.progress.waiting, 0);
+  assert.equal(completed.progress.nodes[0].status, "completed");
+  assert.equal(completed.progress.nodes[0].output, "9");
+});
+
 test("returns compact completed chunk outputs for decomposed jobs", async () => {
   const fetchImpl = async () =>
     jsonResponse({
