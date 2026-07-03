@@ -319,7 +319,7 @@ test("routes current president questions to Wikidata instead of the LLM", async 
     return jsonResponse({
       entities: {
         Q22686: {
-          labels: { en: { value: "Donald Trump" } },
+          labels: { mul: { value: "Donald Trump" } },
         },
       },
     });
