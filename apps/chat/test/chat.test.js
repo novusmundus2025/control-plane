@@ -517,6 +517,58 @@ test("polls chat job progress and final cleaned output", async () => {
   assert.equal(result.progress.nodes[1].output, "");
 });
 
+test("promotes completed section outputs when final synthesis is thin", async () => {
+  const result = await pollChatJob(
+    "job-product-plan",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () =>
+      jsonResponse({
+        job: {
+          job_id: "job-product-plan",
+          status: "completed",
+          execution_mode: "auto",
+          graph_execution_enabled: true,
+          output: "llama.cpp mode=cuda; response=## Scope and constraints",
+          graph: {
+            final_node_id: "job.final",
+            nodes: [
+              {
+                id: "job.product_description",
+                name: "Product description",
+                status: "completed",
+                responsibility: "section",
+                output: "llama.cpp mode=cuda; response=User-facing product description answer.",
+              },
+              {
+                id: "job.technical_architecture",
+                name: "Technical architecture",
+                status: "completed",
+                responsibility: "section",
+                output: "llama.cpp mode=cuda; response=Architecture answer.",
+              },
+              {
+                id: "job.final",
+                name: "Final synthesis",
+                status: "completed",
+                responsibility: "merge",
+                output: "llama.cpp mode=cuda; response=## Scope and constraints",
+              },
+            ],
+          },
+        },
+      }),
+  );
+
+  assert.match(result.output, /## Product description/);
+  assert.match(result.output, /User-facing product description answer/);
+  assert.match(result.output, /## Technical architecture/);
+  assert.match(result.output, /Architecture answer/);
+  assert.doesNotMatch(result.output, /^## Scope and constraints$/);
+  assert.equal(result.progress.final_synthesis, true);
+  assert.equal(result.progress.nodes[0].responsibility, "section");
+  assert.equal(result.progress.nodes[2].responsibility, "merge");
+});
+
 test("uses parent status for single direct chat job progress", async () => {
   const assigned = await pollChatJob(
     "job-single",

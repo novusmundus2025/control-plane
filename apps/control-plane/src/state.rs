@@ -1695,6 +1695,21 @@ fn looks_sectionable_prompt(prompt: &str) -> bool {
     )
 }
 
+fn looks_product_plan_prompt(lower_prompt: &str) -> bool {
+    let matches = [
+        "product description",
+        "technical architecture",
+        "launch plan",
+        "go-to-market",
+        "positioning",
+        "pricing",
+    ]
+    .iter()
+    .filter(|needle| lower_prompt.contains(**needle))
+    .count();
+    matches >= 2
+}
+
 fn looks_like_complete_code_prompt(lower_prompt: &str) -> bool {
     contains_any(
         lower_prompt,
@@ -2392,6 +2407,7 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
     let decomposition_needed = classification.complexity == RequestComplexity::High
         || (classification.task_type == RequestTaskType::Coding
             && looks_like_complete_code_prompt(&lower))
+        || looks_product_plan_prompt(&lower)
         || looks_sectionable_prompt(&request.prompt)
         || contains_any(
             &lower,
@@ -2424,6 +2440,47 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
                     "Request is low or medium complexity without separate responsibility areas."
                         .to_string(),
             }],
+        };
+    }
+
+    if looks_product_plan_prompt(&lower) && classification.task_type != RequestTaskType::Coding {
+        let mut jobs = Vec::new();
+        push_planned_job(
+            &mut jobs,
+            "job.product_description",
+            "Product description",
+            "section",
+            Vec::new(),
+            "Write the user-facing product description, audience, value proposition, and key capabilities.",
+            "Product planning prompts should return the product section directly.",
+        );
+        push_planned_job(
+            &mut jobs,
+            "job.technical_architecture",
+            "Technical architecture",
+            "section",
+            Vec::new(),
+            "Describe the system architecture, main components, data flow, integrations, and operational assumptions.",
+            "Architecture can be drafted independently as a user-facing section.",
+        );
+        push_planned_job(
+            &mut jobs,
+            "job.launch_plan",
+            "Launch plan",
+            "section",
+            Vec::new(),
+            "Create the launch plan with phases, target users, readiness checks, rollout steps, and success metrics.",
+            "Launch planning is a separate deliverable section and does not require a reducer by default.",
+        );
+
+        return JobPlan {
+            plan_id: format!("plan-{}", request.request_id),
+            strategy: "sectioned_product_plan".to_string(),
+            summary: format!(
+                "Planned {} product-plan sections. Sections are returned directly; final synthesis is optional.",
+                jobs.len()
+            ),
+            jobs,
         };
     }
 
@@ -3721,6 +3778,32 @@ mod tests {
     }
 
     #[test]
+    fn product_plan_prompts_return_user_facing_sections_without_reducer() {
+        let mut request = classification_request(
+            "Create a full product description, technical architecture, and launch plan for MundusX.AI.",
+        );
+        request.execution_mode = JobExecutionMode::Auto;
+
+        let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
+        let graph = build_job_graph("job-1", &plan, "1");
+
+        assert_eq!(plan.strategy, "sectioned_product_plan");
+        assert!(plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Product description"));
+        assert!(plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Technical architecture"));
+        assert!(plan.jobs.iter().any(|job| job.name == "Launch plan"));
+        assert!(!plan.jobs.iter().any(|job| job.responsibility == "merge"));
+        assert_eq!(graph.final_node_id, None);
+        assert_eq!(graph.nodes.len(), 3);
+    }
+
+    #[test]
     fn classifies_document_style_requests() {
         let request = classification_request(
             "Draft a customer-facing implementation report in markdown with a checklist.",
@@ -4560,21 +4643,23 @@ mod tests {
                 .job
                 .expect("section claim");
             assert_eq!(claim.max_tokens, Some(256));
-            completed = Some(state
-                .complete_job(
-                    JobCompletion {
-                        job_id: "job-1".to_string(),
-                        node_id: "node-1".to_string(),
-                        worker_id: format!("worker-{}", index + 2),
-                        backend: Backend::M,
-                        status: JobStatus::Completed,
-                        output: Some((*section_output).to_string()),
-                        error: None,
-                        latency_ms: Some(10),
-                    },
-                    (index + 8).to_string(),
-                )
-                .expect("section completion"));
+            completed = Some(
+                state
+                    .complete_job(
+                        JobCompletion {
+                            job_id: "job-1".to_string(),
+                            node_id: "node-1".to_string(),
+                            worker_id: format!("worker-{}", index + 2),
+                            backend: Backend::M,
+                            status: JobStatus::Completed,
+                            output: Some((*section_output).to_string()),
+                            error: None,
+                            latency_ms: Some(10),
+                        },
+                        (index + 8).to_string(),
+                    )
+                    .expect("section completion"),
+            );
         }
 
         let completed = completed.expect("last section completion");
@@ -5240,7 +5325,10 @@ mod tests {
                 .claim_job("node-weak", updated_at.to_string())
                 .job
                 .expect("section claim");
-            assert_ne!(claim.active_graph_node_id.as_deref(), Some("job.final_merge"));
+            assert_ne!(
+                claim.active_graph_node_id.as_deref(),
+                Some("job.final_merge")
+            );
             state
                 .complete_job(
                     JobCompletion {
