@@ -1529,7 +1529,8 @@ fn graph_node_is_long_running_stage(graph_node: &JobGraphNode) -> bool {
     ) || graph_node.id.contains("implementation")
         || graph_node.id.contains("backend")
         || graph_node.id.contains("frontend")
-        || graph_node.id.contains("code_implementation")
+        || graph_node.id.contains("code_file")
+        || graph_node.id.contains("code_main")
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1958,6 +1959,13 @@ fn graph_node_execution_prompt(
         );
     }
 
+    if job.classification.task_type == RequestTaskType::Coding {
+        return format!(
+            "Original user request:\n{}\n\nMundusX code subjob:\nName: {}\nResponsibility: {}\nRequired output: {}\n\nReturn only the requested code contract, code block, or concise compile notes for this subjob. Keep names consistent with earlier contract sections. You may introduce private helper functions only when they are needed by this subjob; list any helper names you introduce.",
+            job.prompt, node.name, node.responsibility, node.required_output
+        );
+    }
+
     format!(
         "Original user request:\n{}\n\nMundusX subjob:\nName: {}\nResponsibility: {}\nRequired output: {}\n\nWrite the factual content for this section only, in plain prose or compact bullets.",
         job.prompt, node.name, node.responsibility, node.required_output
@@ -1990,9 +1998,13 @@ fn graph_node_max_tokens(job: &JobRecord, active_node_id: &str) -> u32 {
             }
         }
         "complete_code_generation" => match node.id.as_str() {
-            "job.code_implementation" => 2_048,
+            "job.code_contract" => 512,
+            "job.code_types" => 768,
+            "job.code_file_write" | "job.code_file_read" | "job.code_helpers" | "job.code_main" => {
+                1_024
+            }
             "job.final_merge" => 3_072,
-            "job.code_outline" | "job.compile_notes" => 384,
+            "job.compile_notes" => 384,
             _ => 768,
         },
         _ => match node.responsibility.as_str() {
@@ -3155,28 +3167,68 @@ fn complete_code_plan_jobs() -> Vec<PlannedJob> {
     let mut jobs = Vec::new();
     push_planned_job(
         &mut jobs,
-        "job.code_outline",
-        "Program outline",
-        "analysis",
+        "job.code_contract",
+        "Code contract",
+        "contract",
         Vec::new(),
-        "Identify data structures, menu flow, file format, and required functions for the complete program.",
-        "Complete program requests need a compact design before source generation.",
+        "Define the shared program contract: language/toolchain, data model, filename, required public function names, function signatures, and allowed private helper policy.",
+        "Complete program chunks need one stable contract before source generation.",
     );
     push_planned_job(
         &mut jobs,
-        "job.code_implementation",
-        "Complete source code",
+        "job.code_types",
+        "Structs, constants, and prototypes",
         "implementation",
-        vec!["job.code_outline".to_string()],
-        "Produce the full source code in one coherent code block without truncating required functions.",
-        "The user asked for a complete program, so the implementation must be the primary deliverable.",
+        vec!["job.code_contract".to_string()],
+        "Produce the include directives, constants, Student struct, and all public function prototypes required by the contract.",
+        "Shared declarations must be generated before implementation chunks.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.code_file_write",
+        "Binary write functions",
+        "implementation",
+        vec!["job.code_types".to_string()],
+        "Implement the binary-file create/append/write functions required by the contract. Include only private helpers needed for this responsibility.",
+        "File-write logic can be generated independently once shared types are fixed.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.code_file_read",
+        "Binary search and read functions",
+        "implementation",
+        vec!["job.code_types".to_string()],
+        "Implement binary-file read/search-by-id functions required by the contract. Include only private helpers needed for this responsibility.",
+        "Read/search logic can be generated independently once shared types are fixed.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.code_helpers",
+        "Input and display helpers",
+        "implementation",
+        vec!["job.code_types".to_string()],
+        "Implement input validation, prompt, cleanup, and display helper functions required by the contract.",
+        "User interaction helpers should be isolated from file I/O chunks.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.code_main",
+        "Main menu and demo flow",
+        "implementation",
+        vec![
+            "job.code_file_write".to_string(),
+            "job.code_file_read".to_string(),
+            "job.code_helpers".to_string(),
+        ],
+        "Implement main() and the menu or demo flow that calls the generated public functions consistently.",
+        "The entrypoint depends on file I/O and helper functions.",
     );
     push_planned_job(
         &mut jobs,
         "job.compile_notes",
         "Compile and usage notes",
         "validation",
-        vec!["job.code_implementation".to_string()],
+        vec!["job.code_main".to_string()],
         "Add concise compiler, runtime, and file-handling notes relevant to the requested language/toolchain.",
         "Legacy or file-based programs need usage notes so the answer is actionable.",
     );
@@ -3186,12 +3238,16 @@ fn complete_code_plan_jobs() -> Vec<PlannedJob> {
         "Final answer",
         "merge",
         vec![
-            "job.code_outline".to_string(),
-            "job.code_implementation".to_string(),
+            "job.code_contract".to_string(),
+            "job.code_types".to_string(),
+            "job.code_file_write".to_string(),
+            "job.code_file_read".to_string(),
+            "job.code_helpers".to_string(),
+            "job.code_main".to_string(),
             "job.compile_notes".to_string(),
         ],
-        "Return the complete final response with the full program first and concise notes after it.",
-        "The reducer must preserve the full code block and avoid cutting the final source.",
+        "Assemble one complete compile-ready source file in the correct order, then add concise compile/run notes. Preserve all required functions and avoid duplicate definitions.",
+        "The reducer must combine contract-driven code chunks into one coherent source file.",
     );
     jobs
 }
@@ -3833,7 +3889,19 @@ mod tests {
         assert!(plan
             .jobs
             .iter()
-            .any(|job| job.name == "Complete source code"));
+            .any(|job| job.name == "Code contract"));
+        assert!(plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Binary write functions"));
+        assert!(plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Binary search and read functions"));
+        assert!(plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Main menu and demo flow"));
         assert_eq!(graph.final_node_id.as_deref(), Some("job.final_merge"));
     }
 
@@ -4322,11 +4390,17 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(plan.strategy, "complete_code_generation");
-        assert_eq!(plan.jobs.len(), 4);
-        assert!(responsibilities.contains(&"analysis"));
+        assert_eq!(plan.jobs.len(), 8);
+        assert!(responsibilities.contains(&"contract"));
         assert!(responsibilities.contains(&"implementation"));
         assert!(responsibilities.contains(&"validation"));
         assert!(responsibilities.contains(&"merge"));
+        assert!(plan.jobs.iter().any(|job| job.id == "job.code_contract"));
+        assert!(plan.jobs.iter().any(|job| job.id == "job.code_types"));
+        assert!(plan.jobs.iter().any(|job| job.id == "job.code_file_write"));
+        assert!(plan.jobs.iter().any(|job| job.id == "job.code_file_read"));
+        assert!(plan.jobs.iter().any(|job| job.id == "job.code_helpers"));
+        assert!(plan.jobs.iter().any(|job| job.id == "job.code_main"));
     }
 
     #[test]
@@ -4481,7 +4555,7 @@ mod tests {
             .claim_job("node-1", "2".to_string())
             .job
             .expect("scope claim");
-        assert!(first_claim.prompt.contains("MundusX subjob"));
+        assert!(first_claim.prompt.contains("MundusX code subjob"));
         assert!(first_claim.prompt.contains("Name: Scope and constraints"));
         assert_eq!(
             state
@@ -4785,7 +4859,7 @@ mod tests {
     }
 
     #[test]
-    fn complete_code_generation_claims_keep_implementation_room() {
+    fn complete_code_generation_claims_contract_then_function_chunks() {
         let mut state = ready_state();
         let mut request = classification_request(
             "Give me a complete Turbo C program to handle enrollment of students save in binary file",
@@ -4794,15 +4868,15 @@ mod tests {
         request.max_tokens = Some(4_096);
         state.submit_job(request, "2".to_string());
 
-        let outline_claim = state
+        let contract_claim = state
             .claim_job("node-1", "3".to_string())
             .job
-            .expect("outline claim");
+            .expect("contract claim");
         assert_eq!(
-            outline_claim.active_graph_node_id.as_deref(),
-            Some("job.code_outline")
+            contract_claim.active_graph_node_id.as_deref(),
+            Some("job.code_contract")
         );
-        assert_eq!(outline_claim.max_tokens, Some(384));
+        assert_eq!(contract_claim.max_tokens, Some(512));
 
         state
             .complete_job(
@@ -4812,23 +4886,49 @@ mod tests {
                     worker_id: "worker-1".to_string(),
                     backend: Backend::M,
                     status: JobStatus::Completed,
-                    output: Some("outline complete".to_string()),
+                    output: Some("contract complete".to_string()),
                     error: None,
                     latency_ms: Some(10),
                 },
                 "4".to_string(),
             )
-            .expect("outline completion");
+            .expect("contract completion");
 
-        let implementation_claim = state
+        let types_claim = state
             .claim_job("node-1", "5".to_string())
             .job
-            .expect("implementation claim");
+            .expect("types claim");
         assert_eq!(
-            implementation_claim.active_graph_node_id.as_deref(),
-            Some("job.code_implementation")
+            types_claim.active_graph_node_id.as_deref(),
+            Some("job.code_types")
         );
-        assert_eq!(implementation_claim.max_tokens, Some(2_048));
+        assert_eq!(types_claim.max_tokens, Some(768));
+
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-2".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("types complete".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "6".to_string(),
+            )
+            .expect("types completion");
+
+        let file_chunk_claim = state
+            .claim_job("node-1", "7".to_string())
+            .job
+            .expect("file/helper chunk claim");
+        assert!(matches!(
+            file_chunk_claim.active_graph_node_id.as_deref(),
+            Some("job.code_file_write") | Some("job.code_file_read") | Some("job.code_helpers")
+        ));
+        assert_eq!(file_chunk_claim.max_tokens, Some(1_024));
     }
 
     #[test]
@@ -6551,13 +6651,13 @@ mod tests {
         state
             .update_graph_node(
                 "job-1",
-                "job.code_outline",
+                "job.code_contract",
                 JobGraphNodeStatus::Completed,
-                Some("outline complete".to_string()),
+                Some("contract complete".to_string()),
                 None,
                 "6".to_string(),
             )
-            .expect("outline complete");
+            .expect("contract complete");
 
         assert!(state.claim_job("node-1", "7".to_string()).job.is_none());
 
@@ -6567,7 +6667,7 @@ mod tests {
             .expect("fast node claims implementation");
         assert_eq!(
             fast_claim.active_graph_node_id.as_deref(),
-            Some("job.code_implementation")
+            Some("job.code_types")
         );
         let decision = fast_claim
             .scheduler_decision
@@ -6600,13 +6700,13 @@ mod tests {
         state
             .update_graph_node(
                 "job-1",
-                "job.code_outline",
+                "job.code_contract",
                 JobGraphNodeStatus::Completed,
-                Some("outline complete".to_string()),
+                Some("contract complete".to_string()),
                 None,
                 "6".to_string(),
             )
-            .expect("outline complete");
+            .expect("contract complete");
 
         let claim = state
             .claim_job("node-1", "7".to_string())
@@ -6614,7 +6714,7 @@ mod tests {
             .expect("only ready node claims implementation");
         assert_eq!(
             claim.active_graph_node_id.as_deref(),
-            Some("job.code_implementation")
+            Some("job.code_types")
         );
     }
 
