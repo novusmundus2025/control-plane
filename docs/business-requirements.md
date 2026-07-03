@@ -8,7 +8,7 @@
 | Repository | `mundusx/control-plane` |
 | Status | Draft |
 | Owner | MundusX operators |
-| Last updated | 2026-06-26 |
+| Last updated | 2026-07-03 |
 
 ## Purpose
 
@@ -148,6 +148,46 @@ The MundusX control plane provides the company-owned operator surface for coordi
 - Provide JSON endpoints for status, nodes, jobs, job events, and credits.
 - Surface Supabase sync degradation and health status.
 - Keep authentication requirements explicit in deployment configuration.
+
+### Contributor Startup Readiness Output
+
+The contributor CLI must explain node startup readiness in operator-readable terms so a contributor can understand whether the node is identified, trusted, connected, allowed by policy, and ready to accept jobs.
+
+| Field | Meaning |
+|---|---|
+| `deviceId` | Stable MundusX node identifier derived from the device identity fingerprint, for example `node-7c540437d8aa3fc6`. |
+| `publicKey` | Full public verification key for the node. The control plane uses this to verify signed node requests. |
+| `publicKeyFingerprint` | Short public-key fingerprint used in UI, logs, and the node ID. |
+| `platform` | Detected host platform, such as `windows-x86_64`. |
+| `cpuCores` | Number of CPU cores detected on the contributor machine. |
+| `backendPreference` | Contributor-configured runtime preference, such as `auto`, `cuda`, or `m`. |
+| `detectedBackend` | Runtime actually detected on the machine, such as `cuda` for NVIDIA GPU support. |
+| `identityReady` | Whether the node identity exists and can sign control-plane requests. |
+| `identityTrustPath` | Secure storage path for private-key material, such as `dpapi://mundusx/device-identity` on Windows. |
+| `modelDir` | Local directory where downloaded models are stored. |
+| `activeModel` | Model currently advertised for local execution. |
+| `contributionPercent` | Contributor routing budget cap used by scheduling policy. |
+| `connected` | Whether the node is configured to connect to the control plane. |
+| `paused` | Whether the node is intentionally paused from accepting work. |
+| `configPath` | Local path to the contributor configuration file. |
+| `powerSource`, `onBattery`, `batteryPercent` | Power-policy signals used to avoid routing work to unsuitable battery states when detectable. |
+| `policyAllowed` | Whether local policy allows the node to contribute. |
+| `onboardingCompleted` | Whether the contributor has acknowledged the onboarding checklist. |
+| `contributionMeaning` | Human-readable explanation that the contribution cap is an automatic routing budget, not a literal constant GPU usage percentage. |
+| `agentMode` | Whether the node agent is running in the current terminal foreground or as a background daemon. |
+| `agentCommand` | Exact node-agent command launched by the CLI. |
+| `agentHint` | How the contributor can disconnect, such as `Esc` or `Ctrl-C` for foreground mode. |
+| `agentLog` and `agentErrorLog` | Local files used for normal agent logs and error diagnostics. |
+| `agentVersion` | Installed node-agent version. |
+| `state` | Agent runtime readiness state, such as `ready`. |
+| `intervalSeconds` | Heartbeat and polling interval used by the node agent. |
+| `agentStatePath` | Local file where agent runtime state is persisted. |
+| `heartbeatLogPath` | Local JSONL heartbeat trace for diagnostics. |
+| `registration` | Whether registration with the control plane is ready. |
+| `heartbeat` | Whether heartbeat reporting to the control plane is ready. |
+| `persistentRuntime` | Local persistent model runtime URL when available, for example `http://127.0.0.1:8789`, used to keep the model warm and reduce per-job startup latency. |
+
+The onboarding panel should summarize identity, hostname, backend, active model, contribution cap, policy state, credits endpoint, dashboard URL, config path, and whether contributor review is still needed. If `onboardingCompleted` is `no`, the CLI should show `opengpu onboarding --complete` as the next action.
 
 ### Persistence
 
