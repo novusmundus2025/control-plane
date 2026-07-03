@@ -38,6 +38,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /No speech heard/);
   assert.match(html, /Transcript ready/);
   assert.match(html, /function speakAssistantReply/);
+  assert.match(html, /function selectJennyVoice/);
+  assert.match(html, /Microsoft Jenny/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);

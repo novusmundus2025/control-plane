@@ -1353,10 +1353,15 @@ export function page(config = configFromEnv()) {
       if (!spoken) return;
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(spoken);
+      const preferredVoice = selectJennyVoice();
+      if (preferredVoice) {
+        utterance.voice = preferredVoice;
+        utterance.lang = preferredVoice.lang || utterance.lang;
+      }
       utterance.rate = 1;
       utterance.pitch = 1;
       utterance.addEventListener("start", () => {
-        voiceStatusEl && (voiceStatusEl.textContent = "Speaking");
+        voiceStatusEl && (voiceStatusEl.textContent = preferredVoice ? "Speaking with Jenny" : "Speaking");
       });
       utterance.addEventListener("end", () => {
         voiceStatusEl && (voiceStatusEl.textContent = "Voice ready");
@@ -1365,6 +1370,20 @@ export function page(config = configFromEnv()) {
         voiceStatusEl && (voiceStatusEl.textContent = "Voice error");
       });
       window.speechSynthesis.speak(utterance);
+    }
+
+    function selectJennyVoice() {
+      if (!("speechSynthesis" in window)) return null;
+      const voices = window.speechSynthesis.getVoices();
+      if (!Array.isArray(voices) || voices.length === 0) return null;
+      const preferredNames = ["Microsoft Jenny", "Jenny Multilingual", "Jenny"];
+      for (const preferredName of preferredNames) {
+        const match = voices.find((voice) =>
+          voice.name.toLowerCase().includes(preferredName.toLowerCase()),
+        );
+        if (match) return match;
+      }
+      return null;
     }
 
     function normalizeSpokenText(text) {
