@@ -152,6 +152,9 @@ test("submits chat work as an auto execution job", async () => {
     assert.equal(body.preferred_backend, "auto");
     assert.equal(body.model, undefined);
     assert.equal(body.max_tokens, 128);
+    assert.match(body.system_prompt, /You are Marie/);
+    assert.match(body.system_prompt, /Voice gender, accent, or browser voice availability/);
+    assert.match(body.system_prompt, /David Batalla's vision/);
     assert.match(body.system_prompt, /Do not echo system/);
     return jsonResponse({
       job_id: "job-1",

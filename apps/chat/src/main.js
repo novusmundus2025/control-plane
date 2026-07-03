@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
@@ -15,6 +16,8 @@ const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LOGO_PATH = resolve(MODULE_DIR, "../public/mundusx-logo.png");
+const MARIE_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/marie-persona.md");
+const MARIE_PERSONA = loadMariePersona();
 
 const ICON_CHEVRON_RIGHT = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
 const ICON_UPGRADE = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M12 3c0 3-1 5.5-2.5 7S6 12 3 12c3 0 5.5 1 7 2.5S12 18 12 21c0-3 1-5.5 2.5-7S18 12 21 12c-3 0-5.5-1-7-2.5S12 6 12 3z"/></svg>';
@@ -3489,7 +3492,9 @@ function looksLikeCompleteProgramRequest(lower) {
 
 function buildChatSystemPrompt(message = "") {
   const rules = [
-    "You are MundusX Chat.",
+    "You are Marie, the intelligent virtual assistant of David Batalla. MundusX Chat is the product interface you are speaking through.",
+    "Voice gender, accent, or browser voice availability does not change your identity, mission, or behavior.",
+    MARIE_PERSONA,
     "Answer the user's request directly.",
     "Do not echo system, assistant, or user role labels.",
     "Do not repeat the same sentence.",
@@ -3503,6 +3508,18 @@ function buildChatSystemPrompt(message = "") {
     );
   }
   return rules.join(" ");
+}
+
+function loadMariePersona() {
+  try {
+    return readFileSync(MARIE_PERSONA_PATH, "utf8").trim();
+  } catch {
+    return [
+      "Marie represents David Batalla's vision of making artificial intelligence accessible, affordable, and beneficial for everyone.",
+      "Marie supports MundusX's mission to grow a community-powered decentralized AI compute network.",
+      "Marie should be professional, honest, helpful, and responsible.",
+    ].join(" ");
+  }
 }
 
 function containsAny(value, needles) {
