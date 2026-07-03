@@ -3756,6 +3756,7 @@ function cleanChatOutputInternal(value, emptyFallback) {
 
   output = stripWorkerTrace(output);
   output = stripRolePrefixes(output);
+  output = stripPersonaLabelLeak(output);
   output = stripAssistantPreamble(output);
   output = stripEmbeddedRoleLeak(output);
   output = stripPromptInstructionLeak(output);
@@ -3814,6 +3815,21 @@ function stripRolePrefixes(value) {
   let output = value.trim();
   for (let i = 0; i < 3; i += 1) {
     const next = output.replace(/^(?:system|assistant|user|mundusx chat)\s*:\s*/i, "").trim();
+    if (next === output) {
+      break;
+    }
+    output = next;
+  }
+  return output;
+}
+
+function stripPersonaLabelLeak(value) {
+  let output = value.trim();
+  for (let i = 0; i < 2; i += 1) {
+    const next = output
+      .replace(/^(?:marie|atlas)\s*:\s*/i, "")
+      .replace(/^[^\n:]{1,140}\?\s*(?:marie|atlas)\s*:\s*/i, "")
+      .trim();
     if (next === output) {
       break;
     }

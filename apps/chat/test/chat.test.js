@@ -993,6 +993,18 @@ test("removes assistant preambles before rendering chat output", () => {
   assert.doesNotMatch(output, /MundusX Chat|Certainly|Here is/i);
 });
 
+test("removes leaked persona labels before rendering chat output", () => {
+  const output = cleanChatOutput(
+    "for MundusX? Marie: My vision for MundusX is to democratize access to AI, making it affordable and beneficial for everyone.",
+  );
+
+  assert.equal(
+    output,
+    "My vision for MundusX is to democratize access to AI, making it affordable and beneficial for everyone.",
+  );
+  assert.doesNotMatch(output, /^for MundusX\?|^Marie:/i);
+});
+
 test("removes leaked subjob instructions while keeping chunk content", () => {
   const output = cleanChatOutput(
     "Do not include any external links or references. Do not generate any output that is not factual and directly related to the user's request. MundusX subjob: Name: History Responsibility: section Required output: Explain the history of Mercedes-Benz from its origins to today. Write the factual content for this section only, in plain prose or compact bullets. Origins and founders: Mercedes-Benz was founded in 1926 by Gottlieb Daimler and Wilhelm Maybach.",
