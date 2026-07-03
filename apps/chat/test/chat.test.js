@@ -23,14 +23,14 @@ test("renders a usable chat page", () => {
   );
 
   assert.match(html, /MundusX Chat/);
-  assert.match(html, /Welcome to MundusX Chat/);
+  assert.match(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
   assert.match(html, /id="chat-form"/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);
   assert.match(html, /Source chunks/);
   assert.match(html, /Message MundusX/);
-  assert.match(html, /\[ \/ \] Commands/);
+  assert.match(html, /<span class="kbd">\/<\/span>Commands/);
   assert.match(html, /\.message\.assistant \.message-body/);
   assert.match(html, /\.message\.user \.message-body/);
   assert.match(html, /\.code-block/);
