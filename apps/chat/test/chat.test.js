@@ -5,7 +5,9 @@ import {
   cleanChatOutput,
   configFromEnv,
   escapeHtml,
+  extractCurrentOfficeQuery,
   extractFactualSummaryTopic,
+  extractPolynomialIntegral,
   extractWeatherLocation,
   fetchNetworkSummary,
   page,
@@ -23,20 +25,24 @@ test("renders a usable chat page", () => {
   );
 
   assert.match(html, /MundusX Chat/);
-  assert.match(html, /Welcome to MundusX Chat/);
+  assert.match(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
   assert.match(html, /id="chat-form"/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);
   assert.match(html, /Source chunks/);
   assert.match(html, /Message MundusX/);
-  assert.match(html, /\[ \/ \] Commands/);
+  assert.match(html, /<span class="kbd">\/<\/span>Commands/);
   assert.match(html, /\.message\.assistant \.message-body/);
   assert.match(html, /\.message\.user \.message-body/);
   assert.match(html, /\.code-block/);
   assert.match(html, /function stripEchoedPrompt/);
   assert.match(html, /function appendRichMessage/);
+  assert.match(html, /function normalizeAssistantDisplayText/);
+  assert.match(html, /function appendInlineMarkdown/);
   assert.match(html, /function formatCodeForDisplay/);
+  assert.match(html, /\.message-body ol/);
+  assert.match(html, /\.message-body strong/);
   assert.ok(html.includes('replace(/^\\n/, "")'));
   assert.ok(html.includes('raw.includes("\\n")'));
   assert.ok(html.includes('/\\b(public\\s+class'));
@@ -53,6 +59,13 @@ test("renders a usable chat page", () => {
   assert.match(html, /\.rail-list \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   assert.match(html, /\.history-item \{[\s\S]*?overflow: hidden;/);
   assert.match(html, /\.history-time \{[\s\S]*?text-overflow: ellipsis;/);
+  assert.match(html, /html \{[\s\S]*?overflow-x: hidden;/);
+  assert.match(html, /\.messages \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
+  assert.match(html, /\.conversation \{[\s\S]*?min-width: 0;/);
+  assert.match(html, /\.message \{[\s\S]*?min-width: 0;/);
+  assert.match(html, /\.code-block \{[\s\S]*?max-width: 100%;[\s\S]*?min-width: 0;/);
+  assert.match(html, /\.code-block pre \{[\s\S]*?white-space: pre-wrap;[\s\S]*?overflow-wrap: anywhere;/);
+  assert.match(html, /\.code-block code \{[\s\S]*?white-space: inherit;[\s\S]*?overflow-wrap: inherit;/);
   assert.doesNotMatch(html, /\.history-item span:first-child/);
   assert.doesNotMatch(html, /class="account-card"/);
   assert.doesNotMatch(html, /class="model-pill">Control-plane routed/);
@@ -217,6 +230,27 @@ test("sends an explicit model override when configured", async () => {
   assert.equal(result.model, "Qwen/Explicit");
 });
 
+test("routes simple polynomial integrals to the math tool", async () => {
+  const fetchImpl = async () => {
+    throw new Error("math tool requests should not call the control plane");
+  };
+
+  const result = await submitChatJob(
+    { message: "Evaluate the following indefinite integral: int (6x^2 - 4x + 3) dx" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "math-tool");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "polynomial_integral");
+  assert.equal(result.assigned_node_id, "math-tool");
+  assert.match(result.output, /Integral: 6x\^2 - 4x \+ 3/);
+  assert.match(result.output, /Answer: 2x\^3 - 2x\^2 \+ 3x \+ C/);
+  assert.doesNotMatch(result.output, /\\frac|\\int|Certainly/i);
+});
+
 test("routes weather questions to wttr without queuing an LLM job", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
@@ -290,6 +324,54 @@ test("routes factual history questions to a grounded summary source", async () =
   assert.match(result.output, /founded in 1916/);
 });
 
+test("routes current president questions to Wikidata instead of the LLM", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === "https://www.wikidata.org/wiki/Special:EntityData/Q30.json") {
+      return jsonResponse({
+        entities: {
+          Q30: {
+            claims: {
+              P6: [
+                {
+                  rank: "preferred",
+                  mainsnak: { datavalue: { value: { id: "Q22686" } } },
+                },
+              ],
+            },
+          },
+        },
+      });
+    }
+    assert.equal(url, "https://www.wikidata.org/wiki/Special:EntityData/Q22686.json");
+    return jsonResponse({
+      entities: {
+        Q22686: {
+          labels: { mul: { value: "Donald Trump" } },
+        },
+      },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "Who is the current president of USA today 2026?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.deepEqual(calls, [
+    "https://www.wikidata.org/wiki/Special:EntityData/Q30.json",
+    "https://www.wikidata.org/wiki/Special:EntityData/Q22686.json",
+  ]);
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "wikidata");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "current_office_holder");
+  assert.equal(result.assigned_node_id, "facts-tool");
+  assert.match(result.output, /Current president of the United States: Donald Trump/);
+});
+
 test("falls back to MundusX jobs when factual summary lookup misses", async () => {
   const calls = [];
   const fetchImpl = async (url, init = {}) => {
@@ -353,11 +435,40 @@ test("extracts only obvious weather locations", () => {
   assert.equal(extractWeatherLocation("Give me a history of Honda"), null);
 });
 
+test("extracts simple polynomial integrals", () => {
+  assert.deepEqual(
+    extractPolynomialIntegral("Evaluate the following indefinite integral: int (6x^2 - 4x + 3) dx"),
+    {
+      variable: "x",
+      expression: "6x^2 - 4x + 3",
+      result: "2x^3 - 2x^2 + 3x + C",
+      terms: [
+        { coefficient: 6, power: 2 },
+        { coefficient: -4, power: 1 },
+        { coefficient: 3, power: 0 },
+      ],
+    },
+  );
+  assert.equal(extractPolynomialIntegral("integrate sin(x) dx"), null);
+  assert.equal(extractPolynomialIntegral("write a history of calculus"), null);
+});
+
 test("extracts only factual summary topics", () => {
   assert.equal(extractFactualSummaryTopic("Give me a detailed history of BMW from its origins to today."), "BMW");
   assert.equal(extractFactualSummaryTopic("Who is Ada Lovelace?"), "Ada Lovelace");
   assert.equal(extractFactualSummaryTopic("Write code for BMW inventory"), null);
   assert.equal(extractFactualSummaryTopic("Explain why a CUDA node can claim a job and fail."), null);
+});
+
+test("extracts current office-holder queries", () => {
+  assert.deepEqual(extractCurrentOfficeQuery("Who is the current president of USA today 2026?"), {
+    office: "president",
+    relationProperty: "P6",
+    country: "the United States",
+    countryEntityId: "Q30",
+  });
+  assert.equal(extractCurrentOfficeQuery("Who is Ada Lovelace?"), null);
+  assert.equal(extractCurrentOfficeQuery("Write a president speech for USA"), null);
 });
 
 test("polls chat job progress and final cleaned output", async () => {
@@ -456,6 +567,8 @@ test("uses parent status for single direct chat job progress", async () => {
   assert.equal(completed.progress.waiting, 0);
   assert.equal(completed.progress.nodes[0].status, "completed");
   assert.equal(completed.progress.nodes[0].output, "9");
+  assert.equal(completed.progress.nodes[0].output_chars, 1);
+  assert.equal(completed.progress.nodes[0].estimated_output_tokens, 1);
 });
 
 test("returns compact completed chunk outputs for decomposed jobs", async () => {
@@ -509,6 +622,50 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
   assert.equal(result.progress.nodes[2].output, "");
 });
 
+test("derives completed chunk metrics when the control plane reports zeros", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-zero-metrics",
+        status: "completed",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        max_tokens: 256,
+        graph: {
+          nodes: [
+            {
+              id: "job.direct_response",
+              name: "Direct response",
+              status: "completed",
+              assigned_node_id: "node-7c540437d8aa3fc6",
+              latency_ms: 0,
+              queue_wait_ms: 0,
+              output_chars: 0,
+              estimated_output_tokens: 0,
+              effective_max_tokens: 0,
+              output: "llama.cpp mode=cuda; response=Current president of the United States: Donald Trump.",
+            },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-zero-metrics",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  const node = result.progress.nodes[0];
+  assert.equal(node.assigned_node_id, "node-7c540437d8aa3fc6");
+  assert.equal(node.latency_ms, null);
+  assert.equal(node.queue_wait_ms, null);
+  assert.equal(node.output_chars, 53);
+  assert.equal(node.estimated_output_tokens, 14);
+  assert.equal(node.effective_max_tokens, 256);
+  assert.equal(node.output, "Current president of the United States: Donald Trump.");
+});
+
 test("cleans worker metadata and repeated role-prefixed output", () => {
   const output = cleanChatOutput(
     "llama.cpp mode=cuda; model=Qwen/Qwen2.5-1.5B-Instruct; path=C:\\Users\\batal\\.opengpu\\models\\qwen.gguf; max_tokens=512; response=system: The President of the United States is Donald Trump. He is the 47th President of the United States. He is the 47th President of the United States. He is the 47th President of the United States.",
@@ -519,6 +676,18 @@ test("cleans worker metadata and repeated role-prefixed output", () => {
     "The President of the United States is Donald Trump. He is the 47th President of the United States.",
   );
   assert.doesNotMatch(output, /llama\.cpp|path=|response=|system:/i);
+});
+
+test("removes assistant preambles before rendering chat output", () => {
+  const output = cleanChatOutput(
+    "llama.cpp mode=cuda; response=MundusX Chat: Certainly! Here is a brief history of Apple Company: 1. **Founding**: Apple was founded in 1976. 2. **Early Years**: Apple released the Apple II.",
+  );
+
+  assert.equal(
+    output,
+    "1. **Founding**: Apple was founded in 1976. 2. **Early Years**: Apple released the Apple II.",
+  );
+  assert.doesNotMatch(output, /MundusX Chat|Certainly|Here is/i);
 });
 
 test("removes leaked subjob instructions while keeping chunk content", () => {

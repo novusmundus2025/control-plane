@@ -10,6 +10,7 @@ const DEFAULT_TIMEOUT_SECONDS = 90;
 const DEFAULT_WEATHER_TTL_SECONDS = 7200;
 const DEFAULT_WEATHER_URL = "https://wttr.in";
 const DEFAULT_FACTUAL_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary";
+const DEFAULT_WIKIDATA_ENTITY_URL = "https://www.wikidata.org/wiki/Special:EntityData";
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -59,6 +60,9 @@ export function configFromEnv(env = process.env) {
     factualSummaryBaseUrl: normalizeOrigin(
       env.MUNDUSX_FACTUAL_SUMMARY_URL ?? DEFAULT_FACTUAL_SUMMARY_URL,
     ),
+    wikidataEntityBaseUrl: normalizeOrigin(
+      env.MUNDUSX_WIKIDATA_ENTITY_URL ?? DEFAULT_WIKIDATA_ENTITY_URL,
+    ),
     weatherTtlSeconds: positiveInteger(
       env.MUNDUSX_WEATHER_TTL_SECONDS,
       DEFAULT_WEATHER_TTL_SECONDS,
@@ -101,6 +105,10 @@ export function page(config = configFromEnv()) {
       --focus-ring: 0 0 0 3px rgba(124, 108, 246, 0.28);
     }
     * { box-sizing: border-box; }
+    html {
+      width: 100%;
+      overflow-x: hidden;
+    }
     body {
       margin: 0;
       height: 100vh;
@@ -558,10 +566,13 @@ export function page(config = configFromEnv()) {
 
     .messages {
       min-height: 0;
-      overflow: auto;
+      min-width: 0;
+      overflow-x: hidden;
+      overflow-y: auto;
     }
     .conversation {
       width: min(880px, 100%);
+      min-width: 0;
       margin: 0 auto;
       padding: 38px 18px 28px;
       display: grid;
@@ -671,6 +682,7 @@ export function page(config = configFromEnv()) {
 
     .message {
       width: 100%;
+      min-width: 0;
       display: flex;
       padding: 10px 0;
     }
@@ -704,12 +716,32 @@ export function page(config = configFromEnv()) {
       font-size: 12px;
       margin-top: 8px;
     }
-
     .message-body p { margin: 0 0 12px; }
     .message-body p:last-child { margin-bottom: 0; }
-
+    .message-body ol,
+    .message-body ul {
+      margin: 10px 0 12px;
+      padding-left: 24px;
+    }
+    .message-body li {
+      margin: 8px 0;
+      padding-left: 4px;
+    }
+    .message-body strong {
+      font-weight: 800;
+    }
+    .message-body code:not(.code-block code) {
+      background: rgba(0,0,0,0.06);
+      border: 1px solid rgba(0,0,0,0.08);
+      border-radius: 5px;
+      padding: 1px 5px;
+      font-size: 0.94em;
+    }
     .code-block {
       margin: 12px 0;
+      width: 100%;
+      max-width: 100%;
+      min-width: 0;
       border: 1px solid #1f2430;
       background: #12141c;
       border-radius: 10px;
@@ -726,8 +758,11 @@ export function page(config = configFromEnv()) {
     .code-block pre {
       margin: 0;
       padding: 14px;
-      overflow: auto;
-      white-space: pre;
+      max-width: 100%;
+      overflow: hidden;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      word-break: break-word;
       font-family: "SF Mono", Menlo, Consolas, monospace;
       font-size: 13px;
       line-height: 1.5;
@@ -738,6 +773,9 @@ export function page(config = configFromEnv()) {
       border: 0;
       border-radius: 0;
       padding: 0;
+      white-space: inherit;
+      overflow-wrap: inherit;
+      word-break: inherit;
     }
 
     .work-trace { display: grid; gap: 12px; }
@@ -1230,11 +1268,60 @@ export function page(config = configFromEnv()) {
     }
 
     function appendTextParagraphs(container, text) {
-      const paragraphs = String(text || "").trim().split(/\\n{2,}/).filter(Boolean);
-      for (const paragraph of paragraphs) {
+      const blocks = normalizeAssistantDisplayText(text).split(/\\n{2,}/).filter(Boolean);
+      for (const block of blocks) {
+        const list = createListBlock(block);
+        if (list) {
+          container.appendChild(list);
+          continue;
+        }
         const node = document.createElement("p");
-        node.textContent = paragraph.trim();
+        appendInlineMarkdown(node, block.trim());
         container.appendChild(node);
+      }
+    }
+
+    function normalizeAssistantDisplayText(text) {
+      return String(text || "")
+        .replace(/\\r\\n/g, "\\n")
+        .replace(/\\s+(\\d+)\\.\\s+(?=\\*\\*|[A-Z0-9])/g, "\\n$1. ")
+        .replace(/\\s+[-*]\\s+(?=\\*\\*|[A-Z0-9])/g, "\\n- ")
+        .replace(/\\n{3,}/g, "\\n\\n")
+        .trim();
+    }
+
+    function createListBlock(block) {
+      const lines = String(block || "").split("\\n").map((line) => line.trim()).filter(Boolean);
+      if (lines.length < 2) return null;
+      const ordered = lines.every((line) => /^\\d+\\.\\s+/.test(line));
+      const unordered = lines.every((line) => /^[-*]\\s+/.test(line));
+      if (!ordered && !unordered) return null;
+      const list = document.createElement(ordered ? "ol" : "ul");
+      for (const line of lines) {
+        const item = document.createElement("li");
+        appendInlineMarkdown(item, line.replace(ordered ? /^\\d+\\.\\s+/ : /^[-*]\\s+/, ""));
+        list.appendChild(item);
+      }
+      return list;
+    }
+
+    function appendInlineMarkdown(parent, text) {
+      const value = String(text || "");
+      const tick = String.fromCharCode(96);
+      const pattern = new RegExp("(\\\\*\\\\*[^*]+\\\\*\\\\*|" + tick + "[^" + tick + "]+" + tick + ")", "g");
+      let index = 0;
+      for (const match of value.matchAll(pattern)) {
+        if (match.index > index) {
+          parent.appendChild(document.createTextNode(value.slice(index, match.index)));
+        }
+        const token = match[0];
+        const node = document.createElement(token.startsWith("**") ? "strong" : "code");
+        node.textContent = token.startsWith("**") ? token.slice(2, -2) : token.slice(1, -1);
+        parent.appendChild(node);
+        index = match.index + token.length;
+      }
+      if (index < value.length) {
+        parent.appendChild(document.createTextNode(value.slice(index)));
       }
     }
 
@@ -1597,9 +1684,22 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(400, "message is required");
   }
 
+  const polynomialIntegral = extractPolynomialIntegral(message);
+  if (polynomialIntegral) {
+    return fetchPolynomialIntegralJob(message, polynomialIntegral);
+  }
+
   const weatherLocation = extractWeatherLocation(message);
   if (weatherLocation) {
     return fetchWeatherJob(message, weatherLocation, config, fetchImpl);
+  }
+
+  const currentOfficeQuery = extractCurrentOfficeQuery(message);
+  if (currentOfficeQuery) {
+    const currentOfficeJob = await fetchCurrentOfficeJob(message, currentOfficeQuery, config, fetchImpl);
+    if (currentOfficeJob) {
+      return currentOfficeJob;
+    }
   }
 
   const factualTopic = extractFactualSummaryTopic(message);
@@ -1644,6 +1744,164 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   return formatChatJob(jobId, job, model || null);
+}
+
+export function extractPolynomialIntegral(message) {
+  const text = String(message ?? "").trim();
+  if (!/\b(?:integral|integrate|int)\b/i.test(text) || !/\bdx\b/i.test(text)) {
+    return null;
+  }
+
+  const expression =
+    text.match(/\bint\b\s*\(?\s*([^)]+?)\s*\)?\s*dx\b/i)?.[1] ??
+    text.match(/\bintegral\s+(?:of\s+)?\(?\s*([^)]+?)\s*\)?\s*dx\b/i)?.[1] ??
+    text.match(/\bintegrate\s+\(?\s*([^)]+?)\s*\)?\s*(?:with\s+respect\s+to\s+x|dx)\b/i)?.[1];
+  if (!expression || !/[xX]/.test(expression)) {
+    return null;
+  }
+
+  const terms = parsePolynomialTerms(expression);
+  if (!terms.length) {
+    return null;
+  }
+  return {
+    variable: "x",
+    expression: formatPolynomial(terms),
+    result: formatPolynomial(terms.map((term) => ({
+      coefficient: term.coefficient / (term.power + 1),
+      power: term.power + 1,
+    })), " + C"),
+    terms,
+  };
+}
+
+function parsePolynomialTerms(expression) {
+  const normalized = String(expression)
+    .replace(/\s+/g, "")
+    .replace(/\*/g, "")
+    .replace(/−/g, "-");
+  if (!normalized || /[^0-9xX^+\-.]/.test(normalized)) {
+    return [];
+  }
+
+  const pieces = normalized.match(/[+-]?[^+-]+/g) ?? [];
+  const terms = [];
+  for (const piece of pieces) {
+    const term = parsePolynomialTerm(piece);
+    if (!term) {
+      return [];
+    }
+    terms.push(term);
+  }
+  return combinePolynomialTerms(terms);
+}
+
+function parsePolynomialTerm(piece) {
+  const value = String(piece ?? "");
+  if (!value) {
+    return null;
+  }
+  const sign = value.startsWith("-") ? -1 : 1;
+  const unsigned = value.replace(/^[+-]/, "");
+  if (/^[0-9]+(?:\.[0-9]+)?$/.test(unsigned)) {
+    return { coefficient: sign * Number(unsigned), power: 0 };
+  }
+
+  const match = unsigned.match(/^([0-9]+(?:\.[0-9]+)?)?[xX](?:\^([0-9]+))?$/);
+  if (!match) {
+    return null;
+  }
+  return {
+    coefficient: sign * Number(match[1] ?? 1),
+    power: Number(match[2] ?? 1),
+  };
+}
+
+function combinePolynomialTerms(terms) {
+  const byPower = new Map();
+  for (const term of terms) {
+    byPower.set(term.power, (byPower.get(term.power) ?? 0) + term.coefficient);
+  }
+  return [...byPower.entries()]
+    .map(([power, coefficient]) => ({ power, coefficient }))
+    .filter((term) => Math.abs(term.coefficient) > 1e-12)
+    .sort((a, b) => b.power - a.power);
+}
+
+function formatPolynomial(terms, suffix = "") {
+  const parts = [];
+  for (const term of terms) {
+    const formatted = formatPolynomialTerm(term);
+    if (!formatted) {
+      continue;
+    }
+    if (!parts.length) {
+      parts.push(formatted);
+    } else if (formatted.startsWith("-")) {
+      parts.push(`- ${formatted.slice(1)}`);
+    } else {
+      parts.push(`+ ${formatted}`);
+    }
+  }
+  return `${parts.join(" ")}${suffix}`;
+}
+
+function formatPolynomialTerm(term) {
+  const coefficient = normalizeNumber(term.coefficient);
+  if (coefficient === 0) {
+    return "";
+  }
+  const sign = coefficient < 0 ? "-" : "";
+  const abs = Math.abs(coefficient);
+  if (term.power === 0) {
+    return `${sign}${formatNumber(abs)}`;
+  }
+  const coefficientText = abs === 1 ? "" : formatNumber(abs);
+  const variable = term.power === 1 ? "x" : `x^${term.power}`;
+  return `${sign}${coefficientText}${variable}`;
+}
+
+function normalizeNumber(value) {
+  const rounded = Math.round(value * 1e12) / 1e12;
+  return Object.is(rounded, -0) ? 0 : rounded;
+}
+
+function formatNumber(value) {
+  if (Number.isInteger(value)) {
+    return String(value);
+  }
+  return String(Number(value.toFixed(6))).replace(/\.0+$/, "");
+}
+
+function fetchPolynomialIntegralJob(message, integral) {
+  const output = [
+    `Integral: ${integral.expression}`,
+    `Answer: ${integral.result}`,
+    "Rule used: integrate each term a*x^n as (a/(n+1))*x^(n+1), then add C.",
+  ].join("\n\n");
+
+  return {
+    job_id: `math-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "math-tool",
+    assigned_node_id: "math-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "polynomial_integral",
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "math_tool",
+    },
+  };
 }
 
 async function fetchWeatherJob(message, location, config, fetchImpl) {
@@ -1757,6 +2015,125 @@ function formatWeatherSummary(requestedLocation, payload) {
   const windKmph = current.windspeedKmph;
   const observation = current.localObsDateTime ? ` Observed ${current.localObsDateTime}.` : "";
   return `Weather for ${place}: ${condition}, ${tempC}C/${tempF}F, feels like ${feelsC}C/${feelsF}F, humidity ${humidity}%, wind ${windKmph} km/h.${observation}`;
+}
+
+export function extractCurrentOfficeQuery(message) {
+  const text = String(message ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  const lower = text.toLowerCase();
+  if (!/\b(?:current|now|today|202\d|latest)\b/.test(lower)) {
+    return null;
+  }
+  const match = lower.match(/\b(?:who\s+is\s+)?(?:the\s+)?current\s+president\s+of\s+(.+?)(?:\s+(?:today|now|currently|in\s+202\d|year\s+202\d))*[?.!]*$/i);
+  if (!match) {
+    return null;
+  }
+  const country = cleanCountryName(match[1]);
+  const countryInfo = country ? countryEntityFor(country) : null;
+  if (!countryInfo) {
+    return null;
+  }
+  return {
+    office: "president",
+    relationProperty: "P6",
+    country: countryInfo.name,
+    countryEntityId: countryInfo.entityId,
+  };
+}
+
+function cleanCountryName(value) {
+  return String(value ?? "")
+    .replace(/\b(?:today|now|currently|please|pls|year|in)\b/gi, "")
+    .replace(/\b202\d\b/g, "")
+    .replace(/[?!.,]+$/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function countryEntityFor(country) {
+  const key = String(country ?? "").toLowerCase().replace(/\./g, "").replace(/\s+/g, " ").trim();
+  const countries = new Map([
+    ["usa", { name: "the United States", entityId: "Q30" }],
+    ["us", { name: "the United States", entityId: "Q30" }],
+    ["u s", { name: "the United States", entityId: "Q30" }],
+    ["america", { name: "the United States", entityId: "Q30" }],
+    ["united states", { name: "the United States", entityId: "Q30" }],
+    ["united states of america", { name: "the United States", entityId: "Q30" }],
+    ["philippines", { name: "the Philippines", entityId: "Q928" }],
+    ["ph", { name: "the Philippines", entityId: "Q928" }],
+  ]);
+  return countries.get(key) ?? null;
+}
+
+async function fetchCurrentOfficeJob(message, query, config, fetchImpl) {
+  try {
+    const output = await fetchCurrentOfficeAnswer(query, config, fetchImpl);
+    return {
+      job_id: `facts-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+      status: "completed",
+      output,
+      output_cleaned: false,
+      error: null,
+      model: "wikidata",
+      assigned_node_id: "facts-tool",
+      execution_mode: "tool",
+      graph_execution_enabled: false,
+      tool: "current_office_holder",
+      progress: {
+        total: 0,
+        completed: 0,
+        running: 0,
+        failed: 0,
+        waiting: 0,
+        processing: null,
+        merging: false,
+        strategy: "current_office_tool",
+      },
+    };
+  } catch {
+    return null;
+  }
+}
+
+async function fetchCurrentOfficeAnswer(query, config, fetchImpl) {
+  const country = await fetchWikidataEntity(query.countryEntityId, config, fetchImpl);
+  const holderId = extractEntityClaimId(country, query.relationProperty);
+  if (!holderId) {
+    throw httpError(502, `current ${query.office} lookup returned no holder for ${query.country}`);
+  }
+  const holder = await fetchWikidataEntity(holderId, config, fetchImpl);
+  const holderName = entityEnglishLabel(holder, holderId);
+  return `Current ${query.office} of ${query.country}: ${holderName}. Source: Wikidata ${query.countryEntityId} ${query.relationProperty}.`;
+}
+
+async function fetchWikidataEntity(entityId, config, fetchImpl) {
+  const url = `${config.wikidataEntityBaseUrl}/${encodeURIComponent(entityId)}.json`;
+  const response = await fetchImpl(url, {
+    headers: { Accept: "application/json", "User-Agent": "MundusX-Chat/0.1 factual-router" },
+  });
+  if (!response.ok) {
+    throw httpError(502, `wikidata lookup failed for ${entityId}`);
+  }
+  const payload = await response.json();
+  const entity = payload?.entities?.[entityId];
+  if (!entity) {
+    throw httpError(502, `wikidata lookup returned no entity for ${entityId}`);
+  }
+  return entity;
+}
+
+function extractEntityClaimId(entity, propertyId) {
+  const claims = entity?.claims?.[propertyId] ?? [];
+  const ranked = claims.find((claim) => claim.rank === "preferred") ?? claims.find((claim) => claim.rank !== "deprecated");
+  const value = ranked?.mainsnak?.datavalue?.value;
+  return typeof value?.id === "string" ? value.id : null;
+}
+
+function entityEnglishLabel(entity, fallback) {
+  const labels = entity?.labels ?? {};
+  return labels.en?.value ?? labels.mul?.value ?? labels["en-us"]?.value ?? labels["en-gb"]?.value ?? fallback;
 }
 
 export function extractFactualSummaryTopic(message) {
@@ -2083,25 +2460,53 @@ function summarizeChatProgress(job) {
     processing: activeNode?.name ?? null,
     merging,
     strategy: job.plan?.strategy ?? graph.strategy ?? "graph",
-    nodes: effectiveNodes.map((node) => ({
-      id: node.id,
-      name: node.name,
-      status: node.status,
-      assigned_node_id: node.assigned_node_id ?? null,
-      latency_ms: numberOrNull(node.latency_ms),
-      queue_wait_ms: numberOrNull(node.queue_wait_ms),
-      runtime_ms: numberOrNull(node.runtime_ms),
-      output_chars: numberOrNull(node.output_chars),
-      estimated_output_tokens: numberOrNull(node.estimated_output_tokens),
-      effective_max_tokens: numberOrNull(node.effective_max_tokens),
-      output: node.status === "completed" && node.output ? compactChunkOutput(node.output) : "",
-    })),
+    nodes: effectiveNodes.map((node) => formatChatProgressNode(node, job)),
+  };
+}
+
+function formatChatProgressNode(node, job) {
+  const completed = node.status === "completed";
+  const rawOutput = completed ? String(node.output ?? job.output ?? "") : "";
+  const compactOutput = rawOutput ? compactChunkOutput(rawOutput) : "";
+  const outputChars = positiveNumberOrNull(node.output_chars) ?? (compactOutput ? compactOutput.length : null);
+  const estimatedOutputTokens =
+    positiveNumberOrNull(node.estimated_output_tokens) ?? estimateDisplayTokens(compactOutput);
+  const effectiveMaxTokens =
+    positiveNumberOrNull(node.effective_max_tokens) ??
+    positiveNumberOrNull(job.effective_max_tokens) ??
+    positiveNumberOrNull(job.max_tokens);
+
+  return {
+    id: node.id,
+    name: node.name,
+    status: node.status,
+    assigned_node_id: node.assigned_node_id ?? null,
+    latency_ms: positiveNumberOrNull(node.latency_ms),
+    queue_wait_ms: positiveNumberOrNull(node.queue_wait_ms),
+    runtime_ms: positiveNumberOrNull(node.runtime_ms),
+    output_chars: outputChars,
+    estimated_output_tokens: estimatedOutputTokens,
+    effective_max_tokens: effectiveMaxTokens,
+    output: compactOutput,
   };
 }
 
 function numberOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function positiveNumberOrNull(value) {
+  const number = numberOrNull(value);
+  return number && number > 0 ? number : null;
+}
+
+function estimateDisplayTokens(value) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  return Math.max(1, Math.ceil(text.length / 4));
 }
 
 function compactChunkOutput(value) {
@@ -2310,6 +2715,7 @@ function cleanChatOutputInternal(value, emptyFallback) {
 
   output = stripWorkerTrace(output);
   output = stripRolePrefixes(output);
+  output = stripAssistantPreamble(output);
   output = stripEmbeddedRoleLeak(output);
   output = stripPromptInstructionLeak(output);
   output = collapseRepeatedSentences(output);
@@ -2335,13 +2741,23 @@ function stripWorkerTrace(value) {
 function stripRolePrefixes(value) {
   let output = value.trim();
   for (let i = 0; i < 3; i += 1) {
-    const next = output.replace(/^(?:system|assistant|user)\s*:\s*/i, "").trim();
+    const next = output.replace(/^(?:system|assistant|user|mundusx chat)\s*:\s*/i, "").trim();
     if (next === output) {
       break;
     }
     output = next;
   }
   return output;
+}
+
+function stripAssistantPreamble(value) {
+  return value
+    .trim()
+    .replace(
+      /^(?:(?:certainly|sure|of course)[!.]?\s+)?(?:here(?:'s| is)\s+(?:a|an|the)?\s*(?:brief|detailed|complete)?\s*(?:answer|overview|summary|history|response|program|code)?(?:\s+of\s+[^:]{2,120})?\s*:\s*)/i,
+      "",
+    )
+    .trim();
 }
 
 function stripEmbeddedRoleLeak(value) {
