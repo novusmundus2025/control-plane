@@ -277,6 +277,8 @@ test("routes simple polynomial integrals to the math tool", async () => {
   assert.equal(result.execution_mode, "tool");
   assert.equal(result.tool, "polynomial_integral");
   assert.equal(result.assigned_node_id, "math-tool");
+  assert.equal(result.response.type, "math_solution");
+  assert.equal(result.response.answer, "2x^3 - 2x^2 + 3x + C");
   assert.match(result.output, /Integral: 6x\^2 - 4x \+ 3/);
   assert.match(result.output, /Answer: 2x\^3 - 2x\^2 \+ 3x \+ C/);
   assert.doesNotMatch(result.output, /\\frac|\\int|Certainly/i);
@@ -295,6 +297,13 @@ test("routes simple linear equations to the math tool", async () => {
   assert.equal(result.model, "math-tool");
   assert.equal(result.execution_mode, "tool");
   assert.equal(result.tool, "linear_equation");
+  assert.equal(result.response.type, "math_solution");
+  assert.equal(result.response.answer, "y = -9.4");
+  assert.deepEqual(result.response.steps, [
+    "13(y+7)=3(y-1)",
+    "10y = -94",
+    "y = -9.4",
+  ]);
   assert.match(result.output, /Answer: y = -9\.4/);
   assert.doesNotMatch(result.output, /\\frac|Certainly|To solve/i);
 });
@@ -339,6 +348,10 @@ test("routes weather questions to wttr without queuing an LLM job", async () => 
   assert.equal(result.execution_mode, "tool");
   assert.equal(result.tool, "weather");
   assert.equal(result.assigned_node_id, "weather-tool");
+  assert.equal(result.response.type, "weather_result");
+  assert.equal(result.response.title, "Weather for Manila, National Capital Region, Philippines");
+  assert.equal(result.response.summary, "Partly cloudy, 31C/88F");
+  assert.equal(result.response.facts.Humidity, "70%");
   assert.match(result.output, /Weather for Manila, National Capital Region, Philippines/);
   assert.match(result.output, /Partly cloudy, 31C\/88F/);
 });
