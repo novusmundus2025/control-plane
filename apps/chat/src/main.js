@@ -2140,25 +2140,53 @@ function summarizeChatProgress(job) {
     processing: activeNode?.name ?? null,
     merging,
     strategy: job.plan?.strategy ?? graph.strategy ?? "graph",
-    nodes: effectiveNodes.map((node) => ({
-      id: node.id,
-      name: node.name,
-      status: node.status,
-      assigned_node_id: node.assigned_node_id ?? null,
-      latency_ms: numberOrNull(node.latency_ms),
-      queue_wait_ms: numberOrNull(node.queue_wait_ms),
-      runtime_ms: numberOrNull(node.runtime_ms),
-      output_chars: numberOrNull(node.output_chars),
-      estimated_output_tokens: numberOrNull(node.estimated_output_tokens),
-      effective_max_tokens: numberOrNull(node.effective_max_tokens),
-      output: node.status === "completed" && node.output ? compactChunkOutput(node.output) : "",
-    })),
+    nodes: effectiveNodes.map((node) => formatChatProgressNode(node, job)),
+  };
+}
+
+function formatChatProgressNode(node, job) {
+  const completed = node.status === "completed";
+  const rawOutput = completed ? String(node.output ?? job.output ?? "") : "";
+  const compactOutput = rawOutput ? compactChunkOutput(rawOutput) : "";
+  const outputChars = positiveNumberOrNull(node.output_chars) ?? (compactOutput ? compactOutput.length : null);
+  const estimatedOutputTokens =
+    positiveNumberOrNull(node.estimated_output_tokens) ?? estimateDisplayTokens(compactOutput);
+  const effectiveMaxTokens =
+    positiveNumberOrNull(node.effective_max_tokens) ??
+    positiveNumberOrNull(job.effective_max_tokens) ??
+    positiveNumberOrNull(job.max_tokens);
+
+  return {
+    id: node.id,
+    name: node.name,
+    status: node.status,
+    assigned_node_id: node.assigned_node_id ?? null,
+    latency_ms: positiveNumberOrNull(node.latency_ms),
+    queue_wait_ms: positiveNumberOrNull(node.queue_wait_ms),
+    runtime_ms: positiveNumberOrNull(node.runtime_ms),
+    output_chars: outputChars,
+    estimated_output_tokens: estimatedOutputTokens,
+    effective_max_tokens: effectiveMaxTokens,
+    output: compactOutput,
   };
 }
 
 function numberOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function positiveNumberOrNull(value) {
+  const number = numberOrNull(value);
+  return number && number > 0 ? number : null;
+}
+
+function estimateDisplayTokens(value) {
+  const text = String(value ?? "").trim();
+  if (!text) {
+    return null;
+  }
+  return Math.max(1, Math.ceil(text.length / 4));
 }
 
 function compactChunkOutput(value) {

@@ -520,6 +520,8 @@ test("uses parent status for single direct chat job progress", async () => {
   assert.equal(completed.progress.waiting, 0);
   assert.equal(completed.progress.nodes[0].status, "completed");
   assert.equal(completed.progress.nodes[0].output, "9");
+  assert.equal(completed.progress.nodes[0].output_chars, 1);
+  assert.equal(completed.progress.nodes[0].estimated_output_tokens, 1);
 });
 
 test("returns compact completed chunk outputs for decomposed jobs", async () => {
@@ -571,6 +573,50 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
   assert.equal(result.progress.nodes[0].effective_max_tokens, 256);
   assert.equal(result.progress.nodes[1].output, "");
   assert.equal(result.progress.nodes[2].output, "");
+});
+
+test("derives completed chunk metrics when the control plane reports zeros", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-zero-metrics",
+        status: "completed",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        max_tokens: 256,
+        graph: {
+          nodes: [
+            {
+              id: "job.direct_response",
+              name: "Direct response",
+              status: "completed",
+              assigned_node_id: "node-7c540437d8aa3fc6",
+              latency_ms: 0,
+              queue_wait_ms: 0,
+              output_chars: 0,
+              estimated_output_tokens: 0,
+              effective_max_tokens: 0,
+              output: "llama.cpp mode=cuda; response=Current president of the United States: Donald Trump.",
+            },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-zero-metrics",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  const node = result.progress.nodes[0];
+  assert.equal(node.assigned_node_id, "node-7c540437d8aa3fc6");
+  assert.equal(node.latency_ms, null);
+  assert.equal(node.queue_wait_ms, null);
+  assert.equal(node.output_chars, 53);
+  assert.equal(node.estimated_output_tokens, 14);
+  assert.equal(node.effective_max_tokens, 256);
+  assert.equal(node.output, "Current president of the United States: Donald Trump.");
 });
 
 test("cleans worker metadata and repeated role-prefixed output", () => {
