@@ -220,13 +220,14 @@ test("renders chunk plan progress for decomposed jobs", () => {
           completed_at: null,
           plan: {
             strategy: "sectioned_research",
-            summary: "Planned sectioned research units plus a final reducer.",
+            summary:
+              "Planned 3 sectioned research units. Sections are returned directly; final synthesis is optional.",
           },
           graph: {
             nodes: [
               { name: "Origins and founders", status: "completed", blocked_by: [] },
               { name: "Modern era", status: "running", blocked_by: [] },
-              { name: "Final synthesis", status: "waiting", blocked_by: ["job.modern_era"] },
+              { name: "Expansion and milestones", status: "waiting", blocked_by: ["job.modern_era"] },
             ],
           },
         },
@@ -239,7 +240,7 @@ test("renders chunk plan progress for decomposed jobs", () => {
 
   assert.match(html, /mode decompose/i);
   assert.match(html, /graph enabled/i);
-  assert.match(html, /1\/3 chunks complete/i);
+  assert.match(html, /1\/3 sections complete/i);
   assert.match(html, /Origins and founders/i);
   assert.match(html, /Modern era/i);
   assert.match(html, /Blocked by job\.modern_era/i);

@@ -766,12 +766,12 @@ export function page(config = configFromEnv()) {
       40% { opacity: 1; transform: translateY(-2px); }
     }
 
-    .source-chunks {
+    .source-sections {
       margin-top: 16px;
       border-top: 1px solid var(--line);
       padding-top: 12px;
     }
-    .source-chunks summary {
+    .source-sections summary {
       cursor: pointer;
       color: var(--muted-2);
       font-size: 12px;
@@ -1048,8 +1048,8 @@ export function page(config = configFromEnv()) {
       const output = stripEchoedPrompt(payload.output || "(empty response)", userPrompt);
       body.textContent = "";
       appendRichMessage(body, output);
-      if (payload.progress?.nodes?.some((chunk) => chunk.output)) {
-        body.appendChild(createSourceChunks(payload));
+      if (shouldShowSourceSections(payload)) {
+        body.appendChild(createSourceSections(payload));
       }
       const meta = document.createElement("div");
       meta.className = "meta";
@@ -1251,11 +1251,16 @@ export function page(config = configFromEnv()) {
       return wrapper;
     }
 
-    function createSourceChunks(payload) {
+    function shouldShowSourceSections(payload) {
+      return Boolean(payload.progress?.final_synthesis) &&
+        payload.progress?.nodes?.some((chunk) => chunk.output);
+    }
+
+    function createSourceSections(payload) {
       const details = document.createElement("details");
-      details.className = "source-chunks";
+      details.className = "source-sections";
       const summary = document.createElement("summary");
-      summary.textContent = "Source chunks";
+      summary.textContent = "Completed source sections";
       details.appendChild(summary);
       const list = document.createElement("div");
       list.className = "chunk-list";
@@ -1329,19 +1334,25 @@ export function page(config = configFromEnv()) {
 
     function formatProgressText(payload) {
       const progress = payload.progress || {};
-      if (payload.status === "completed") return "Final answer ready.";
+      if (payload.status === "completed") {
+        return progress.final_synthesis ? "Final answer ready." : "Sections ready.";
+      }
       if (progress.merging) return "Merging final synthesis...";
       if (progress.processing) return "Processing: " + progress.processing;
       if (progress.total) {
-        return "Queued " + progress.completed + "/" + progress.total + " chunks complete.";
+        return "Queued " + progress.completed + "/" + progress.total + " " + progressUnit(progress) + " complete.";
       }
       return "Queued with MundusX...";
     }
 
     function formatJobMeta(payload) {
       const progress = payload.progress || {};
-      const chunks = progress.total ? " / " + progress.completed + "/" + progress.total + " chunks" : "";
-      return "job " + payload.job_id + " / " + payload.status + " / mode " + payload.execution_mode + chunks;
+      const units = progress.total ? " / " + progress.completed + "/" + progress.total + " " + progressUnit(progress) : "";
+      return "job " + payload.job_id + " / " + payload.status + " / mode " + payload.execution_mode + units;
+    }
+
+    function progressUnit(progress) {
+      return progress.strategy === "sectioned_research" && !progress.final_synthesis ? "sections" : "chunks";
     }
 
     function sleep(ms) {
@@ -2274,18 +2285,19 @@ function summarizeChatProgress(job) {
   const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
   const parentStatus = String(job.status ?? "").toLowerCase();
   if (!nodes.length) {
-    return {
-      total: 0,
-      completed: 0,
+      return {
+        total: 0,
+        completed: 0,
       running: ["assigned", "running"].includes(parentStatus) ? 1 : 0,
       failed: 0,
       waiting: parentStatus === "queued" ? 1 : 0,
-      processing: ["assigned", "running"].includes(parentStatus)
-        ? `Direct response${job.assigned_node_id ? ` on ${job.assigned_node_id}` : ""}`
-        : null,
-      merging: false,
-      strategy: job.plan?.strategy ?? "single_job",
-    };
+        processing: ["assigned", "running"].includes(parentStatus)
+          ? `Direct response${job.assigned_node_id ? ` on ${job.assigned_node_id}` : ""}`
+          : null,
+        merging: false,
+        final_synthesis: false,
+        strategy: job.plan?.strategy ?? "single_job",
+      };
   }
 
   const graphExecutionEnabled = Boolean(job.graph_execution_enabled);
@@ -2306,22 +2318,23 @@ function summarizeChatProgress(job) {
   const waiting = effectiveNodes.filter((node) => node.status === "waiting" || node.status === "ready" || node.status === "queued").length;
   const activeNode =
     effectiveNodes.find((node) => node.id === job.active_graph_node_id) ?? runningNodes[0] ?? null;
-  const finalNodeId = graph.final_node_id ?? null;
+    const finalNodeId = graph.final_node_id ?? null;
   const merging =
     Boolean(activeNode) &&
     (activeNode.id === finalNodeId || String(activeNode.responsibility ?? "") === "merge");
 
-  return {
-    total: effectiveNodes.length,
-    completed,
-    running: runningNodes.length,
-    failed,
-    waiting,
-    processing: activeNode?.name ?? null,
-    merging,
-    strategy: job.plan?.strategy ?? graph.strategy ?? "graph",
-    nodes: effectiveNodes.map((node) => formatChatProgressNode(node, job)),
-  };
+    return {
+      total: effectiveNodes.length,
+      completed,
+      running: runningNodes.length,
+      failed,
+      waiting,
+      processing: activeNode?.name ?? null,
+      merging,
+      final_synthesis: Boolean(finalNodeId),
+      strategy: job.plan?.strategy ?? graph.strategy ?? "graph",
+      nodes: effectiveNodes.map((node) => formatChatProgressNode(node, job)),
+    };
 }
 
 function formatChatProgressNode(node, job) {
