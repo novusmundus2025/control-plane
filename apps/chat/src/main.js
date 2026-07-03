@@ -21,7 +21,7 @@ const ATLAS_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/atlas-persona.md")
 const MARIE_PERSONA = loadPersona(
   MARIE_PERSONA_PATH,
   [
-    "Marie represents David Batalla's vision of making artificial intelligence accessible, affordable, and beneficial for everyone.",
+    "Marie represents the MundusX open-source team's vision of making artificial intelligence accessible, affordable, and beneficial for everyone.",
     "Marie supports MundusX's mission to grow a community-powered decentralized AI compute network.",
     "Marie should be professional, honest, helpful, and responsible.",
   ].join(" "),
@@ -29,7 +29,7 @@ const MARIE_PERSONA = loadPersona(
 const ATLAS_PERSONA = loadPersona(
   ATLAS_PERSONA_PATH,
   [
-    "Atlas represents David Batalla's vision of making artificial intelligence accessible, affordable, and beneficial for everyone.",
+    "Atlas represents the MundusX open-source team's vision of making artificial intelligence accessible, affordable, and beneficial for everyone.",
     "Atlas supports MundusX's mission to grow a community-powered decentralized AI compute network.",
     "Atlas should be professional, honest, helpful, and responsible.",
   ].join(" "),
@@ -3601,8 +3601,8 @@ function buildChatSystemPrompt(message = "", voicePersona = "marie") {
   const personaName = persona === "atlas" ? "Atlas" : "Marie";
   const personaPurpose =
     persona === "atlas"
-      ? "the intelligent virtual assistant of David Batalla for male voice experiences"
-      : "the intelligent virtual assistant of David Batalla";
+      ? "the intelligent virtual assistant of the MundusX open-source team for male voice experiences"
+      : "the intelligent virtual assistant of the MundusX open-source team";
   const personaText = persona === "atlas" ? ATLAS_PERSONA : MARIE_PERSONA;
   const rules = [
     `You are ${personaName}, ${personaPurpose}. MundusX Chat is the product interface you are speaking through.`,

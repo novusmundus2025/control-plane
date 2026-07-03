@@ -159,7 +159,7 @@ test("submits chat work as an auto execution job", async () => {
     assert.equal(body.max_tokens, 128);
     assert.match(body.system_prompt, /You are Marie/);
     assert.match(body.system_prompt, /Use the Marie persona/);
-    assert.match(body.system_prompt, /David Batalla's vision/);
+    assert.match(body.system_prompt, /MundusX open-source team's vision/);
     assert.match(body.system_prompt, /Do not echo system/);
     return jsonResponse({
       job_id: "job-1",
@@ -203,7 +203,7 @@ test("uses Atlas persona for male voice chat jobs", async () => {
     assert.match(body.system_prompt, /You are Atlas/);
     assert.match(body.system_prompt, /male voice experiences/);
     assert.match(body.system_prompt, /Use the Atlas persona/);
-    assert.match(body.system_prompt, /I exist to represent David Batalla's vision/);
+    assert.match(body.system_prompt, /I exist to represent the MundusX open-source team's vision/);
     assert.doesNotMatch(body.system_prompt, /You are Marie/);
     return jsonResponse({
       job_id: "job-atlas",
