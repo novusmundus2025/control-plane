@@ -165,7 +165,7 @@ test("submits chat work as an auto execution job", async () => {
     assert.equal(body.execution_mode, "auto");
     assert.equal(body.preferred_backend, "auto");
     assert.equal(body.model, undefined);
-    assert.equal(body.max_tokens, 128);
+    assert.equal(body.max_tokens, 512);
     assert.match(body.system_prompt, /You are Atlas/);
     assert.match(body.system_prompt, /the MundusX assistant/);
     assert.match(body.system_prompt, /My name is \*\*Atlas\*\*/);
@@ -264,9 +264,21 @@ test("uses compact token budgets for direct chat prompts", async () => {
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     fetchImpl,
   );
+  await submitChatJob(
+    { message: "Explain why a CUDA node can claim a job and fail." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+  await submitChatJob(
+    { message: "Explain in detailed terms how contributor routing works." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
 
   assert.equal(calls[0].max_tokens, 48);
   assert.equal(calls[1].max_tokens, 128);
+  assert.equal(calls[2].max_tokens, 512);
+  assert.equal(calls[3].max_tokens, 1024);
 });
 
 test("uses larger token budgets for complete program prompts", async () => {
