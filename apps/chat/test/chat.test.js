@@ -159,6 +159,9 @@ test("submits chat work as an auto execution job", async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
     calls.push({ url, init });
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
     const body = JSON.parse(init.body);
     assert.equal(body.prompt, "Explain why a CUDA node can claim a job and fail.");
@@ -200,7 +203,8 @@ test("submits chat work as an auto execution job", async () => {
     fetchImpl,
   );
 
-  assert.equal(calls.length, 1);
+  const jobCalls = calls.filter((call) => call.url === "https://uat.mundusx.ai/v1/jobs");
+  assert.equal(jobCalls.length, 1);
   assert.equal(result.job_id, "job-1");
   assert.equal(result.execution_mode, "auto");
   assert.equal(result.progress.total, 2);
@@ -279,6 +283,116 @@ test("uses compact token budgets for direct chat prompts", async () => {
   assert.equal(calls[1].max_tokens, 128);
   assert.equal(calls[2].max_tokens, 512);
   assert.equal(calls[3].max_tokens, 1024);
+});
+
+test("adapts token budgets to stronger node model and GPU capacity", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({
+        items: [
+          {
+            node_id: "node-7b",
+            state: "ready",
+            reported_state: "ready",
+            backend: "cuda",
+            policy_allowed: true,
+            computed_policy_allowed: true,
+            on_battery: false,
+            available_memory_mb: 12000,
+            available_gpu_percent: 80,
+            worker_health: {
+              healthy: true,
+              runtime_ready: true,
+              model_name: "Qwen/Qwen2.5-7B-Instruct",
+              cuda_device_available: true,
+              notes: [],
+            },
+          },
+        ],
+      });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-adaptive",
+      job: {
+        job_id: "job-adaptive",
+        status: "queued",
+        execution_mode: "auto",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  await submitChatJob(
+    { message: "Explain why a CUDA node can claim a job and fail." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+  await submitChatJob(
+    { message: "Explain in detailed terms how contributor routing works." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].max_tokens, 1024);
+  assert.equal(calls[1].max_tokens, 2048);
+});
+
+test("keeps conservative token budgets for low capability nodes", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({
+        items: [
+          {
+            node_id: "node-small",
+            state: "ready",
+            reported_state: "ready",
+            backend: "cuda",
+            policy_allowed: true,
+            computed_policy_allowed: true,
+            on_battery: false,
+            available_memory_mb: 4096,
+            available_gpu_percent: 70,
+            worker_health: {
+              healthy: true,
+              runtime_ready: true,
+              model_name: "Qwen/Qwen2.5-1.5B-Instruct",
+              cuda_device_available: true,
+              notes: ["CUDA low-VRAM profile selected"],
+            },
+          },
+        ],
+      });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-small",
+      job: {
+        job_id: "job-small",
+        status: "queued",
+        execution_mode: "auto",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  await submitChatJob(
+    { message: "Explain why a CUDA node can claim a job and fail." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+  await submitChatJob(
+    { message: "Explain in detailed terms how contributor routing works." },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].max_tokens, 512);
+  assert.equal(calls[1].max_tokens, 1024);
 });
 
 test("uses larger token budgets for complete program prompts", async () => {
@@ -655,6 +769,9 @@ test("falls back to MundusX jobs when factual summary lookup misses", async () =
     if (url.includes("/page/summary/")) {
       return jsonResponse({ error: "not found" }, { status: 404 });
     }
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
     return jsonResponse({
       job_id: "job-fallback",
@@ -673,7 +790,7 @@ test("falls back to MundusX jobs when factual summary lookup misses", async () =
     fetchImpl,
   );
 
-  assert.equal(calls.length, 3);
+  assert.equal(calls.filter((call) => call.url === "https://uat.mundusx.ai/v1/jobs").length, 1);
   assert.equal(result.job_id, "job-fallback");
   assert.equal(result.status, "queued");
 });

@@ -2255,6 +2255,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   const model = String(body?.model ?? config.modelOverride ?? "").trim();
+  const capacityProfile = await fetchChatCapacityProfile(config, fetchImpl, model);
   const jobBody = {
     request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
     prompt: message,
@@ -2263,7 +2264,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     execution_mode: normalizeExecutionMode(body?.executionMode ?? "auto"),
     stream: false,
     system_prompt: buildChatSystemPrompt(message, body?.voicePersona),
-    max_tokens: inferMaxTokens(message, body?.maxTokens),
+    max_tokens: inferMaxTokens(message, body?.maxTokens, capacityProfile),
     temperature: typeof body?.temperature === "number" ? body.temperature : 0.2,
     top_p: typeof body?.topP === "number" ? body.topP : 0.9,
   };
@@ -2288,6 +2289,86 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   return formatChatJob(jobId, job, model || null);
+}
+
+async function fetchChatCapacityProfile(config, fetchImpl, requestedModel = "") {
+  try {
+    const payload = await controlPlaneFetch(fetchImpl, config, "/v1/nodes?page=1&page_size=25");
+    const nodes = Array.isArray(payload?.items) ? payload.items : Array.isArray(payload) ? payload : [];
+    return strongestCapacityProfile(nodes, requestedModel);
+  } catch {
+    return requestedModel ? capacityProfileFromModel(requestedModel, null) : null;
+  }
+}
+
+function strongestCapacityProfile(nodes, requestedModel = "") {
+  const profiles = nodes
+    .map((node) => capacityProfileFromNode(node, requestedModel))
+    .filter(Boolean);
+  if (!profiles.length) {
+    return requestedModel ? capacityProfileFromModel(requestedModel, null) : null;
+  }
+  return profiles.sort((left, right) => right.score - left.score)[0];
+}
+
+function capacityProfileFromNode(node, requestedModel = "") {
+  if (!node || node.policy_allowed === false || node.computed_policy_allowed === false || node.on_battery === true) {
+    return null;
+  }
+  const state = String(node.state ?? node.reported_state ?? "").toLowerCase();
+  const reportedState = String(node.reported_state ?? node.state ?? "").toLowerCase();
+  if (!["ready", "online", "idle"].includes(state) && !["ready", "online", "idle"].includes(reportedState)) {
+    return null;
+  }
+  const health = node.worker_health ?? {};
+  if (health.healthy === false || health.runtime_ready === false) {
+    return null;
+  }
+  const modelName = requestedModel || health.model_name || node.model || "";
+  const gpuAvailable = positiveInteger(node.available_gpu_percent, 0);
+  const memoryMb = positiveInteger(node.available_memory_mb, 0);
+  const cudaReady = health.cuda_device_available === true || String(node.backend ?? "").toLowerCase() === "cuda";
+  const lowVram = String(health.notes ?? "").toLowerCase().includes("low-vram");
+  const base = capacityProfileFromModel(modelName, { gpuAvailable, memoryMb, cudaReady, lowVram });
+  return {
+    ...base,
+    score: base.score + Math.min(20, Math.floor(gpuAvailable / 5)) + Math.min(20, Math.floor(memoryMb / 2048)),
+  };
+}
+
+function capacityProfileFromModel(modelName, node = null) {
+  const modelBillions = modelSizeBillions(modelName);
+  const gpuAvailable = node?.gpuAvailable ?? 0;
+  const memoryMb = node?.memoryMb ?? 0;
+  const cudaReady = node?.cudaReady ?? false;
+  const lowVram = node?.lowVram ?? false;
+  let tier = "small";
+  let score = modelBillions * 10;
+
+  if (!lowVram && cudaReady && modelBillions >= 14 && memoryMb >= 16000 && gpuAvailable >= 40) {
+    tier = "xlarge";
+    score += 80;
+  } else if (!lowVram && cudaReady && modelBillions >= 7 && memoryMb >= 8000 && gpuAvailable >= 35) {
+    tier = "large";
+    score += 60;
+  } else if (!lowVram && cudaReady && modelBillions >= 3 && memoryMb >= 6000 && gpuAvailable >= 30) {
+    tier = "medium";
+    score += 35;
+  } else if (!lowVram && modelBillions >= 7 && memoryMb >= 8000) {
+    tier = "medium";
+    score += 25;
+  }
+
+  return { tier, modelBillions, gpuAvailable, memoryMb, cudaReady, lowVram, score };
+}
+
+function modelSizeBillions(modelName) {
+  const lower = String(modelName ?? "").toLowerCase();
+  const matches = [...lower.matchAll(/(\d+(?:[._]\d+)?)\s*b\b/g)];
+  if (!matches.length) {
+    return 0;
+  }
+  return Math.max(...matches.map((match) => Number(match[1].replace("_", "."))).filter(Number.isFinite));
 }
 
 function isToolModeEnabled(body) {
@@ -3648,7 +3729,7 @@ function normalizeExecutionMode(value) {
   return "auto";
 }
 
-function inferMaxTokens(message, explicitValue) {
+function inferMaxTokens(message, explicitValue, capacityProfile = null) {
   const explicit = positiveInteger(explicitValue, 0);
   if (explicit > 0) {
     return explicit;
@@ -3656,7 +3737,7 @@ function inferMaxTokens(message, explicitValue) {
 
   const lower = message.toLowerCase();
   if (looksLikeCompleteProgramRequest(lower)) {
-    return 4096;
+    return adaptiveTokenBudget("code", 4096, capacityProfile);
   }
   if (
     containsAny(lower, [
@@ -3672,15 +3753,26 @@ function inferMaxTokens(message, explicitValue) {
     return 48;
   }
   if (containsAny(lower, ["detailed", "complete", "full", "comprehensive", "history of", "report"])) {
-    return 1024;
+    return adaptiveTokenBudget("detailed", 1024, capacityProfile);
   }
   if (message.length > 600) {
-    return 768;
+    return adaptiveTokenBudget("long", 768, capacityProfile);
   }
   if (message.length <= 40 && !containsAny(lower, ["explain", "why", "how", "what", "tell me", "describe"])) {
     return 128;
   }
-  return 512;
+  return adaptiveTokenBudget("normal", 512, capacityProfile);
+}
+
+function adaptiveTokenBudget(kind, fallback, capacityProfile) {
+  const tier = capacityProfile?.tier ?? "small";
+  const budgets = {
+    small: { normal: 512, long: 768, detailed: 1024, code: 4096 },
+    medium: { normal: 768, long: 1024, detailed: 1536, code: 4096 },
+    large: { normal: 1024, long: 1536, detailed: 2048, code: 4096 },
+    xlarge: { normal: 2048, long: 3072, detailed: 4096, code: 6144 },
+  };
+  return budgets[tier]?.[kind] ?? fallback;
 }
 
 function looksLikeCompleteProgramRequest(lower) {
