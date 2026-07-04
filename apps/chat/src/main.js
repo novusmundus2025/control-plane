@@ -3617,10 +3617,10 @@ function inferMaxTokens(message, explicitValue) {
   if (message.length > 600) {
     return 768;
   }
-  if (message.length <= 160) {
+  if (message.length <= 40 && !containsAny(lower, ["explain", "why", "how", "what", "tell me", "describe"])) {
     return 128;
   }
-  return 384;
+  return 512;
 }
 
 function looksLikeCompleteProgramRequest(lower) {
