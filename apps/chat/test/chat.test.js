@@ -543,6 +543,41 @@ test("routes simple polynomial derivatives to the math tool", async () => {
   assert.doesNotMatch(result.output, /Certainly|To solve|\\frac/i);
 });
 
+test("routes assistant identity prompts to deterministic persona answers", async () => {
+  const result = await submitChatJob(
+    { message: "Introduce yourself please" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("assistant identity prompts should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "mundusx-identity");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "assistant_identity");
+  assert.equal(result.assigned_node_id, "persona-tool");
+  assert.match(result.output, /^I'm Atlas, the MundusX assistant\./);
+  assert.match(result.output, /troubleshoot nodes and jobs/i);
+  assert.doesNotMatch(result.output, /I'm a new user|Can you tell me|valuable resource/i);
+});
+
+test("routes assistant mission prompts to deterministic persona answers", async () => {
+  const result = await submitChatJob(
+    { message: "what's your mission and vision?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("assistant mission prompts should not call the control plane");
+    },
+  );
+
+  assert.equal(result.model, "mundusx-identity");
+  assert.equal(result.tool, "assistant_identity");
+  assert.match(result.output, /^I'm Atlas, the MundusX assistant\./);
+  assert.match(result.output, /My mission is to help people understand/i);
+  assert.match(result.output, /My vision is simple/i);
+});
+
 test("routes MundusX benefits questions to grounded product knowledge", async () => {
   const result = await submitChatJob(
     { message: "What are the most important benefits of the MundusX decentralized AI compute network?" },

@@ -2338,6 +2338,11 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     return fetchWeatherJob(toolMessage, weatherLocation, config, fetchImpl);
   }
 
+  const identityTopic = extractAssistantIdentityTopic(toolMessage);
+  if (identityTopic) {
+    return fetchAssistantIdentityJob(toolMessage, identityTopic, body?.voicePersona);
+  }
+
   const mundusxKnowledgeTopic = extractMundusXKnowledgeTopic(toolMessage);
   if (mundusxKnowledgeTopic) {
     return fetchMundusXKnowledgeJob(toolMessage, mundusxKnowledgeTopic);
@@ -3099,6 +3104,66 @@ function fetchLinearEquationJob(message, equation) {
       processing: null,
       merging: false,
       strategy: "linear_equation_tool",
+    },
+  };
+}
+
+function extractAssistantIdentityTopic(message) {
+  const lower = String(message ?? "").toLowerCase().trim();
+  if (!lower) {
+    return null;
+  }
+  if (
+    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do you have a name|what(?:'s| is) your name)\b/i.test(lower)
+  ) {
+    return "identity";
+  }
+  if (/\b(?:your mission|your vision|mission and vision|what(?:'s| is) your purpose)\b/i.test(lower)) {
+    return "mission";
+  }
+  return null;
+}
+
+function fetchAssistantIdentityJob(message, topic, voicePersona = "atlas") {
+  const persona = resolveVoicePersona(voicePersona);
+  const personaName = persona === "marie" ? "Marie" : "Atlas";
+  const output = topic === "mission"
+    ? [
+        `I'm ${personaName}, the MundusX assistant.`,
+        "My mission is to help people understand, build with, and participate in MundusX: a community-powered decentralized AI compute network.",
+        "My vision is simple: make useful AI more accessible, affordable, and collaborative by connecting contributor machines into a shared compute ecosystem.",
+      ].join("\n")
+    : [
+        `I'm ${personaName}, the MundusX assistant.`,
+        "I help answer questions, explain MundusX, troubleshoot nodes and jobs, and support developers and contributors using the network.",
+        "MundusX is focused on community-powered decentralized AI compute, where available machines can help serve AI workloads.",
+      ].join("\n");
+
+  return {
+    job_id: `identity-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "mundusx-identity",
+    assigned_node_id: "persona-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "assistant_identity",
+    response: {
+      type: "assistant_identity",
+      topic,
+      persona: personaName,
+    },
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "assistant_identity_tool",
     },
   };
 }
