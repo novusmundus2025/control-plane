@@ -1464,11 +1464,14 @@ export function page(config = configFromEnv()) {
           voiceHardStopTimer = window.setTimeout(() => stopRecognition("timeout"), hardStopTimeoutMs);
         });
         recognition.addEventListener("result", (event) => {
-          let transcript = "";
+          const transcriptParts = [];
           for (let i = 0; i < event.results.length; i += 1) {
-            transcript += event.results[i][0]?.transcript ?? "";
+            const part = event.results[i][0]?.transcript ?? "";
+            if (part.trim()) {
+              transcriptParts.push(part.trim());
+            }
           }
-          promptEl.value = transcript.trim();
+          promptEl.value = transcriptParts.join(" ").replace(/\s+/g, " ").trim();
           voiceStatusEl.textContent = promptEl.value.trim() ? "Transcript ready" : "Listening";
           resetSilenceTimer();
         });
@@ -3305,6 +3308,9 @@ export function extractWeatherLocation(message) {
   if (!/\b(weather|forecast|temperature|temp)\b/.test(lower)) {
     return null;
   }
+  if (hasNonWeatherCompoundIntent(lower)) {
+    return null;
+  }
 
   const patterns = [
     /\b(?:weather|forecast|temperature|temp)\s+(?:in|for|at|of)\s+(.+)$/i,
@@ -3321,6 +3327,21 @@ export function extractWeatherLocation(message) {
   return null;
 }
 
+function hasNonWeatherCompoundIntent(lowerText) {
+  const hasConnector = /\b(?:and|also|then|after that|next)\b|[.;]/i.test(lowerText);
+  if (!hasConnector) {
+    return false;
+  }
+  const nonWeatherIntent =
+    /\b(?:introduce yourself|who are you|what'?s your name|do you have a name|your mission|your vision)\b/i.test(
+      lowerText,
+    ) ||
+    /\b(?:who is|who's|tell me who|tell me about|history of|translate|write|create|code|program|explain|summarize)\b/i.test(
+      lowerText,
+    );
+  return nonWeatherIntent;
+}
+
 function cleanWeatherLocation(value) {
   let location = String(value ?? "")
     .replace(/[?!.,]+$/g, "")
@@ -3328,6 +3349,9 @@ function cleanWeatherLocation(value) {
     .replace(/\s+/g, " ")
     .trim();
   location = location.replace(/^(?:the\s+)?weather\s+(?:in|for|at|of)\s+/i, "").trim();
+  location = location
+    .replace(/\s+\b(?:and|with)\s+(?:humidity|wind|forecast|temperature|temp|conditions|rain|snow|uv|air quality)\b.*$/i, "")
+    .trim();
   if (!location || location.length < 2 || location.length > 120) {
     return null;
   }

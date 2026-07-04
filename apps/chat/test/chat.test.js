@@ -40,6 +40,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /recognition\.continuous = true/);
   assert.match(html, /const silenceTimeoutMs = 4000/);
   assert.match(html, /const hardStopTimeoutMs = 60000/);
+  assert.match(html, /transcriptParts\.join\(" "\)/);
   assert.match(html, /No speech heard/);
   assert.match(html, /Voice limit reached/);
   assert.match(html, /Transcript ready/);
@@ -1081,6 +1082,13 @@ test("extracts only obvious weather locations", () => {
   assert.equal(extractWeatherLocation("weather in Warsaw please"), "Warsaw");
   assert.equal(extractWeatherLocation("temperature for New York right now"), "New York");
   assert.equal(extractWeatherLocation("Give me a history of Honda"), null);
+  assert.equal(
+    extractWeatherLocation(
+      "Hey Atlas kindly introduce yourself and let me know what is the weather today in Newfing Germany and then tell me who is David Battalia",
+    ),
+    null,
+  );
+  assert.equal(extractWeatherLocation("weather in Manila and humidity please"), "Manila");
 });
 
 test("extracts simple polynomial integrals", () => {
