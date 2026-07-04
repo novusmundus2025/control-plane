@@ -731,8 +731,8 @@ test("routes malformed voice who-is prompts to cautious factual fallback instead
   const fetchImpl = async (url) => {
     calls.push(url);
     if (url.includes("opensearch")) {
-      assert.match(url, /search=David%20Batalla/);
-      return jsonResponse(["David Batalla", [], [], []]);
+      assert.match(url, /search=David%20Battalia/);
+      return jsonResponse(["David Battalia", ["David Batalla"], [""], ["https://en.wikipedia.org/wiki/David_Batalla"]]);
     }
     if (url === "https://en.wikipedia.org/api/rest_v1/page/summary/David%20Batalla") {
       return jsonResponse({ title: "Not found" }, false, 404);
@@ -754,6 +754,10 @@ test("routes malformed voice who-is prompts to cautious factual fallback instead
   assert.match(result.output, /do not have enough verified public information/i);
   assert.doesNotMatch(result.output, /role in the MundusX project/i);
   assert.doesNotMatch(result.output, /co-founder/i);
+  assert.deepEqual(calls, [
+    "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=David%20Battalia",
+    "https://en.wikipedia.org/api/rest_v1/page/summary/David%20Batalla",
+  ]);
 });
 
 test("routes factual history questions to a grounded summary source", async () => {
@@ -1269,7 +1273,7 @@ test("extracts simple polynomial derivatives", () => {
 test("extracts only factual summary topics", () => {
   assert.equal(extractFactualSummaryTopic("Give me a detailed history of BMW from its origins to today."), "BMW");
   assert.equal(extractFactualSummaryTopic("Who is Ada Lovelace?"), "Ada Lovelace");
-  assert.equal(extractFactualSummaryTopic("Who i David Battalia"), "David Batalla");
+  assert.equal(extractFactualSummaryTopic("Who i David Battalia"), "David Battalia");
   assert.equal(extractFactualSummaryTopic("who is sara duterte from ph?"), "sara duterte");
   assert.equal(extractFactualSummaryTopic("Write code for BMW inventory"), null);
   assert.equal(extractFactualSummaryTopic("Explain why a CUDA node can claim a job and fail."), null);

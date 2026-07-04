@@ -2463,12 +2463,16 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
 
     const factualTopic = extractFactualSummaryTopic(toolMessage);
     if (factualTopic) {
-      const factualJob = await fetchFactualSummaryJob(toolMessage, factualTopic, config, fetchImpl);
+      const factualCandidate = await resolveWikipediaTitleCandidate(factualTopic, config, fetchImpl);
+      const factualJob = await fetchFactualSummaryJob(toolMessage, factualTopic, config, fetchImpl, {
+        titleCandidate: factualCandidate,
+      });
       if (factualJob) {
         return recordAssistantTurn(conversationId, config, fetchImpl, factualJob);
       }
       if (shouldUseCautiousFactualFallback(toolMessage, factualTopic)) {
-        return recordAssistantTurn(conversationId, config, fetchImpl, fetchCautiousFactualFallbackJob(toolMessage, factualTopic));
+        const fallbackTopic = factualCandidate?.title ?? factualTopic;
+        return recordAssistantTurn(conversationId, config, fetchImpl, fetchCautiousFactualFallbackJob(toolMessage, fallbackTopic));
       }
     }
   }
@@ -3238,11 +3242,15 @@ async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePerso
     }
 
     if (intent.type === "factual") {
-      const factualJob = await fetchFactualSummaryJob(message, intent.topic, config, fetchImpl);
-      const fallbackJob = factualJob ? null : fetchCautiousFactualFallbackJob(message, intent.topic);
+      const factualCandidate = await resolveWikipediaTitleCandidate(intent.topic, config, fetchImpl);
+      const factualJob = await fetchFactualSummaryJob(message, intent.topic, config, fetchImpl, {
+        titleCandidate: factualCandidate,
+      });
+      const fallbackTopic = factualCandidate?.title ?? intent.topic;
+      const fallbackJob = factualJob ? null : fetchCautiousFactualFallbackJob(message, fallbackTopic);
       sections.push({
         type: "factual_summary",
-        title: intent.topic,
+        title: factualJob?.response?.title ?? fallbackTopic,
         output: factualJob?.output ?? fallbackJob.output,
         response: factualJob?.response ?? fallbackJob.response,
       });
@@ -3848,7 +3856,6 @@ function cleanFactualTopic(value) {
     .replace(/\s+from\s+(?:the\s+)?.+$/i, "")
     .replace(/[?!.,]+$/g, "")
     .replace(/\s+/g, " ")
-    .replace(/\bBattalia\b/g, "Batalla")
     .trim();
   if (!topic || topic.length < 2 || topic.length > 100) {
     return null;
@@ -3958,13 +3965,13 @@ export function needsGrounding(message) {
   return score >= 2;
 }
 
-async function fetchFactualSummaryJob(message, topic, config, fetchImpl) {
+async function fetchFactualSummaryJob(message, topic, config, fetchImpl, options = {}) {
   try {
-    const output = await fetchFactualSummary(topic, config, fetchImpl);
+    const result = await fetchFactualSummaryResult(topic, config, fetchImpl, options.titleCandidate);
     return {
       job_id: `facts-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
       status: "completed",
-      output,
+      output: result.output,
       output_cleaned: false,
       error: null,
       model: "wikipedia-summary",
@@ -3972,6 +3979,11 @@ async function fetchFactualSummaryJob(message, topic, config, fetchImpl) {
       execution_mode: "tool",
       graph_execution_enabled: false,
       tool: "factual_summary",
+      response: {
+        type: "factual_summary",
+        title: result.title,
+        verified: true,
+      },
       progress: {
         total: 0,
         completed: 0,
@@ -4021,17 +4033,17 @@ function fetchCautiousFactualFallbackJob(message, topic) {
 
 function shouldUseCautiousFactualFallback(message, topic) {
   const lower = String(message ?? "").toLowerCase();
-  const normalizedTopic = String(topic ?? "").toLowerCase();
-  return (
-    /\b(?:who|what)\s+i\b/.test(lower) ||
-    /\bdavid\s+battalia\b/.test(lower) ||
-    /\bdavid\s+batalla\b/.test(normalizedTopic)
-  );
+  return /\b(?:who|what)\s+i\b/.test(lower);
 }
 
 async function fetchFactualSummary(topic, config, fetchImpl) {
-  const resolvedTitle = await resolveWikipediaTitle(topic, config, fetchImpl);
-  const lookupTitle = resolvedTitle ?? topic;
+  return (await fetchFactualSummaryResult(topic, config, fetchImpl)).output;
+}
+
+async function fetchFactualSummaryResult(topic, config, fetchImpl, titleCandidate = undefined) {
+  const candidate =
+    titleCandidate === undefined ? await resolveWikipediaTitleCandidate(topic, config, fetchImpl) : titleCandidate;
+  const lookupTitle = candidate?.title ?? topic;
   const url = `${config.factualSummaryBaseUrl}/${encodeURIComponent(lookupTitle)}`;
   const response = await fetchImpl(url, {
     headers: { Accept: "application/json", "User-Agent": "MundusX-Chat/0.1 factual-router" },
@@ -4046,10 +4058,18 @@ async function fetchFactualSummary(topic, config, fetchImpl) {
     throw httpError(502, `factual lookup returned no summary for ${topic}`);
   }
   const description = payload.description ? ` ${payload.description}.` : "";
-  return `${title}:${description} ${extract}`.replace(/\s+/g, " ").trim();
+  return {
+    output: `${title}:${description} ${extract}`.replace(/\s+/g, " ").trim(),
+    title,
+    candidate,
+  };
 }
 
 async function resolveWikipediaTitle(topic, config, fetchImpl) {
+  return (await resolveWikipediaTitleCandidate(topic, config, fetchImpl))?.title ?? null;
+}
+
+async function resolveWikipediaTitleCandidate(topic, config, fetchImpl) {
   try {
     const searchOrigin = new URL(config.factualSummaryBaseUrl).origin;
     const searchUrl = `${searchOrigin}/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=${encodeURIComponent(topic)}`;
@@ -4064,7 +4084,8 @@ async function resolveWikipediaTitle(topic, config, fetchImpl) {
     if (typeof bestMatch !== "string" || !bestMatch.trim()) {
       return null;
     }
-    return isPlausibleTitleMatch(topic, bestMatch) ? bestMatch.trim() : null;
+    const title = bestMatch.trim();
+    return isPlausibleTitleMatch(topic, title) ? { title } : null;
   } catch {
     return null;
   }
@@ -4087,9 +4108,54 @@ function isPlausibleTitleMatch(topic, resolvedTitle) {
   if (topicWords.length === 0) {
     return true;
   }
-  const titleWords = new Set(significantWords(resolvedTitle));
-  const overlap = topicWords.filter((word) => titleWords.has(word)).length;
-  return overlap > topicWords.length / 2;
+  const titleWords = significantWords(resolvedTitle);
+  if (titleWords.length === 0) {
+    return false;
+  }
+  const exactOverlap = topicWords.filter((word) => titleWords.includes(word)).length;
+  const fuzzyOverlap = topicWords.filter((word) => titleWords.some((titleWord) => areNearWords(word, titleWord))).length;
+  return exactOverlap > topicWords.length / 2 || (exactOverlap > 0 && fuzzyOverlap === topicWords.length);
+}
+
+function areNearWords(left, right) {
+  if (left === right) {
+    return true;
+  }
+  const maxLength = Math.max(left.length, right.length);
+  if (maxLength < 5) {
+    return false;
+  }
+  const allowedDistance = maxLength <= 7 ? 1 : 2;
+  return levenshteinDistance(left, right) <= allowedDistance;
+}
+
+function levenshteinDistance(left, right) {
+  const a = String(left ?? "");
+  const b = String(right ?? "");
+  if (a === b) {
+    return 0;
+  }
+  if (!a.length) {
+    return b.length;
+  }
+  if (!b.length) {
+    return a.length;
+  }
+  const previous = Array.from({ length: b.length + 1 }, (_, index) => index);
+  const current = new Array(b.length + 1);
+  for (let i = 1; i <= a.length; i += 1) {
+    current[0] = i;
+    for (let j = 1; j <= b.length; j += 1) {
+      const substitutionCost = a[i - 1] === b[j - 1] ? 0 : 1;
+      current[j] = Math.min(
+        previous[j] + 1,
+        current[j - 1] + 1,
+        previous[j - 1] + substitutionCost,
+      );
+    }
+    previous.splice(0, previous.length, ...current);
+  }
+  return previous[b.length];
 }
 
 async function fetchWebSearchSnippets(query, config, fetchImpl) {
