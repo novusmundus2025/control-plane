@@ -106,6 +106,10 @@ test("renders a usable chat page", () => {
   assert.match(html, /className = "history-main"/);
   assert.match(html, /className = "history-menu-button"/);
   assert.match(html, /function loadHistoryItem/);
+  assert.match(html, /let activeHistoryLoadToken = 0/);
+  assert.match(html, /const loadToken = \+\+activeHistoryLoadToken/);
+  assert.match(html, /loadToken !== activeHistoryLoadToken/);
+  assert.match(html, /activeHistoryLoadToken \+= 1/);
   assert.match(html, /function fetchConversationMessages/);
   assert.match(html, /function appendCachedConversationTurn/);
   assert.match(html, /function readCachedConversation/);
