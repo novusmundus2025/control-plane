@@ -1945,6 +1945,10 @@ export function page(config = configFromEnv()) {
         }
         return wrapper;
       }
+      if (response.type === "factual_summary") {
+        appendRichMessage(wrapper, response.text || response.summary || "");
+        return wrapper;
+      }
       appendRichMessage(wrapper, response.text || "");
       return wrapper;
     }
@@ -4328,6 +4332,7 @@ async function fetchFactualSummaryJob(message, topic, config, fetchImpl, options
       response: {
         type: "factual_summary",
         title: result.title,
+        text: result.output,
         verified: true,
       },
       progress: {
