@@ -5,6 +5,7 @@ import {
   buildHistoryContext,
   cleanChatOutput,
   configFromEnv,
+  deleteChatConversation,
   escapeHtml,
   extractCurrentOfficeQuery,
   extractFactualSummaryTopic,
@@ -97,9 +98,15 @@ test("renders a usable chat page", () => {
   assert.match(html, /\.header-actions \{\s*display: none;/);
   assert.match(html, /class="runtime-status-sentinel" id="runtime-status"/);
   assert.match(html, /\.history-title \{/);
-  assert.match(html, /row\.innerHTML = "<span class='history-title'><\/span><span class='history-time'><\/span>"/);
+  assert.match(html, /id="history-context-menu"/);
+  assert.match(html, /data-action="rename"/);
+  assert.match(html, /data-action="pin"/);
+  assert.match(html, /data-action="delete"/);
+  assert.match(html, /className = "history-main"/);
+  assert.match(html, /className = "history-menu-button"/);
   assert.match(html, /\.rail-list \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   assert.match(html, /\.history-item \{[\s\S]*?overflow: hidden;/);
+  assert.match(html, /\.history-context-menu \{/);
   assert.match(html, /\.history-time \{[\s\S]*?text-overflow: ellipsis;/);
   assert.match(html, /html \{[\s\S]*?overflow-x: hidden;/);
   assert.match(html, /\.messages \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
@@ -2117,4 +2124,33 @@ test("conversation-memory write failures never break pollChatJob's response", as
 
   assert.equal(result.status, "completed");
   assert.equal(result.output, "Done.");
+});
+
+test("deleteChatConversation proxies real conversation deletion to the control plane", async () => {
+  const calls = [];
+  const result = await deleteChatConversation(
+    "conv-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url, init) => {
+      calls.push({ url, init });
+      assert.equal(url, "https://uat.mundusx.ai/v1/conversations/conv-1");
+      assert.equal(init.method, "DELETE");
+      return jsonResponse({ conversation_id: "conv-1", deleted: true, persisted: true });
+    },
+  );
+
+  assert.deepEqual(result, { conversation_id: "conv-1", deleted: true, persisted: true });
+  assert.equal(calls.length, 1);
+});
+
+test("deleteChatConversation treats missing backend records as shallow local history", async () => {
+  const result = await deleteChatConversation(
+    "tool-only",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => jsonResponse({ error: "not found" }, false, 404),
+  );
+
+  assert.equal(result.conversation_id, "tool-only");
+  assert.equal(result.deleted, false);
+  assert.equal(result.persisted, false);
 });

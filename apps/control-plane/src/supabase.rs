@@ -1,6 +1,6 @@
 use crate::contracts::{
-    AgentRegistration, AppendChatMessageRequest, ChatMessageRecord, CreditsLedgerRecord,
-    Heartbeat, JobCompletion, JobEventRecord, JobRecord, NodeRecord,
+    AgentRegistration, AppendChatMessageRequest, ChatMessageRecord, CreditsLedgerRecord, Heartbeat,
+    JobCompletion, JobEventRecord, JobRecord, NodeRecord,
 };
 use crate::state::ControlPlaneState;
 use rustls::pki_types::ServerName;
@@ -329,10 +329,9 @@ impl SupabaseMirror {
         let record = match inserted.into_iter().next() {
             Some(record) => record,
             None => {
-                let job_id = payload
-                    .job_id
-                    .as_deref()
-                    .ok_or_else(|| "supabase did not return the inserted chat message".to_string())?;
+                let job_id = payload.job_id.as_deref().ok_or_else(|| {
+                    "supabase did not return the inserted chat message".to_string()
+                })?;
                 let conversation_id_escaped = escape_query_value(conversation_id);
                 let job_id_escaped = escape_query_value(job_id);
                 self.fetch_json::<Vec<ChatMessageRecord>>(&format!(
@@ -369,6 +368,16 @@ impl SupabaseMirror {
         let mut messages: Vec<ChatMessageRecord> = self.fetch_json(&path)?;
         messages.reverse();
         Ok(messages)
+    }
+
+    pub fn delete_chat_conversation(&self, conversation_id: &str) -> Result<(), String> {
+        let conversation_id = escape_query_value(conversation_id);
+        self.delete_path(&format!(
+            "chat_messages?conversation_id=eq.{conversation_id}"
+        ))?;
+        self.delete_path(&format!(
+            "chat_conversations?conversation_id=eq.{conversation_id}"
+        ))
     }
 
     fn job_payload(&self, job: &JobRecord) -> serde_json::Value {
@@ -542,6 +551,28 @@ impl SupabaseMirror {
 
         serde_json::from_slice(response.body.as_bytes())
             .map_err(|error| format!("failed to parse supabase response: {error}"))
+    }
+
+    fn delete_path(&self, path: &str) -> Result<(), String> {
+        let response = supabase_rest_request(
+            "DELETE",
+            &format!("{}/rest/v1/{}", self.base_url, path),
+            &self.api_key,
+            &[("Prefer", "return=minimal")],
+            None,
+        )?;
+
+        if response.is_success() {
+            Ok(())
+        } else if response.body.trim().is_empty() {
+            Err(format!("supabase delete failed: HTTP {}", response.status))
+        } else {
+            Err(format!(
+                "supabase delete failed: HTTP {}: {}",
+                response.status,
+                response.body.trim()
+            ))
+        }
     }
 
     fn fetch_job_events(&self) -> Result<Vec<JobEventRecord>, String> {

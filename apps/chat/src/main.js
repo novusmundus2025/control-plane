@@ -337,6 +337,89 @@ export function page(config = configFromEnv()) {
       background: transparent;
       transition: color var(--motion-fast), background var(--motion-fast);
     }
+    .history-main {
+      min-width: 0;
+      flex: 1 1 auto;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 8px;
+      text-align: left;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      padding: 0;
+      font: inherit;
+      cursor: pointer;
+    }
+    .history-menu-button {
+      flex: 0 0 auto;
+      width: 26px;
+      height: 26px;
+      display: grid;
+      place-items: center;
+      border: 1px solid transparent;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--muted-2);
+      cursor: pointer;
+      opacity: 0;
+    }
+    .history-item:hover .history-menu-button,
+    .history-menu-button:focus-visible,
+    .history-menu-button[aria-expanded="true"] {
+      opacity: 1;
+    }
+    .history-menu-button:hover,
+    .history-menu-button:focus-visible,
+    .history-menu-button[aria-expanded="true"] {
+      color: var(--text);
+      background: #fff;
+      border-color: var(--line);
+      outline: 0;
+    }
+    .history-context-menu {
+      position: fixed;
+      z-index: 20;
+      min-width: 152px;
+      display: none;
+      gap: 3px;
+      padding: 7px;
+      border-radius: 10px;
+      border: 1px solid rgba(17, 24, 39, 0.08);
+      background: #fff;
+      box-shadow: 0 18px 45px rgba(20, 25, 40, 0.18);
+    }
+    .history-context-menu.is-open {
+      display: grid;
+    }
+    .history-context-menu button {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      border: 0;
+      border-radius: 7px;
+      background: transparent;
+      color: var(--text);
+      padding: 8px 9px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .history-context-menu button:hover,
+    .history-context-menu button:focus-visible {
+      background: #f1f2f9;
+      outline: 0;
+    }
+    .history-context-menu .danger {
+      color: #dc2626;
+    }
+    .history-pin {
+      flex: 0 0 auto;
+      color: var(--purple);
+      font-size: 11px;
+    }
     .history-item:hover,
     .history-item:focus-visible {
       color: var(--text);
@@ -1213,6 +1296,11 @@ export function page(config = configFromEnv()) {
       </div>
       <button class="new-chat" id="new-chat" type="button"><span>+ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
+      <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
+        <button type="button" data-action="rename" role="menuitem">Rename</button>
+        <button type="button" data-action="pin" role="menuitem">Pin chat</button>
+        <button class="danger" type="button" data-action="delete" role="menuitem">Delete</button>
+      </div>
       <div class="rail-footer">
         <div class="network-line"><span><span class="network-dot"></span>MundusX Network</span><span id="network-card-state">Syncing</span></div>
         <div id="network-card-metrics">-- nodes - -- queued - routed</div>
@@ -1284,6 +1372,7 @@ export function page(config = configFromEnv()) {
     const statusEl = document.getElementById("runtime-status");
     const statusTextEl = document.getElementById("runtime-status-text");
     const historyListEl = document.getElementById("history-list");
+    const historyMenuEl = document.getElementById("history-context-menu");
     const newChatEl = document.getElementById("new-chat");
     const accountBarEl = document.getElementById("account-bar");
     const accountMenuEl = document.getElementById("account-menu");
@@ -1307,6 +1396,7 @@ export function page(config = configFromEnv()) {
     let speakReplies = localStorage.getItem("mundusx.chat.voice.speakReplies") === "true";
     let webSearchEnabled = localStorage.getItem("mundusx.chat.toolMode") === "true";
     let enterToSendEnabled = localStorage.getItem("mundusx.chat.enterToSend") !== "false";
+    let activeHistoryMenuId = null;
 
     renderHistory();
     hydrateNetwork();
@@ -1326,10 +1416,31 @@ export function page(config = configFromEnv()) {
       accountMenuEl.classList.remove("is-open");
       accountBarEl?.setAttribute("aria-expanded", "false");
     });
+    document.addEventListener("click", (event) => {
+      if (!historyMenuEl?.classList.contains("is-open")) return;
+      if (event.target.closest(".history-context-menu") || event.target.closest(".history-menu-button")) return;
+      closeHistoryMenu();
+    });
     document.addEventListener("keydown", (event) => {
       if (event.key !== "Escape") return;
       accountMenuEl?.classList.remove("is-open");
       accountBarEl?.setAttribute("aria-expanded", "false");
+      closeHistoryMenu();
+    });
+    historyMenuEl?.addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-action]");
+      if (!button || !activeHistoryMenuId) return;
+      const action = button.dataset.action;
+      const item = readHistory().find((entry) => entry.id === activeHistoryMenuId);
+      closeHistoryMenu();
+      if (!item) return;
+      if (action === "rename") {
+        renameHistoryItem(item);
+      } else if (action === "pin") {
+        togglePinnedHistoryItem(item);
+      } else if (action === "delete") {
+        await deleteHistoryItem(item);
+      }
     });
     webSearchToggleEl?.addEventListener("click", () => {
       webSearchEnabled = !webSearchEnabled;
@@ -1641,7 +1752,8 @@ export function page(config = configFromEnv()) {
       const message = promptEl.value.trim();
       if (!message) return;
 
-      saveHistory(message);
+      const conversationId = getConversationId();
+      saveHistory(message, conversationId);
       addMessage(message, "user");
       promptEl.value = "";
       sendEl.disabled = true;
@@ -1649,7 +1761,6 @@ export function page(config = configFromEnv()) {
       const pending = addMessage("Submitting to MundusX...", "assistant", "Queued");
 
       try {
-        const conversationId = getConversationId();
         const created = await fetch("/api/chat/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2207,12 +2318,18 @@ export function page(config = configFromEnv()) {
       }
     }
 
-    function saveHistory(message) {
+    function saveHistory(message, conversationId) {
       const items = readHistory();
       const now = Date.now();
       const next = [
-        { id: String(now), title: message.slice(0, 72), createdAt: now },
-        ...items.filter((item) => item.title !== message).slice(0, 29),
+        {
+          id: conversationId || String(now),
+          conversationId: conversationId || null,
+          title: message.slice(0, 72),
+          createdAt: now,
+          pinned: false,
+        },
+        ...items.filter((item) => item.conversationId !== conversationId && item.title !== message).slice(0, 49),
       ];
       localStorage.setItem(historyKey, JSON.stringify(next));
       renderHistory();
@@ -2257,23 +2374,116 @@ export function page(config = configFromEnv()) {
         heading.textContent = label;
         group.appendChild(heading);
         for (const item of groupItems) {
-          const row = document.createElement("button");
+          const row = document.createElement("div");
           row.className = "history-item";
-          row.type = "button";
-          row.innerHTML = "<span class='history-title'></span><span class='history-time'></span>";
-          row.children[0].textContent = item.title || "Untitled";
-          row.children[1].textContent = formatHistoryTime(item.createdAt);
-          row.addEventListener("click", () => {
+          row.dataset.historyId = item.id;
+          const main = document.createElement("button");
+          main.className = "history-main";
+          main.type = "button";
+          main.innerHTML = "<span class='history-title'></span><span class='history-time'></span>";
+          main.children[0].textContent = item.title || "Untitled";
+          main.children[1].textContent = item.pinned ? "Pinned" : formatHistoryTime(item.createdAt);
+          main.addEventListener("click", () => {
             promptEl.value = item.title || "";
             promptEl.focus();
           });
+          const menuButton = document.createElement("button");
+          menuButton.className = "history-menu-button";
+          menuButton.type = "button";
+          menuButton.setAttribute("aria-label", "Conversation actions");
+          menuButton.setAttribute("aria-haspopup", "menu");
+          menuButton.setAttribute("aria-expanded", "false");
+          menuButton.textContent = "...";
+          menuButton.addEventListener("click", (event) => {
+            event.stopPropagation();
+            openHistoryMenu(item, menuButton);
+          });
+          row.appendChild(main);
+          row.appendChild(menuButton);
           group.appendChild(row);
         }
         historyListEl.appendChild(group);
       }
     }
 
+    function writeHistory(items) {
+      localStorage.setItem(historyKey, JSON.stringify(items));
+      renderHistory();
+    }
+
+    function closeHistoryMenu() {
+      if (!historyMenuEl) return;
+      historyMenuEl.classList.remove("is-open");
+      activeHistoryMenuId = null;
+      document.querySelectorAll(".history-menu-button[aria-expanded='true']").forEach((button) => {
+        button.setAttribute("aria-expanded", "false");
+      });
+    }
+
+    function openHistoryMenu(item, anchor) {
+      if (!historyMenuEl) return;
+      activeHistoryMenuId = item.id;
+      document.querySelectorAll(".history-menu-button[aria-expanded='true']").forEach((button) => {
+        button.setAttribute("aria-expanded", "false");
+      });
+      anchor.setAttribute("aria-expanded", "true");
+      const pinButton = historyMenuEl.querySelector("[data-action='pin']");
+      if (pinButton) pinButton.textContent = item.pinned ? "Unpin chat" : "Pin chat";
+      const rect = anchor.getBoundingClientRect();
+      historyMenuEl.style.left = Math.min(rect.left, window.innerWidth - 170) + "px";
+      historyMenuEl.style.top = Math.min(rect.bottom + 6, window.innerHeight - 128) + "px";
+      historyMenuEl.classList.add("is-open");
+    }
+
+    function renameHistoryItem(item) {
+      const nextTitle = window.prompt("Rename chat", item.title || "");
+      if (nextTitle === null) return;
+      const title = nextTitle.trim().slice(0, 72);
+      if (!title) return;
+      const items = readHistory().map((entry) =>
+        entry.id === item.id ? { ...entry, title, updatedAt: Date.now() } : entry,
+      );
+      writeHistory(items);
+    }
+
+    function togglePinnedHistoryItem(item) {
+      const items = readHistory().map((entry) =>
+        entry.id === item.id ? { ...entry, pinned: !entry.pinned, updatedAt: Date.now() } : entry,
+      );
+      writeHistory(items);
+    }
+
+    async function deleteHistoryItem(item) {
+      const items = readHistory();
+      writeHistory(items.filter((entry) => entry.id !== item.id));
+      if (item.conversationId && item.conversationId === localStorage.getItem(conversationIdKey)) {
+        localStorage.setItem(conversationIdKey, crypto.randomUUID());
+      }
+      try {
+        const result = await deleteConversationRecord(item.conversationId);
+        if (!result.ok) {
+          throw new Error(result.error || "delete failed");
+        }
+      } catch (error) {
+        if (item.conversationId) {
+          writeHistory(items);
+          setStatus("error", "Delete failed");
+        }
+      }
+    }
+
+    async function deleteConversationRecord(conversationId) {
+      if (!conversationId) return { ok: true, shallow: true };
+      const response = await fetch("/api/conversations/" + encodeURIComponent(conversationId), { method: "DELETE" });
+      const payload = await response.json().catch(() => ({}));
+      if (response.ok || response.status === 404 || response.status === 503) {
+        return { ok: true, ...payload };
+      }
+      return { ok: false, error: payload.error || "delete failed" };
+    }
+
     function groupHistory(items) {
+      const pinned = [];
       const today = [];
       const yesterday = [];
       const older = [];
@@ -2281,11 +2491,13 @@ export function page(config = configFromEnv()) {
       startToday.setHours(0, 0, 0, 0);
       const startYesterday = startToday.getTime() - 86400000;
       for (const item of items) {
-        if (item.createdAt >= startToday.getTime()) today.push(item);
+        if (item.pinned) pinned.push(item);
+        else if (item.createdAt >= startToday.getTime()) today.push(item);
         else if (item.createdAt >= startYesterday) yesterday.push(item);
         else older.push(item);
       }
       return [
+        ["Pinned", pinned],
         ["Today", today],
         ["Yesterday", yesterday],
         ["Previous", older],
@@ -2345,6 +2557,11 @@ export function createServerApp(config = configFromEnv()) {
       }
       if (request.method === "GET" && url.pathname === "/api/network") {
         const result = await fetchNetworkSummary(config);
+        return sendJson(response, 200, result);
+      }
+      if (request.method === "DELETE" && url.pathname.startsWith("/api/conversations/")) {
+        const conversationId = decodeURIComponent(url.pathname.slice("/api/conversations/".length));
+        const result = await deleteChatConversation(conversationId, config, fetch);
         return sendJson(response, 200, result);
       }
       if (request.method === "POST" && url.pathname === "/api/chat") {
@@ -4945,6 +5162,28 @@ async function fetchConversationHistory(conversationId, config, fetchImpl, limit
     `/v1/conversations/${encodeURIComponent(conversationId)}/messages?limit=${limit}`,
   );
   return Array.isArray(result?.messages) ? result.messages : [];
+}
+
+export async function deleteChatConversation(conversationId, config = configFromEnv(), fetchImpl = fetch) {
+  const id = String(conversationId ?? "").trim();
+  if (!id || id.includes("/")) {
+    throw httpError(400, "conversation id is required");
+  }
+  try {
+    return await controlPlaneFetch(fetchImpl, config, `/v1/conversations/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    });
+  } catch (error) {
+    if ([404, 503].includes(error.statusCode)) {
+      return {
+        conversation_id: id,
+        deleted: false,
+        persisted: false,
+        reason: error.message || "conversation was not persisted",
+      };
+    }
+    throw error;
+  }
 }
 
 export async function fetchNetworkSummary(config = configFromEnv(), fetchImpl = fetch) {

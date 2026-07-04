@@ -3587,6 +3587,14 @@ fn parse_conversation_messages_path(path: &str) -> Option<&str> {
     Some(id)
 }
 
+fn parse_conversation_path(path: &str) -> Option<&str> {
+    let id = path.strip_prefix("/v1/conversations/")?;
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    Some(id)
+}
+
 fn query_usize(query: Option<&str>, key: &str) -> Option<usize> {
     query_param(query, key)?.parse::<usize>().ok()
 }
@@ -4020,6 +4028,9 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
     }
 
     if matches!(method, "GET" | "POST") && parse_conversation_messages_path(path).is_some() {
+        return true;
+    }
+    if method == "DELETE" && parse_conversation_path(path).is_some() {
         return true;
     }
 
@@ -4814,9 +4825,10 @@ fn handle_connection(
             match serde_json::from_str::<AppendChatMessageRequest>(&request.body) {
                 Ok(payload) => match supabase.as_ref() {
                     Some(db) => match db.append_chat_message(conversation_id, &payload) {
-                        Ok(record) => {
-                            json_response("201 Created", serde_json::to_value(record).expect("json"))
-                        }
+                        Ok(record) => json_response(
+                            "201 Created",
+                            serde_json::to_value(record).expect("json"),
+                        ),
                         Err(error) => {
                             eprintln!("failed to append chat message: {error}");
                             json_response("502 Bad Gateway", serde_json::json!({ "error": error }))
@@ -4857,6 +4869,34 @@ fn handle_connection(
                 None => json_response(
                     "200 OK",
                     serde_json::json!({ "conversation_id": conversation_id, "messages": [] }),
+                ),
+            }
+        }
+        ("DELETE", path) if parse_conversation_path(path).is_some() => {
+            let conversation_id = parse_conversation_path(path).expect("checked");
+            match supabase.as_ref() {
+                Some(db) => match db.delete_chat_conversation(conversation_id) {
+                    Ok(()) => json_response(
+                        "200 OK",
+                        serde_json::json!({
+                            "conversation_id": conversation_id,
+                            "deleted": true,
+                            "persisted": true
+                        }),
+                    ),
+                    Err(error) => {
+                        eprintln!("failed to delete chat conversation: {error}");
+                        json_response("502 Bad Gateway", serde_json::json!({ "error": error }))
+                    }
+                },
+                None => json_response(
+                    "200 OK",
+                    serde_json::json!({
+                        "conversation_id": conversation_id,
+                        "deleted": false,
+                        "persisted": false,
+                        "reason": "conversation storage is not configured"
+                    }),
                 ),
             }
         }
@@ -5189,7 +5229,8 @@ mod tests {
         auth_disabled_flag_enabled, control_plane_bind_addr_from_env, control_plane_home,
         control_plane_operator_page, deploy_fingerprint_from_env, handle_connection,
         job_async_payload, now_unix_seconds, operator_auth_mode_from_env,
-        operator_auth_startup_config_error, operator_auth_token_from_env, parse_request,
+        operator_auth_startup_config_error, operator_auth_token_from_env,
+        parse_conversation_messages_path, parse_conversation_path, parse_request,
         read_http_request, requires_operator_auth, status_snapshot_with_deploy_fingerprint,
         trust_grade, trust_grade_badge, HttpRequestReadError, OperatorAuthMode, OperatorPage,
         StorageSource, SupabaseSyncStatus, AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV,
@@ -6362,9 +6403,8 @@ mod tests {
         state.submit_job(
             JobRequest {
                 request_id: "job-graph-wait".to_string(),
-                prompt:
-                    "Design and implement a backend API plus frontend dashboard and add tests."
-                        .to_string(),
+                prompt: "Design and implement a backend API plus frontend dashboard and add tests."
+                    .to_string(),
                 preferred_backend: Backend::Auto,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
@@ -6412,9 +6452,8 @@ mod tests {
         state.submit_job(
             JobRequest {
                 request_id: "job-stale-ui".to_string(),
-                prompt:
-                    "Design and implement a backend API plus frontend dashboard and add tests."
-                        .to_string(),
+                prompt: "Design and implement a backend API plus frontend dashboard and add tests."
+                    .to_string(),
                 preferred_backend: Backend::Auto,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
@@ -6457,9 +6496,8 @@ mod tests {
         state.submit_job(
             JobRequest {
                 request_id: "job-reducer-warning".to_string(),
-                prompt:
-                    "Design and implement a backend API plus frontend dashboard and add tests."
-                        .to_string(),
+                prompt: "Design and implement a backend API plus frontend dashboard and add tests."
+                    .to_string(),
                 preferred_backend: Backend::Auto,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
@@ -6802,6 +6840,10 @@ mod tests {
             "GET",
             "/v1/conversations/abc-123/messages"
         ));
+        assert!(requires_operator_auth(
+            "DELETE",
+            "/v1/conversations/abc-123"
+        ));
     }
 
     #[test]
@@ -6820,6 +6862,20 @@ mod tests {
         );
         assert_eq!(
             parse_conversation_messages_path("/v1/conversations/abc-123"),
+            None
+        );
+    }
+
+    #[test]
+    fn parses_conversation_path() {
+        assert_eq!(
+            parse_conversation_path("/v1/conversations/abc-123"),
+            Some("abc-123")
+        );
+        assert_eq!(parse_conversation_path("/v1/conversations/abc/def"), None);
+        assert_eq!(parse_conversation_path("/v1/conversations/"), None);
+        assert_eq!(
+            parse_conversation_path("/v1/conversations/abc-123/messages"),
             None
         );
     }
