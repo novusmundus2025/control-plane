@@ -3693,7 +3693,7 @@ function extractAssistantIdentityTopic(message) {
     return null;
   }
   if (
-    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do you have a name|what(?:'s| is) your name)\b/i.test(lower)
+    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do you have a name|what(?:'s| is) your name|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you)\b/i.test(lower)
   ) {
     return "identity";
   }
@@ -3714,6 +3714,7 @@ function fetchAssistantIdentityJob(message, topic, voicePersona = "atlas") {
       ].join("\n")
     : [
         `I'm ${personaName}, the MundusX assistant.`,
+        "I was created by the MundusX open-source team to support the MundusX community.",
         "I help answer questions, explain MundusX, troubleshoot nodes and jobs, and support developers and contributors using the network.",
         "MundusX is focused on community-powered decentralized AI compute, where available machines can help serve AI workloads.",
       ].join("\n");
@@ -3863,7 +3864,7 @@ function isCompoundPromptForDirectTools(message) {
   }
   const intentChecks = [
     /\b(?:weather|forecast|temperature|temp)\b/i,
-    /\b(?:introduce yourself|who are you|what'?s your name|do you have a name|your mission|your vision)\b/i,
+    /\b(?:introduce yourself|who are you|what'?s your name|do you have a name|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i,
     /\b(?:who is|who's|tell me who|tell me about)\b/i,
     /\b(?:history of|translate|write|create|code|program|explain|summarize)\b/i,
     /\b(?:solve|derivative|integral|differentiate|compute|calculate)\b/i,
@@ -3934,7 +3935,7 @@ function extractCompoundFactualIntent(text) {
 
 function extractCompoundIdentityIntent(text) {
   const match = text.match(
-    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do you have a name|what(?:'s| is) your name|your mission|your vision|mission and vision)\b/i,
+    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do you have a name|what(?:'s| is) your name|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision|mission and vision)\b/i,
   );
   if (!match) {
     return null;
@@ -3953,7 +3954,7 @@ function hasNonWeatherCompoundIntent(lowerText) {
     return false;
   }
   const nonWeatherIntent =
-    /\b(?:introduce yourself|who are you|what'?s your name|do you have a name|your mission|your vision)\b/i.test(
+    /\b(?:introduce yourself|who are you|what'?s your name|do you have a name|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i.test(
       lowerText,
     ) ||
     /\b(?:who is|who's|tell me who|tell me about|history of|translate|write|create|code|program|explain|summarize)\b/i.test(

@@ -581,8 +581,27 @@ test("routes assistant identity prompts to deterministic persona answers", async
   assert.equal(result.tool, "assistant_identity");
   assert.equal(result.assigned_node_id, "persona-tool");
   assert.match(result.output, /^I'm Atlas, the MundusX assistant\./);
+  assert.match(result.output, /created by the MundusX open-source team/i);
   assert.match(result.output, /troubleshoot nodes and jobs/i);
   assert.doesNotMatch(result.output, /I'm a new user|Can you tell me|valuable resource/i);
+});
+
+test("routes assistant creator prompts to deterministic persona answers", async () => {
+  const result = await submitChatJob(
+    { message: "Who created you?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("assistant creator prompts should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "mundusx-identity");
+  assert.equal(result.tool, "assistant_identity");
+  assert.match(result.output, /^I'm Atlas, the MundusX assistant\./);
+  assert.match(result.output, /MundusX open-source team/i);
+  assert.doesNotMatch(result.output, /User's request|comprehensive explanation|provide a detailed/i);
+  assert.doesNotMatch(result.output, /David Batalla created me|created by David/i);
 });
 
 test("routes assistant mission prompts to deterministic persona answers", async () => {
@@ -730,6 +749,7 @@ test("answers compound weather person and identity prompts with direct tools", a
   assert.match(result.output, /do not have enough verified public information/i);
   assert.match(result.output, /## Atlas/);
   assert.match(result.output, /I'm Atlas, the MundusX assistant/);
+  assert.match(result.output, /MundusX open-source team/i);
   assert.equal(result.response.type, "compound_tool_result");
   assert.equal(result.response.sections.length, 3);
   assert.deepEqual(result.response.sections.map((section) => section.type), [
