@@ -1399,6 +1399,7 @@ export function page(config = configFromEnv()) {
     let enterToSendEnabled = localStorage.getItem("mundusx.chat.enterToSend") !== "false";
     let activeHistoryMenuId = null;
     let activeHistoryId = localStorage.getItem(conversationIdKey);
+    let activeHistoryLoadToken = 0;
 
     renderHistory();
     hydrateNetwork();
@@ -1740,6 +1741,7 @@ export function page(config = configFromEnv()) {
     }
 
     newChatEl?.addEventListener("click", () => {
+      activeHistoryLoadToken += 1;
       localStorage.setItem(conversationIdKey, crypto.randomUUID());
       activeHistoryId = localStorage.getItem(conversationIdKey);
       messagesEl.querySelectorAll(".message").forEach((node) => node.remove());
@@ -1755,6 +1757,7 @@ export function page(config = configFromEnv()) {
       const message = promptEl.value.trim();
       if (!message) return;
 
+      activeHistoryLoadToken += 1;
       const conversationId = getConversationId();
       saveHistory(message, conversationId);
       addMessage(message, "user");
@@ -2422,6 +2425,7 @@ export function page(config = configFromEnv()) {
     async function loadHistoryItem(item) {
       const conversationId = item.conversationId || item.id;
       if (!conversationId) return;
+      const loadToken = ++activeHistoryLoadToken;
       activeHistoryId = conversationId;
       localStorage.setItem(conversationIdKey, conversationId);
       renderHistory();
@@ -2435,12 +2439,15 @@ export function page(config = configFromEnv()) {
       } catch {
         turns = [];
       }
+      if (loadToken !== activeHistoryLoadToken || activeHistoryId !== conversationId) return;
       if (!turns.length) {
         turns = readCachedConversation(conversationId);
       }
+      if (loadToken !== activeHistoryLoadToken || activeHistoryId !== conversationId) return;
 
       if (turns.length) {
         for (const turn of turns) {
+          if (loadToken !== activeHistoryLoadToken || activeHistoryId !== conversationId) return;
           renderStoredTurn(turn);
         }
       } else {
