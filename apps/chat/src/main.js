@@ -1949,6 +1949,10 @@ export function page(config = configFromEnv()) {
         appendRichMessage(wrapper, response.text || response.summary || "");
         return wrapper;
       }
+      if (response.type === "assistant_identity") {
+        appendRichMessage(wrapper, response.text || "");
+        return wrapper;
+      }
       appendRichMessage(wrapper, response.text || "");
       return wrapper;
     }
@@ -3745,6 +3749,7 @@ function fetchAssistantIdentityJob(message, topic, voicePersona = "atlas") {
       type: "assistant_identity",
       topic,
       persona: personaName,
+      text: output,
     },
     progress: {
       total: 0,
