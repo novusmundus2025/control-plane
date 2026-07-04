@@ -4347,7 +4347,7 @@ async function fetchFactualSummaryJob(message, topic, config, fetchImpl, options
 }
 
 function fetchCautiousFactualFallbackJob(message, topic) {
-  const output = `I do not have enough verified public information about ${topic} to answer reliably. I should not guess, invent a biography, or claim a role in MundusX without a verified source.`;
+  const output = `I do not have enough verified public information about ${topic} to answer reliably. I should not guess or invent a biography without a verified source.`;
   return {
     job_id: `facts-miss-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
     status: "completed",
