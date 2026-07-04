@@ -773,6 +773,41 @@ pub struct CreditsLedgerRecord {
     pub created_at: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatMessageRecord {
+    #[serde(default)]
+    pub id: Option<u64>,
+    pub conversation_id: String,
+    pub role: String,
+    pub content: String,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+    #[serde(default)]
+    pub created_at: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AppendChatMessageRequest {
+    pub role: String,
+    pub content: String,
+    #[serde(default)]
+    pub job_id: Option<String>,
+    #[serde(default)]
+    pub tool: Option<String>,
+    #[serde(default)]
+    pub metadata: Option<serde_json::Value>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ChatMessagesResponse {
+    pub conversation_id: String,
+    pub messages: Vec<ChatMessageRecord>,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NodePolicyOverrideTarget {
@@ -931,6 +966,37 @@ mod tests {
 
         assert_eq!(request.runtime_mode, RuntimeMode::Local);
         assert!(!request.stream);
+    }
+
+    #[test]
+    fn append_chat_message_request_defaults_optional_fields() {
+        let request: AppendChatMessageRequest = serde_json::from_value(serde_json::json!({
+            "role": "user",
+            "content": "hello"
+        }))
+        .expect("minimal chat message request");
+
+        assert_eq!(request.role, "user");
+        assert_eq!(request.content, "hello");
+        assert_eq!(request.job_id, None);
+        assert_eq!(request.tool, None);
+        assert_eq!(request.metadata, None);
+    }
+
+    #[test]
+    fn append_chat_message_request_accepts_optional_fields() {
+        let request: AppendChatMessageRequest = serde_json::from_value(serde_json::json!({
+            "role": "assistant",
+            "content": "hi there",
+            "job_id": "job-1",
+            "tool": "web_search",
+            "metadata": {"sources": []}
+        }))
+        .expect("full chat message request");
+
+        assert_eq!(request.job_id, Some("job-1".to_string()));
+        assert_eq!(request.tool, Some("web_search".to_string()));
+        assert_eq!(request.metadata, Some(serde_json::json!({"sources": []})));
     }
 
     #[test]

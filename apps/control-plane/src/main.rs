@@ -4,11 +4,12 @@ mod state;
 mod supabase;
 
 use contracts::{
-    is_trusted_identity_path, trust_path_label, AgentRegistration, ChatCompletionChoice,
-    ChatCompletionChoiceMessage, ChatCompletionMundusX, ChatCompletionRequest,
-    ChatCompletionResponse, CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode,
-    JobGraphNodeStatus, JobRecord, JobRequest, JobStatus, NodePolicyOverrideInput, NodeRecord,
-    OperatorContributionPercentUpdate, OperatorNodePolicyOverrideUpdate, RuntimeMode,
+    is_trusted_identity_path, trust_path_label, AgentRegistration, AppendChatMessageRequest,
+    ChatCompletionChoice, ChatCompletionChoiceMessage, ChatCompletionMundusX,
+    ChatCompletionRequest, ChatCompletionResponse, ChatMessagesResponse, CreditsLedgerRecord,
+    Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord, JobRequest,
+    JobStatus, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
+    OperatorNodePolicyOverrideUpdate, RuntimeMode,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::apply_migrations;
@@ -3548,6 +3549,15 @@ fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
     None
 }
 
+fn parse_conversation_messages_path(path: &str) -> Option<&str> {
+    let rest = path.strip_prefix("/v1/conversations/")?;
+    let id = rest.strip_suffix("/messages")?;
+    if id.is_empty() || id.contains('/') {
+        return None;
+    }
+    Some(id)
+}
+
 fn query_usize(query: Option<&str>, key: &str) -> Option<usize> {
     query_param(query, key)?.parse::<usize>().ok()
 }
@@ -3977,6 +3987,10 @@ fn requires_device_signature(method: &str, path: &str) -> bool {
 
 fn requires_operator_auth(method: &str, path: &str) -> bool {
     if method == "GET" && path.starts_with("/v1/jobs/") {
+        return true;
+    }
+
+    if matches!(method, "GET" | "POST") && parse_conversation_messages_path(path).is_some() {
         return true;
     }
 
@@ -4766,6 +4780,57 @@ fn handle_connection(
                 serde_json::json!({ "error": error.to_string() }),
             ),
         },
+        ("POST", path) if parse_conversation_messages_path(path).is_some() => {
+            let conversation_id = parse_conversation_messages_path(path).expect("checked");
+            match serde_json::from_str::<AppendChatMessageRequest>(&request.body) {
+                Ok(payload) => match supabase.as_ref() {
+                    Some(db) => match db.append_chat_message(conversation_id, &payload) {
+                        Ok(record) => {
+                            json_response("201 Created", serde_json::to_value(record).expect("json"))
+                        }
+                        Err(error) => {
+                            eprintln!("failed to append chat message: {error}");
+                            json_response("502 Bad Gateway", serde_json::json!({ "error": error }))
+                        }
+                    },
+                    None => json_response(
+                        "503 Service Unavailable",
+                        serde_json::json!({ "error": "conversation storage is not configured" }),
+                    ),
+                },
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+            }
+        }
+        ("GET", path) if parse_conversation_messages_path(path).is_some() => {
+            let conversation_id = parse_conversation_messages_path(path).expect("checked");
+            let limit = query_param(query, "limit")
+                .and_then(|value| value.parse::<u32>().ok())
+                .unwrap_or(20)
+                .clamp(1, 200);
+            match supabase.as_ref() {
+                Some(db) => match db.fetch_chat_messages(conversation_id, limit) {
+                    Ok(messages) => json_response(
+                        "200 OK",
+                        serde_json::to_value(ChatMessagesResponse {
+                            conversation_id: conversation_id.to_string(),
+                            messages,
+                        })
+                        .expect("json"),
+                    ),
+                    Err(error) => {
+                        eprintln!("failed to fetch chat messages: {error}");
+                        json_response("502 Bad Gateway", serde_json::json!({ "error": error }))
+                    }
+                },
+                None => json_response(
+                    "200 OK",
+                    serde_json::json!({ "conversation_id": conversation_id, "messages": [] }),
+                ),
+            }
+        }
         ("POST", "/v1/chat/completions") => {
             match serde_json::from_str::<ChatCompletionRequest>(&request.body) {
                 Ok(request_body) => {
@@ -6572,6 +6637,38 @@ mod tests {
     #[test]
     fn protects_single_job_status_route() {
         assert!(requires_operator_auth("GET", "/v1/jobs/job-1"));
+    }
+
+    #[test]
+    fn protects_conversation_messages_routes() {
+        assert!(requires_operator_auth(
+            "POST",
+            "/v1/conversations/abc-123/messages"
+        ));
+        assert!(requires_operator_auth(
+            "GET",
+            "/v1/conversations/abc-123/messages"
+        ));
+    }
+
+    #[test]
+    fn parses_conversation_messages_path() {
+        assert_eq!(
+            parse_conversation_messages_path("/v1/conversations/abc-123/messages"),
+            Some("abc-123")
+        );
+        assert_eq!(
+            parse_conversation_messages_path("/v1/conversations/abc/def/messages"),
+            None
+        );
+        assert_eq!(
+            parse_conversation_messages_path("/v1/conversations//messages"),
+            None
+        );
+        assert_eq!(
+            parse_conversation_messages_path("/v1/conversations/abc-123"),
+            None
+        );
     }
 
     #[test]

@@ -444,7 +444,7 @@ export function page(config = configFromEnv()) {
       width: 30px;
       height: 30px;
       border-radius: 50%;
-      background: #b8462c;
+      background: var(--gradient);
       color: #fff;
       display: grid;
       place-items: center;
@@ -1295,6 +1295,7 @@ export function page(config = configFromEnv()) {
     const voiceSpeakEl = document.getElementById("voice-speak");
     const voiceStatusEl = document.getElementById("voice-status");
     const historyKey = "mundusx.chat.history.v1";
+    const conversationIdKey = "mundusx.chat.conversationId.v1";
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let isListening = false;
@@ -1572,6 +1573,7 @@ export function page(config = configFromEnv()) {
     }
 
     newChatEl?.addEventListener("click", () => {
+      localStorage.setItem(conversationIdKey, crypto.randomUUID());
       messagesEl.querySelectorAll(".message").forEach((node) => node.remove());
       if (!document.getElementById("welcome")) {
         messagesEl.prepend(createWelcome());
@@ -1593,10 +1595,11 @@ export function page(config = configFromEnv()) {
       const pending = addMessage("Submitting to MundusX...", "assistant", "Queued");
 
       try {
+        const conversationId = getConversationId();
         const created = await fetch("/api/chat/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona(), toolMode: webSearchEnabled }),
+          body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona(), toolMode: webSearchEnabled, conversationId }),
         });
         const submitted = await created.json();
         if (!created.ok) {
@@ -1607,7 +1610,9 @@ export function page(config = configFromEnv()) {
         let payload = submitted;
         while (!["completed", "failed"].includes(payload.status)) {
           await sleep(1500);
-          const polled = await fetch("/api/chat/jobs/" + encodeURIComponent(submitted.job_id));
+          const polled = await fetch(
+            "/api/chat/jobs/" + encodeURIComponent(submitted.job_id) + "?conversationId=" + encodeURIComponent(conversationId),
+          );
           payload = await polled.json();
           if (!polled.ok) {
             throw new Error(payload.error || "chat poll failed");
@@ -2168,6 +2173,15 @@ export function page(config = configFromEnv()) {
       }
     }
 
+    function getConversationId() {
+      let id = localStorage.getItem(conversationIdKey);
+      if (!id) {
+        id = crypto.randomUUID();
+        localStorage.setItem(conversationIdKey, id);
+      }
+      return id;
+    }
+
     function renderHistory() {
       const items = readHistory();
       historyListEl.innerHTML = "";
@@ -2291,7 +2305,8 @@ export function createServerApp(config = configFromEnv()) {
       }
       if (request.method === "GET" && url.pathname.startsWith("/api/chat/jobs/")) {
         const jobId = decodeURIComponent(url.pathname.slice("/api/chat/jobs/".length));
-        const result = await pollChatJob(jobId, config);
+        const conversationId = url.searchParams.get("conversationId") || null;
+        const result = await pollChatJob(jobId, config, fetch, { conversationId });
         return sendJson(response, 200, result);
       }
       return sendJson(response, 404, { error: "not found" });
@@ -2315,34 +2330,56 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   if (!message) {
     throw httpError(400, "message is required");
   }
+  const conversationId = String(body?.conversationId ?? "").trim() || null;
+  if (conversationId) {
+    await appendConversationMessage(conversationId, "user", message, config, fetchImpl).catch((error) => {
+      console.warn(`[conversation] failed to persist user message: ${error.message}`);
+    });
+  }
+
   const toolMode = isToolModeEnabled(body);
   const toolMessage = stripToolModePrefix(message);
 
   const linearEquation = extractLinearEquation(toolMessage);
   if (linearEquation) {
-    return fetchLinearEquationJob(toolMessage, linearEquation);
+    return recordAssistantTurn(conversationId, config, fetchImpl, fetchLinearEquationJob(toolMessage, linearEquation));
   }
 
   const polynomialDerivative = extractPolynomialDerivative(toolMessage);
   if (polynomialDerivative) {
-    return fetchPolynomialDerivativeJob(toolMessage, polynomialDerivative);
+    return recordAssistantTurn(
+      conversationId,
+      config,
+      fetchImpl,
+      fetchPolynomialDerivativeJob(toolMessage, polynomialDerivative),
+    );
   }
 
   const polynomialIntegral = extractPolynomialIntegral(toolMessage);
   if (polynomialIntegral) {
-    return fetchPolynomialIntegralJob(toolMessage, polynomialIntegral);
+    return recordAssistantTurn(
+      conversationId,
+      config,
+      fetchImpl,
+      fetchPolynomialIntegralJob(toolMessage, polynomialIntegral),
+    );
   }
 
   const weatherLocation = extractWeatherLocation(toolMessage);
   if (weatherLocation) {
-    return fetchWeatherJob(toolMessage, weatherLocation, config, fetchImpl);
+    return recordAssistantTurn(
+      conversationId,
+      config,
+      fetchImpl,
+      await fetchWeatherJob(toolMessage, weatherLocation, config, fetchImpl),
+    );
   }
 
   const currentOfficeQuery = extractCurrentOfficeQuery(toolMessage);
   if (currentOfficeQuery) {
     const currentOfficeJob = await fetchCurrentOfficeJob(toolMessage, currentOfficeQuery, config, fetchImpl);
     if (currentOfficeJob) {
-      return currentOfficeJob;
+      return recordAssistantTurn(conversationId, config, fetchImpl, currentOfficeJob);
     }
   }
 
@@ -2350,7 +2387,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   if (factualTopic) {
     const factualJob = await fetchFactualSummaryJob(toolMessage, factualTopic, config, fetchImpl);
     if (factualJob) {
-      return factualJob;
+      return recordAssistantTurn(conversationId, config, fetchImpl, factualJob);
     }
   }
 
@@ -2361,15 +2398,28 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
       voicePersona: body?.voicePersona,
     });
     if (webSearchJob) {
-      return webSearchJob;
+      return recordAssistantTurn(conversationId, config, fetchImpl, webSearchJob);
     }
 
     const generalTopic = extractGeneralLookupTopic(toolMessage);
     if (generalTopic) {
       const generalJob = await fetchFactualSummaryJob(toolMessage, generalTopic, config, fetchImpl);
       if (generalJob) {
-        return generalJob;
+        return recordAssistantTurn(conversationId, config, fetchImpl, generalJob);
       }
+    }
+  }
+
+  let systemPrompt = buildChatSystemPrompt(message, body?.voicePersona);
+  if (conversationId) {
+    try {
+      const history = await fetchConversationHistory(conversationId, config, fetchImpl, 16);
+      const context = buildHistoryContext(history);
+      if (context) {
+        systemPrompt = `${systemPrompt}\n\nPrior conversation (most recent last):\n${context}`;
+      }
+    } catch (error) {
+      console.warn(`[conversation] failed to load history: ${error.message}`);
     }
   }
 
@@ -2383,6 +2433,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     temperature: body?.temperature,
     topP: body?.topP,
     capacityProfile,
+    systemPrompt,
   });
 
   const jobResponse = await controlPlaneFetch(
@@ -2402,6 +2453,19 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   return formatChatJob(jobId, job, jobBody.model || null);
+}
+
+async function recordAssistantTurn(conversationId, config, fetchImpl, result) {
+  if (conversationId && result?.status === "completed") {
+    const isRealJobId = typeof result.job_id === "string" && !/^(math|weather|facts)-/.test(result.job_id);
+    await appendConversationMessage(conversationId, "assistant", result.output, config, fetchImpl, {
+      jobId: isRealJobId ? result.job_id : null,
+      tool: result.tool ?? null,
+    }).catch((error) => {
+      console.warn(`[conversation] failed to persist assistant message: ${error.message}`);
+    });
+  }
+  return result;
 }
 
 function buildGenericJobBody(message, config, options = {}) {
@@ -3861,13 +3925,21 @@ function hashText(value) {
   return (hash >>> 0).toString(16);
 }
 
-export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = fetch) {
+export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = fetch, options = {}) {
   if (!jobId) {
     throw httpError(400, "job id is required");
   }
+  const conversationId = options.conversationId ?? null;
   const latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
   const job = latest.job ?? latest;
   const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null);
+  if (formatted.status === "completed" && conversationId) {
+    await appendConversationMessage(conversationId, "assistant", formatted.output, config, fetchImpl, {
+      jobId,
+    }).catch((error) => {
+      console.warn(`[conversation] failed to persist assistant message: ${error.message}`);
+    });
+  }
   if (formatted.status !== "completed") {
     return formatted;
   }
@@ -3896,10 +3968,11 @@ function logGroundingCitationCheck(jobId, output, sources) {
 
 async function waitForChatJob(jobId, body, config, fetchImpl) {
   const timeoutSeconds = positiveInteger(body?.timeoutSeconds, config.defaultTimeoutSeconds);
+  const conversationId = String(body?.conversationId ?? "").trim() || null;
   const deadline = Date.now() + timeoutSeconds * 1000;
   let latest = null;
   while (Date.now() <= deadline) {
-    latest = await pollChatJob(jobId, config, fetchImpl);
+    latest = await pollChatJob(jobId, config, fetchImpl, { conversationId });
     if (latest.status === "completed") {
       return latest;
     }
@@ -4229,6 +4302,26 @@ function resolveVoicePersona(value) {
   return String(value || "").trim().toLowerCase() === "marie" ? "marie" : "atlas";
 }
 
+export function buildHistoryContext(messages, maxChars = 3000, maxTurns = 8) {
+  if (!Array.isArray(messages) || !messages.length) {
+    return "";
+  }
+  const trimmed = messages.slice(-maxTurns * 2);
+  const lines = [];
+  let used = 0;
+  for (let i = trimmed.length - 1; i >= 0; i--) {
+    const entry = trimmed[i];
+    const label = entry?.role === "assistant" ? "Assistant" : "User";
+    const line = `${label}: ${String(entry?.content ?? "").trim()}`;
+    if (used + line.length > maxChars) {
+      break;
+    }
+    lines.unshift(line);
+    used += line.length;
+  }
+  return lines.join("\n");
+}
+
 function loadPersona(path, fallback) {
   try {
     return readFileSync(path, "utf8").trim();
@@ -4255,6 +4348,33 @@ async function controlPlaneFetch(fetchImpl, config, path, init = {}) {
     throw httpError(response.status, payload.error || `control plane returned ${response.status}`);
   }
   return payload;
+}
+
+async function appendConversationMessage(conversationId, role, content, config, fetchImpl, extra = {}) {
+  if (!conversationId || !content) {
+    return null;
+  }
+  return controlPlaneFetch(
+    fetchImpl,
+    config,
+    `/v1/conversations/${encodeURIComponent(conversationId)}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify({ role, content, ...extra }),
+    },
+  );
+}
+
+async function fetchConversationHistory(conversationId, config, fetchImpl, limit = 16) {
+  if (!conversationId) {
+    return [];
+  }
+  const result = await controlPlaneFetch(
+    fetchImpl,
+    config,
+    `/v1/conversations/${encodeURIComponent(conversationId)}/messages?limit=${limit}`,
+  );
+  return Array.isArray(result?.messages) ? result.messages : [];
 }
 
 export async function fetchNetworkSummary(config = configFromEnv(), fetchImpl = fetch) {

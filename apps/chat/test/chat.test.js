@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import {
+  buildHistoryContext,
   cleanChatOutput,
   configFromEnv,
   escapeHtml,
@@ -1557,4 +1558,370 @@ test("returns a user-facing fallback for empty cleaned responses", () => {
     cleanChatOutput("llama.cpp mode=cuda; response=system:"),
     "MundusX returned an empty response. Please try again.",
   );
+});
+
+test("buildHistoryContext returns empty string for no history", () => {
+  assert.equal(buildHistoryContext([]), "");
+  assert.equal(buildHistoryContext(undefined), "");
+});
+
+test("buildHistoryContext caps by turn count and keeps the most recent", () => {
+  const messages = Array.from({ length: 20 }, (_, index) => ({
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `turn-${index}`,
+  }));
+
+  const context = buildHistoryContext(messages, 10_000, 8);
+  const lines = context.split("\n");
+
+  assert.equal(lines.length, 16);
+  assert.equal(lines[0], "User: turn-4");
+  assert.equal(lines[lines.length - 1], "Assistant: turn-19");
+});
+
+test("buildHistoryContext caps by character budget and keeps the most recent", () => {
+  const messages = [
+    { role: "user", content: "a".repeat(100) },
+    { role: "assistant", content: "b".repeat(100) },
+    { role: "user", content: "c".repeat(100) },
+  ];
+
+  const context = buildHistoryContext(messages, 150, 8);
+  const lines = context.split("\n");
+
+  assert.equal(lines.length, 1);
+  assert.equal(lines[0], `User: ${"c".repeat(100)}`);
+});
+
+test("buildHistoryContext formats turns chronologically with role labels", () => {
+  const context = buildHistoryContext([
+    { role: "user", content: "hello" },
+    { role: "assistant", content: "hi there" },
+  ]);
+
+  assert.equal(context, "User: hello\nAssistant: hi there");
+});
+
+test("submitChatJob persists the user turn when a conversationId is provided", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
+    if (url.includes("/v1/conversations/")) {
+      return jsonResponse({ id: 1, conversation_id: "conv-1", role: "user", content: "hello" }, true, 201);
+    }
+    return jsonResponse({
+      job_id: "job-1",
+      status: "queued",
+      job: { job_id: "job-1", status: "queued" },
+    });
+  };
+
+  await submitChatJob(
+    { message: "hello", conversationId: "conv-1" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  const messageCalls = calls.filter(
+    (call) => call.url.includes("/v1/conversations/conv-1/messages") && call.init?.method === "POST",
+  );
+  assert.equal(messageCalls.length, 1);
+  const body = JSON.parse(messageCalls[0].init.body);
+  assert.equal(body.role, "user");
+  assert.equal(body.content, "hello");
+});
+
+test("submitChatJob skips conversation memory entirely without a conversationId", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push(url);
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
+    return jsonResponse({
+      job_id: "job-1",
+      status: "queued",
+      job: { job_id: "job-1", status: "queued" },
+    });
+  };
+
+  await submitChatJob(
+    { message: "hello" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.ok(!calls.some((url) => url.includes("/v1/conversations/")));
+});
+
+test("submitChatJob folds prior conversation history into the system prompt for the generic path", async () => {
+  const fetchImpl = async (url, init) => {
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
+    if (url.includes("/v1/conversations/conv-1/messages") && (!init || init.method !== "POST")) {
+      return jsonResponse({
+        conversation_id: "conv-1",
+        messages: [
+          { role: "user", content: "What is MundusX?" },
+          { role: "assistant", content: "A decentralized compute network." },
+        ],
+      });
+    }
+    if (url.includes("/v1/conversations/")) {
+      return jsonResponse({ id: 1 }, true, 201);
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    const body = JSON.parse(init.body);
+    assert.match(body.system_prompt, /Prior conversation \(most recent last\):/);
+    assert.match(body.system_prompt, /User: What is MundusX\?/);
+    assert.match(body.system_prompt, /Assistant: A decentralized compute network\./);
+    return jsonResponse({
+      job_id: "job-2",
+      status: "queued",
+      job: { job_id: "job-2", status: "queued" },
+    });
+  };
+
+  await submitChatJob(
+    { message: "Tell me more.", conversationId: "conv-1" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+});
+
+test("submitChatJob does not fetch conversation history for tool paths", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (url.includes("/v1/conversations/")) {
+      return jsonResponse({ id: 1 }, true, 201);
+    }
+    assert.equal(url, "https://wttr.in/Manila?format=j1");
+    return jsonResponse({
+      nearest_area: [
+        {
+          areaName: [{ value: "Manila" }],
+          region: [{ value: "National Capital Region" }],
+          country: [{ value: "Philippines" }],
+        },
+      ],
+      current_condition: [
+        {
+          weatherDesc: [{ value: "Partly cloudy" }],
+          temp_C: "31",
+          temp_F: "88",
+          FeelsLikeC: "36",
+          FeelsLikeF: "97",
+          humidity: "70",
+          windspeedKmph: "12",
+          localObsDateTime: "2026-07-03 05:00 PM",
+        },
+      ],
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "what is the weather in Manila today?", conversationId: "conv-1" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  const historyFetchCalls = calls.filter(
+    (call) => call.url.includes("/v1/conversations/") && (!call.init || call.init.method !== "POST"),
+  );
+  assert.equal(historyFetchCalls.length, 0);
+});
+
+test("sync tool paths persist both the user and assistant turns", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (url === "https://wttr.in/Manila?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Manila" }],
+            region: [{ value: "National Capital Region" }],
+            country: [{ value: "Philippines" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Partly cloudy" }],
+            temp_C: "31",
+            temp_F: "88",
+            FeelsLikeC: "36",
+            FeelsLikeF: "97",
+            humidity: "70",
+            windspeedKmph: "12",
+            localObsDateTime: "2026-07-03 05:00 PM",
+          },
+        ],
+      });
+    }
+    assert.ok(url.includes("/v1/conversations/conv-1/messages"));
+    return jsonResponse({ id: 1 }, true, 201);
+  };
+
+  const result = await submitChatJob(
+    { message: "what is the weather in Manila today?", conversationId: "conv-1" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  const messageCalls = calls.filter((call) => call.url.includes("/v1/conversations/conv-1/messages"));
+  assert.equal(messageCalls.length, 2);
+  assert.equal(JSON.parse(messageCalls[0].init.body).role, "user");
+  const assistantBody = JSON.parse(messageCalls[1].init.body);
+  assert.equal(assistantBody.role, "assistant");
+  assert.equal(assistantBody.jobId, null);
+  assert.equal(assistantBody.tool, "weather");
+});
+
+test("pollChatJob persists the assistant turn exactly once on completion", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (url.includes("/v1/conversations/")) {
+      return jsonResponse({ id: 1 }, true, 201);
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-1");
+    return jsonResponse({
+      job: {
+        job_id: "job-1",
+        status: "completed",
+        model: "Qwen/Test",
+        output: "llama.cpp mode=cuda; response=assistant: Done.",
+      },
+    });
+  };
+
+  await pollChatJob(
+    "job-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+    { conversationId: "conv-1" },
+  );
+
+  const messageCalls = calls.filter((call) => call.url.includes("/v1/conversations/conv-1/messages"));
+  assert.equal(messageCalls.length, 1);
+  const body = JSON.parse(messageCalls[0].init.body);
+  assert.equal(body.role, "assistant");
+  assert.equal(body.content, "Done.");
+  assert.equal(body.jobId, "job-1");
+});
+
+test("pollChatJob does not persist a turn for a non-completed job", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    return jsonResponse({ job: { job_id: "job-1", status: "queued" } });
+  };
+
+  await pollChatJob(
+    "job-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+    { conversationId: "conv-1" },
+  );
+
+  assert.ok(!calls.some((url) => url.includes("/v1/conversations/")));
+});
+
+test("pollChatJob does not persist a turn without a conversationId", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    return jsonResponse({
+      job: { job_id: "job-1", status: "completed", output: "Done." },
+    });
+  };
+
+  await pollChatJob(
+    "job-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.ok(!calls.some((url) => url.includes("/v1/conversations/")));
+});
+
+test("conversation-memory write failures never break submitChatJob's response", async () => {
+  const fetchImpl = async (url) => {
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
+    if (url.includes("/v1/conversations/")) {
+      return jsonResponse({ error: "boom" }, false, 500);
+    }
+    return jsonResponse({
+      job_id: "job-1",
+      status: "queued",
+      job: { job_id: "job-1", status: "queued" },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "hello", conversationId: "conv-1" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.job_id, "job-1");
+  assert.equal(result.status, "queued");
+});
+
+test("conversation-memory read failures never break submitChatJob's response", async () => {
+  const fetchImpl = async (url, init) => {
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
+    if (url.includes("/v1/conversations/conv-1/messages") && (!init || init.method !== "POST")) {
+      return jsonResponse({ error: "boom" }, false, 500);
+    }
+    if (url.includes("/v1/conversations/")) {
+      return jsonResponse({ id: 1 }, true, 201);
+    }
+    return jsonResponse({
+      job_id: "job-1",
+      status: "queued",
+      job: { job_id: "job-1", status: "queued" },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "hello", conversationId: "conv-1" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.job_id, "job-1");
+  assert.equal(result.status, "queued");
+});
+
+test("conversation-memory write failures never break pollChatJob's response", async () => {
+  const fetchImpl = async (url) => {
+    if (url.includes("/v1/conversations/")) {
+      return jsonResponse({ error: "boom" }, false, 500);
+    }
+    return jsonResponse({
+      job: { job_id: "job-1", status: "completed", output: "Done." },
+    });
+  };
+
+  const result = await pollChatJob(
+    "job-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+    { conversationId: "conv-1" },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.output, "Done.");
 });

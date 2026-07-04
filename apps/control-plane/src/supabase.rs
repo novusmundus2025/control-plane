@@ -1,6 +1,6 @@
 use crate::contracts::{
-    AgentRegistration, CreditsLedgerRecord, Heartbeat, JobCompletion, JobEventRecord, JobRecord,
-    NodeRecord,
+    AgentRegistration, AppendChatMessageRequest, ChatMessageRecord, CreditsLedgerRecord,
+    Heartbeat, JobCompletion, JobEventRecord, JobRecord, NodeRecord,
 };
 use crate::state::ControlPlaneState;
 use rustls::pki_types::ServerName;
@@ -289,6 +289,88 @@ impl SupabaseMirror {
         )
     }
 
+    pub fn append_chat_message(
+        &self,
+        conversation_id: &str,
+        payload: &AppendChatMessageRequest,
+    ) -> Result<ChatMessageRecord, String> {
+        self.post_json(
+            "chat_conversations",
+            Some("conversation_id"),
+            "resolution=merge-duplicates,return=minimal",
+            json!({ "conversation_id": conversation_id }),
+        )?;
+
+        let message_row = json!({
+            "conversation_id": conversation_id,
+            "role": payload.role,
+            "content": payload.content,
+            "job_id": payload.job_id,
+            "tool": payload.tool,
+            "metadata": payload.metadata.clone().unwrap_or_else(|| json!({})),
+        });
+
+        let inserted: Vec<ChatMessageRecord> = if payload.job_id.is_some() {
+            self.post_json_returning_with_conflict(
+                "chat_messages",
+                Some("job_id"),
+                "resolution=ignore-duplicates,return=representation",
+                message_row,
+            )?
+        } else {
+            self.post_json_returning_with_conflict(
+                "chat_messages",
+                None,
+                "return=representation",
+                message_row,
+            )?
+        };
+
+        let record = match inserted.into_iter().next() {
+            Some(record) => record,
+            None => {
+                let job_id = payload
+                    .job_id
+                    .as_deref()
+                    .ok_or_else(|| "supabase did not return the inserted chat message".to_string())?;
+                let conversation_id_escaped = escape_query_value(conversation_id);
+                let job_id_escaped = escape_query_value(job_id);
+                self.fetch_json::<Vec<ChatMessageRecord>>(&format!(
+                    "chat_messages?conversation_id=eq.{conversation_id_escaped}&job_id=eq.{job_id_escaped}&select=*&limit=1"
+                ))?
+                .into_iter()
+                .next()
+                .ok_or_else(|| "supabase did not return the existing chat message".to_string())?
+            }
+        };
+
+        let _ = self.post_json(
+            "chat_conversations",
+            Some("conversation_id"),
+            "resolution=merge-duplicates,return=minimal",
+            json!({
+                "conversation_id": conversation_id,
+                "last_message_at": record.created_at,
+            }),
+        );
+
+        Ok(record)
+    }
+
+    pub fn fetch_chat_messages(
+        &self,
+        conversation_id: &str,
+        limit: u32,
+    ) -> Result<Vec<ChatMessageRecord>, String> {
+        let conversation_id = escape_query_value(conversation_id);
+        let path = format!(
+            "chat_messages?conversation_id=eq.{conversation_id}&select=*&order=created_at.desc,id.desc&limit={limit}"
+        );
+        let mut messages: Vec<ChatMessageRecord> = self.fetch_json(&path)?;
+        messages.reverse();
+        Ok(messages)
+    }
+
     fn job_payload(&self, job: &JobRecord) -> serde_json::Value {
         json!({
             "job_id": job.job_id,
@@ -385,6 +467,50 @@ impl SupabaseMirror {
                 response.body.trim()
             ))
         }
+    }
+
+    fn post_json_returning_with_conflict<T>(
+        &self,
+        table: &str,
+        on_conflict: Option<&str>,
+        prefer: &str,
+        payload: serde_json::Value,
+    ) -> Result<T, String>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        let mut url = format!("{}/rest/v1/{}", self.base_url, table);
+        if let Some(on_conflict) = on_conflict {
+            url.push_str(&format!("?on_conflict={on_conflict}"));
+        }
+
+        let response = supabase_rest_request(
+            "POST",
+            &url,
+            &self.api_key,
+            &[("Content-Type", "application/json"), ("Prefer", prefer)],
+            Some(payload.to_string()),
+        )?;
+
+        if !response.is_success() {
+            return Err(if response.body.trim().is_empty() {
+                format!("supabase sync failed: HTTP {}", response.status)
+            } else {
+                format!(
+                    "supabase sync failed: HTTP {}: {}",
+                    response.status,
+                    response.body.trim()
+                )
+            });
+        }
+
+        if response.body.trim().is_empty() {
+            return serde_json::from_str("[]")
+                .map_err(|error| format!("failed to parse supabase response: {error}"));
+        }
+
+        serde_json::from_slice(response.body.as_bytes())
+            .map_err(|error| format!("failed to parse supabase response: {error}"))
     }
 
     fn fetch_json<T>(&self, path: &str) -> Result<T, String>
@@ -710,6 +836,19 @@ fn trim_trailing_slash(input: &str) -> String {
     input.trim_end_matches('/').to_string()
 }
 
+fn escape_query_value(input: &str) -> String {
+    let mut escaped = String::new();
+    for byte in input.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                escaped.push(byte as char)
+            }
+            _ => escaped.push_str(&format!("%{byte:02X}")),
+        }
+    }
+    escaped
+}
+
 fn now_epoch() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -749,6 +888,12 @@ mod tests {
     #[test]
     fn rejects_non_supabase_database_urls() {
         assert!(derive_supabase_url("postgresql://user:pass@localhost:5432/postgres").is_none());
+    }
+
+    #[test]
+    fn escapes_special_characters_in_query_values() {
+        assert_eq!(escape_query_value("abc-123_DEF.~"), "abc-123_DEF.~");
+        assert_eq!(escape_query_value("a b&c=d"), "a%20b%26c%3Dd");
     }
 
     #[test]
