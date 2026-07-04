@@ -39,7 +39,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /speechSynthesis/);
   assert.match(html, /getUserMedia/);
   assert.match(html, /recognition\.continuous = true/);
-  assert.match(html, /const silenceTimeoutMs = 4000/);
+  assert.match(html, /const silenceTimeoutMs = 2700/);
   assert.match(html, /const hardStopTimeoutMs = 60000/);
   assert.match(html, /transcriptParts\.join\(" "\)/);
   assert.match(html, /No speech heard/);
