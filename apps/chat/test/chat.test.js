@@ -283,11 +283,17 @@ test("uses compact token budgets for direct chat prompts", async () => {
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     fetchImpl,
   );
+  await submitChatJob(
+    { message: "What are the most important benefits of Ethereum blockchain for decentralized applications?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
 
   assert.equal(calls[0].max_tokens, 48);
   assert.equal(calls[1].max_tokens, 128);
   assert.equal(calls[2].max_tokens, 512);
   assert.equal(calls[3].max_tokens, 1024);
+  assert.equal(calls[4].max_tokens, 1024);
 });
 
 test("adapts token budgets to stronger node model and GPU capacity", async () => {
@@ -1550,6 +1556,17 @@ test("cleans embedded role leakage and repeated answer spam", () => {
     "The article is about election coverage. The article is written in a balanced way.",
   );
   assert.doesNotMatch(output, /system:|So what is the point/i);
+});
+
+test("cleans duplicated opening clauses before rendering chat output", () => {
+  const output = cleanChatOutput(
+    "Ethereum blockchain is a decentralized, open-source platform that allows developers to build and deploy decentralized applications. Ethereum blockchain is a decentralized, open-source platform that allows developers to build and deploy decentralized applications. It supports smart contracts and transparent execution.",
+  );
+
+  assert.equal(
+    output,
+    "Ethereum blockchain is a decentralized, open-source platform that allows developers to build and deploy decentralized applications. It supports smart contracts and transparent execution.",
+  );
 });
 
 test("returns a user-facing fallback for empty cleaned responses", () => {
