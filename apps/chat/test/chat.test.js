@@ -204,6 +204,7 @@ test("submits chat work as an auto execution job", async () => {
     assert.match(body.system_prompt, /You are Atlas/);
     assert.match(body.system_prompt, /the MundusX assistant/);
     assert.match(body.system_prompt, /My name is \*\*Atlas\*\*/);
+    assert.match(body.system_prompt, /Answer only what the user asked/);
     assert.match(body.system_prompt, /Do not echo persona notes/);
     assert.doesNotMatch(body.system_prompt, /male voice experiences/);
     assert.doesNotMatch(body.system_prompt, /Use the Atlas persona/);
@@ -796,6 +797,38 @@ test("routes malformed voice who-is prompts to cautious factual fallback instead
   assert.deepEqual(calls, [
     "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=David%20Battalia",
     "https://en.wikipedia.org/api/rest_v1/page/summary/David%20Batalla",
+  ]);
+});
+
+test("routes unknown who-is prompts to cautious factual fallback instead of the LLM", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=Lichard%20Baliuag/);
+      return jsonResponse(["Lichard Baliuag", [], [], []]);
+    }
+    if (url === "https://en.wikipedia.org/api/rest_v1/page/summary/Lichard%20Baliuag") {
+      return jsonResponse({ error: "not found" }, { status: 404 });
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: "Who is Lichard Baliuag?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "factual_summary");
+  assert.equal(result.response.verified, false);
+  assert.match(result.output, /do not have enough verified public information about Lichard Baliuag/i);
+  assert.doesNotMatch(result.output, /role in the MundusX/i);
+  assert.deepEqual(calls, [
+    "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=Lichard%20Baliuag",
+    "https://en.wikipedia.org/api/rest_v1/page/summary/Lichard%20Baliuag",
   ]);
 });
 
@@ -1720,6 +1753,15 @@ test("removes leaked system prompt text after direct identity answers", () => {
 
   assert.equal(output, "Yes, I am Atlas, the MundusX assistant.");
   assert.doesNotMatch(output, /MundusX Chat is the product interface|Use the Atlas persona|Answer the user's request/i);
+});
+
+test("removes unasked who-is expansion prompts from model output", () => {
+  const output = cleanChatOutput(
+    "What is his role in the MundusX community? Lichard Baliuag is a member of the MundusX community.",
+  );
+
+  assert.equal(output, "Lichard Baliuag is a member of the MundusX community.");
+  assert.doesNotMatch(output, /What is his role/i);
 });
 
 test("removes leaked subjob instructions while keeping chunk content", () => {
