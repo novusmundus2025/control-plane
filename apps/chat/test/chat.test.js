@@ -73,6 +73,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /Tools On/);
   assert.match(html, /function createCitationSources/);
   assert.match(html, /function createToolBadge/);
+  assert.match(html, /response\.type === "factual_summary"/);
   assert.match(html, /\.citation-sources/);
   assert.match(html, /\.tool-badge/);
   assert.match(html, /\.message\.assistant \.message-body/);
@@ -861,6 +862,7 @@ test("routes factual history questions to a grounded summary source", async () =
   assert.equal(result.execution_mode, "tool");
   assert.equal(result.tool, "factual_summary");
   assert.equal(result.assigned_node_id, "facts-tool");
+  assert.match(result.response.text, /Bayerische Motoren Werke AG/);
   assert.match(result.output, /Bayerische Motoren Werke AG/);
   assert.match(result.output, /founded in 1916/);
 });
