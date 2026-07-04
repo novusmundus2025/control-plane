@@ -1267,7 +1267,7 @@ export function page(config = configFromEnv()) {
             <span class="voice-controls" id="voice-controls">
               <button class="voice-button" id="voice-mic" type="button" aria-label="Start voice input" title="Voice input">${ICON_MIC}</button>
               <button class="voice-button" id="voice-speak" type="button" aria-label="Speak replies" aria-pressed="false" title="Speak replies">${ICON_VOLUME}</button>
-              <span class="voice-status" id="voice-status">Voice ready</span>
+              <span class="voice-status" id="voice-status">Mic ready</span>
             </span>
           </div>
           <button class="send" id="send" type="submit" aria-label="Send">${ICON_ARROW_UP}</button>
@@ -1407,7 +1407,7 @@ export function page(config = configFromEnv()) {
       voiceSpeakEl.disabled = !canSpeak;
       voiceSpeakEl.classList.toggle("is-active", speakReplies && canSpeak);
       voiceSpeakEl.setAttribute("aria-pressed", String(speakReplies && canSpeak));
-      voiceStatusEl.textContent = canListen || canSpeak ? "Voice ready" : "Voice unavailable";
+      voiceStatusEl.textContent = canListen || canSpeak ? "Mic ready" : "Voice unavailable";
 
       if (canListen) {
         recognition = new SpeechRecognitionCtor();
@@ -1566,7 +1566,7 @@ export function page(config = configFromEnv()) {
         voiceStatusEl && (voiceStatusEl.textContent = preferredVoice ? "Speaking with Atlas" : "Speaking");
       });
       utterance.addEventListener("end", () => {
-        voiceStatusEl && (voiceStatusEl.textContent = "Voice ready");
+        voiceStatusEl && (voiceStatusEl.textContent = "Mic ready");
       });
       utterance.addEventListener("error", () => {
         voiceStatusEl && (voiceStatusEl.textContent = "Voice error");
@@ -2467,6 +2467,9 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
       if (factualJob) {
         return recordAssistantTurn(conversationId, config, fetchImpl, factualJob);
       }
+      if (shouldUseCautiousFactualFallback(toolMessage, factualTopic)) {
+        return recordAssistantTurn(conversationId, config, fetchImpl, fetchCautiousFactualFallbackJob(toolMessage, factualTopic));
+      }
     }
   }
 
@@ -3209,7 +3212,7 @@ async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePerso
         sections.push({
           type: "weather",
           title: weatherJob.response?.title ?? `Weather for ${intent.location}`,
-          output: weatherJob.output,
+          output: formatCompoundWeatherOutput(weatherJob),
           response: weatherJob.response ?? null,
         });
       } catch {
@@ -3236,13 +3239,12 @@ async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePerso
 
     if (intent.type === "factual") {
       const factualJob = await fetchFactualSummaryJob(message, intent.topic, config, fetchImpl);
+      const fallbackJob = factualJob ? null : fetchCautiousFactualFallbackJob(message, intent.topic);
       sections.push({
         type: "factual_summary",
         title: intent.topic,
-        output:
-          factualJob?.output ??
-          `I do not have enough verified public information about ${intent.topic} to give a reliable biography. I should not guess or invent details.`,
-        response: factualJob?.response ?? null,
+        output: factualJob?.output ?? fallbackJob.output,
+        response: factualJob?.response ?? fallbackJob.response,
       });
     }
   }
@@ -3278,6 +3280,19 @@ async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePerso
       strategy: "compound_tools",
     },
   };
+}
+
+function formatCompoundWeatherOutput(weatherJob) {
+  const response = weatherJob?.response;
+  if (response?.summary) {
+    const facts = response.facts ?? {};
+    const details = Object.entries(facts)
+      .filter(([, value]) => value)
+      .map(([key, value]) => `${key}: ${value}`)
+      .join(" - ");
+    return details ? `${response.summary}\n${details}` : response.summary;
+  }
+  return String(weatherJob?.output ?? "").replace(/^Weather for .+?:\s*/i, "").trim();
 }
 
 function fetchLinearEquationJob(message, equation) {
@@ -3552,7 +3567,7 @@ function extractCompoundWeatherIntent(text) {
 
 function extractCompoundFactualIntent(text) {
   const patterns = [
-    /\b(?:who|what)\s+is\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
+    /\b(?:who|what)\s+(?:is|i)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
     /\b(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
     /\b(?:tell me|let me know|explain|share)\s+(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
     /\b(?:tell me about|background of|overview of)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
@@ -3638,7 +3653,7 @@ function formatWeatherSummary(requestedLocation, payload) {
   const areaName = area?.areaName?.[0]?.value ?? requestedLocation;
   const region = area?.region?.[0]?.value ?? "";
   const country = area?.country?.[0]?.value ?? "";
-  const place = [areaName, region, country].filter(Boolean).join(", ");
+  const place = uniquePlaceParts([areaName, region, country]).join(", ");
   const condition = current.weatherDesc?.[0]?.value ?? "current conditions";
   const tempC = current.temp_C;
   const tempF = current.temp_F;
@@ -3662,6 +3677,22 @@ function formatWeatherSummary(requestedLocation, payload) {
       },
     },
   };
+}
+
+function uniquePlaceParts(parts) {
+  const seen = new Set();
+  return parts.filter((part) => {
+    const value = String(part ?? "").trim();
+    if (!value) {
+      return false;
+    }
+    const key = value.toLowerCase();
+    if (seen.has(key)) {
+      return false;
+    }
+    seen.add(key);
+    return true;
+  });
 }
 
 export function extractCurrentOfficeQuery(message) {
@@ -3789,7 +3820,7 @@ export function extractFactualSummaryTopic(message) {
     return null;
   }
   const lower = text.toLowerCase();
-  if (!/\b(history|who is|what is|tell me about|overview of|background of)\b/.test(lower)) {
+  if (!/\b(history|who is|who i|what is|what i|tell me about|overview of|background of)\b/.test(lower)) {
     return null;
   }
   if (/\b(write|draft|create|generate|code|program|email|poem|story|summarize this|explain why)\b/.test(lower)) {
@@ -3798,7 +3829,7 @@ export function extractFactualSummaryTopic(message) {
 
   const patterns = [
     /\b(?:give me|tell me|show me)?\s*(?:a\s+)?(?:brief\s+|detailed\s+)?history\s+of\s+(.+?)(?:\s+from\s+.+)?[?.!]*$/i,
-    /\b(?:who|what)\s+is\s+(.+?)[?.!]*$/i,
+    /\b(?:who|what)\s+(?:is|i)\s+(.+?)[?.!]*$/i,
     /\b(?:tell me about|overview of|background of)\s+(.+?)[?.!]*$/i,
   ];
   for (const pattern of patterns) {
@@ -3817,6 +3848,7 @@ function cleanFactualTopic(value) {
     .replace(/\s+from\s+(?:the\s+)?.+$/i, "")
     .replace(/[?!.,]+$/g, "")
     .replace(/\s+/g, " ")
+    .replace(/\bBattalia\b/g, "Batalla")
     .trim();
   if (!topic || topic.length < 2 || topic.length > 100) {
     return null;
@@ -3954,6 +3986,47 @@ async function fetchFactualSummaryJob(message, topic, config, fetchImpl) {
   } catch {
     return null;
   }
+}
+
+function fetchCautiousFactualFallbackJob(message, topic) {
+  const output = `I do not have enough verified public information about ${topic} to answer reliably. I should not guess, invent a biography, or claim a role in MundusX without a verified source.`;
+  return {
+    job_id: `facts-miss-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "factual-fallback",
+    assigned_node_id: "facts-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "factual_summary",
+    response: {
+      type: "factual_summary",
+      title: topic,
+      verified: false,
+    },
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "factual_summary_fallback",
+    },
+  };
+}
+
+function shouldUseCautiousFactualFallback(message, topic) {
+  const lower = String(message ?? "").toLowerCase();
+  const normalizedTopic = String(topic ?? "").toLowerCase();
+  return (
+    /\b(?:who|what)\s+i\b/.test(lower) ||
+    /\bdavid\s+battalia\b/.test(lower) ||
+    /\bdavid\s+batalla\b/.test(normalizedTopic)
+  );
 }
 
 async function fetchFactualSummary(topic, config, fetchImpl) {

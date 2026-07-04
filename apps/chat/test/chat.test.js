@@ -51,6 +51,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /function selectedAssistantPersona/);
   assert.match(html, /Microsoft David/);
   assert.match(html, /Speaking with Atlas/);
+  assert.match(html, /Mic ready/);
+  assert.doesNotMatch(html, /Voice ready/);
   assert.doesNotMatch(html, /id="voice-select"/);
   assert.doesNotMatch(html, /Auto voice/);
   assert.match(html, /id="history-list"/);
@@ -705,7 +707,9 @@ test("answers compound weather person and identity prompts with direct tools", a
     "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=David%20Batalla",
     "https://en.wikipedia.org/api/rest_v1/page/summary/David%20Batalla",
   ]);
-  assert.match(result.output, /## Weather for Berlin, Berlin, Germany/);
+  assert.match(result.output, /## Weather for Berlin, Germany/);
+  assert.doesNotMatch(result.output, /Weather for Berlin, Germany\nWeather for/i);
+  assert.doesNotMatch(result.output, /Berlin, Berlin/);
   assert.match(result.output, /Clear, 22C\/72F/);
   assert.match(result.output, /## David Batalla/);
   assert.match(result.output, /do not have enough verified public information/i);
@@ -720,6 +724,36 @@ test("answers compound weather person and identity prompts with direct tools", a
   ]);
   assert.doesNotMatch(result.output, /Please provide the information in a single response/i);
   assert.doesNotMatch(result.output, /Sure, I can provide both pieces/i);
+});
+
+test("routes malformed voice who-is prompts to cautious factual fallback instead of the LLM", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=David%20Batalla/);
+      return jsonResponse(["David Batalla", [], [], []]);
+    }
+    if (url === "https://en.wikipedia.org/api/rest_v1/page/summary/David%20Batalla") {
+      return jsonResponse({ title: "Not found" }, false, 404);
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: "Who i David Battalia" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "factual_summary");
+  assert.equal(result.response.verified, false);
+  assert.match(result.output, /David Batalla/);
+  assert.match(result.output, /do not have enough verified public information/i);
+  assert.doesNotMatch(result.output, /role in the MundusX project/i);
+  assert.doesNotMatch(result.output, /co-founder/i);
 });
 
 test("routes factual history questions to a grounded summary source", async () => {
@@ -1235,6 +1269,7 @@ test("extracts simple polynomial derivatives", () => {
 test("extracts only factual summary topics", () => {
   assert.equal(extractFactualSummaryTopic("Give me a detailed history of BMW from its origins to today."), "BMW");
   assert.equal(extractFactualSummaryTopic("Who is Ada Lovelace?"), "Ada Lovelace");
+  assert.equal(extractFactualSummaryTopic("Who i David Battalia"), "David Batalla");
   assert.equal(extractFactualSummaryTopic("who is sara duterte from ph?"), "sara duterte");
   assert.equal(extractFactualSummaryTopic("Write code for BMW inventory"), null);
   assert.equal(extractFactualSummaryTopic("Explain why a CUDA node can claim a job and fail."), null);
