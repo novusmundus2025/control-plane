@@ -14,6 +14,7 @@ import {
   extractPolynomialDerivative,
   extractPolynomialIntegral,
   extractWeatherLocation,
+  fetchChatConversation,
   fetchNetworkSummary,
   needsGrounding,
   page,
@@ -104,6 +105,13 @@ test("renders a usable chat page", () => {
   assert.match(html, /data-action="delete"/);
   assert.match(html, /className = "history-main"/);
   assert.match(html, /className = "history-menu-button"/);
+  assert.match(html, /function loadHistoryItem/);
+  assert.match(html, /function fetchConversationMessages/);
+  assert.match(html, /function appendCachedConversationTurn/);
+  assert.match(html, /function readCachedConversation/);
+  assert.match(html, /await loadHistoryItem\(item\)/);
+  assert.match(html, /conversationCachePrefix/);
+  assert.match(html, /\/api\/conversations\//);
   assert.match(html, /\.rail-list \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   assert.match(html, /\.history-item \{[\s\S]*?overflow: hidden;/);
   assert.match(html, /\.history-context-menu \{/);
@@ -2141,6 +2149,40 @@ test("deleteChatConversation proxies real conversation deletion to the control p
 
   assert.deepEqual(result, { conversation_id: "conv-1", deleted: true, persisted: true });
   assert.equal(calls.length, 1);
+});
+
+test("fetchChatConversation proxies persisted conversation messages from the control plane", async () => {
+  const result = await fetchChatConversation(
+    "conv-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url, init) => {
+      assert.equal(url, "https://uat.mundusx.ai/v1/conversations/conv-1/messages?limit=80");
+      assert.equal(init.method, undefined);
+      return jsonResponse({
+        conversation_id: "conv-1",
+        messages: [
+          { role: "user", content: "hello" },
+          { role: "assistant", content: "hi" },
+        ],
+      });
+    },
+  );
+
+  assert.equal(result.conversation_id, "conv-1");
+  assert.equal(result.persisted, true);
+  assert.deepEqual(result.messages.map((message) => message.content), ["hello", "hi"]);
+});
+
+test("fetchChatConversation treats missing chat storage as an empty shallow conversation", async () => {
+  const result = await fetchChatConversation(
+    "conv-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => jsonResponse({ error: "supabase table missing" }, false, 502),
+  );
+
+  assert.equal(result.conversation_id, "conv-1");
+  assert.equal(result.persisted, false);
+  assert.deepEqual(result.messages, []);
 });
 
 test("deleteChatConversation treats missing backend records as shallow local history", async () => {
