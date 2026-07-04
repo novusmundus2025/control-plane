@@ -1385,6 +1385,7 @@ export function page(config = configFromEnv()) {
     const voiceStatusEl = document.getElementById("voice-status");
     const historyKey = "mundusx.chat.history.v1";
     const conversationIdKey = "mundusx.chat.conversationId.v1";
+    const conversationCachePrefix = "mundusx.chat.conversation.v1:";
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let isListening = false;
@@ -1397,6 +1398,7 @@ export function page(config = configFromEnv()) {
     let webSearchEnabled = localStorage.getItem("mundusx.chat.toolMode") === "true";
     let enterToSendEnabled = localStorage.getItem("mundusx.chat.enterToSend") !== "false";
     let activeHistoryMenuId = null;
+    let activeHistoryId = localStorage.getItem(conversationIdKey);
 
     renderHistory();
     hydrateNetwork();
@@ -1739,6 +1741,7 @@ export function page(config = configFromEnv()) {
 
     newChatEl?.addEventListener("click", () => {
       localStorage.setItem(conversationIdKey, crypto.randomUUID());
+      activeHistoryId = localStorage.getItem(conversationIdKey);
       messagesEl.querySelectorAll(".message").forEach((node) => node.remove());
       if (!document.getElementById("welcome")) {
         messagesEl.prepend(createWelcome());
@@ -1755,6 +1758,7 @@ export function page(config = configFromEnv()) {
       const conversationId = getConversationId();
       saveHistory(message, conversationId);
       addMessage(message, "user");
+      appendCachedConversationTurn(conversationId, { role: "user", content: message });
       promptEl.value = "";
       sendEl.disabled = true;
       setStatus("working", "Working");
@@ -1789,7 +1793,7 @@ export function page(config = configFromEnv()) {
           throw new Error(payload.error || "MundusX job failed");
         }
 
-        renderCompletedJob(pending, payload);
+        renderCompletedJob(pending, payload, conversationId);
         setStatus("ready", "Ready");
       } catch (error) {
         pending.className = "message error";
@@ -1816,7 +1820,7 @@ export function page(config = configFromEnv()) {
       body.appendChild(meta);
     }
 
-    function renderCompletedJob(node, payload) {
+    function renderCompletedJob(node, payload, conversationId = null) {
       const body = node.querySelector(".message-body");
       const userPrompt = findPreviousUserMessage(node);
       const output = stripEchoedPrompt(payload.output || "(empty response)", userPrompt);
@@ -1840,6 +1844,13 @@ export function page(config = configFromEnv()) {
         meta.appendChild(badge);
       }
       body.appendChild(meta);
+      if (conversationId) {
+        appendCachedConversationTurn(conversationId, {
+          role: "assistant",
+          content: displayTextForCachedPayload(payload, output),
+          payload,
+        });
+      }
       speakAssistantReply(spokenTextForPayload(payload, output));
     }
 
@@ -2383,9 +2394,11 @@ export function page(config = configFromEnv()) {
           main.innerHTML = "<span class='history-title'></span><span class='history-time'></span>";
           main.children[0].textContent = item.title || "Untitled";
           main.children[1].textContent = item.pinned ? "Pinned" : formatHistoryTime(item.createdAt);
-          main.addEventListener("click", () => {
-            promptEl.value = item.title || "";
-            promptEl.focus();
+          if ((item.conversationId || item.id) === activeHistoryId) {
+            row.classList.add("active");
+          }
+          main.addEventListener("click", async () => {
+            await loadHistoryItem(item);
           });
           const menuButton = document.createElement("button");
           menuButton.className = "history-menu-button";
@@ -2404,6 +2417,101 @@ export function page(config = configFromEnv()) {
         }
         historyListEl.appendChild(group);
       }
+    }
+
+    async function loadHistoryItem(item) {
+      const conversationId = item.conversationId || item.id;
+      if (!conversationId) return;
+      activeHistoryId = conversationId;
+      localStorage.setItem(conversationIdKey, conversationId);
+      renderHistory();
+      promptEl.value = "";
+      setStatus("working", "Loading");
+      clearConversation();
+
+      let turns = [];
+      try {
+        turns = await fetchConversationMessages(conversationId);
+      } catch {
+        turns = [];
+      }
+      if (!turns.length) {
+        turns = readCachedConversation(conversationId);
+      }
+
+      if (turns.length) {
+        for (const turn of turns) {
+          renderStoredTurn(turn);
+        }
+      } else {
+        addMessage(item.title || "Untitled conversation", "user");
+        addMessage("This conversation was not saved in the backend yet. Shallow tool results and older local-only items can only restore from this browser cache.", "assistant");
+      }
+      setStatus("ready", "Ready");
+      document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
+    }
+
+    function clearConversation() {
+      messagesEl.querySelectorAll(".message").forEach((node) => node.remove());
+      document.getElementById("welcome")?.remove();
+    }
+
+    async function fetchConversationMessages(conversationId) {
+      const response = await fetch("/api/conversations/" + encodeURIComponent(conversationId) + "/messages");
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        throw new Error(payload.error || "conversation unavailable");
+      }
+      return Array.isArray(payload.messages) ? payload.messages : [];
+    }
+
+    function renderStoredTurn(turn) {
+      const role = turn.role === "user" ? "user" : "assistant";
+      const node = addMessage("", role);
+      const body = node.querySelector(".message-body");
+      body.textContent = "";
+      if (role === "assistant" && turn.payload?.response) {
+        body.appendChild(renderTypedResponse(turn.payload.response));
+      } else {
+        appendRichMessage(body, turn.content || "");
+      }
+      if (turn.job_id || turn.payload?.job_id) {
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = "job " + (turn.job_id || turn.payload.job_id);
+        body.appendChild(meta);
+      }
+    }
+
+    function appendCachedConversationTurn(conversationId, turn) {
+      if (!conversationId || !turn?.content) return;
+      const turns = readCachedConversation(conversationId);
+      const next = [
+        ...turns,
+        {
+          role: turn.role === "user" ? "user" : "assistant",
+          content: turn.content,
+          payload: turn.payload || null,
+          createdAt: Date.now(),
+        },
+      ].slice(-80);
+      localStorage.setItem(conversationCachePrefix + conversationId, JSON.stringify(next));
+    }
+
+    function readCachedConversation(conversationId) {
+      try {
+        const turns = JSON.parse(localStorage.getItem(conversationCachePrefix + conversationId) || "[]");
+        return Array.isArray(turns) ? turns : [];
+      } catch {
+        return [];
+      }
+    }
+
+    function displayTextForCachedPayload(payload, output) {
+      if (payload.response?.summary) return payload.response.summary;
+      if (payload.response?.answer) return payload.response.answer;
+      if (payload.response?.text) return payload.response.text;
+      return output || payload.output || "";
     }
 
     function writeHistory(items) {
@@ -2456,8 +2564,13 @@ export function page(config = configFromEnv()) {
     async function deleteHistoryItem(item) {
       const items = readHistory();
       writeHistory(items.filter((entry) => entry.id !== item.id));
+      const cachedId = item.conversationId || item.id;
+      if (cachedId) {
+        localStorage.removeItem(conversationCachePrefix + cachedId);
+      }
       if (item.conversationId && item.conversationId === localStorage.getItem(conversationIdKey)) {
         localStorage.setItem(conversationIdKey, crypto.randomUUID());
+        activeHistoryId = localStorage.getItem(conversationIdKey);
       }
       try {
         const result = await deleteConversationRecord(item.conversationId);
@@ -2557,6 +2670,14 @@ export function createServerApp(config = configFromEnv()) {
       }
       if (request.method === "GET" && url.pathname === "/api/network") {
         const result = await fetchNetworkSummary(config);
+        return sendJson(response, 200, result);
+      }
+      if (request.method === "GET" && url.pathname.startsWith("/api/conversations/") && url.pathname.endsWith("/messages")) {
+        const conversationId = decodeURIComponent(
+          url.pathname.slice("/api/conversations/".length, -"/messages".length),
+        );
+        const limit = Number.parseInt(url.searchParams.get("limit") || "80", 10);
+        const result = await fetchChatConversation(conversationId, config, fetch, Number.isFinite(limit) ? limit : 80);
         return sendJson(response, 200, result);
       }
       if (request.method === "DELETE" && url.pathname.startsWith("/api/conversations/")) {
@@ -5153,15 +5274,37 @@ async function appendConversationMessage(conversationId, role, content, config, 
 }
 
 async function fetchConversationHistory(conversationId, config, fetchImpl, limit = 16) {
-  if (!conversationId) {
-    return [];
+  const result = await fetchChatConversation(conversationId, config, fetchImpl, limit);
+  return result.messages;
+}
+
+export async function fetchChatConversation(conversationId, config = configFromEnv(), fetchImpl = fetch, limit = 80) {
+  const id = String(conversationId ?? "").trim();
+  if (!id || id.includes("/")) {
+    throw httpError(400, "conversation id is required");
   }
-  const result = await controlPlaneFetch(
-    fetchImpl,
-    config,
-    `/v1/conversations/${encodeURIComponent(conversationId)}/messages?limit=${limit}`,
-  );
-  return Array.isArray(result?.messages) ? result.messages : [];
+  try {
+    const result = await controlPlaneFetch(
+      fetchImpl,
+      config,
+      `/v1/conversations/${encodeURIComponent(id)}/messages?limit=${Math.max(1, Math.min(200, limit || 80))}`,
+    );
+    return {
+      conversation_id: id,
+      messages: Array.isArray(result?.messages) ? result.messages : [],
+      persisted: true,
+    };
+  } catch (error) {
+    if ([404, 502, 503].includes(error.statusCode)) {
+      return {
+        conversation_id: id,
+        messages: [],
+        persisted: false,
+        reason: error.message || "conversation was not persisted",
+      };
+    }
+    throw error;
+  }
 }
 
 export async function deleteChatConversation(conversationId, config = configFromEnv(), fetchImpl = fetch) {
