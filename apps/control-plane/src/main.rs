@@ -1639,7 +1639,17 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
         })
         .map(|credit| credit.amount)
         .sum::<f64>();
-    let graph_nodes_html = if job.graph.nodes.is_empty() {
+    let graph_nodes_html = if !job.graph_execution_enabled {
+        if job.graph.nodes.is_empty() {
+            r#"<div class="empty">This job used single-job execution and has no graph chunks.</div>"#
+                .to_string()
+        } else {
+            format!(
+                r#"<div class="empty">This job used single-job execution. The recorded {}-step graph is advisory only and was not executed as chunks.</div>"#,
+                job.graph.nodes.len()
+            )
+        }
+    } else if job.graph.nodes.is_empty() {
         r#"<div class="empty">This job has no decomposed graph chunks.</div>"#.to_string()
     } else {
         let mut html = String::from(
@@ -5850,9 +5860,70 @@ mod tests {
         assert!(response.contains("single"));
         assert!(response.contains("Graph Chunks"));
         assert!(response.contains("advisory"));
+        assert!(response.contains("advisory only and was not executed as chunks"));
         assert!(response.contains("trust:"));
         assert!(response.contains(r#"href="/jobs?job_id=job-single""#));
         assert!(response.contains(r#"href="/nodes/node-1""#));
+        assert!(!response.contains("chunk job.direct_response"));
+    }
+
+    #[test]
+    fn job_detail_page_does_not_render_advisory_direct_plan_as_ready_chunk() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "1");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-advisory-direct-detail".to_string(),
+                prompt: "Introduce yourself please".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Auto,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(128),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claimed advisory direct job");
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-advisory-direct-detail".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-123".to_string(),
+                    backend: Backend::Cuda,
+                    status: JobStatus::Completed,
+                    output: Some("Atlas introduction".to_string()),
+                    error: None,
+                    latency_ms: Some(50),
+                },
+                "4".to_string(),
+            )
+            .expect("completed advisory direct job");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Jobs,
+            Some("job_id=job-advisory-direct-detail"),
+        );
+
+        assert!(html.contains("Job Detail"));
+        assert!(html.contains("mode auto"));
+        assert!(html.contains("graph advisory"));
+        assert!(html.contains("Atlas introduction"));
+        assert!(html.contains("advisory only and was not executed as chunks"));
+        assert!(!html.contains("chunk job.direct_response"));
+        assert!(!html.contains(">Direct response<"));
+        assert!(!html.contains(">ready<"));
     }
 
     #[test]
