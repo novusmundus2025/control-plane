@@ -13,6 +13,7 @@ import {
   extractPolynomialIntegral,
   extractWeatherLocation,
   fetchNetworkSummary,
+  needsGrounding,
   page,
   pollChatJob,
   submitChatJob,
@@ -60,6 +61,10 @@ test("renders a usable chat page", () => {
   assert.match(html, /function renderToolMode/);
   assert.match(html, /function renderEnterToSend/);
   assert.match(html, /Tools On/);
+  assert.match(html, /function createCitationSources/);
+  assert.match(html, /function createToolBadge/);
+  assert.match(html, /\.citation-sources/);
+  assert.match(html, /\.tool-badge/);
   assert.match(html, /\.message\.assistant \.message-body/);
   assert.match(html, /\.message\.user \.message-body/);
   assert.match(html, /\.code-block/);
@@ -672,14 +677,26 @@ test("routes free-form tool-mode requests for a person to a grounded summary", a
   assert.match(result.output, /Elon Reeve Musk/);
 });
 
-test("declines a fuzzy Wikipedia match instead of presenting the wrong subject as fact", async () => {
+test("declines a fuzzy Wikipedia match and falls through to a normal LLM job instead of presenting the wrong subject as fact", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
     calls.push(url);
     if (url.includes("opensearch")) {
       return jsonResponse(["Dave Batalla", ["Dave Tallant"], [""], ["https://en.wikipedia.org/wiki/Dave_Tallant"]]);
     }
-    return jsonResponse({ error: "not found" }, { status: 404 });
+    if (url.includes("/page/summary/")) {
+      return jsonResponse({ error: "not found" }, { status: 404 });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    return jsonResponse({
+      job_id: "job-fallback",
+      job: {
+        job_id: "job-fallback",
+        status: "queued",
+        execution_mode: "auto",
+        graph: { nodes: [] },
+      },
+    });
   };
 
   const result = await submitChatJob(
@@ -691,8 +708,9 @@ test("declines a fuzzy Wikipedia match instead of presenting the wrong subject a
     fetchImpl,
   );
 
-  assert.equal(result.tool, "unsupported_tool_mode");
-  assert.doesNotMatch(result.output, /Tallant/);
+  assert.doesNotMatch(JSON.stringify(result), /Tallant/);
+  assert.equal(result.job_id, "job-fallback");
+  assert.equal(result.status, "queued");
 });
 
 test("extracts general lookup topics from free-form tool-mode phrasing", () => {
@@ -709,6 +727,111 @@ test("extracts general lookup topics from free-form tool-mode phrasing", () => {
   );
   assert.equal(extractGeneralLookupTopic("Write code for a login form"), null);
   assert.equal(extractGeneralLookupTopic("Can you help me plan a trip"), null);
+});
+
+test("gates web search on factual signals, not conversation or creative requests", () => {
+  assert.equal(needsGrounding("What year did the Berlin Wall fall?"), true);
+  assert.equal(needsGrounding("How many people live in Tokyo?"), true);
+  assert.equal(needsGrounding("What is the current price of Bitcoin?"), true);
+  assert.equal(needsGrounding("Who won the 2022 World Cup?"), true);
+  assert.equal(needsGrounding("hi"), false);
+  assert.equal(needsGrounding("thanks!"), false);
+  assert.equal(needsGrounding("Write me a poem about the ocean"), false);
+  assert.equal(needsGrounding("What do you think about pineapple on pizza"), false);
+});
+
+test("routes tool-mode grounded requests through Brave Search and injects citable sources", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (String(url).includes("api.search.brave.com")) {
+      assert.match(String(url), /q=What\+is\+Elon\+Musk/);
+      return jsonResponse({
+        web: {
+          results: [
+            { title: "Elon Musk net worth", url: "https://example.com/elon", description: "Elon Musk's net worth is estimated at $200 billion." },
+          ],
+        },
+      });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    return jsonResponse({
+      job_id: "job-grounded-1",
+      job: {
+        job_id: "job-grounded-1",
+        status: "completed",
+        output: "Elon Musk's net worth is about $200 billion [1].",
+        execution_mode: "tool",
+      },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "What is Elon Musk net worth right now?", toolMode: true },
+    configFromEnv({
+      MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
+      MUNDUSX_WEB_SEARCH_API_KEY: "test-key",
+    }),
+    fetchImpl,
+  );
+
+  assert.equal(result.tool, "web_search");
+  assert.equal(result.status, "completed");
+  assert.equal(result.sources.length, 1);
+  assert.equal(result.sources[0].url, "https://example.com/elon");
+  assert.match(result.output, /\$200 billion/);
+
+  const jobsCall = calls.find((url) => url === "https://uat.mundusx.ai/v1/jobs");
+  assert.ok(jobsCall);
+});
+
+test("declines web search without an API key and falls through to a normal job", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (String(url).includes("api.search.brave.com")) {
+      throw new Error("should not call Brave Search without an API key");
+    }
+    if (String(url).includes("wikipedia.org") || String(url).includes("opensearch")) {
+      return jsonResponse({ error: "not found" }, { status: 404 });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    return jsonResponse({
+      job_id: "job-no-key",
+      job: { job_id: "job-no-key", status: "queued", execution_mode: "auto", graph: { nodes: [] } },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "What is the current population of Japan?", toolMode: true },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.ok(!calls.some((url) => String(url).includes("api.search.brave.com")));
+  assert.equal(result.job_id, "job-no-key");
+});
+
+test("does not attempt web search when tool mode is off", async () => {
+  const result = await submitChatJob(
+    { message: "What year did the Berlin Wall fall?" },
+    configFromEnv({
+      MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
+      MUNDUSX_WEB_SEARCH_API_KEY: "test-key",
+    }),
+    async (url) => {
+      if (String(url).includes("api.search.brave.com")) {
+        throw new Error("should not call web search when tool mode is off");
+      }
+      assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+      return jsonResponse({
+        job_id: "job-plain",
+        job: { job_id: "job-plain", status: "queued", execution_mode: "auto", graph: { nodes: [] } },
+      });
+    },
+  );
+
+  assert.equal(result.job_id, "job-plain");
 });
 
 test("routes current president questions to Wikidata instead of the LLM", async () => {
@@ -795,21 +918,34 @@ test("falls back to MundusX jobs when factual summary lookup misses", async () =
   assert.equal(result.status, "queued");
 });
 
-test("does not fall back to MundusX jobs when explicit tool mode has no matching tool", async () => {
+test("falls back to a normal MundusX job when explicit tool mode has no matching tool", async () => {
+  const calls = [];
+  const fetchImpl = async (url) => {
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
+    calls.push(url);
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    return jsonResponse({
+      job_id: "job-no-tool-match",
+      job: {
+        job_id: "job-no-tool-match",
+        status: "queued",
+        execution_mode: "auto",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
   const result = await submitChatJob(
     { message: "latest NVIDIA driver for GTX 1650", toolMode: true },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
-    async () => {
-      throw new Error("tool mode should not call the control plane for unsupported direct tools");
-    },
+    fetchImpl,
   );
 
-  assert.equal(result.status, "completed");
-  assert.equal(result.model, "tool-router");
-  assert.equal(result.execution_mode, "tool");
-  assert.equal(result.tool, "unsupported_tool_mode");
-  assert.match(result.output, /Tool mode is on/);
-  assert.match(result.output, /Turn Web Search off/);
+  assert.equal(calls.length, 1);
+  assert.equal(result.job_id, "job-no-tool-match");
+  assert.equal(result.status, "queued");
 });
 
 test("accepts at-prefixed web search requests for direct tools", async () => {
@@ -969,6 +1105,54 @@ test("extracts current office-holder queries", () => {
   });
   assert.equal(extractCurrentOfficeQuery("Who is Ada Lovelace?"), null);
   assert.equal(extractCurrentOfficeQuery("Write a president speech for USA"), null);
+});
+
+test("reattaches tracked citation sources when polling a grounded job to completion", async () => {
+  const config = configFromEnv({
+    MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
+    MUNDUSX_WEB_SEARCH_API_KEY: "test-key",
+  });
+
+  let jobStatus = "queued";
+  const fetchImpl = async (url) => {
+    if (String(url).includes("api.search.brave.com")) {
+      return jsonResponse({
+        web: {
+          results: [{ title: "Tokyo Population", url: "https://example.com/tokyo", description: "Tokyo has about 14 million residents." }],
+        },
+      });
+    }
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      return jsonResponse({
+        job_id: "job-grounded-poll",
+        job: { job_id: "job-grounded-poll", status: "queued", execution_mode: "tool" },
+      });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-grounded-poll");
+    return jsonResponse({
+      job: {
+        job_id: "job-grounded-poll",
+        status: jobStatus,
+        output: "Tokyo has roughly 14 million residents [1].",
+        execution_mode: "tool",
+      },
+    });
+  };
+
+  const submitted = await submitChatJob(
+    { message: "How many people live in Tokyo right now?", toolMode: true },
+    config,
+    fetchImpl,
+  );
+  assert.equal(submitted.job_id, "job-grounded-poll");
+  assert.equal(submitted.status, "queued");
+
+  jobStatus = "completed";
+  const polled = await pollChatJob("job-grounded-poll", config, fetchImpl);
+
+  assert.equal(polled.tool, "web_search");
+  assert.equal(polled.sources.length, 1);
+  assert.equal(polled.sources[0].url, "https://example.com/tokyo");
 });
 
 test("polls chat job progress and final cleaned output", async () => {

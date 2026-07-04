@@ -12,6 +12,10 @@ const DEFAULT_WEATHER_TTL_SECONDS = 7200;
 const DEFAULT_WEATHER_URL = "https://wttr.in";
 const DEFAULT_FACTUAL_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary";
 const DEFAULT_WIKIDATA_ENTITY_URL = "https://www.wikidata.org/wiki/Special:EntityData";
+const DEFAULT_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
+const DEFAULT_WEB_SEARCH_MAX_RESULTS = 4;
+const DEFAULT_WEB_SEARCH_TTL_SECONDS = 1800;
+const DEFAULT_WEB_SEARCH_DAILY_BUDGET = 0;
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
@@ -91,6 +95,20 @@ export function configFromEnv(env = process.env) {
     defaultTimeoutSeconds: positiveInteger(
       env.MUNDUSX_CHAT_TIMEOUT_SECONDS,
       DEFAULT_TIMEOUT_SECONDS,
+    ),
+    webSearchBaseUrl: normalizeOrigin(env.MUNDUSX_WEB_SEARCH_URL ?? DEFAULT_WEB_SEARCH_URL),
+    webSearchApiKey: (env.MUNDUSX_WEB_SEARCH_API_KEY ?? "").trim(),
+    webSearchMaxResults: positiveInteger(
+      env.MUNDUSX_WEB_SEARCH_MAX_RESULTS,
+      DEFAULT_WEB_SEARCH_MAX_RESULTS,
+    ),
+    webSearchTtlSeconds: positiveInteger(
+      env.MUNDUSX_WEB_SEARCH_TTL_SECONDS,
+      DEFAULT_WEB_SEARCH_TTL_SECONDS,
+    ),
+    webSearchDailyBudget: positiveInteger(
+      env.MUNDUSX_WEB_SEARCH_DAILY_BUDGET,
+      DEFAULT_WEB_SEARCH_DAILY_BUDGET,
     ),
   };
 }
@@ -954,6 +972,52 @@ export function page(config = configFromEnv()) {
       color: var(--muted-2);
       font-size: 12px;
     }
+    .citation-sources {
+      margin-top: 12px;
+      border-top: 1px solid var(--line);
+      padding-top: 10px;
+      display: grid;
+      gap: 6px;
+    }
+    .citation-sources summary {
+      cursor: pointer;
+      color: var(--muted-2);
+      font-size: 12px;
+    }
+    .citation-list {
+      margin-top: 8px;
+      display: grid;
+      gap: 6px;
+    }
+    .citation-row {
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .citation-row a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+    .citation-row a:hover {
+      text-decoration: underline;
+    }
+    .tool-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 11px;
+      font-weight: 650;
+      margin-left: 8px;
+    }
+    .tool-badge.is-web {
+      background: rgba(59, 130, 246, 0.12);
+      color: var(--blue);
+    }
+    .tool-badge.is-wikipedia {
+      background: rgba(107, 114, 128, 0.14);
+      color: var(--muted);
+    }
 
     form {
       width: min(880px, 100%);
@@ -1595,11 +1659,58 @@ export function page(config = configFromEnv()) {
       if (shouldShowSourceSections(payload)) {
         body.appendChild(createSourceSections(payload));
       }
+      if (Array.isArray(payload.sources) && payload.sources.length) {
+        body.appendChild(createCitationSources(payload.sources));
+      }
       const meta = document.createElement("div");
       meta.className = "meta";
       meta.textContent = formatJobMeta(payload);
+      const badge = createToolBadge(payload);
+      if (badge) {
+        meta.appendChild(badge);
+      }
       body.appendChild(meta);
       speakAssistantReply(spokenTextForPayload(payload, output));
+    }
+
+    function createCitationSources(sources) {
+      const details = document.createElement("details");
+      details.className = "citation-sources";
+      details.open = true;
+      const summary = document.createElement("summary");
+      summary.textContent = "Sources (" + sources.length + ")";
+      details.appendChild(summary);
+      const list = document.createElement("div");
+      list.className = "citation-list";
+      sources.forEach((source, index) => {
+        const row = document.createElement("div");
+        row.className = "citation-row";
+        const link = document.createElement("a");
+        link.href = source.url;
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+        link.textContent = "[" + (index + 1) + "] " + (source.title || source.url);
+        row.appendChild(link);
+        list.appendChild(row);
+      });
+      details.appendChild(list);
+      return details;
+    }
+
+    function createToolBadge(payload) {
+      if (payload.tool === "web_search") {
+        const badge = document.createElement("span");
+        badge.className = "tool-badge is-web";
+        badge.textContent = "Web";
+        return badge;
+      }
+      if (payload.tool === "factual_summary") {
+        const badge = document.createElement("span");
+        badge.className = "tool-badge is-wikipedia";
+        badge.textContent = "Wikipedia";
+        return badge;
+      }
+      return null;
     }
 
     function spokenTextForPayload(payload, fallbackOutput) {
@@ -2243,7 +2354,16 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     }
   }
 
-  if (toolMode) {
+  if (toolMode && needsGrounding(toolMessage)) {
+    const groundingQuery = extractGeneralLookupTopic(toolMessage) || toolMessage;
+    const webSearchJob = await fetchWebSearchJob(message, groundingQuery, config, fetchImpl, {
+      model: body?.model,
+      voicePersona: body?.voicePersona,
+    });
+    if (webSearchJob) {
+      return webSearchJob;
+    }
+
     const generalTopic = extractGeneralLookupTopic(toolMessage);
     if (generalTopic) {
       const generalJob = await fetchFactualSummaryJob(toolMessage, generalTopic, config, fetchImpl);
@@ -2251,26 +2371,19 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
         return generalJob;
       }
     }
-    return fetchUnsupportedToolModeJob(toolMessage);
   }
 
   const model = String(body?.model ?? config.modelOverride ?? "").trim();
   const capacityProfile = await fetchChatCapacityProfile(config, fetchImpl, model);
-  const jobBody = {
-    request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
-    prompt: message,
-    preferred_backend: "auto",
-    runtime_mode: "local",
-    execution_mode: normalizeExecutionMode(body?.executionMode ?? "auto"),
-    stream: false,
-    system_prompt: buildChatSystemPrompt(message, body?.voicePersona),
-    max_tokens: inferMaxTokens(message, body?.maxTokens, capacityProfile),
-    temperature: typeof body?.temperature === "number" ? body.temperature : 0.2,
-    top_p: typeof body?.topP === "number" ? body.topP : 0.9,
-  };
-  if (model) {
-    jobBody.model = model;
-  }
+  const jobBody = buildGenericJobBody(message, config, {
+    model: body?.model,
+    voicePersona: body?.voicePersona,
+    executionMode: body?.executionMode,
+    maxTokens: body?.maxTokens,
+    temperature: body?.temperature,
+    topP: body?.topP,
+    capacityProfile,
+  });
 
   const jobResponse = await controlPlaneFetch(
     fetchImpl,
@@ -2288,7 +2401,27 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(502, "control plane did not return a job id");
   }
 
-  return formatChatJob(jobId, job, model || null);
+  return formatChatJob(jobId, job, jobBody.model || null);
+}
+
+function buildGenericJobBody(message, config, options = {}) {
+  const model = String(options.model ?? config.modelOverride ?? "").trim();
+  const jobBody = {
+    request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    prompt: message,
+    preferred_backend: "auto",
+    runtime_mode: "local",
+    execution_mode: normalizeExecutionMode(options.executionMode ?? "auto"),
+    stream: false,
+    system_prompt: options.systemPrompt ?? buildChatSystemPrompt(message, options.voicePersona),
+    max_tokens: inferMaxTokens(message, options.maxTokens, options.capacityProfile ?? null),
+    temperature: typeof options.temperature === "number" ? options.temperature : 0.2,
+    top_p: typeof options.topP === "number" ? options.topP : 0.9,
+  };
+  if (model) {
+    jobBody.model = model;
+  }
+  return jobBody;
 }
 
 async function fetchChatCapacityProfile(config, fetchImpl, requestedModel = "") {
@@ -2383,35 +2516,6 @@ function stripToolModePrefix(message) {
   return String(message ?? "")
     .replace(/^\s*@(?:web(?:\s+search)?|search|tools?)?\s*/i, "")
     .trim();
-}
-
-function fetchUnsupportedToolModeJob(message) {
-  const output = [
-    "Tool mode is on, but MundusX does not have a direct tool for this request yet.",
-    "Try a supported grounded request such as weather, current president, factual summary, or math. Turn Web Search off to use the local model.",
-  ].join(" ");
-  return {
-    job_id: `tool-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
-    status: "completed",
-    output,
-    output_cleaned: false,
-    error: null,
-    model: "tool-router",
-    assigned_node_id: "tool-router",
-    execution_mode: "tool",
-    graph_execution_enabled: false,
-    tool: "unsupported_tool_mode",
-    progress: {
-      total: 0,
-      completed: 0,
-      running: 0,
-      failed: 0,
-      waiting: 0,
-      processing: null,
-      merging: false,
-      strategy: "tool_mode_router",
-    },
-  };
 }
 
 export function extractLinearEquation(message) {
@@ -3267,6 +3371,80 @@ export function extractGeneralLookupTopic(message) {
   return cleanFactualTopic(candidate);
 }
 
+const GROUNDING_NEGATIVE_PATTERN =
+  /\b(write|draft|create|generate|code|program|email|poem|story|summarize this|explain why|translate|rewrite|refactor|pretend|roleplay|joke|brainstorm)\b/i;
+const GROUNDING_CONVERSATIONAL_PATTERN =
+  /^(hi|hello|hey|thanks|thank you|ok|okay|cool|nice|good morning|good night|how are you|what's up|sup)\b/i;
+const GROUNDING_OPINION_PATTERN = /\b(do you think|your opinion|should i|would you|what do you feel)\b/i;
+const GROUNDING_FACTUAL_MARKERS = [
+  "when did",
+  "when was",
+  "when will",
+  "how many",
+  "how much",
+  "how old",
+  "what year",
+  "what date",
+  "latest",
+  "current",
+  "currently",
+  "recent",
+  "as of",
+  "price of",
+  "cost of",
+  "score of",
+  "result of",
+  "population of",
+  "capital of",
+  "founder of",
+  "ceo of",
+  "release date",
+  "net worth",
+  "who won",
+  "who is",
+  "what is",
+  "where is",
+  "which country",
+  "which company",
+];
+
+export function needsGrounding(message) {
+  const text = String(message ?? "").trim();
+  if (!text) {
+    return false;
+  }
+  const lower = text.toLowerCase();
+
+  if (GROUNDING_NEGATIVE_PATTERN.test(lower)) {
+    return false;
+  }
+  if (GROUNDING_CONVERSATIONAL_PATTERN.test(lower)) {
+    return false;
+  }
+  if (GROUNDING_OPINION_PATTERN.test(lower)) {
+    return false;
+  }
+  if (text.length < 12 && !text.includes("?")) {
+    return false;
+  }
+
+  let score = 0;
+  if (containsAny(lower, GROUNDING_FACTUAL_MARKERS)) {
+    score += 2;
+  }
+  if (/\b(19|20)\d{2}\b/.test(lower)) {
+    score += 1;
+  }
+  if (/\?\s*$/.test(text)) {
+    score += 1;
+  }
+  if (/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)+\b/.test(text)) {
+    score += 1;
+  }
+
+  return score >= 2;
+}
+
 async function fetchFactualSummaryJob(message, topic, config, fetchImpl) {
   try {
     const output = await fetchFactualSummary(topic, config, fetchImpl);
@@ -3358,6 +3536,188 @@ function isPlausibleTitleMatch(topic, resolvedTitle) {
   const titleWords = new Set(significantWords(resolvedTitle));
   const overlap = topicWords.filter((word) => titleWords.has(word)).length;
   return overlap > topicWords.length / 2;
+}
+
+async function fetchWebSearchSnippets(query, config, fetchImpl) {
+  const cacheKey = webSearchCacheKey(query);
+  if (config.weatherCacheUrl) {
+    const cached = await redisGet(config.weatherCacheUrl, cacheKey);
+    if (cached) {
+      try {
+        return JSON.parse(cached);
+      } catch {
+        // Fall through to a live lookup if the cached payload is malformed.
+      }
+    }
+  }
+
+  if (config.weatherCacheUrl && config.webSearchDailyBudget > 0) {
+    const overBudget = await webSearchBudgetExceeded(config);
+    if (overBudget) {
+      return null;
+    }
+  }
+
+  if (!config.webSearchApiKey) {
+    return null;
+  }
+
+  const url = new URL(config.webSearchBaseUrl);
+  url.searchParams.set("q", query);
+  url.searchParams.set("count", String(config.webSearchMaxResults));
+
+  let response;
+  try {
+    response = await fetchImpl(url.toString(), {
+      headers: {
+        Accept: "application/json",
+        "X-Subscription-Token": config.webSearchApiKey,
+        "User-Agent": "MundusX-Chat/0.1 web-search-router",
+      },
+    });
+  } catch {
+    return null;
+  }
+  if (!response.ok) {
+    return null;
+  }
+
+  let payload;
+  try {
+    payload = await response.json();
+  } catch {
+    return null;
+  }
+
+  const results = payload?.web?.results;
+  if (!Array.isArray(results) || results.length === 0) {
+    return null;
+  }
+
+  const sources = results
+    .slice(0, config.webSearchMaxResults)
+    .map((result) => ({
+      title: String(result?.title ?? "").trim(),
+      url: String(result?.url ?? "").trim(),
+      snippet: String(result?.description ?? "").replace(/<\/?strong>/g, "").trim(),
+    }))
+    .filter((source) => source.title && source.url && source.snippet);
+
+  if (sources.length === 0) {
+    return null;
+  }
+
+  if (config.weatherCacheUrl) {
+    await redisSet(config.weatherCacheUrl, cacheKey, JSON.stringify(sources), config.webSearchTtlSeconds);
+    await webSearchRecordCall(config);
+  }
+
+  return sources;
+}
+
+function webSearchCacheKey(query) {
+  return `mundusx:websearch:v1:${query.toLowerCase().replace(/\s+/g, " ").trim()}`;
+}
+
+function webSearchBudgetKey() {
+  const day = new Date().toISOString().slice(0, 10);
+  return `mundusx:websearch:budget:v1:${day}`;
+}
+
+async function webSearchBudgetExceeded(config) {
+  const current = await redisGet(config.weatherCacheUrl, webSearchBudgetKey());
+  const count = Number(current);
+  return Number.isFinite(count) && count >= config.webSearchDailyBudget;
+}
+
+async function webSearchRecordCall(config) {
+  try {
+    const key = webSearchBudgetKey();
+    const count = await redisCommand(config.weatherCacheUrl, ["INCR", key]);
+    if (Number(count) === 1) {
+      await redisCommand(config.weatherCacheUrl, ["EXPIRE", key, "172800"]);
+    }
+  } catch {
+    // Budget tracking is best-effort; a missed increment only risks one extra call.
+  }
+}
+
+async function fetchWebSearchJob(message, query, config, fetchImpl, jobOptions = {}) {
+  const sources = await fetchWebSearchSnippets(query, config, fetchImpl);
+  if (!sources || sources.length === 0) {
+    return null;
+  }
+
+  const jobBody = buildGenericJobBody(message, config, {
+    ...jobOptions,
+    systemPrompt: buildGroundedSystemPrompt(message, jobOptions.voicePersona, sources),
+  });
+
+  const jobResponse = await controlPlaneFetch(fetchImpl, config, "/v1/jobs", {
+    method: "POST",
+    body: JSON.stringify(jobBody),
+  });
+
+  const job = jobResponse.job ?? jobResponse;
+  const jobId = jobResponse.job_id ?? job.job_id;
+  if (!jobId) {
+    throw httpError(502, "control plane did not return a job id");
+  }
+
+  trackGroundingSources(jobId, sources, config);
+
+  const formatted = formatChatJob(jobId, job, jobBody.model || null);
+  return { ...formatted, tool: "web_search", sources };
+}
+
+function buildGroundedSystemPrompt(message, voicePersona, sources) {
+  const basePrompt = buildChatSystemPrompt(message, voicePersona);
+  const sourceList = sources
+    .map((source, index) => `[${index + 1}] ${source.title} — ${source.snippet} (source: ${source.url})`)
+    .join("\n");
+  return [
+    basePrompt,
+    "Answer using ONLY the sources listed below. Cite the sources you use inline as [1], [2], etc., matching the numbers below.",
+    "If the sources do not contain the answer, say so explicitly rather than guessing.",
+    "Sources:",
+    sourceList,
+  ].join("\n");
+}
+
+const groundingSourcesByJobId = new Map();
+
+function trackGroundingSources(jobId, sources, config) {
+  groundingSourcesByJobId.set(jobId, sources);
+  if (config.weatherCacheUrl) {
+    redisSet(
+      config.weatherCacheUrl,
+      groundingSourcesCacheKey(jobId),
+      JSON.stringify(sources),
+      3600,
+    ).catch(() => {});
+  }
+}
+
+async function lookupGroundingSources(jobId, config) {
+  if (groundingSourcesByJobId.has(jobId)) {
+    return groundingSourcesByJobId.get(jobId);
+  }
+  if (!config.weatherCacheUrl) {
+    return null;
+  }
+  const cached = await redisGet(config.weatherCacheUrl, groundingSourcesCacheKey(jobId));
+  if (!cached) {
+    return null;
+  }
+  try {
+    return JSON.parse(cached);
+  } catch {
+    return null;
+  }
+}
+
+function groundingSourcesCacheKey(jobId) {
+  return `mundusx:websearch:sources:v1:${jobId}`;
 }
 
 function weatherCacheKey(location) {
@@ -3507,7 +3867,31 @@ export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = f
   }
   const latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
   const job = latest.job ?? latest;
-  return formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null);
+  const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null);
+  if (formatted.status !== "completed") {
+    return formatted;
+  }
+
+  const sources = await lookupGroundingSources(jobId, config);
+  if (!sources) {
+    return formatted;
+  }
+
+  logGroundingCitationCheck(jobId, formatted.output, sources);
+  return { ...formatted, tool: "web_search", sources };
+}
+
+function logGroundingCitationCheck(jobId, output, sources) {
+  const hasCitationMarker = /\[[1-9]\d*\]/.test(output);
+  const outputWords = new Set(significantWords(output));
+  const sourceWords = sources.flatMap((source) => significantWords(source.snippet));
+  const overlapCount = sourceWords.filter((word) => outputWords.has(word)).length;
+  const overlapRatio = sourceWords.length ? overlapCount / sourceWords.length : 0;
+  if (!hasCitationMarker && overlapRatio < 0.1) {
+    console.warn(
+      `[grounding-check] job ${jobId} answer may not be grounded in provided sources (citations: ${hasCitationMarker}, overlap: ${overlapRatio.toFixed(2)})`,
+    );
+  }
 }
 
 async function waitForChatJob(jobId, body, config, fetchImpl) {
