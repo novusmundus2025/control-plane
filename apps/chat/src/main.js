@@ -1299,6 +1299,10 @@ export function page(config = configFromEnv()) {
     let recognition = null;
     let isListening = false;
     let heardSpeech = false;
+    let voiceStopReason = "idle";
+    let voiceSilenceTimer = null;
+    let voiceHardStopTimer = null;
+    let voiceMicStream = null;
     let speakReplies = localStorage.getItem("mundusx.chat.voice.speakReplies") === "true";
     let webSearchEnabled = localStorage.getItem("mundusx.chat.toolMode") === "true";
     let enterToSendEnabled = localStorage.getItem("mundusx.chat.enterToSend") !== "false";
@@ -1395,6 +1399,8 @@ export function page(config = configFromEnv()) {
       if (!voiceMicEl || !voiceSpeakEl || !voiceStatusEl) return;
       const canListen = Boolean(SpeechRecognitionCtor);
       const canSpeak = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+      const silenceTimeoutMs = 4000;
+      const hardStopTimeoutMs = 60000;
 
       voiceMicEl.disabled = !canListen;
       voiceSpeakEl.disabled = !canSpeak;
@@ -1404,27 +1410,58 @@ export function page(config = configFromEnv()) {
 
       if (canListen) {
         recognition = new SpeechRecognitionCtor();
-        recognition.continuous = false;
+        recognition.continuous = true;
         recognition.interimResults = true;
         recognition.maxAlternatives = 1;
         recognition.lang = navigator.language || "en-US";
+        const clearVoiceTimers = () => {
+          if (voiceSilenceTimer) window.clearTimeout(voiceSilenceTimer);
+          if (voiceHardStopTimer) window.clearTimeout(voiceHardStopTimer);
+          voiceSilenceTimer = null;
+          voiceHardStopTimer = null;
+        };
+        const releaseVoiceMic = () => {
+          if (!voiceMicStream) return;
+          voiceMicStream.getTracks().forEach((track) => track.stop());
+          voiceMicStream = null;
+        };
+        const stopRecognition = (reason) => {
+          if (!recognition || !isListening) return;
+          voiceStopReason = reason;
+          clearVoiceTimers();
+          try {
+            recognition.stop();
+          } catch {
+            releaseVoiceMic();
+          }
+        };
+        const resetSilenceTimer = () => {
+          if (!isListening) return;
+          if (voiceSilenceTimer) window.clearTimeout(voiceSilenceTimer);
+          voiceSilenceTimer = window.setTimeout(() => stopRecognition("silence"), silenceTimeoutMs);
+        };
         recognition.addEventListener("audiostart", () => {
           voiceStatusEl.textContent = "Mic allowed";
         });
         recognition.addEventListener("speechstart", () => {
           heardSpeech = true;
           voiceStatusEl.textContent = "Hearing speech";
+          resetSilenceTimer();
         });
         recognition.addEventListener("speechend", () => {
-          voiceStatusEl.textContent = "Processing voice";
+          voiceStatusEl.textContent = "Waiting for more speech";
+          resetSilenceTimer();
         });
         recognition.addEventListener("start", () => {
           isListening = true;
           heardSpeech = false;
+          voiceStopReason = "listening";
           voiceMicEl.classList.add("is-listening");
           voiceMicEl.setAttribute("aria-label", "Stop voice input");
           voiceStatusEl.textContent = "Listening";
           setStatus("working", "Listening");
+          resetSilenceTimer();
+          voiceHardStopTimer = window.setTimeout(() => stopRecognition("timeout"), hardStopTimeoutMs);
         });
         recognition.addEventListener("result", (event) => {
           let transcript = "";
@@ -1433,25 +1470,39 @@ export function page(config = configFromEnv()) {
           }
           promptEl.value = transcript.trim();
           voiceStatusEl.textContent = promptEl.value.trim() ? "Transcript ready" : "Listening";
+          resetSilenceTimer();
         });
         recognition.addEventListener("nomatch", () => {
           voiceStatusEl.textContent = "No speech matched";
+          resetSilenceTimer();
         });
         recognition.addEventListener("end", () => {
           isListening = false;
+          clearVoiceTimers();
+          releaseVoiceMic();
           voiceMicEl.classList.remove("is-listening");
           voiceMicEl.setAttribute("aria-label", "Start voice input");
           voiceStatusEl.textContent = promptEl.value.trim()
             ? "Transcript ready"
+            : voiceStopReason === "timeout"
+              ? "Voice limit reached"
             : heardSpeech
               ? "No transcript"
               : "No speech heard";
+          voiceStopReason = "idle";
           setStatus("ready", "Ready");
         });
         recognition.addEventListener("error", (event) => {
           isListening = false;
+          clearVoiceTimers();
+          releaseVoiceMic();
           voiceMicEl.classList.remove("is-listening");
-          voiceStatusEl.textContent = event.error === "not-allowed" ? "Mic blocked" : "Voice error";
+          voiceStatusEl.textContent =
+            event.error === "not-allowed"
+              ? "Mic blocked"
+              : event.error === "no-speech"
+                ? "No speech heard"
+                : "Voice error";
           setStatus("error", "Voice error");
         });
       }
@@ -1459,6 +1510,7 @@ export function page(config = configFromEnv()) {
       voiceMicEl.addEventListener("click", async () => {
         if (!recognition) return;
         if (isListening) {
+          voiceStopReason = "manual";
           recognition.stop();
           return;
         }
@@ -1469,8 +1521,7 @@ export function page(config = configFromEnv()) {
         }
         try {
           if (navigator.mediaDevices?.getUserMedia) {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            stream.getTracks().forEach((track) => track.stop());
+            voiceMicStream = await navigator.mediaDevices.getUserMedia({ audio: true });
             voiceStatusEl.textContent = "Mic allowed";
           }
           promptEl.value = "";
