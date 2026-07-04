@@ -2393,65 +2393,73 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
 
   const toolMode = isToolModeEnabled(body);
   const toolMessage = stripToolModePrefix(message);
+  const compoundToolPrompt = isCompoundPromptForDirectTools(toolMessage);
 
-  const linearEquation = extractLinearEquation(toolMessage);
-  if (linearEquation) {
-    return recordAssistantTurn(conversationId, config, fetchImpl, fetchLinearEquationJob(toolMessage, linearEquation));
-  }
-
-  const polynomialDerivative = extractPolynomialDerivative(toolMessage);
-  if (polynomialDerivative) {
-    return recordAssistantTurn(
-      conversationId,
-      config,
-      fetchImpl,
-      fetchPolynomialDerivativeJob(toolMessage, polynomialDerivative),
-    );
-  }
-
-  const polynomialIntegral = extractPolynomialIntegral(toolMessage);
-  if (polynomialIntegral) {
-    return recordAssistantTurn(
-      conversationId,
-      config,
-      fetchImpl,
-      fetchPolynomialIntegralJob(toolMessage, polynomialIntegral),
-    );
-  }
-
-  const weatherLocation = extractWeatherLocation(toolMessage);
-  if (weatherLocation) {
-    return recordAssistantTurn(
-      conversationId,
-      config,
-      fetchImpl,
-      await fetchWeatherJob(toolMessage, weatherLocation, config, fetchImpl),
-    );
-  }
-
-  const identityTopic = extractAssistantIdentityTopic(toolMessage);
-  if (identityTopic) {
-    return fetchAssistantIdentityJob(toolMessage, identityTopic, body?.voicePersona);
-  }
-
-  const mundusxKnowledgeTopic = extractMundusXKnowledgeTopic(toolMessage);
-  if (mundusxKnowledgeTopic) {
-    return fetchMundusXKnowledgeJob(toolMessage, mundusxKnowledgeTopic);
-  }
-
-  const currentOfficeQuery = extractCurrentOfficeQuery(toolMessage);
-  if (currentOfficeQuery) {
-    const currentOfficeJob = await fetchCurrentOfficeJob(toolMessage, currentOfficeQuery, config, fetchImpl);
-    if (currentOfficeJob) {
-      return recordAssistantTurn(conversationId, config, fetchImpl, currentOfficeJob);
+  if (!compoundToolPrompt) {
+    const linearEquation = extractLinearEquation(toolMessage);
+    if (linearEquation) {
+      return recordAssistantTurn(conversationId, config, fetchImpl, fetchLinearEquationJob(toolMessage, linearEquation));
     }
-  }
 
-  const factualTopic = extractFactualSummaryTopic(toolMessage);
-  if (factualTopic) {
-    const factualJob = await fetchFactualSummaryJob(toolMessage, factualTopic, config, fetchImpl);
-    if (factualJob) {
-      return recordAssistantTurn(conversationId, config, fetchImpl, factualJob);
+    const polynomialDerivative = extractPolynomialDerivative(toolMessage);
+    if (polynomialDerivative) {
+      return recordAssistantTurn(
+        conversationId,
+        config,
+        fetchImpl,
+        fetchPolynomialDerivativeJob(toolMessage, polynomialDerivative),
+      );
+    }
+
+    const polynomialIntegral = extractPolynomialIntegral(toolMessage);
+    if (polynomialIntegral) {
+      return recordAssistantTurn(
+        conversationId,
+        config,
+        fetchImpl,
+        fetchPolynomialIntegralJob(toolMessage, polynomialIntegral),
+      );
+    }
+
+    const weatherLocation = extractWeatherLocation(toolMessage);
+    if (weatherLocation) {
+      return recordAssistantTurn(
+        conversationId,
+        config,
+        fetchImpl,
+        await fetchWeatherJob(toolMessage, weatherLocation, config, fetchImpl),
+      );
+    }
+
+    const identityTopic = extractAssistantIdentityTopic(toolMessage);
+    if (identityTopic) {
+      return recordAssistantTurn(
+        conversationId,
+        config,
+        fetchImpl,
+        fetchAssistantIdentityJob(toolMessage, identityTopic, body?.voicePersona),
+      );
+    }
+
+    const mundusxKnowledgeTopic = extractMundusXKnowledgeTopic(toolMessage);
+    if (mundusxKnowledgeTopic) {
+      return recordAssistantTurn(conversationId, config, fetchImpl, fetchMundusXKnowledgeJob(toolMessage, mundusxKnowledgeTopic));
+    }
+
+    const currentOfficeQuery = extractCurrentOfficeQuery(toolMessage);
+    if (currentOfficeQuery) {
+      const currentOfficeJob = await fetchCurrentOfficeJob(toolMessage, currentOfficeQuery, config, fetchImpl);
+      if (currentOfficeJob) {
+        return recordAssistantTurn(conversationId, config, fetchImpl, currentOfficeJob);
+      }
+    }
+
+    const factualTopic = extractFactualSummaryTopic(toolMessage);
+    if (factualTopic) {
+      const factualJob = await fetchFactualSummaryJob(toolMessage, factualTopic, config, fetchImpl);
+      if (factualJob) {
+        return recordAssistantTurn(conversationId, config, fetchImpl, factualJob);
+      }
     }
   }
 
@@ -3389,6 +3397,25 @@ export function extractWeatherLocation(message) {
     }
   }
   return null;
+}
+
+function isCompoundPromptForDirectTools(message) {
+  const lower = String(message ?? "").toLowerCase();
+  if (!lower) {
+    return false;
+  }
+  const hasConnector = /\b(?:and|also|then|after that|next)\b|[.;]/i.test(lower);
+  if (!hasConnector) {
+    return false;
+  }
+  const intentChecks = [
+    /\b(?:weather|forecast|temperature|temp)\b/i,
+    /\b(?:introduce yourself|who are you|what'?s your name|do you have a name|your mission|your vision)\b/i,
+    /\b(?:who is|who's|tell me who|tell me about)\b/i,
+    /\b(?:history of|translate|write|create|code|program|explain|summarize)\b/i,
+    /\b(?:solve|derivative|integral|differentiate|compute|calculate)\b/i,
+  ];
+  return intentChecks.reduce((count, pattern) => count + (pattern.test(lower) ? 1 : 0), 0) > 1;
 }
 
 function hasNonWeatherCompoundIntent(lowerText) {
