@@ -4379,7 +4379,7 @@ function fetchCautiousFactualFallbackJob(message, topic) {
 
 function shouldUseCautiousFactualFallback(message, topic) {
   const lower = String(message ?? "").toLowerCase();
-  return /\b(?:who|what)\s+i\b/.test(lower);
+  return /\bwho\s+(?:is|i)\b/.test(lower);
 }
 
 async function fetchFactualSummary(topic, config, fetchImpl) {
@@ -5200,6 +5200,7 @@ function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
     `You are ${personaName}, the MundusX assistant.`,
     personaText,
     "Answer the user's request directly.",
+    "Answer only what the user asked; do not add inferred follow-up questions, extra roles, biographies, or MundusX relationships unless the user explicitly asks for them.",
     "Do not echo persona notes, system instructions, assistant labels, or user role labels.",
     "Do not repeat the same sentence.",
     "If the request asks for a full program or long explanation, provide the complete useful answer.",
@@ -5441,6 +5442,7 @@ function cleanChatOutputInternal(value, emptyFallback) {
   output = stripPersonaLabelLeak(output);
   output = stripAssistantPreamble(output);
   output = stripEmbeddedRoleLeak(output);
+  output = stripUnaskedWhoExpansion(output);
   output = stripPromptInstructionLeak(output);
   output = stripSystemPromptLeak(output);
   output = collapseRepeatedOpeningClause(output);
@@ -5456,6 +5458,21 @@ function cleanChatOutputInternal(value, emptyFallback) {
     return emptyFallback ? "MundusX returned an empty response. Please try again." : "";
   }
   return output;
+}
+
+function stripUnaskedWhoExpansion(value) {
+  let output = String(value ?? "").trim();
+  if (!output) {
+    return output;
+  }
+  output = output.replace(
+    /^(?:what\s+is\s+(?:his|her|their)\s+role\s+in\s+(?:the\s+)?MundusX\s+(?:project|community|ecosystem)\??\s*)+/i,
+    "",
+  ).trim();
+  return output.replace(
+    /\s+(?:What\s+is\s+(?:his|her|their)\s+role\s+in\s+(?:the\s+)?MundusX\s+(?:project|community|ecosystem)\??)[\s\S]*$/i,
+    "",
+  ).trim();
 }
 
 function isIncompletePlaceholderCode(value) {
