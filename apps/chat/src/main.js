@@ -3752,7 +3752,21 @@ function inferMaxTokens(message, explicitValue, capacityProfile = null) {
   ) {
     return 48;
   }
-  if (containsAny(lower, ["detailed", "complete", "full", "comprehensive", "history of", "report"])) {
+  if (
+    containsAny(lower, [
+      "detailed",
+      "complete",
+      "full",
+      "comprehensive",
+      "history of",
+      "report",
+      "benefit",
+      "advantage",
+      "important",
+      "importance",
+      "list",
+    ])
+  ) {
     return adaptiveTokenBudget("detailed", 1024, capacityProfile);
   }
   if (message.length > 600) {
@@ -3979,6 +3993,7 @@ function cleanChatOutputInternal(value, emptyFallback) {
   output = stripEmbeddedRoleLeak(output);
   output = stripPromptInstructionLeak(output);
   output = stripSystemPromptLeak(output);
+  output = collapseRepeatedOpeningClause(output);
   output = collapseRepeatedSentences(output);
   output = collapseRepeatedLines(output);
   output = output.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -4040,6 +4055,15 @@ function stripRolePrefixes(value) {
     output = next;
   }
   return output;
+}
+
+function collapseRepeatedOpeningClause(value) {
+  const output = String(value ?? "").trim();
+  const match = output.match(/^(.{20,260}?\b(?:is|are|was|were|allows|enables|uses|provides)\b.{20,260}?[.!?])\s+\1/i);
+  if (!match) {
+    return output;
+  }
+  return `${match[1]} ${output.slice(match[0].length).trim()}`.trim();
 }
 
 function stripPersonaLabelLeak(value) {
