@@ -1400,7 +1400,7 @@ export function page(config = configFromEnv()) {
       if (!voiceMicEl || !voiceSpeakEl || !voiceStatusEl) return;
       const canListen = Boolean(SpeechRecognitionCtor);
       const canSpeak = "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
-      const silenceTimeoutMs = 4000;
+      const silenceTimeoutMs = 2700;
       const hardStopTimeoutMs = 60000;
 
       voiceMicEl.disabled = !canListen;
