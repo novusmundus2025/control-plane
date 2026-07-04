@@ -2338,6 +2338,11 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     return fetchWeatherJob(toolMessage, weatherLocation, config, fetchImpl);
   }
 
+  const mundusxKnowledgeTopic = extractMundusXKnowledgeTopic(toolMessage);
+  if (mundusxKnowledgeTopic) {
+    return fetchMundusXKnowledgeJob(toolMessage, mundusxKnowledgeTopic);
+  }
+
   const currentOfficeQuery = extractCurrentOfficeQuery(toolMessage);
   if (currentOfficeQuery) {
     const currentOfficeJob = await fetchCurrentOfficeJob(toolMessage, currentOfficeQuery, config, fetchImpl);
@@ -3094,6 +3099,83 @@ function fetchLinearEquationJob(message, equation) {
       processing: null,
       merging: false,
       strategy: "linear_equation_tool",
+    },
+  };
+}
+
+function extractMundusXKnowledgeTopic(message) {
+  const lower = String(message ?? "").toLowerCase();
+  if (!/\bmundusx\b/.test(lower)) {
+    return null;
+  }
+  if (containsAny(lower, ["blockchain", "consensus", "smart contract", "ethereum"])) {
+    return null;
+  }
+  if (
+    containsAny(lower, [
+      "benefit",
+      "advantage",
+      "why use",
+      "why should",
+      "important",
+      "importance",
+      "value",
+      "mission",
+      "vision",
+      "what is",
+      "explain",
+    ])
+  ) {
+    return "overview";
+  }
+  return null;
+}
+
+function fetchMundusXKnowledgeJob(message, topic) {
+  const output = [
+    "The most important benefits of the MundusX decentralized AI compute network are:",
+    "",
+    "1. Accessibility: MundusX is designed to make AI compute reachable through community-contributed machines instead of only large centralized data centers.",
+    "",
+    "2. Lower cost potential: By routing work to available contributor GPUs and CPUs, MundusX can reduce dependence on expensive centralized inference providers.",
+    "",
+    "3. Contributor participation: People who share idle compute can help power AI workloads and earn recognition or rewards through the network model.",
+    "",
+    "4. Flexible compute supply: The network can grow across Windows, macOS, Linux, GPUs, CPUs, edge devices, and servers as contributors join.",
+    "",
+    "5. Open collaboration: MundusX is built around an open-source, community-powered direction so developers and operators can inspect, improve, and extend the system.",
+    "",
+    "6. Resilience through distribution: Workloads can be routed across multiple available nodes instead of depending on one machine or one provider.",
+    "",
+    "7. Practical routing: The control plane can match jobs to nodes by model, backend, health, policy, trust, and available capacity.",
+    "",
+    "MundusX is not currently described as a blockchain consensus network in this product path. Its core idea is decentralized AI compute: contributors provide usable compute, and the control plane routes AI work to suitable nodes.",
+  ].join("\n");
+
+  return {
+    job_id: `mundusx-facts-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "mundusx-knowledge",
+    assigned_node_id: "facts-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "mundusx_knowledge",
+    response: {
+      type: "mundusx_knowledge",
+      topic,
+    },
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "mundusx_knowledge_tool",
     },
   };
 }

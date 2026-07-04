@@ -543,6 +543,26 @@ test("routes simple polynomial derivatives to the math tool", async () => {
   assert.doesNotMatch(result.output, /Certainly|To solve|\\frac/i);
 });
 
+test("routes MundusX benefits questions to grounded product knowledge", async () => {
+  const result = await submitChatJob(
+    { message: "What are the most important benefits of the MundusX decentralized AI compute network?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("MundusX product knowledge should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "mundusx-knowledge");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "mundusx_knowledge");
+  assert.equal(result.assigned_node_id, "facts-tool");
+  assert.match(result.output, /community-contributed machines/i);
+  assert.match(result.output, /control plane can match jobs to nodes/i);
+  assert.match(result.output, /not currently described as a blockchain consensus network/i);
+  assert.doesNotMatch(result.output, /smart contracts|Ethereum Virtual Machine/i);
+});
+
 test("routes weather questions to wttr without queuing an LLM job", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
