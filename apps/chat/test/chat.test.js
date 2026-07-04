@@ -652,31 +652,42 @@ test("routes weather questions to wttr without queuing an LLM job", async () => 
   assert.match(result.output, /Partly cloudy, 31C\/88F/);
 });
 
-test("does not let one direct tool hijack a compound chat prompt", async () => {
+test("answers compound weather person and identity prompts with direct tools", async () => {
   const calls = [];
   const prompt =
-    "Hey Atlas kindly introduce yourself and let me know what is the weather today in Newfing Germany and then tell me who is David Battalia";
-  const fetchImpl = async (url, init) => {
-    calls.push({ url, init });
-    assert.notEqual(url, "https://wttr.in/Newfing%20Germany?format=j1");
-    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
-      return jsonResponse({ items: [] });
+    "What's the weather today in Berlin, and can you tell me who David Batalla is? finally pls introduce yourself";
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === "https://wttr.in/Berlin?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Berlin" }],
+            region: [{ value: "Berlin" }],
+            country: [{ value: "Germany" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Clear" }],
+            temp_C: "22",
+            temp_F: "72",
+            FeelsLikeC: "22",
+            FeelsLikeF: "72",
+            humidity: "45",
+            windspeedKmph: "9",
+          },
+        ],
+      });
     }
-    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
-    const body = JSON.parse(init.body);
-    assert.equal(body.prompt, prompt);
-    return jsonResponse({
-      job_id: "compound-1",
-      status: "queued",
-      job: {
-        job_id: "compound-1",
-        status: "queued",
-        model: "Qwen/Test",
-        execution_mode: "auto",
-        graph_execution_enabled: false,
-        plan: { strategy: "single_job" },
-      },
-    });
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=David%20Batalla/);
+      return jsonResponse(["David Batalla", [], [], []]);
+    }
+    if (url === "https://en.wikipedia.org/api/rest_v1/page/summary/David%20Batalla") {
+      return jsonResponse({ title: "Not found" }, false, 404);
+    }
+    throw new Error(`unexpected url ${url}`);
   };
 
   const result = await submitChatJob(
@@ -685,13 +696,30 @@ test("does not let one direct tool hijack a compound chat prompt", async () => {
     fetchImpl,
   );
 
-  assert.equal(result.status, "queued");
-  assert.equal(result.execution_mode, "auto");
-  assert.equal(result.job_id, "compound-1");
-  assert.deepEqual(
-    calls.map((call) => call.url),
-    ["https://uat.mundusx.ai/v1/nodes?page=1&page_size=25", "https://uat.mundusx.ai/v1/jobs"],
-  );
+  assert.equal(result.status, "completed");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "compound_tools");
+  assert.equal(result.assigned_node_id, "chat-tools");
+  assert.deepEqual(calls, [
+    "https://wttr.in/Berlin?format=j1",
+    "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=David%20Batalla",
+    "https://en.wikipedia.org/api/rest_v1/page/summary/David%20Batalla",
+  ]);
+  assert.match(result.output, /## Weather for Berlin, Berlin, Germany/);
+  assert.match(result.output, /Clear, 22C\/72F/);
+  assert.match(result.output, /## David Batalla/);
+  assert.match(result.output, /do not have enough verified public information/i);
+  assert.match(result.output, /## Atlas/);
+  assert.match(result.output, /I'm Atlas, the MundusX assistant/);
+  assert.equal(result.response.type, "compound_tool_result");
+  assert.equal(result.response.sections.length, 3);
+  assert.deepEqual(result.response.sections.map((section) => section.type), [
+    "weather",
+    "factual_summary",
+    "assistant_identity",
+  ]);
+  assert.doesNotMatch(result.output, /Please provide the information in a single response/i);
+  assert.doesNotMatch(result.output, /Sure, I can provide both pieces/i);
 });
 
 test("routes factual history questions to a grounded summary source", async () => {

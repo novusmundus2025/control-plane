@@ -2395,6 +2395,13 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   const toolMessage = stripToolModePrefix(message);
   const compoundToolPrompt = isCompoundPromptForDirectTools(toolMessage);
 
+  if (compoundToolPrompt) {
+    const compoundJob = await fetchCompoundDirectToolJob(toolMessage, config, fetchImpl, body?.voicePersona);
+    if (compoundJob) {
+      return recordAssistantTurn(conversationId, config, fetchImpl, compoundJob);
+    }
+  }
+
   if (!compoundToolPrompt) {
     const linearEquation = extractLinearEquation(toolMessage);
     if (linearEquation) {
@@ -3188,6 +3195,91 @@ async function fetchWeatherJob(message, location, config, fetchImpl) {
   };
 }
 
+async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePersona = "atlas") {
+  const intents = extractCompoundDirectToolIntents(message);
+  if (intents.length < 2) {
+    return null;
+  }
+
+  const sections = [];
+  for (const intent of intents) {
+    if (intent.type === "weather") {
+      try {
+        const weatherJob = await fetchWeatherJob(message, intent.location, config, fetchImpl);
+        sections.push({
+          type: "weather",
+          title: weatherJob.response?.title ?? `Weather for ${intent.location}`,
+          output: weatherJob.output,
+          response: weatherJob.response ?? null,
+        });
+      } catch {
+        sections.push({
+          type: "weather",
+          title: `Weather for ${intent.location}`,
+          output: `I could not fetch live weather for ${intent.location} right now.`,
+          response: null,
+        });
+      }
+      continue;
+    }
+
+    if (intent.type === "identity") {
+      const identityJob = fetchAssistantIdentityJob(message, intent.topic, voicePersona);
+      sections.push({
+        type: "assistant_identity",
+        title: "Atlas",
+        output: identityJob.output,
+        response: identityJob.response ?? null,
+      });
+      continue;
+    }
+
+    if (intent.type === "factual") {
+      const factualJob = await fetchFactualSummaryJob(message, intent.topic, config, fetchImpl);
+      sections.push({
+        type: "factual_summary",
+        title: intent.topic,
+        output:
+          factualJob?.output ??
+          `I do not have enough verified public information about ${intent.topic} to give a reliable biography. I should not guess or invent details.`,
+        response: factualJob?.response ?? null,
+      });
+    }
+  }
+
+  if (sections.length < 2) {
+    return null;
+  }
+
+  const output = sections.map((section) => `## ${section.title}\n${section.output}`).join("\n\n");
+  return {
+    job_id: `compound-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "mundusx-tool-orchestrator",
+    assigned_node_id: "chat-tools",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "compound_tools",
+    response: {
+      type: "compound_tool_result",
+      sections,
+    },
+    progress: {
+      total: sections.length,
+      completed: sections.length,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "compound_tools",
+    },
+  };
+}
+
 function fetchLinearEquationJob(message, equation) {
   const answer = `${equation.variable} = ${formatNumber(equation.solution)}`;
   const reducedCoefficient = normalizeNumber(equation.left.coefficient - equation.right.coefficient);
@@ -3416,6 +3508,82 @@ function isCompoundPromptForDirectTools(message) {
     /\b(?:solve|derivative|integral|differentiate|compute|calculate)\b/i,
   ];
   return intentChecks.reduce((count, pattern) => count + (pattern.test(lower) ? 1 : 0), 0) > 1;
+}
+
+function extractCompoundDirectToolIntents(message) {
+  const text = String(message ?? "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return [];
+  }
+
+  const intents = [];
+  const weather = extractCompoundWeatherIntent(text);
+  if (weather) {
+    intents.push(weather);
+  }
+
+  const factual = extractCompoundFactualIntent(text);
+  if (factual) {
+    intents.push(factual);
+  }
+
+  const identity = extractCompoundIdentityIntent(text);
+  if (identity) {
+    intents.push(identity);
+  }
+
+  return intents.sort((a, b) => a.index - b.index);
+}
+
+function extractCompoundWeatherIntent(text) {
+  const match = text.match(
+    /\b(?:weather|forecast|temperature|temp)\b(?:\s+\w+){0,4}?\s+(?:in|for|at|of)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
+  );
+  const location = cleanWeatherLocation(match?.[1]);
+  if (!match || !location) {
+    return null;
+  }
+  return {
+    type: "weather",
+    index: match.index ?? 0,
+    location,
+  };
+}
+
+function extractCompoundFactualIntent(text) {
+  const patterns = [
+    /\b(?:who|what)\s+is\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
+    /\b(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
+    /\b(?:tell me|let me know|explain|share)\s+(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
+    /\b(?:tell me about|background of|overview of)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
+  ];
+  for (const pattern of patterns) {
+    const match = text.match(pattern);
+    const topic = cleanFactualTopic(match?.[1]);
+    if (match && topic) {
+      return {
+        type: "factual",
+        index: match.index ?? 0,
+        topic,
+      };
+    }
+  }
+  return null;
+}
+
+function extractCompoundIdentityIntent(text) {
+  const match = text.match(
+    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do you have a name|what(?:'s| is) your name|your mission|your vision|mission and vision)\b/i,
+  );
+  if (!match) {
+    return null;
+  }
+  const topic = /\b(?:mission|vision)\b/i.test(match[0]) ? "mission" : "identity";
+  return {
+    type: "identity",
+    index: match.index ?? 0,
+    topic,
+  };
 }
 
 function hasNonWeatherCompoundIntent(lowerText) {
