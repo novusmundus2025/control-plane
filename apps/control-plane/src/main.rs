@@ -829,12 +829,23 @@ fn query_value_any(query: Option<&str>, keys: &[&str]) -> String {
 }
 
 fn graph_progress_summary(job: &JobRecord) -> String {
-    if job.graph.nodes.is_empty() {
-        return if job.graph_execution_enabled {
-            "graph enabled, no chunks yet".to_string()
-        } else {
-            "single job".to_string()
+    if !job.graph_execution_enabled {
+        return match job.status {
+            JobStatus::Completed => "single job completed".to_string(),
+            JobStatus::Failed => "single job failed".to_string(),
+            JobStatus::Assigned => "single job running".to_string(),
+            JobStatus::Queued => {
+                if job.graph.nodes.is_empty() {
+                    "single job queued".to_string()
+                } else {
+                    "advisory plan recorded only".to_string()
+                }
+            }
         };
+    }
+
+    if job.graph.nodes.is_empty() {
+        return "graph enabled, no chunks yet".to_string();
     }
 
     let completed = job
@@ -874,6 +885,14 @@ fn graph_progress_summary(job: &JobRecord) -> String {
 }
 
 fn graph_attention_summary(job: &JobRecord) -> String {
+    if !job.graph_execution_enabled {
+        return if job.graph.nodes.is_empty() {
+            "no graph execution".to_string()
+        } else {
+            "advisory plan was not executed as subjobs".to_string()
+        };
+    }
+
     if let Some(error) = job
         .graph
         .merge_error
@@ -1349,7 +1368,7 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
             escape_html(&result_preview),
         ));
 
-        if job.graph_execution_enabled || !job.graph.nodes.is_empty() {
+        if job.graph_execution_enabled {
             let completed_chunks = job
                 .graph
                 .nodes
@@ -6131,9 +6150,72 @@ mod tests {
         assert!(html.contains("Submitted after timestamp"));
         assert!(html.contains("node-1"));
         assert!(html.contains("worker-123"));
+        assert!(html.contains("single job completed"));
+        assert!(html.contains("advisory plan was not executed as subjobs"));
         assert!(html.contains("Tesla summary output"));
         assert!(html.contains("Showing 1-1 of 1"));
         assert!(html.contains(r#"href="/v1/jobs?page=1&amp;page_size=10&amp;status=completed""#));
+        assert!(!html.contains("Subjobs for"));
+        assert!(!html.contains("Direct response"));
+    }
+
+    #[test]
+    fn jobs_page_does_not_render_advisory_direct_plan_as_subjob_progress() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-1", "DAVE", "1");
+        state.submit_job(
+            JobRequest {
+                request_id: "job-advisory-direct".to_string(),
+                prompt: "Introduce yourself please".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Auto,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(128),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claimed advisory direct job");
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-advisory-direct".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-123".to_string(),
+                    backend: Backend::Cuda,
+                    status: JobStatus::Completed,
+                    output: Some("Atlas introduction".to_string()),
+                    error: None,
+                    latency_ms: Some(50),
+                },
+                "4".to_string(),
+            )
+            .expect("completed advisory direct job");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Jobs,
+            Some("status=completed&page=1&page_size=10"),
+        );
+
+        assert!(html.contains("job-advisory-direct"));
+        assert!(html.contains("mode auto &middot; graph advisory"));
+        assert!(html.contains("single job completed"));
+        assert!(html.contains("advisory plan was not executed as subjobs"));
+        assert!(html.contains("Atlas introduction"));
+        assert!(!html.contains("Subjobs for"));
+        assert!(!html.contains("Direct response"));
+        assert!(!html.contains("0/1 chunks complete"));
     }
 
     #[test]
