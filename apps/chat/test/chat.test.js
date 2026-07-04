@@ -74,6 +74,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /function createCitationSources/);
   assert.match(html, /function createToolBadge/);
   assert.match(html, /response\.type === "factual_summary"/);
+  assert.match(html, /response\.type === "assistant_identity"/);
   assert.match(html, /\.citation-sources/);
   assert.match(html, /\.tool-badge/);
   assert.match(html, /\.message\.assistant \.message-body/);
@@ -586,6 +587,7 @@ test("routes assistant identity prompts to deterministic persona answers", async
   assert.equal(result.execution_mode, "tool");
   assert.equal(result.tool, "assistant_identity");
   assert.equal(result.assigned_node_id, "persona-tool");
+  assert.match(result.response.text, /^I'm Atlas, the MundusX assistant\./);
   assert.match(result.output, /^I'm Atlas, the MundusX assistant\./);
   assert.match(result.output, /created by the MundusX open-source team/i);
   assert.match(result.output, /troubleshoot nodes and jobs/i);
@@ -604,6 +606,7 @@ test("routes assistant creator prompts to deterministic persona answers", async 
   assert.equal(result.status, "completed");
   assert.equal(result.model, "mundusx-identity");
   assert.equal(result.tool, "assistant_identity");
+  assert.match(result.response.text, /^I'm Atlas, the MundusX assistant\./);
   assert.match(result.output, /^I'm Atlas, the MundusX assistant\./);
   assert.match(result.output, /MundusX open-source team/i);
   assert.doesNotMatch(result.output, /User's request|comprehensive explanation|provide a detailed/i);
@@ -621,6 +624,7 @@ test("routes assistant mission prompts to deterministic persona answers", async 
 
   assert.equal(result.model, "mundusx-identity");
   assert.equal(result.tool, "assistant_identity");
+  assert.match(result.response.text, /My mission is to help people understand/i);
   assert.match(result.output, /^I'm Atlas, the MundusX assistant\./);
   assert.match(result.output, /My mission is to help people understand/i);
   assert.match(result.output, /My vision is simple/i);
