@@ -370,14 +370,15 @@ impl SupabaseMirror {
         Ok(messages)
     }
 
-    pub fn delete_chat_conversation(&self, conversation_id: &str) -> Result<(), String> {
+    pub fn delete_chat_conversation(&self, conversation_id: &str) -> Result<bool, String> {
         let conversation_id = escape_query_value(conversation_id);
-        self.delete_path(&format!(
+        let deleted_messages = self.delete_path(&format!(
             "chat_messages?conversation_id=eq.{conversation_id}"
         ))?;
-        self.delete_path(&format!(
+        let deleted_conversation = self.delete_path(&format!(
             "chat_conversations?conversation_id=eq.{conversation_id}"
-        ))
+        ))?;
+        Ok(deleted_messages || deleted_conversation)
     }
 
     fn job_payload(&self, job: &JobRecord) -> serde_json::Value {
@@ -553,7 +554,7 @@ impl SupabaseMirror {
             .map_err(|error| format!("failed to parse supabase response: {error}"))
     }
 
-    fn delete_path(&self, path: &str) -> Result<(), String> {
+    fn delete_path(&self, path: &str) -> Result<bool, String> {
         let response = supabase_rest_request(
             "DELETE",
             &format!("{}/rest/v1/{}", self.base_url, path),
@@ -563,7 +564,9 @@ impl SupabaseMirror {
         )?;
 
         if response.is_success() {
-            Ok(())
+            Ok(true)
+        } else if is_missing_supabase_table(response.status, &response.body) {
+            Ok(false)
         } else if response.body.trim().is_empty() {
             Err(format!("supabase delete failed: HTTP {}", response.status))
         } else {
@@ -606,6 +609,10 @@ impl RestResponse {
     fn is_success(&self) -> bool {
         (200..300).contains(&self.status)
     }
+}
+
+fn is_missing_supabase_table(status: u16, body: &str) -> bool {
+    status == 404 && body.contains("\"code\":\"PGRST205\"")
 }
 
 fn supabase_rest_request(
@@ -925,6 +932,14 @@ mod tests {
     fn escapes_special_characters_in_query_values() {
         assert_eq!(escape_query_value("abc-123_DEF.~"), "abc-123_DEF.~");
         assert_eq!(escape_query_value("a b&c=d"), "a%20b%26c%3Dd");
+    }
+
+    #[test]
+    fn recognizes_missing_supabase_table_errors() {
+        let body = r#"{"code":"PGRST205","message":"Could not find the table 'public.chat_messages' in the schema cache"}"#;
+        assert!(is_missing_supabase_table(404, body));
+        assert!(!is_missing_supabase_table(500, body));
+        assert!(!is_missing_supabase_table(404, r#"{"code":"OTHER"}"#));
     }
 
     #[test]

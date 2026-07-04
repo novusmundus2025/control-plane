@@ -4876,12 +4876,13 @@ fn handle_connection(
             let conversation_id = parse_conversation_path(path).expect("checked");
             match supabase.as_ref() {
                 Some(db) => match db.delete_chat_conversation(conversation_id) {
-                    Ok(()) => json_response(
+                    Ok(persisted) => json_response(
                         "200 OK",
                         serde_json::json!({
                             "conversation_id": conversation_id,
-                            "deleted": true,
-                            "persisted": true
+                            "deleted": persisted,
+                            "persisted": persisted,
+                            "reason": if persisted { serde_json::Value::Null } else { serde_json::Value::String("conversation storage was not found".to_string()) }
                         }),
                     ),
                     Err(error) => {
