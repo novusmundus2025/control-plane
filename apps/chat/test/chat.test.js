@@ -284,11 +284,17 @@ test("uses compact token budgets for direct chat prompts", async () => {
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     fetchImpl,
   );
+  await submitChatJob(
+    { message: "What are the most important benefits of Ethereum blockchain for decentralized applications?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
 
   assert.equal(calls[0].max_tokens, 48);
   assert.equal(calls[1].max_tokens, 128);
   assert.equal(calls[2].max_tokens, 512);
   assert.equal(calls[3].max_tokens, 1024);
+  assert.equal(calls[4].max_tokens, 1024);
 });
 
 test("adapts token budgets to stronger node model and GPU capacity", async () => {
@@ -536,6 +542,26 @@ test("routes simple polynomial derivatives to the math tool", async () => {
   ]);
   assert.match(result.output, /Answer: Yes\. f'\(x\) = 6x \+ 5\./);
   assert.doesNotMatch(result.output, /Certainly|To solve|\\frac/i);
+});
+
+test("routes MundusX benefits questions to grounded product knowledge", async () => {
+  const result = await submitChatJob(
+    { message: "What are the most important benefits of the MundusX decentralized AI compute network?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("MundusX product knowledge should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "mundusx-knowledge");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "mundusx_knowledge");
+  assert.equal(result.assigned_node_id, "facts-tool");
+  assert.match(result.output, /community-contributed machines/i);
+  assert.match(result.output, /control plane can match jobs to nodes/i);
+  assert.match(result.output, /not currently described as a blockchain consensus network/i);
+  assert.doesNotMatch(result.output, /smart contracts|Ethereum Virtual Machine/i);
 });
 
 test("routes weather questions to wttr without queuing an LLM job", async () => {
@@ -1551,6 +1577,17 @@ test("cleans embedded role leakage and repeated answer spam", () => {
     "The article is about election coverage. The article is written in a balanced way.",
   );
   assert.doesNotMatch(output, /system:|So what is the point/i);
+});
+
+test("cleans duplicated opening clauses before rendering chat output", () => {
+  const output = cleanChatOutput(
+    "Ethereum blockchain is a decentralized, open-source platform that allows developers to build and deploy decentralized applications. Ethereum blockchain is a decentralized, open-source platform that allows developers to build and deploy decentralized applications. It supports smart contracts and transparent execution.",
+  );
+
+  assert.equal(
+    output,
+    "Ethereum blockchain is a decentralized, open-source platform that allows developers to build and deploy decentralized applications. It supports smart contracts and transparent execution.",
+  );
 });
 
 test("returns a user-facing fallback for empty cleaned responses", () => {
