@@ -676,6 +676,7 @@ export function page(config = configFromEnv()) {
       flex: 0 0 auto;
     }
     .runtime-status-sentinel[data-state="working"] { color: var(--amber); }
+    .runtime-status-sentinel[data-state="standby"] { color: var(--amber); }
     .runtime-status-sentinel[data-state="error"] { color: var(--red); }
     .header-actions {
       display: none;
@@ -1363,7 +1364,7 @@ export function page(config = configFromEnv()) {
     </aside>
     <main id="chat-main" class="is-empty-chat">
       <header>
-        <span class="runtime-status-sentinel" id="runtime-status" data-state="ready"><span class="status-dot"></span><span id="runtime-status-text">Ready</span></span>
+        <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
       </header>
       <section class="messages" id="messages" aria-live="polite">
         <div class="conversation" id="conversation">
@@ -1427,6 +1428,7 @@ export function page(config = configFromEnv()) {
     let activeHistoryMenuId = null;
     let activeHistoryId = localStorage.getItem(conversationIdKey);
     let activeHistoryLoadToken = 0;
+    let readyNodeCount = null;
 
     function setEmptyChatMode(isEmpty) {
       mainEl?.classList.toggle("is-empty-chat", Boolean(isEmpty));
@@ -1526,6 +1528,21 @@ export function page(config = configFromEnv()) {
     function setStatus(state, label) {
       statusEl.dataset.state = state;
       statusTextEl.textContent = label;
+    }
+
+    function isIdleRuntimeStatus() {
+      return ["ready", "standby"].includes(statusEl.dataset.state) || ["Checking", "Offline"].includes(statusTextEl.textContent);
+    }
+
+    function syncNetworkRuntimeStatus(force = false) {
+      if (!force && !isIdleRuntimeStatus()) return;
+      if (readyNodeCount === null) {
+        setStatus("working", "Checking");
+      } else if (readyNodeCount > 0) {
+        setStatus("ready", "Ready");
+      } else {
+        setStatus("standby", "Standby - no ready nodes");
+      }
     }
 
     function renderToolMode() {
@@ -1640,7 +1657,7 @@ export function page(config = configFromEnv()) {
               ? "No transcript"
               : "No speech heard";
           voiceStopReason = "idle";
-          setStatus("ready", "Ready");
+          syncNetworkRuntimeStatus(true);
         });
         recognition.addEventListener("error", (event) => {
           isListening = false;
@@ -1830,7 +1847,7 @@ export function page(config = configFromEnv()) {
         }
 
         renderCompletedJob(pending, payload, conversationId);
-        setStatus("ready", "Ready");
+        syncNetworkRuntimeStatus(true);
       } catch (error) {
         pending.className = "message error";
         const body = pending.querySelector(".message-body");
@@ -2356,20 +2373,24 @@ export function page(config = configFromEnv()) {
         summary?.classList.toggle("is-online", payload.online_count > 0);
         summary?.classList.toggle("is-waiting", payload.online_count === 0);
         summary?.classList.remove("is-offline");
+        readyNodeCount = payload.online_count;
         setText("network-state", payload.online_count > 0 ? "Online - nodes ready" : "Standby - no ready nodes");
         setText("network-card-state", payload.online_count > 0 ? "ONLINE" : "WAITING");
         setText("network-card-metrics", payload.online_count + " nodes - " + payload.queued_job_count + " queued - " + payload.model_routing);
         setText("network-latency", latency + " ms");
         setText("network-jobs", payload.completed_job_count + " completed");
+        syncNetworkRuntimeStatus(false);
       } catch {
         const summary = document.querySelector(".network-summary");
         summary?.classList.remove("is-online", "is-waiting");
         summary?.classList.add("is-offline");
+        readyNodeCount = 0;
         setText("network-state", "Control plane offline");
         setText("network-card-state", "OFFLINE");
         setText("network-card-metrics", "control plane unavailable");
         setText("network-latency", "-- ms");
         setText("network-jobs", "--");
+        if (isIdleRuntimeStatus()) setStatus("error", "Offline");
       }
     }
 
@@ -2495,7 +2516,7 @@ export function page(config = configFromEnv()) {
         addMessage(item.title || "Untitled conversation", "user");
         addMessage("This conversation was not saved in the backend yet. Shallow tool results and older local-only items can only restore from this browser cache.", "assistant");
       }
-      setStatus("ready", "Ready");
+      syncNetworkRuntimeStatus(true);
       document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
     }
 

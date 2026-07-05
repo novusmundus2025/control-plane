@@ -107,6 +107,11 @@ test("renders a usable chat page", () => {
   assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /\.header-actions \{\s*display: none;/);
   assert.match(html, /class="runtime-status-sentinel" id="runtime-status"/);
+  assert.match(html, /id="runtime-status" data-state="working"/);
+  assert.match(html, /id="runtime-status-text">Checking/);
+  assert.match(html, /\.runtime-status-sentinel\[data-state="standby"\]/);
+  assert.match(html, /function syncNetworkRuntimeStatus/);
+  assert.match(html, /Standby - no ready nodes/);
   assert.match(html, /\.history-title \{/);
   assert.match(html, /id="history-context-menu"/);
   assert.match(html, /data-action="rename"/);
