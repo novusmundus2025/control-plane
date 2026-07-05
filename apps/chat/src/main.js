@@ -4069,7 +4069,7 @@ function isCompoundPromptForDirectTools(message) {
   }
   const intentChecks = [
     /\b(?:weather|forecast|temperature|temp)\b/i,
-    /\b(?:introduce yourself|who are you|what'?s your name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i,
+    /\b(?:introduce yourself|who are you|what'?s your name|tell me (?:your|ur) name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i,
     /\b(?:who is|who's|tell me who|tell me about)\b/i,
     /\b(?:history of|translate|write|create|code|program|explain|summarize)\b/i,
     /\b(?:solve|derivative|integral|differentiate|compute|calculate)\b/i,
@@ -4140,7 +4140,7 @@ function extractCompoundFactualIntent(text) {
 
 function extractCompoundIdentityIntent(text) {
   const match = text.match(
-    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do (?:you|u) have a name|what(?:'s| is) your name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision|mission and vision)\b/i,
+    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do (?:you|u) have a name|what(?:'s| is) your name|tell me (?:your|ur) name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision|mission and vision)\b/i,
   );
   if (!match) {
     return null;
@@ -4163,7 +4163,7 @@ function hasNonWeatherCompoundIntent(lowerText) {
     return false;
   }
   const nonWeatherIntent =
-    /\b(?:introduce yourself|who are you|what'?s your name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i.test(
+    /\b(?:introduce yourself|who are you|what'?s your name|tell me (?:your|ur) name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i.test(
       lowerText,
     ) ||
     /\b(?:who is|who's|tell me who|tell me about|history of|translate|write|create|code|program|explain|summarize)\b/i.test(
@@ -4181,6 +4181,7 @@ function cleanWeatherLocation(value) {
   location = location.replace(/^(?:the\s+)?weather\s+(?:in|for|at|of)\s+/i, "").trim();
   location = location
     .replace(/\s+\b(?:and|with)\s+(?:humidity|wind|forecast|temperature|temp|conditions|rain|snow|uv|air quality)\b.*$/i, "")
+    .replace(/\s*,?\s+\b(?:and|also|then|finally|next)\b\s+(?:please\s+|pls\s+)?(?:tell me (?:your|ur) name|what'?s your name|do (?:you|u) have a name|introduce yourself|who are you|tell me about yourself)\b.*$/i, "")
     .trim();
   if (!location || location.length < 2 || location.length > 120) {
     return null;

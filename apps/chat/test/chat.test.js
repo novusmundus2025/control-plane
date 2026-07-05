@@ -854,6 +854,53 @@ test("answers compound weather person and identity prompts with direct tools", a
   assert.doesNotMatch(result.output, /Sure, I can provide both pieces/i);
 });
 
+test("answers compound weather and name prompts without polluting the weather location", async () => {
+  const calls = [];
+  const prompt = "Can you tell me the weather in stuttgart germany today, and please tell me your name?";
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    assert.equal(url, "https://wttr.in/stuttgart%20germany?format=j1");
+    return jsonResponse({
+      nearest_area: [
+        {
+          areaName: [{ value: "Stuttgart" }],
+          region: [{ value: "Baden-Wurttemberg" }],
+          country: [{ value: "Germany" }],
+        },
+      ],
+      current_condition: [
+        {
+          weatherDesc: [{ value: "Cloudy" }],
+          temp_C: "18",
+          temp_F: "64",
+          FeelsLikeC: "18",
+          FeelsLikeF: "64",
+          humidity: "70",
+          windspeedKmph: "11",
+        },
+      ],
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "compound_tools");
+  assert.deepEqual(calls, ["https://wttr.in/stuttgart%20germany?format=j1"]);
+  assert.match(result.output, /## Weather for Stuttgart, .*Germany/);
+  assert.match(result.output, /Cloudy, 18C\/64F/);
+  assert.match(result.output, /## Atlas/);
+  assert.match(result.output, /My name is Atlas\./);
+  assert.deepEqual(result.response.sections.map((section) => section.type), [
+    "weather",
+    "assistant_identity",
+  ]);
+});
+
 test("routes malformed voice who-is prompts to cautious factual fallback instead of the LLM", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
@@ -1359,6 +1406,10 @@ test("extracts only obvious weather locations", () => {
     null,
   );
   assert.equal(extractWeatherLocation("weather in Manila and humidity please"), "Manila");
+  assert.equal(
+    extractWeatherLocation("weather in stuttgart germany today, and please tell me your name"),
+    null,
+  );
 });
 
 test("extracts simple polynomial integrals", () => {
