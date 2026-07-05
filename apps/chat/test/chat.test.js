@@ -188,19 +188,19 @@ test("composes chat system prompts from selected markdown skills", () => {
     "atlas",
   );
 
-  assert.match(prompt, /Selected MundusX Markdown skills:/);
-  assert.match(prompt, /--- skill: router\.md/);
-  assert.match(prompt, /# Router Skill/);
-  assert.match(prompt, /--- skill: formatter\.md/);
-  assert.match(prompt, /# Formatter Skill/);
-  assert.match(prompt, /--- skill: persona-atlas\.md/);
-  assert.match(prompt, /# Atlas Persona Skill/);
-  assert.match(prompt, /--- skill: code\.md/);
-  assert.match(prompt, /# Code Generation Skill/);
-  assert.match(prompt, /--- skill: chunk-planner\.md/);
-  assert.match(prompt, /# Chunk Planner Skill/);
-  assert.match(prompt, /--- skill: verifier\.md/);
-  assert.match(prompt, /# Verifier Skill/);
+  assert.match(prompt, /Internal MundusX response skills/);
+  assert.match(prompt, /\[router\]/);
+  assert.match(prompt, /decide whether a chat request should use deterministic tools/);
+  assert.match(prompt, /\[formatter\]/);
+  assert.match(prompt, /\[code\]/);
+  assert.match(prompt, /\[chunk-planner\]/);
+  assert.match(prompt, /\[verifier\]/);
+  assert.doesNotMatch(prompt, /# Router Skill/);
+  assert.doesNotMatch(prompt, /# Formatter Skill/);
+  assert.doesNotMatch(prompt, /# Atlas Persona Skill/);
+  assert.doesNotMatch(prompt, /# Code Generation Skill/);
+  assert.doesNotMatch(prompt, /# Chunk Planner Skill/);
+  assert.doesNotMatch(prompt, /# Verifier Skill/);
   assert.match(prompt, /Start with the complete compilable source file in a fenced code block/);
   assert.match(prompt, /Do not introduce the answer with a rewritten version of the user's request/);
   assert.match(prompt, /Answer only what the user asked/);
@@ -210,15 +210,19 @@ test("composes chat system prompts from selected markdown skills", () => {
 test("selects focused markdown skills by request type", () => {
   assert.deepEqual(
     selectChatSkills("Say hi.").map((skill) => skill.name),
-    ["router.md", "formatter.md", "persona-atlas.md"],
+    ["router.md", "formatter.md"],
   );
   assert.deepEqual(
     selectChatSkills("Differentiate y = cosh(arcsin(x^2 ln x))").map((skill) => skill.name),
-    ["router.md", "formatter.md", "persona-atlas.md", "math.md", "chunk-planner.md", "verifier.md"],
+    ["router.md", "formatter.md", "math.md", "chunk-planner.md", "verifier.md"],
   );
   assert.deepEqual(
     selectChatSkills("What is the weather in Berlin today?").map((skill) => skill.name),
-    ["router.md", "formatter.md", "persona-atlas.md", "weather.md", "facts.md", "verifier.md"],
+    ["router.md", "formatter.md", "weather.md", "facts.md", "verifier.md"],
+  );
+  assert.deepEqual(
+    selectChatSkills("Translate to German Hi how are you").map((skill) => skill.name),
+    ["router.md", "formatter.md", "translation.md"],
   );
   assert.ok(
     selectChatSkills("Who is Sara Duterte from PH?").some((skill) => skill.name === "facts.md"),
@@ -270,10 +274,11 @@ test("submits chat work as an auto execution job", async () => {
     assert.equal(body.max_tokens, 512);
     assert.match(body.system_prompt, /You are Atlas/);
     assert.match(body.system_prompt, /the MundusX assistant/);
-    assert.match(body.system_prompt, /My name is \*\*Atlas\*\*/);
     assert.match(body.system_prompt, /Answer only what the user asked/);
     assert.match(body.system_prompt, /Do not complete, rewrite, correct, or expand the user's prompt/);
     assert.match(body.system_prompt, /Do not echo persona notes/);
+    assert.doesNotMatch(body.system_prompt, /# Router Skill/);
+    assert.doesNotMatch(body.system_prompt, /My name is \*\*Atlas\*\*/);
     assert.doesNotMatch(body.system_prompt, /male voice experiences/);
     assert.doesNotMatch(body.system_prompt, /Use the Atlas persona/);
     assert.doesNotMatch(body.system_prompt, /You are Marie/);
@@ -311,6 +316,40 @@ test("submits chat work as an auto execution job", async () => {
   assert.equal(result.progress.total, 2);
   assert.equal(result.progress.waiting, 2);
   assert.equal(result.progress.final_synthesis, true);
+});
+
+test("submits translation jobs with focused private skills", async () => {
+  const fetchImpl = async (url, init) => {
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    const body = JSON.parse(init.body);
+    assert.equal(body.prompt, "Translate to German Hi how are you");
+    assert.equal(body.max_tokens, 48);
+    assert.match(body.system_prompt, /\[translation\]/);
+    assert.match(body.system_prompt, /return only the translated text/i);
+    assert.doesNotMatch(body.system_prompt, /# Translation Skill/);
+    assert.doesNotMatch(body.system_prompt, /# Router Skill/);
+    assert.doesNotMatch(body.system_prompt, /My name is \*\*Atlas\*\*/);
+    return jsonResponse({
+      job_id: "job-translate",
+      status: "queued",
+      job: {
+        job_id: "job-translate",
+        status: "queued",
+        graph_execution_enabled: false,
+      },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: "Translate to German Hi how are you" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.job_id, "job-translate");
 });
 
 test("redacts obvious secrets before submitting chat work", async () => {
@@ -364,7 +403,7 @@ test("uses Atlas persona for male voice chat jobs", async () => {
     assert.equal(body.prompt, "Explain MundusX in one paragraph.");
     assert.match(body.system_prompt, /You are Atlas/);
     assert.match(body.system_prompt, /the MundusX assistant/);
-    assert.match(body.system_prompt, /My name is \*\*Atlas\*\*/);
+    assert.doesNotMatch(body.system_prompt, /My name is \*\*Atlas\*\*/);
     assert.doesNotMatch(body.system_prompt, /male voice experiences/);
     assert.doesNotMatch(body.system_prompt, /Use the Atlas persona/);
     assert.doesNotMatch(body.system_prompt, /You are Marie/);
@@ -2205,6 +2244,15 @@ test("removes plain response labels before rendering chat output", () => {
 
   assert.equal(output, "My name is Atlas.");
   assert.doesNotMatch(output, /^Response:/i);
+});
+
+test("removes leaked markdown skill instructions before rendering chat output", () => {
+  const output = cleanChatOutput(
+    "md # Router Skill Route requests conservatively. # Formatter Skill Answer directly and cleanly. # Translation Skill Return only the translated text.",
+  );
+
+  assert.equal(output, "MundusX returned an empty response. Please try again.");
+  assert.doesNotMatch(output, /Router Skill|Formatter Skill|Translation Skill/i);
 });
 
 test("removes leaked persona labels before rendering chat output", () => {
