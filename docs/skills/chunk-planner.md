@@ -9,5 +9,5 @@ Rules:
 - Chunk code only when the request needs multiple responsibilities or asks for code plus explanation.
 - Preserve dependencies: tests depend on implementation, final synthesis depends on sections, and usage notes depend on the final source.
 - If only one capable node is available, chunk only when it improves output quality or avoids token limits.
+- For compound prompts, the planner may split work into tool/API sections and LLM sections; only LLM sections run on nodes through the control plane.
 - Return completed sections to the UI as they finish; do not hide useful section outputs behind a thin final answer.
-

@@ -1286,6 +1286,171 @@ test("uses the LLM planner before tools for multi-intent prompts", async () => {
   ]);
 });
 
+test("routes planned LLM sections back through control-plane jobs", async () => {
+  const calls = [];
+  const prompt = "What is the weather in Berlin and write one short launch tagline for MundusX.";
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      if (/You are the MundusX tool planner/.test(body.system_prompt)) {
+        assert.equal(body.execution_mode, "single");
+        return jsonResponse({
+          job_id: "planner-llm-1",
+          status: "completed",
+          job: {
+            job_id: "planner-llm-1",
+            status: "completed",
+            output: JSON.stringify({
+              intents: [
+                { type: "weather", location: "Berlin" },
+                {
+                  type: "llm_auto",
+                  title: "Launch tagline",
+                  prompt: "Write one short launch tagline for MundusX.",
+                },
+              ],
+            }),
+          },
+        });
+      }
+      assert.equal(body.prompt, "Write one short launch tagline for MundusX.");
+      assert.equal(body.execution_mode, "auto");
+      assert.doesNotMatch(body.system_prompt, /You are the MundusX tool planner/);
+      return jsonResponse({
+        job_id: "tagline-1",
+        status: "completed",
+        job: {
+          job_id: "tagline-1",
+          status: "completed",
+          model: "Qwen/Test",
+          execution_mode: "auto",
+          output: "MundusX turns idle compute into shared AI power.",
+        },
+      });
+    }
+    if (url === "https://wttr.in/Berlin?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Berlin" }],
+            region: [{ value: "Berlin" }],
+            country: [{ value: "Germany" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Sunny" }],
+            temp_C: "20",
+            temp_F: "68",
+            FeelsLikeC: "20",
+            FeelsLikeF: "68",
+            humidity: "56",
+            windspeedKmph: "19",
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "compound_tools");
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://uat.mundusx.ai/v1/jobs",
+    "https://wttr.in/Berlin?format=j1",
+    "https://uat.mundusx.ai/v1/jobs",
+  ]);
+  assert.match(result.output, /## Weather for Berlin, Germany/);
+  assert.match(result.output, /## Launch tagline/);
+  assert.match(result.output, /idle compute into shared AI power/);
+  assert.deepEqual(result.response.sections.map((section) => section.type), ["weather", "llm"]);
+  assert.equal(result.response.sections[1].response.job_id, "tagline-1");
+  assert.equal(result.response.sections[1].response.execution_mode, "auto");
+});
+
+test("honors planner-requested decomposed LLM sections", async () => {
+  const calls = [];
+  const prompt = "What is the weather in Berlin, also give me a detailed launch roadmap for MundusX chat.";
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      if (/You are the MundusX tool planner/.test(body.system_prompt)) {
+        return jsonResponse({
+          job_id: "planner-decompose-1",
+          status: "completed",
+          job: {
+            job_id: "planner-decompose-1",
+            status: "completed",
+            output: JSON.stringify({
+              intents: [
+                { type: "weather", location: "Berlin" },
+                {
+                  type: "llm_decompose",
+                  title: "Launch roadmap",
+                  prompt: "Give a detailed launch roadmap for MundusX chat.",
+                },
+              ],
+            }),
+          },
+        });
+      }
+      assert.equal(body.prompt, "Give a detailed launch roadmap for MundusX chat.");
+      assert.equal(body.execution_mode, "decompose");
+      return jsonResponse({
+        job_id: "plan-1",
+        status: "completed",
+        job: {
+          job_id: "plan-1",
+          status: "completed",
+          model: "Qwen/Test",
+          execution_mode: "decompose",
+          output: "Plan section output.",
+        },
+      });
+    }
+    if (url === "https://wttr.in/Berlin?format=j1") {
+      return jsonResponse({
+        nearest_area: [{ areaName: [{ value: "Berlin" }], region: [{ value: "Berlin" }], country: [{ value: "Germany" }] }],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Sunny" }],
+            temp_C: "20",
+            temp_F: "68",
+            FeelsLikeC: "20",
+            FeelsLikeF: "68",
+            humidity: "56",
+            windspeedKmph: "19",
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://uat.mundusx.ai/v1/jobs",
+    "https://wttr.in/Berlin?format=j1",
+    "https://uat.mundusx.ai/v1/jobs",
+  ]);
+  assert.equal(result.response.sections[1].response.execution_mode, "decompose");
+  assert.match(result.output, /Plan section output/);
+});
+
 test("answers compound weather and name prompts without polluting the weather location", async () => {
   const calls = [];
   const prompt = "Can you tell me the weather in stuttgart germany today, and please tell me your name?";

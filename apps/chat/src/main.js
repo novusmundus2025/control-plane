@@ -3864,6 +3864,31 @@ async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePerso
         output: factualJob?.output ?? fallbackJob.output,
         response: factualJob?.response ?? fallbackJob.response,
       });
+      continue;
+    }
+
+    if (intent.type === "llm") {
+      try {
+        const llmJob = await fetchPlannedLlmSectionJob(message, intent, config, fetchImpl, voicePersona);
+        sections.push({
+          type: "llm",
+          title: intent.title ?? "Response",
+          output: llmJob.output,
+          response: {
+            type: "llm_section_result",
+            job_id: llmJob.job_id,
+            execution_mode: llmJob.execution_mode,
+            model: llmJob.model ?? null,
+          },
+        });
+      } catch (error) {
+        sections.push({
+          type: "llm",
+          title: intent.title ?? "Response",
+          output: `I could not complete this section: ${error.message ?? "request failed"}`,
+          response: null,
+        });
+      }
     }
   }
 
@@ -3911,6 +3936,37 @@ function formatCompoundWeatherOutput(weatherJob) {
     return details ? `${response.summary}\n${details}` : response.summary;
   }
   return String(weatherJob?.output ?? "").replace(/^Weather for .+?:\s*/i, "").trim();
+}
+
+async function fetchPlannedLlmSectionJob(parentMessage, intent, config, fetchImpl, voicePersona = "atlas") {
+  const prompt = String(intent.prompt ?? intent.topic ?? "").trim();
+  if (!prompt) {
+    throw httpError(400, "planned LLM section is missing a prompt");
+  }
+  const executionMode = normalizeExecutionMode(intent.executionMode ?? "auto");
+  const jobBody = buildGenericJobBody(prompt, config, {
+    executionMode,
+    voicePersona,
+    systemPrompt: buildChatSystemPrompt(prompt, voicePersona),
+    maxTokens: intent.maxTokens,
+  });
+  const jobResponse = await controlPlaneFetch(fetchImpl, config, "/v1/jobs", {
+    method: "POST",
+    body: JSON.stringify(jobBody),
+  });
+  const job = jobResponse.job ?? jobResponse;
+  const jobId = jobResponse.job_id ?? job.job_id;
+  if (!jobId) {
+    throw httpError(502, "control plane did not return a section job id");
+  }
+  const formatted = formatChatJob(jobId, job, jobBody.model || null);
+  if (formatted.status === "completed") {
+    return formatted;
+  }
+  if (formatted.status === "failed") {
+    throw httpError(502, formatted.error || "planned section job failed");
+  }
+  return waitForChatJob(jobId, { timeoutSeconds: config.defaultTimeoutSeconds, message: parentMessage }, config, fetchImpl);
 }
 
 function isMultiIntentPlanningCandidate(message) {
@@ -3995,14 +4051,18 @@ async function submitToolPlannerJob(message, config, fetchImpl) {
 function buildToolPlannerSystemPrompt() {
   return [
     "You are the MundusX tool planner.",
-    "You do not answer the user. You split multi-intent prompts and choose tools.",
+    "You do not answer the user. You split multi-intent prompts and choose the correct execution path for each intent.",
     "Return strict JSON only, with this shape:",
-    "{\"intents\":[{\"type\":\"weather\",\"location\":\"Berlin\"},{\"type\":\"factual\",\"topic\":\"University of the Philippines Diliman\"},{\"type\":\"mundusx_knowledge\",\"topic\":\"overview\"}]}",
-    "Allowed intent types: weather, factual, assistant_identity, mundusx_knowledge.",
+    "{\"intents\":[{\"type\":\"weather\",\"location\":\"Berlin\"},{\"type\":\"factual\",\"topic\":\"University of the Philippines Diliman\"},{\"type\":\"llm_auto\",\"title\":\"Product tagline\",\"prompt\":\"Write one short product tagline for MundusX.\"}]}",
+    "Allowed intent types: weather, factual, assistant_identity, mundusx_knowledge, llm_auto, llm_single, llm_decompose.",
     "Use weather for weather, forecast, temperature, humidity, wind, or current condition requests.",
     "Use factual for public factual lookup requests about people, schools, organizations, places, or history.",
     "Use assistant_identity for questions about Atlas name, purpose, creator, mission, or vision.",
     "Use mundusx_knowledge for questions asking what MundusX is, MundusX mission, vision, benefits, architecture, contributors, or network.",
+    "Use llm_single for short generation, translation, summarization, or reasoning that needs a model but does not need splitting.",
+    "Use llm_auto for normal open-ended model work where the control plane should choose the execution mode.",
+    "Use llm_decompose for long code, detailed research, multi-deliverable work, advanced math explanations, or requests that should be chunked.",
+    "For llm_* include prompt and a concise title. The prompt must be only that intent, not the whole user message.",
     "Preserve the user's order. Include each requested intent once. Do not invent missing questions.",
     "For weather include location. For factual include topic. For assistant_identity include topic: name, identity, creator, or mission. For mundusx_knowledge include topic: overview, benefits, mission, or architecture.",
   ].join("\n");
@@ -4051,6 +4111,21 @@ function normalizePlannerIntents(intents) {
     if (type === "mundusx_knowledge") {
       const topic = normalizeMundusXKnowledgePlannerTopic(rawIntent?.topic);
       normalized.push({ type, topic, index: normalized.length });
+      continue;
+    }
+    if (type === "llm") {
+      const prompt = cleanPlannerLlmPrompt(rawIntent?.prompt ?? rawIntent?.topic ?? rawIntent?.query);
+      if (prompt) {
+        const maxTokens = positiveInteger(rawIntent?.max_tokens ?? rawIntent?.maxTokens, null);
+        normalized.push({
+          type,
+          prompt,
+          title: cleanPlannerLlmTitle(rawIntent?.title) ?? "Response",
+          executionMode: normalizePlannerExecutionMode(rawIntent?.type, rawIntent?.execution_mode ?? rawIntent?.executionMode),
+          ...(maxTokens ? { maxTokens } : {}),
+          index: normalized.length,
+        });
+      }
     }
   }
   return dedupeCompoundIntents(normalized).slice(0, MAX_COMPOUND_DIRECT_TOOL_INTENTS);
@@ -4067,7 +4142,44 @@ function normalizePlannerIntentType(value) {
   if (["mundusx", "mundusx_overview", "product_knowledge"].includes(type)) {
     return "mundusx_knowledge";
   }
+  if (["llm", "llm_auto", "llm_single", "llm_decompose", "auto", "single", "decompose", "gpu", "model"].includes(type)) {
+    return "llm";
+  }
   return null;
+}
+
+function normalizePlannerExecutionMode(typeValue, modeValue) {
+  const rawType = String(typeValue ?? "").toLowerCase().replace(/[-\s]+/g, "_").trim();
+  const rawMode = String(modeValue ?? "").toLowerCase().replace(/[-\s]+/g, "_").trim();
+  if (rawType === "llm_decompose" || rawMode === "decompose") {
+    return "decompose";
+  }
+  if (rawType === "llm_single" || rawMode === "single") {
+    return "single";
+  }
+  return "auto";
+}
+
+function cleanPlannerLlmPrompt(value) {
+  const prompt = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/[ \t]+([?.!,;:])/g, "$1")
+    .trim();
+  if (!prompt || prompt.length < 2 || prompt.length > 3000) {
+    return null;
+  }
+  return prompt;
+}
+
+function cleanPlannerLlmTitle(value) {
+  const title = String(value ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/[?!.,:;]+$/g, "")
+    .trim();
+  if (!title || title.length < 2 || title.length > 80) {
+    return null;
+  }
+  return title;
 }
 
 function normalizeAssistantIdentityPlannerTopic(value) {
@@ -4483,7 +4595,9 @@ function dedupeCompoundIntents(intents) {
       ? intent.location
       : intent.type === "factual"
         ? intent.topic
-        : intent.topic;
+        : intent.type === "llm"
+          ? intent.prompt
+          : intent.topic;
     const key = `${intent.type}:${String(value ?? "").toLowerCase()}`;
     if (seen.has(key)) {
       continue;
