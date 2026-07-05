@@ -1073,6 +1073,7 @@ test("routes malformed voice who-is prompts to cautious factual fallback instead
   assert.equal(result.execution_mode, "tool");
   assert.equal(result.tool, "factual_summary");
   assert.equal(result.response.verified, false);
+  assert.match(result.response.text, /do not have enough verified public information/i);
   assert.match(result.output, /David Batalla/);
   assert.match(result.output, /do not have enough verified public information/i);
   assert.doesNotMatch(result.output, /role in the MundusX project/i);
@@ -1107,6 +1108,7 @@ test("routes unknown who-is prompts to cautious factual fallback instead of the 
   assert.equal(result.execution_mode, "tool");
   assert.equal(result.tool, "factual_summary");
   assert.equal(result.response.verified, false);
+  assert.match(result.response.text, /do not have enough verified public information about Lichard Baliuag/i);
   assert.match(result.output, /do not have enough verified public information about Lichard Baliuag/i);
   assert.doesNotMatch(result.output, /role in the MundusX/i);
   assert.deepEqual(calls, [

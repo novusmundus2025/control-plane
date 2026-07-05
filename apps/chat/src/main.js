@@ -1935,7 +1935,7 @@ export function page(config = configFromEnv()) {
       const output = stripEchoedPrompt(payload.output || "(empty response)", userPrompt);
       body.textContent = "";
       if (payload.response) {
-        body.appendChild(renderTypedResponse(payload.response));
+        body.appendChild(renderTypedResponse(payload.response, output));
       } else {
         appendRichMessage(body, output);
       }
@@ -2011,7 +2011,7 @@ export function page(config = configFromEnv()) {
       return fallbackOutput;
     }
 
-    function renderTypedResponse(response) {
+    function renderTypedResponse(response, fallbackOutput = "") {
       const wrapper = document.createElement("div");
       wrapper.className = "typed-response";
       if (response.type === "math_solution") {
@@ -2083,19 +2083,19 @@ export function page(config = configFromEnv()) {
           wrapper.appendChild(sectionCard);
         }
         if (!sections.length) {
-          appendRichMessage(wrapper, response.text || "");
+          appendRichMessage(wrapper, response.text || fallbackOutput || "");
         }
         return wrapper;
       }
       if (response.type === "factual_summary") {
-        appendRichMessage(wrapper, response.text || response.summary || "");
+        appendRichMessage(wrapper, response.text || response.summary || fallbackOutput || "");
         return wrapper;
       }
       if (response.type === "assistant_identity") {
-        appendRichMessage(wrapper, response.text || "");
+        appendRichMessage(wrapper, response.text || fallbackOutput || "");
         return wrapper;
       }
-      appendRichMessage(wrapper, response.text || "");
+      appendRichMessage(wrapper, response.text || fallbackOutput || "");
       return wrapper;
     }
 
@@ -2653,7 +2653,7 @@ export function page(config = configFromEnv()) {
       const body = node.querySelector(".message-body");
       body.textContent = "";
       if (role === "assistant" && turn.payload?.response) {
-        body.appendChild(renderTypedResponse(turn.payload.response));
+        body.appendChild(renderTypedResponse(turn.payload.response, turn.payload.output || turn.content || ""));
       } else {
         appendRichMessage(body, turn.content || "");
       }
@@ -4638,6 +4638,7 @@ function fetchCautiousFactualFallbackJob(message, topic) {
     response: {
       type: "factual_summary",
       title: topic,
+      text: output,
       verified: false,
     },
     progress: {
