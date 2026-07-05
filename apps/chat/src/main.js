@@ -5291,6 +5291,9 @@ function inferMaxTokens(message, explicitValue, capacityProfile = null) {
 
   const lower = message.toLowerCase();
   if (looksLikeCompleteProgramRequest(lower)) {
+    if (looksLikeSmallCompleteProgramRequest(message)) {
+      return adaptiveTokenBudget("codeSmall", 1536, capacityProfile);
+    }
     return adaptiveTokenBudget("code", 4096, capacityProfile);
   }
   if (
@@ -5335,12 +5338,47 @@ function inferMaxTokens(message, explicitValue, capacityProfile = null) {
 function adaptiveTokenBudget(kind, fallback, capacityProfile) {
   const tier = capacityProfile?.tier ?? "small";
   const budgets = {
-    small: { normal: 512, long: 768, detailed: 1024, code: 4096 },
-    medium: { normal: 768, long: 1024, detailed: 1536, code: 4096 },
-    large: { normal: 1024, long: 1536, detailed: 2048, code: 4096 },
-    xlarge: { normal: 2048, long: 3072, detailed: 4096, code: 6144 },
+    small: { normal: 512, long: 768, detailed: 1024, codeSmall: 1536, code: 4096 },
+    medium: { normal: 768, long: 1024, detailed: 1536, codeSmall: 2048, code: 4096 },
+    large: { normal: 1024, long: 1536, detailed: 2048, codeSmall: 3072, code: 4096 },
+    xlarge: { normal: 2048, long: 3072, detailed: 4096, codeSmall: 4096, code: 6144 },
   };
   return budgets[tier]?.[kind] ?? fallback;
+}
+
+function looksLikeSmallCompleteProgramRequest(message) {
+  const lower = String(message ?? "").toLowerCase();
+  if (
+    !looksLikeCompleteProgramRequest(lower) ||
+    looksLikeLargeCodeProject(lower) ||
+    looksLikeComplexSingleFileCodeRequest(lower)
+  ) {
+    return false;
+  }
+  if (message.length <= 180) {
+    return true;
+  }
+  return /\b(?:magic\s+square|calculator|sorting?|sort string|factorial|fibonacci|prime|palindrome|simple|3x3|three by three|5x5)\b/i.test(
+    lower,
+  );
+}
+
+function looksLikeComplexSingleFileCodeRequest(lower) {
+  return containsAny(lower, [
+    "binary file",
+    "property file",
+    "properties file",
+    "file handling",
+    "menu",
+    "input handling",
+    "error handling",
+    "save",
+    "delete",
+    "update",
+    "student",
+    "enrollment",
+    "record",
+  ]);
 }
 
 function looksLikeCompleteProgramRequest(lower) {

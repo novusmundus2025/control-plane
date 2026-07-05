@@ -501,7 +501,7 @@ test("uses larger token budgets for complete program prompts", async () => {
 
   assert.equal(calls[0].max_tokens, 4096);
   assert.equal(calls[1].max_tokens, 4096);
-  assert.equal(calls[2].max_tokens, 4096);
+  assert.equal(calls[2].max_tokens, 1536);
   assert.equal(calls[0].execution_mode, "single");
   assert.equal(calls[1].execution_mode, "single");
   assert.equal(calls[2].execution_mode, "single");
