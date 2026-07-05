@@ -271,16 +271,16 @@ impl ControlPlaneState {
             .map(|output| output.chars().count() as f64)
             .unwrap_or(0.0);
         let work_units = ((prompt_chars + output_chars) / 400.0).ceil().max(1.0);
-        let contribution_multiplier = 1.0 + (node.contribution_percent as f64 / 100.0);
-        let amount = ((work_units * contribution_multiplier) * 100.0).round() / 100.0;
+        let amount = (work_units * 100.0).round() / 100.0;
         let graph_node_id = graph_node.map(|node| node.id.clone());
         let graph_node_name = graph_node.map(|node| node.name.clone());
         let parent_job_id = graph_node_id.as_ref().map(|_| job.job_id.clone());
         let metadata = serde_json::json!({
-            "formula": "ceil((prompt_chars + output_chars) / 400) * (1 + contribution_percent / 100)",
+            "formula": "ceil((prompt_chars + output_chars) / 400)",
             "prompt_chars": prompt_chars,
             "output_chars": output_chars,
             "contribution_percent": node.contribution_percent,
+            "contribution_percent_role": "routing_budget_only",
             "backend": node.backend,
             "job_status": job.status,
             "parent_job_id": job.job_id,
@@ -5600,6 +5600,61 @@ mod tests {
         assert!(state
             .award_job_reward(&second_completed, "6".to_string())
             .is_none());
+    }
+
+    #[test]
+    fn credit_award_ignores_contribution_percent_multiplier() {
+        let mut state = ready_state();
+        state
+            .set_operator_contribution_percent("node-1", Some(80))
+            .expect("operator cap update");
+        state.submit_job(classification_request("hello world"), "2".to_string());
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("claim");
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("x".repeat(835)),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("completion");
+        let award = state
+            .award_job_reward(&completed, "5".to_string())
+            .expect("award");
+
+        assert_eq!(award.amount, 3.0);
+        assert_eq!(
+            award
+                .metadata
+                .get("formula")
+                .and_then(|value| value.as_str()),
+            Some("ceil((prompt_chars + output_chars) / 400)")
+        );
+        assert_eq!(
+            award
+                .metadata
+                .get("contribution_percent_role")
+                .and_then(|value| value.as_str()),
+            Some("routing_budget_only")
+        );
+        assert_eq!(
+            award
+                .metadata
+                .get("contribution_percent")
+                .and_then(|value| value.as_u64()),
+            Some(80)
+        );
     }
 
     #[test]

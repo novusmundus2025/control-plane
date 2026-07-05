@@ -34,8 +34,7 @@ Current credit scoring is character-based, not true token-metered accounting:
 
 ```text
 work_units = ceil((prompt_chars + output_chars) / 400)
-multiplier = 1 + contribution_percent / 100
-credits = round(work_units * multiplier, 2)
+credits = round(work_units, 2)
 ```
 
 Example:
@@ -43,20 +42,20 @@ Example:
 ```text
 prompt_chars = 23
 output_chars = 835
-contribution_percent = 80
 
 work_units = ceil((23 + 835) / 400)
            = ceil(858 / 400)
            = 3
 
-multiplier = 1 + 80 / 100
-           = 1.8
-
-credits = 3 * 1.8
-        = 5.40
+credits = 3.00
 ```
 
 `400` is the current character work-unit divisor.
+
+`contribution_percent` is not a payout multiplier. It is a routing budget cap used
+to decide how much work a contributor allows MundusX to schedule on that device,
+and it may influence model/workload eligibility. Credits are awarded for completed
+work, not for the configured contribution cap.
 
 ### Node Trust Score
 
