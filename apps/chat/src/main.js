@@ -856,6 +856,36 @@ export function page(config = configFromEnv()) {
     .message.error .message-body {
       color: #b3231f;
     }
+    .message-error-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .message-retry-button {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 30px;
+      border: 1px solid rgba(229, 72, 77, 0.24);
+      border-radius: 999px;
+      background: #fff;
+      color: #b3231f;
+      padding: 0 10px;
+      font-size: 12px;
+      font-weight: 700;
+      transition: background var(--motion-fast), border-color var(--motion-fast), transform var(--motion-fast);
+    }
+    .message-retry-button:hover,
+    .message-retry-button:focus-visible {
+      background: #fff6f6;
+      border-color: rgba(229, 72, 77, 0.42);
+      transform: translateY(-1px);
+    }
+    .message-retry-icon {
+      font-size: 14px;
+      line-height: 1;
+    }
     .meta {
       color: var(--muted-2);
       font-size: 12px;
@@ -1852,12 +1882,38 @@ export function page(config = configFromEnv()) {
         pending.className = "message error";
         const body = pending.querySelector(".message-body");
         body.textContent = error.message;
+        appendRetryAction(body, message);
         setStatus("error", "Error");
       } finally {
         sendEl.disabled = false;
         promptEl.focus();
       }
     });
+
+    function appendRetryAction(body, message) {
+      const text = String(message ?? "").trim();
+      if (!body || !text) return;
+      const actions = document.createElement("div");
+      actions.className = "message-error-actions";
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "message-retry-button";
+      button.setAttribute("aria-label", "Retry this message");
+      const icon = document.createElement("span");
+      icon.className = "message-retry-icon";
+      icon.setAttribute("aria-hidden", "true");
+      icon.textContent = "↻";
+      const label = document.createElement("span");
+      label.textContent = "Retry";
+      button.append(icon, label);
+      button.addEventListener("click", () => {
+        promptEl.value = text;
+        promptEl.focus();
+        form.requestSubmit();
+      });
+      actions.appendChild(button);
+      body.appendChild(actions);
+    }
 
     function renderPendingJob(node, payload) {
       const body = node.querySelector(".message-body");

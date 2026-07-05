@@ -96,6 +96,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /function isIncompleteCodeFallback/);
   assert.match(html, /function progressLooksLikeCodePlan/);
   assert.match(html, /shouldShowSourceSections\(payload, output\)/);
+  assert.match(html, /function appendRetryAction/);
+  assert.match(html, /message-retry-button/);
   assert.match(html, /function progressUnit/);
   assert.match(html, /\.message-body ol/);
   assert.match(html, /\.message-body strong/);
