@@ -1622,6 +1622,51 @@ test("does not guess compound tool chunks when the LLM planner returns no usable
   );
 });
 
+test("rejects fallback answers that drift into invented question lists", async () => {
+  const prompt = "What is mundusx? What is the weather in Manila? Subtract 3(x2+1)2 from 6x3 -9x2 -13x -4";
+  const fetchImpl = async (url, init = {}) => {
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      if (/You are the MundusX tool planner/.test(body.system_prompt ?? "")) {
+        return plannerJobResponse([], "planner-empty");
+      }
+      return jsonResponse({
+        job_id: "normal-drift",
+        status: "completed",
+        job: {
+          job_id: "normal-drift",
+          status: "completed",
+          output: [
+            "What is the sum of the first 100 odd numbers?",
+            "What is the area of a circle with a radius of 5 units?",
+            "What is the area of a square with a side length of 4 units?",
+            "What is the volume of a cube with a side length of 3 units?",
+            "What is the area of a triangle with base 6 units and height 4 units?",
+            "What is the area of a rectangle with length 8 units and width 3 units?",
+          ].join(" "),
+          model: "Qwen/Qwen2.5-1.5B-Instruct",
+          execution_mode: "auto",
+        },
+      });
+    }
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ nodes: [] });
+    }
+    throw new Error(`unexpected call ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.output, "");
+  assert.match(result.error, /generated unrelated questions/i);
+  assert.ok(result.quality_flags.some((flag) => flag.code === "question_drift"));
+});
+
 test("answers compound weather and name prompts without polluting the weather location", async () => {
   const calls = [];
   const prompt = "Can you tell me the weather in stuttgart germany today, and please tell me your name?";

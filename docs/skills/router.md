@@ -6,6 +6,7 @@ Rules:
 
 - For multi-intent prompts, call the planner first. The planner returns strict JSON describing each small intent chunk and whether it should use a direct tool/API or a control-plane LLM job.
 - Do not use regex/API extraction to guess compound prompt chunks after planner failure. If the planner is unavailable or returns invalid JSON, route the whole request back through `/v1/jobs` rather than executing partial tool guesses.
+- If the fallback `/v1/jobs` answer drifts into invented questions or unrelated prompt expansion, reject it as a failed answer and allow retry instead of displaying it.
 - Route weather, current factual lookups, assistant identity, simple polynomial calculus, and simple linear equations to tools when a matching tool exists.
 - Route planned `math` intents to deterministic math tools first; fall back to `/v1/jobs` only when no math parser matches.
 - Planned tool/API chunks must stay small and single-purpose, for example one weather location or one factual lookup topic.

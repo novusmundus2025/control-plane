@@ -3081,7 +3081,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(502, "control plane did not return a job id");
   }
 
-  return formatChatJob(jobId, job, jobBody.model || null);
+  return formatChatJob(jobId, job, jobBody.model || null, { prompt: message });
 }
 
 async function recordAssistantTurn(conversationId, config, fetchImpl, result) {
@@ -4097,7 +4097,7 @@ async function fetchPlannedLlmSectionJob(parentMessage, intent, config, fetchImp
   if (!jobId) {
     throw httpError(502, "control plane did not return a section job id");
   }
-  const formatted = formatChatJob(jobId, job, jobBody.model || null);
+  const formatted = formatChatJob(jobId, job, jobBody.model || null, { prompt });
   if (formatted.status === "completed") {
     return formatted;
   }
@@ -5525,7 +5525,7 @@ async function fetchWebSearchJob(message, query, config, fetchImpl, jobOptions =
 
   trackGroundingSources(jobId, sources, config);
 
-  const formatted = formatChatJob(jobId, job, jobBody.model || null);
+  const formatted = formatChatJob(jobId, job, jobBody.model || null, { prompt: message });
   return { ...formatted, tool: "web_search", sources };
 }
 
@@ -5727,7 +5727,7 @@ export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = f
   const conversationId = options.conversationId ?? null;
   const latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
   const job = latest.job ?? latest;
-  const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null);
+  const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null, { prompt: options.message });
   if (formatted.status === "completed" && conversationId) {
     await appendConversationMessage(conversationId, "assistant", formatted.output, config, fetchImpl, {
       jobId,
@@ -5781,20 +5781,23 @@ async function waitForChatJob(jobId, body, config, fetchImpl) {
   throw httpError(504, `timed out waiting for job ${jobId} while status was ${status}`);
 }
 
-function formatChatJob(jobId, job, fallbackModel) {
+function formatChatJob(jobId, job, fallbackModel, options = {}) {
   const progress = summarizeChatProgress(job);
   const sourceOutput = String(job.output ?? "");
   const rawOutput = job.status === "completed" ? cleanChatOutput(sourceOutput) : "";
   const output = job.status === "completed" ? promoteSectionOutputWhenFinalIsThin(rawOutput, progress) : "";
-  const qualityFlags = job.status === "completed" ? detectChatQualityFlags(sourceOutput, rawOutput, output) : [];
+  const qualityFlags = job.status === "completed"
+    ? detectChatQualityFlags(sourceOutput, rawOutput, output, options.prompt)
+    : [];
+  const rejectFlag = qualityFlags.find((flag) => flag.severity === "reject");
   return {
     job_id: jobId,
-    status: job.status,
-    output,
+    status: rejectFlag ? "failed" : job.status,
+    output: rejectFlag ? "" : output,
     output_cleaned: job.status === "completed" && output !== String(job.output ?? ""),
     quality_flags: qualityFlags,
     needs_repair: qualityFlags.some((flag) => flag.severity === "repair"),
-    error: job.error ?? null,
+    error: rejectFlag?.message ?? job.error ?? null,
     model: job.model ?? fallbackModel,
     assigned_node_id: job.assigned_node_id ?? null,
     execution_mode: job.execution_mode ?? "single",
@@ -6660,7 +6663,7 @@ function cleanChatOutputInternal(value, emptyFallback) {
   return output;
 }
 
-function detectChatQualityFlags(rawValue, cleanedValue, finalValue = cleanedValue) {
+function detectChatQualityFlags(rawValue, cleanedValue, finalValue = cleanedValue, promptValue = "") {
   const raw = String(rawValue ?? "").trim();
   const cleaned = String(cleanedValue ?? "").trim();
   const finalOutput = String(finalValue ?? "").trim();
@@ -6695,8 +6698,41 @@ function detectChatQualityFlags(rawValue, cleanedValue, finalValue = cleanedValu
   if (hasBrokenMarkdownFence(finalOutput)) {
     addFlag("broken_markdown", "repair", "The rendered answer has an unmatched Markdown code fence.");
   }
+  if (hasUnrequestedQuestionDrift(promptValue, finalOutput)) {
+    addFlag(
+      "question_drift",
+      "reject",
+      "MundusX generated unrelated questions instead of answering the request. Please retry.",
+    );
+  }
 
   return flags;
+}
+
+function hasUnrequestedQuestionDrift(promptValue, outputValue) {
+  const prompt = String(promptValue ?? "").trim();
+  const output = String(outputValue ?? "").trim();
+  if (!prompt || !output) {
+    return false;
+  }
+  if (/\b(?:quiz|questionnaire|worksheet|practice\s+(?:questions|problems)|exam|test\s+questions|generate\s+questions|list\s+questions|interview\s+questions)\b/i.test(prompt)) {
+    return false;
+  }
+  const promptQuestionCount = countQuestionLikeClauses(prompt);
+  const outputQuestionCount = countQuestionLikeClauses(output);
+  if (outputQuestionCount < 6 || outputQuestionCount <= promptQuestionCount + 3) {
+    return false;
+  }
+  const questionIntroCount = (output.match(/\b(?:what|who|where|when|why|how|is|are|can|does|do|should)\b[^?]{0,160}\?/gi) ?? []).length;
+  const answerMarkers = (output.match(/\b(?:answer|result|therefore|equals|is\s+[-+]?\d|MundusX|weather|temperature)\b/gi) ?? []).length;
+  return questionIntroCount >= 5 && answerMarkers < questionIntroCount;
+}
+
+function countQuestionLikeClauses(value) {
+  const text = String(value ?? "");
+  const questionMarks = (text.match(/\?/g) ?? []).length;
+  const questionStarters = (text.match(/\b(?:what|who|where|when|why|how|is|are|can|does|do|should)\b[^.?!]{0,120}\?/gi) ?? []).length;
+  return Math.max(questionMarks, questionStarters);
 }
 
 function startsWithPromptContinuation(value) {
