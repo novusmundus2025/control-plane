@@ -2057,6 +2057,11 @@ fn graph_node_max_tokens(job: &JobRecord, active_node_id: &str) -> u32 {
             "job.compile_notes" => 384,
             _ => 768,
         },
+        "code_with_explanation" => match node.id.as_str() {
+            "job.complete_source" => 1_280,
+            "job.code_explanation" => 512,
+            _ => 768,
+        },
         _ => match node.responsibility.as_str() {
             "merge" => 768,
             "analysis" | "scope" => 256,
@@ -2610,6 +2615,16 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
     if classification.task_type == RequestTaskType::Coding
         && looks_like_complete_code_prompt(&lower)
     {
+        if looks_like_code_explanation_prompt(&lower) && looks_like_small_code_prompt(&lower) {
+            let jobs = code_with_explanation_plan_jobs();
+            return JobPlan {
+                plan_id: format!("plan-{}", request.request_id),
+                strategy: "code_with_explanation".to_string(),
+                summary: "Planned complete source code first, followed by a concise explanation.".to_string(),
+                jobs,
+            };
+        }
+
         let jobs = complete_code_plan_jobs();
         return JobPlan {
             plan_id: format!("plan-{}", request.request_id),
@@ -3346,6 +3361,85 @@ fn complete_code_plan_jobs() -> Vec<PlannedJob> {
         "The reducer must combine contract-driven code chunks into one coherent source file.",
     );
     jobs
+}
+
+fn code_with_explanation_plan_jobs() -> Vec<PlannedJob> {
+    let mut jobs = Vec::new();
+    push_planned_job(
+        &mut jobs,
+        "job.complete_source",
+        "Complete source code",
+        "code",
+        Vec::new(),
+        "Return only one complete compilable source file in a fenced code block. Include required imports, classes, methods, and runnable entrypoint. Do not include explanation in this chunk.",
+        "For small educational code requests, the user can inspect the source before waiting for explanation.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.code_explanation",
+        "Code explanation",
+        "documentation",
+        vec!["job.complete_source".to_string()],
+        "Explain how the generated program works in concise prose or bullets. Refer to the source code chunk; do not repeat the full code.",
+        "Explanation depends on the source code and should be returned as a separate, smaller chunk.",
+    );
+    jobs
+}
+
+fn looks_like_code_explanation_prompt(lower: &str) -> bool {
+    contains_any(
+        lower,
+        &[
+            "explain",
+            "explanation",
+            "how it works",
+            "how it is generated",
+            "understand",
+            "walkthrough",
+            "describe the code",
+            "detailed explanation",
+        ],
+    )
+}
+
+fn looks_like_small_code_prompt(lower: &str) -> bool {
+    !contains_any(
+        lower,
+        &[
+            "binary file",
+            "property file",
+            "properties file",
+            "file handling",
+            "database",
+            "api",
+            "backend",
+            "frontend",
+            "authentication",
+            "menu",
+            "save",
+            "delete",
+            "update",
+            "student",
+            "enrollment",
+            "record",
+        ],
+    ) && (lower.len() <= 240
+        || contains_any(
+            lower,
+            &[
+                "magic square",
+                "calculator",
+                "sort",
+                "factorial",
+                "fibonacci",
+                "prime",
+                "palindrome",
+                "simple",
+                "3x3",
+                "three by three",
+                "5x5",
+            ],
+        ))
 }
 
 fn contains_any(input: &str, needles: &[&str]) -> bool {
@@ -4509,6 +4603,29 @@ mod tests {
         assert!(plan.jobs.iter().any(|job| job.id == "job.code_file_read"));
         assert!(plan.jobs.iter().any(|job| job.id == "job.code_helpers"));
         assert!(plan.jobs.iter().any(|job| job.id == "job.code_main"));
+    }
+
+    #[test]
+    fn decomposed_small_code_with_explanation_uses_two_chunks() {
+        let mut state = ready_state();
+        let mut request = classification_request(
+            "Show me a complete program in Java for magic square three by three and explain how it works.",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+
+        let record = state.submit_job(request, "1".to_string());
+
+        assert_eq!(record.execution_mode, JobExecutionMode::Decompose);
+        assert!(record.graph_execution_enabled);
+        assert_eq!(record.plan.strategy, "code_with_explanation");
+        assert_eq!(record.graph.nodes.len(), 2);
+        assert_eq!(record.graph.nodes[0].id, "job.complete_source");
+        assert_eq!(record.graph.nodes[0].name, "Complete source code");
+        assert_eq!(record.graph.nodes[1].id, "job.code_explanation");
+        assert_eq!(
+            record.graph.nodes[1].depends_on,
+            vec!["job.complete_source".to_string()]
+        );
     }
 
     #[test]

@@ -493,6 +493,14 @@ test("uses larger token budgets for complete program prompts", async () => {
   );
   await submitChatJob(
     {
+      message:
+        "Show me a complete program in Java for magic square three by three and explain how it works.",
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+  await submitChatJob(
+    {
       message: "Create a complete backend project with API, database, authentication, and regression tests",
     },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
@@ -502,10 +510,12 @@ test("uses larger token budgets for complete program prompts", async () => {
   assert.equal(calls[0].max_tokens, 4096);
   assert.equal(calls[1].max_tokens, 4096);
   assert.equal(calls[2].max_tokens, 1536);
+  assert.equal(calls[3].max_tokens, 1536);
   assert.equal(calls[0].execution_mode, "single");
   assert.equal(calls[1].execution_mode, "single");
   assert.equal(calls[2].execution_mode, "single");
-  assert.equal(calls[3].execution_mode, "auto");
+  assert.equal(calls[3].execution_mode, "decompose");
+  assert.equal(calls[4].execution_mode, "auto");
   assert.match(calls[1].system_prompt, /complete compilable source file/i);
   assert.match(calls[1].system_prompt, /Do not use ellipses, TODO comments, placeholder bodies/i);
 });

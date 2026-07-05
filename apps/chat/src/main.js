@@ -3059,10 +3059,18 @@ function chooseChatExecutionMode(message, requestedMode = "auto") {
     return normalized;
   }
   const text = String(message ?? "").trim();
+  if (shouldUseCodeWithExplanationDecomposition(text)) {
+    return "decompose";
+  }
   if (shouldUseSingleCodeExecution(text)) {
     return "single";
   }
   return normalized;
+}
+
+function shouldUseCodeWithExplanationDecomposition(message) {
+  const lower = String(message ?? "").toLowerCase();
+  return looksLikeSmallCompleteProgramRequest(message) && looksLikeCodeExplanationRequest(lower);
 }
 
 function shouldUseSingleCodeExecution(message) {
@@ -5378,6 +5386,19 @@ function looksLikeComplexSingleFileCodeRequest(lower) {
     "student",
     "enrollment",
     "record",
+  ]);
+}
+
+function looksLikeCodeExplanationRequest(lower) {
+  return containsAny(lower, [
+    "explain",
+    "explanation",
+    "how it works",
+    "how it is generated",
+    "understand",
+    "walkthrough",
+    "describe the code",
+    "detailed explanation",
   ]);
 }
 
