@@ -57,16 +57,8 @@ const ICON_MIC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const ICON_VOLUME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
 
 const WELCOME_INNER_HTML = `<div class="welcome-inner">
-              <h1>Welcome to <span class="grad-text">MundusX</span> Chat</h1>
-              <div class="welcome-rule"></div>
-              <p class="welcome-copy">Ask anything about MundusX - contributors, architecture, nodes, jobs, or anything else.</p>
-              <div class="examples-heading"><span>Example Questions</span></div>
-              <div class="suggestions">
-                <button class="suggestion" type="button"><span class="suggestion-icon icon-purple">${ICON_CLOCK}</span><span class="suggestion-text">Give me a detailed history of Honda from its origins to today.</span><span class="suggestion-arrow">${ICON_ARROW_RIGHT}</span></button>
-                <button class="suggestion" type="button"><span class="suggestion-icon icon-blue">${ICON_CPU}</span><span class="suggestion-text">Explain why a CUDA node can claim a job and fail.</span><span class="suggestion-arrow">${ICON_ARROW_RIGHT}</span></button>
-                <button class="suggestion" type="button"><span class="suggestion-icon icon-green">${ICON_EDIT}</span><span class="suggestion-text">Draft a product description for MundusX contributors.</span><span class="suggestion-arrow">${ICON_ARROW_RIGHT}</span></button>
-                <button class="suggestion" type="button"><span class="suggestion-icon icon-orange">${ICON_LAYERS}</span><span class="suggestion-text">Summarize the current control-plane architecture.</span><span class="suggestion-arrow">${ICON_ARROW_RIGHT}</span></button>
-              </div>
+              <h1>Hello, my name is <span class="atlas-word">Atlas</span>.</h1>
+              <p class="welcome-copy">How can I help you today?</p>
             </div>`;
 
 export function configFromEnv(env = process.env) {
@@ -651,6 +643,9 @@ export function page(config = configFromEnv()) {
       grid-template-rows: 58px minmax(0, 1fr) auto;
       background: transparent;
     }
+    main.is-empty-chat {
+      grid-template-rows: 58px minmax(0, 1fr) minmax(0, 1fr);
+    }
     header {
       padding: 0 24px;
       border-bottom: 1px solid var(--line);
@@ -692,6 +687,9 @@ export function page(config = configFromEnv()) {
       overflow-x: hidden;
       overflow-y: auto;
     }
+    main.is-empty-chat .messages {
+      overflow: hidden;
+    }
     .conversation {
       width: min(880px, 100%);
       min-width: 0;
@@ -700,8 +698,13 @@ export function page(config = configFromEnv()) {
       display: grid;
       gap: 8px;
     }
+    main.is-empty-chat .conversation {
+      min-height: 100%;
+      align-content: end;
+      padding-bottom: 22px;
+    }
     .welcome {
-      min-height: 40vh;
+      min-height: 0;
       display: grid;
       place-items: center;
       text-align: center;
@@ -724,6 +727,25 @@ export function page(config = configFromEnv()) {
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
+    }
+    .atlas-word {
+      position: relative;
+      display: inline-block;
+      padding-bottom: 10px;
+      background: linear-gradient(90deg, #3b82f6 0%, #7c5cf0 100%);
+      -webkit-background-clip: text;
+      background-clip: text;
+      color: transparent;
+    }
+    .atlas-word::after {
+      content: "";
+      position: absolute;
+      left: 0;
+      bottom: 0;
+      width: 46px;
+      height: 3px;
+      border-radius: 999px;
+      background: linear-gradient(90deg, #3b82f6 0%, #7c5cf0 100%);
     }
     .welcome-rule {
       width: 46px;
@@ -1107,6 +1129,10 @@ export function page(config = configFromEnv()) {
       margin: 0 auto;
       padding: 14px 18px 22px;
     }
+    main.is-empty-chat form {
+      align-self: start;
+      padding-top: 0;
+    }
     .composer {
       border: 1px solid var(--line);
       border-radius: 16px;
@@ -1276,7 +1302,7 @@ export function page(config = configFromEnv()) {
       .shell { grid-template-columns: 1fr; }
       aside { display: none; }
       .conversation { padding: 24px 14px 20px; }
-      .suggestions { grid-template-columns: 1fr; }
+      main.is-empty-chat { grid-template-rows: 58px minmax(0, 0.9fr) minmax(0, 1.1fr); }
       form { padding: 12px 14px 18px; }
     }
   </style>
@@ -1335,7 +1361,7 @@ export function page(config = configFromEnv()) {
         </button>
       </div>
     </aside>
-    <main>
+    <main id="chat-main" class="is-empty-chat">
       <header>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="ready"><span class="status-dot"></span><span id="runtime-status-text">Ready</span></span>
       </header>
@@ -1366,6 +1392,7 @@ export function page(config = configFromEnv()) {
   </div>
   <script>
     const form = document.getElementById("chat-form");
+    const mainEl = document.getElementById("chat-main");
     const promptEl = document.getElementById("prompt");
     const sendEl = document.getElementById("send");
     const messagesEl = document.getElementById("conversation");
@@ -1400,6 +1427,10 @@ export function page(config = configFromEnv()) {
     let activeHistoryMenuId = null;
     let activeHistoryId = localStorage.getItem(conversationIdKey);
     let activeHistoryLoadToken = 0;
+
+    function setEmptyChatMode(isEmpty) {
+      mainEl?.classList.toggle("is-empty-chat", Boolean(isEmpty));
+    }
 
     renderHistory();
     hydrateNetwork();
@@ -1466,6 +1497,7 @@ export function page(config = configFromEnv()) {
 
     function addMessage(text, role, meta) {
       document.getElementById("welcome")?.remove();
+      setEmptyChatMode(false);
       const node = document.createElement("div");
       node.className = "message" + (role ? " " + role : "");
       node.setAttribute("aria-label", role === "user" ? "Your message" : "MundusX response");
@@ -1748,6 +1780,7 @@ export function page(config = configFromEnv()) {
       if (!document.getElementById("welcome")) {
         messagesEl.prepend(createWelcome());
       }
+      setEmptyChatMode(true);
       promptEl.value = "";
       promptEl.focus();
     });
@@ -2469,6 +2502,7 @@ export function page(config = configFromEnv()) {
     function clearConversation() {
       messagesEl.querySelectorAll(".message").forEach((node) => node.remove());
       document.getElementById("welcome")?.remove();
+      setEmptyChatMode(false);
     }
 
     async function fetchConversationMessages(conversationId) {
@@ -2652,12 +2686,6 @@ export function page(config = configFromEnv()) {
       wrapper.className = "welcome";
       wrapper.id = "welcome";
       wrapper.innerHTML = ${JSON.stringify(WELCOME_INNER_HTML)};
-      wrapper.querySelectorAll(".suggestion").forEach((button) => {
-        button.addEventListener("click", () => {
-          promptEl.value = (button.querySelector(".suggestion-text") ?? button).textContent.trim();
-          promptEl.focus();
-        });
-      });
       return wrapper;
     }
   </script>

@@ -32,7 +32,13 @@ test("renders a usable chat page", () => {
   );
 
   assert.match(html, /MundusX Chat/);
-  assert.match(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
+  assert.match(html, /id="chat-main" class="is-empty-chat"/);
+  assert.match(html, /Hello, my name is <span class="atlas-word">Atlas<\/span>\./);
+  assert.match(html, /\.atlas-word::after/);
+  assert.doesNotMatch(html, /class="atlas-accent"/);
+  assert.match(html, /How can I help you today\?/);
+  assert.doesNotMatch(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
+  assert.doesNotMatch(html, /Example Questions/);
   assert.match(html, /id="chat-form"/);
   assert.match(html, /id="voice-mic"/);
   assert.match(html, /id="voice-speak"/);
@@ -51,6 +57,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /function selectSpokenVoice/);
   assert.match(html, /function selectAtlasVoice/);
   assert.match(html, /function selectedAssistantPersona/);
+  assert.match(html, /function setEmptyChatMode/);
   assert.match(html, /Microsoft David/);
   assert.match(html, /Speaking with Atlas/);
   assert.match(html, /Mic ready/);
