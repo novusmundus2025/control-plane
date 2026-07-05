@@ -1039,6 +1039,82 @@ test("answers compound weather person and identity prompts with direct tools", a
   assert.doesNotMatch(result.output, /Sure, I can provide both pieces/i);
 });
 
+test("answers compound weather and malformed school lookup prompts with direct tools", async () => {
+  const calls = [];
+  const prompt = "What' the weather in Manila And What chool i in Baguio City they call it Saint Loui Univer ity";
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === "https://wttr.in/Manila?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Manila" }],
+            region: [{ value: "National Capital Region" }],
+            country: [{ value: "Philippines" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Partly cloudy" }],
+            temp_C: "31",
+            temp_F: "88",
+            FeelsLikeC: "35",
+            FeelsLikeF: "95",
+            humidity: "70",
+            windspeedKmph: "10",
+          },
+        ],
+      });
+    }
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=Saint%20Louis%20University%20Baguio%20City/);
+      return jsonResponse([
+        "Saint Louis University Baguio City",
+        ["Saint Louis University (Philippines)"],
+        [""],
+        ["https://en.wikipedia.org/wiki/Saint_Louis_University_(Philippines)"],
+      ]);
+    }
+    if (url === "https://en.wikipedia.org/api/rest_v1/page/summary/Saint%20Louis%20University%20(Philippines)") {
+      return jsonResponse({
+        title: "Saint Louis University (Philippines)",
+        extract: "Saint Louis University is a private Catholic research university in Baguio, Philippines.",
+        content_urls: {
+          desktop: {
+            page: "https://en.wikipedia.org/wiki/Saint_Louis_University_(Philippines)",
+          },
+        },
+      });
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "compound_tools");
+  assert.deepEqual(calls, [
+    "https://wttr.in/Manila?format=j1",
+    "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=Saint%20Louis%20University%20Baguio%20City",
+    "https://en.wikipedia.org/api/rest_v1/page/summary/Saint%20Louis%20University%20(Philippines)",
+  ]);
+  assert.match(result.output, /## Weather for Manila, National Capital Region, Philippines/);
+  assert.match(result.output, /Partly cloudy, 31C\/88F/);
+  assert.match(result.output, /## Saint Louis University \(Philippines\)/);
+  assert.match(result.output, /private Catholic research university in Baguio/i);
+  assert.doesNotMatch(result.output, /Acera/i);
+  assert.equal(result.response.type, "compound_tool_result");
+  assert.deepEqual(result.response.sections.map((section) => section.type), [
+    "weather",
+    "factual_summary",
+  ]);
+});
+
 test("answers compound weather and name prompts without polluting the weather location", async () => {
   const calls = [];
   const prompt = "Can you tell me the weather in stuttgart germany today, and please tell me your name?";
@@ -1741,6 +1817,10 @@ test("extracts only obvious weather locations", () => {
   assert.equal(extractWeatherLocation("weather in Manila and humidity please"), "Manila");
   assert.equal(
     extractWeatherLocation("weather in stuttgart germany today, and please tell me your name"),
+    null,
+  );
+  assert.equal(
+    extractWeatherLocation("What' the weather in Manila And What chool i in Baguio City they call it Saint Loui Univer ity"),
     null,
   );
 });

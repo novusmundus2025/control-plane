@@ -4129,6 +4129,7 @@ function isCompoundPromptForDirectTools(message) {
     /\b(?:weather|forecast|temperature|temp)\b/i,
     /\b(?:introduce yourself|who are you|what'?s your name|tell me (?:your|ur) name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i,
     /\b(?:who is|who's|tell me who|tell me about)\b/i,
+    /\b(?:what\s+(?:school|chool|university|college)|(?:school|university|college)\s+(?:called|named|in))\b/i,
     /\b(?:history of|translate|write|create|code|program|explain|summarize)\b/i,
     /\b(?:solve|derivative|integral|differentiate|compute|calculate)\b/i,
   ];
@@ -4183,6 +4184,7 @@ function extractCompoundWeatherIntents(text) {
 
 function extractCompoundFactualIntents(text) {
   const patterns = [
+    /\bwhat\s+(?:school|chool|university|college)\s+(?:is|i)?\s*(?:in\s+(.+?)\s+)?(?:they\s+)?(?:call(?:ed)?\s+it|named)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
     /\b(?:who|what)\s+(?:is|i)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
     /\b(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
     /\b(?:tell me|let me know|explain|share)\s+(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
@@ -4191,7 +4193,7 @@ function extractCompoundFactualIntents(text) {
   const intents = [];
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
-      const topic = cleanFactualTopic(match?.[1]);
+      const topic = cleanFactualTopic(match?.[2] ? `${match[2]} ${match[1] ?? ""}` : match?.[1]);
       if (!topic) {
         continue;
       }
@@ -4262,6 +4264,9 @@ function hasNonWeatherCompoundIntent(lowerText) {
     ) ||
     /\b(?:who is|who's|tell me who|tell me about|history of|translate|write|create|code|program|explain|summarize)\b/i.test(
       lowerText,
+    ) ||
+    /\b(?:what\s+(?:school|chool|university|college)|(?:school|university|college)\s+(?:called|named|in))\b/i.test(
+      lowerText,
     );
   return nonWeatherIntent;
 }
@@ -4275,6 +4280,7 @@ function cleanWeatherLocation(value) {
   location = location.replace(/^(?:the\s+)?weather\s+(?:in|for|at|of)\s+/i, "").trim();
   location = location
     .replace(/\s+\b(?:and|with)\s+(?:humidity|wind|forecast|temperature|temp|conditions|rain|snow|uv|air quality)\b.*$/i, "")
+    .replace(/\s*,?\s+\b(?:and|also|then|finally|next)\b\s+(?:who|what|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)|(?:school|university|college)\b).*$/i, "")
     .replace(/\s*,?\s+\b(?:and|also|then|finally|next)\b\s+(?:please\s+|pls\s+)?(?:tell me (?:your|ur) name|what'?s your name|do (?:you|u) have a name|introduce yourself|who are you|tell me about yourself)\b.*$/i, "")
     .trim();
   if (!location || location.length < 2 || location.length > 120) {
@@ -4494,7 +4500,7 @@ export function extractFactualSummaryTopic(message) {
 }
 
 function cleanFactualTopic(value) {
-  const topic = String(value ?? "")
+  const topic = normalizeCommonFactualTypos(String(value ?? ""))
     .replace(/\b(?:today|now|please|pls|in detail|from its origins to today|from origins to today)\b/gi, "")
     .replace(/\s+from\s+(?:the\s+)?.+$/i, "")
     .replace(/[?!.,]+$/g, "")
@@ -4504,6 +4510,14 @@ function cleanFactualTopic(value) {
     return null;
   }
   return topic;
+}
+
+function normalizeCommonFactualTypos(value) {
+  return value
+    .replace(/\bSaint\s+Loui\s+Univer\s+ity\b/gi, "Saint Louis University")
+    .replace(/\bSaint\s+Loui\b/gi, "Saint Louis")
+    .replace(/\bUniver\s+ity\b/gi, "University")
+    .replace(/\bchool\b/gi, "school");
 }
 
 const GENERIC_LOOKUP_LEAD_IN =
@@ -4757,9 +4771,20 @@ function isPlausibleTitleMatch(topic, resolvedTitle) {
   if (titleWords.length === 0) {
     return false;
   }
+  const coreTitleWords = significantWords(String(resolvedTitle ?? "").replace(/\([^)]*\)/g, ""));
   const exactOverlap = topicWords.filter((word) => titleWords.includes(word)).length;
   const fuzzyOverlap = topicWords.filter((word) => titleWords.some((titleWord) => areNearWords(word, titleWord))).length;
-  return exactOverlap > topicWords.length / 2 || (exactOverlap > 0 && fuzzyOverlap === topicWords.length);
+  const titleCoveredByTopic =
+    titleWords.length >= 2 && titleWords.every((word) => topicWords.some((topicWord) => areNearWords(topicWord, word)));
+  const coreTitleCoveredByTopic =
+    coreTitleWords.length >= 2 &&
+    coreTitleWords.every((word) => topicWords.some((topicWord) => areNearWords(topicWord, word)));
+  return (
+    exactOverlap > topicWords.length / 2 ||
+    (exactOverlap > 0 && fuzzyOverlap === topicWords.length) ||
+    titleCoveredByTopic ||
+    coreTitleCoveredByTopic
+  );
 }
 
 function areNearWords(left, right) {
