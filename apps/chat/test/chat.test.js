@@ -1115,6 +1115,85 @@ test("answers compound weather and malformed school lookup prompts with direct t
   ]);
 });
 
+test("answers compound weather factual and MundusX prompts with direct tools", async () => {
+  const calls = [];
+  const prompt =
+    "What is the weather in Berlin, also tell me Details of University of the Philippines Diliman finally what is mundusx?";
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === "https://wttr.in/Berlin?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Berlin" }],
+            region: [{ value: "Berlin" }],
+            country: [{ value: "Germany" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Sunny" }],
+            temp_C: "20",
+            temp_F: "68",
+            FeelsLikeC: "20",
+            FeelsLikeF: "68",
+            humidity: "56",
+            windspeedKmph: "19",
+          },
+        ],
+      });
+    }
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=University%20of%20the%20Philippines%20Diliman/);
+      return jsonResponse([
+        "University of the Philippines Diliman",
+        ["University of the Philippines Diliman"],
+        [""],
+        ["https://en.wikipedia.org/wiki/University_of_the_Philippines_Diliman"],
+      ]);
+    }
+    if (url === "https://en.wikipedia.org/api/rest_v1/page/summary/University%20of%20the%20Philippines%20Diliman") {
+      return jsonResponse({
+        title: "University of the Philippines Diliman",
+        extract: "The University of the Philippines Diliman is a public research university in Quezon City, Philippines.",
+        content_urls: {
+          desktop: {
+            page: "https://en.wikipedia.org/wiki/University_of_the_Philippines_Diliman",
+          },
+        },
+      });
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "compound_tools");
+  assert.deepEqual(calls, [
+    "https://wttr.in/Berlin?format=j1",
+    "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=University%20of%20the%20Philippines%20Diliman",
+    "https://en.wikipedia.org/api/rest_v1/page/summary/University%20of%20the%20Philippines%20Diliman",
+  ]);
+  assert.match(result.output, /## Weather for Berlin, Germany/);
+  assert.match(result.output, /Sunny, 20C\/68F/);
+  assert.match(result.output, /## University of the Philippines Diliman/);
+  assert.match(result.output, /public research university in Quezon City/i);
+  assert.match(result.output, /## MundusX/);
+  assert.match(result.output, /decentralized AI compute/i);
+  assert.equal(result.response.type, "compound_tool_result");
+  assert.deepEqual(result.response.sections.map((section) => section.type), [
+    "weather",
+    "factual_summary",
+    "mundusx_knowledge",
+  ]);
+});
+
 test("answers compound weather and name prompts without polluting the weather location", async () => {
   const calls = [];
   const prompt = "Can you tell me the weather in stuttgart germany today, and please tell me your name?";

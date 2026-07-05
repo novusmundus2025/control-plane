@@ -3826,6 +3826,17 @@ async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePerso
       continue;
     }
 
+    if (intent.type === "mundusx_knowledge") {
+      const mundusxJob = fetchMundusXKnowledgeJob(message, intent.topic);
+      sections.push({
+        type: "mundusx_knowledge",
+        title: "MundusX",
+        output: mundusxJob.output,
+        response: mundusxJob.response ?? null,
+      });
+      continue;
+    }
+
     if (intent.type === "factual") {
       const factualCandidate = await resolveWikipediaTitleCandidate(intent.topic, config, fetchImpl);
       const factualJob = await fetchFactualSummaryJob(message, intent.topic, config, fetchImpl, {
@@ -4128,9 +4139,10 @@ function isCompoundPromptForDirectTools(message) {
   const intentChecks = [
     /\b(?:weather|forecast|temperature|temp)\b/i,
     /\b(?:introduce yourself|who are you|what'?s your name|tell me (?:your|ur) name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i,
+    /\b(?:what\s+is\s+mundusx|tell me about mundusx|explain mundusx|details?\s+of\s+mundusx)\b/i,
     /\b(?:who is|who's|tell me who|tell me about)\b/i,
     /\b(?:what\s+(?:school|chool|university|college)|(?:school|university|college)\s+(?:called|named|in))\b/i,
-    /\b(?:history of|translate|write|create|code|program|explain|summarize)\b/i,
+    /\b(?:history of|details? of|information about|info about|translate|write|create|code|program|explain|summarize)\b/i,
     /\b(?:solve|derivative|integral|differentiate|compute|calculate)\b/i,
   ];
   return intentChecks.reduce((count, pattern) => count + (pattern.test(lower) ? 1 : 0), 0) > 1;
@@ -4148,6 +4160,10 @@ function extractCompoundDirectToolIntents(message) {
 
   for (const weather of extractCompoundWeatherIntents(text)) {
     intents.push(weather);
+  }
+
+  for (const mundusxKnowledge of extractCompoundMundusXKnowledgeIntents(text)) {
+    intents.push(mundusxKnowledge);
   }
 
   for (const factual of extractCompoundFactualIntents(text)) {
@@ -4182,19 +4198,45 @@ function extractCompoundWeatherIntents(text) {
   return intents;
 }
 
+function extractCompoundMundusXKnowledgeIntents(text) {
+  const pattern =
+    /\b(?:what\s+is\s+mundusx|tell me about mundusx|explain mundusx|details?\s+of\s+mundusx|mundusx\s+(?:overview|mission|vision|benefits?))\b/gi;
+  const intents = [];
+  const seenTopics = new Set();
+  for (const match of text.matchAll(pattern)) {
+    const topic = extractMundusXKnowledgeTopic(match[0]) ?? "overview";
+    if (seenTopics.has(topic)) {
+      continue;
+    }
+    seenTopics.add(topic);
+    intents.push({
+      type: "mundusx_knowledge",
+      index: match.index ?? 0,
+      topic,
+    });
+  }
+  return intents;
+}
+
 function extractCompoundFactualIntents(text) {
   const patterns = [
     /\bwhat\s+(?:school|chool|university|college)\s+(?:is|i)?\s*(?:in\s+(.+?)\s+)?(?:they\s+)?(?:call(?:ed)?\s+it|named)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
     /\b(?:who|what)\s+(?:is|i)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
     /\b(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
     /\b(?:tell me|let me know|explain|share)\s+(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
-    /\b(?:tell me about|background of|overview of)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
+    /\b(?:tell me about|background of|overview of|details? of|information about|info about)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
   ];
   const intents = [];
   for (const pattern of patterns) {
     for (const match of text.matchAll(pattern)) {
       const topic = cleanFactualTopic(match?.[2] ? `${match[2]} ${match[1] ?? ""}` : match?.[1]);
       if (!topic) {
+        continue;
+      }
+      if (/\b(?:weather|forecast|temperature|temp)\b/i.test(topic)) {
+        continue;
+      }
+      if (/\bmundusx\b/i.test(topic) || extractMundusXKnowledgeTopic(topic)) {
         continue;
       }
       intents.push({
@@ -4262,7 +4304,10 @@ function hasNonWeatherCompoundIntent(lowerText) {
     /\b(?:introduce yourself|who are you|what'?s your name|tell me (?:your|ur) name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i.test(
       lowerText,
     ) ||
-    /\b(?:who is|who's|tell me who|tell me about|history of|translate|write|create|code|program|explain|summarize)\b/i.test(
+    /\b(?:what\s+is\s+mundusx|tell me about mundusx|explain mundusx|details?\s+of\s+mundusx)\b/i.test(
+      lowerText,
+    ) ||
+    /\b(?:who is|who's|tell me who|tell me about|history of|details? of|information about|info about|translate|write|create|code|program|explain|summarize)\b/i.test(
       lowerText,
     ) ||
     /\b(?:what\s+(?:school|chool|university|college)|(?:school|university|college)\s+(?:called|named|in))\b/i.test(
