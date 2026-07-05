@@ -5696,11 +5696,13 @@ function cleanChatOutputInternal(value, emptyFallback) {
   output = stripPersonaLabelLeak(output);
   output = stripExpandedRequestLeak(output);
   output = stripAssistantPreamble(output);
+  output = stripOrphanedPromptContinuation(output);
   output = stripEmbeddedRoleLeak(output);
   output = stripUnaskedWhoExpansion(output);
   output = stripPromptInstructionLeak(output);
   output = stripExpandedRequestLeak(output);
   output = stripAssistantPreamble(output);
+  output = stripOrphanedPromptContinuation(output);
   output = stripSystemPromptLeak(output);
   output = collapseRepeatedOpeningClause(output);
   output = collapseRepeatedSentences(output);
@@ -5830,6 +5832,26 @@ function stripAssistantPreamble(value) {
       "",
     )
     .trim();
+}
+
+function stripOrphanedPromptContinuation(value) {
+  const output = String(value ?? "").trim();
+  const match = output.match(
+    /^([a-z][a-z0-9 ,/'-]{0,48}\.)\s+((?:The|This|A|An)\s+(?:program|code|function|example|solution|answer)\b[\s\S]*)$/,
+  );
+  if (!match) {
+    return output;
+  }
+
+  const fragment = match[1].trim().toLowerCase();
+  if (
+    /\b(?:matrix|program|code|function|class|method|file|input|output|operation|square)\.$/.test(fragment) ||
+    fragment.split(/\s+/).length <= 4
+  ) {
+    return match[2].trim();
+  }
+
+  return output;
 }
 
 function stripExpandedRequestLeak(value) {

@@ -1830,6 +1830,17 @@ test("removes expanded request leakage before complete-code answers", () => {
   assert.doesNotMatch(output, /I want to understand|Please provide|Certainly|Below is/i);
 });
 
+test("removes orphaned prompt continuation fragments before answers", () => {
+  const output = cleanChatOutput(
+    "matrix. The program should take a 3x3 matrix as input, perform the magic square operation, and print the result.",
+  );
+
+  assert.equal(
+    output,
+    "The program should take a 3x3 matrix as input, perform the magic square operation, and print the result.",
+  );
+});
+
 test("removes plain response labels before rendering chat output", () => {
   const output = cleanChatOutput(
     "Response: My name is Atlas.",
