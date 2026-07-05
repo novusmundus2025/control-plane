@@ -5635,10 +5635,13 @@ function cleanChatOutputInternal(value, emptyFallback) {
   output = stripWorkerTrace(output);
   output = stripRolePrefixes(output);
   output = stripPersonaLabelLeak(output);
+  output = stripExpandedRequestLeak(output);
   output = stripAssistantPreamble(output);
   output = stripEmbeddedRoleLeak(output);
   output = stripUnaskedWhoExpansion(output);
   output = stripPromptInstructionLeak(output);
+  output = stripExpandedRequestLeak(output);
+  output = stripAssistantPreamble(output);
   output = stripSystemPromptLeak(output);
   output = collapseRepeatedOpeningClause(output);
   output = collapseRepeatedSentences(output);
@@ -5764,10 +5767,35 @@ function stripAssistantPreamble(value) {
   return value
     .trim()
     .replace(
-      /^(?:(?:certainly|sure|of course)[!.]?\s+)?(?:here(?:'s| is)\s+(?:a|an|the)?\s*(?:brief|detailed|complete)?\s*(?:answer|overview|summary|history|response|program|code)?(?:\s+of\s+[^:]{2,120})?\s*:\s*)/i,
+      /^(?:(?:certainly|sure|of course)[!.]?\s+)?(?:(?:here(?:'s| is)|below is)\s+(?:a|an|the)?\s*(?:brief|detailed|complete)?\s*(?:answer|overview|summary|history|response|program|code|source file)?(?:\s+of\s+[^:]{2,120})?[:.]?\s*)/i,
       "",
     )
     .trim();
+}
+
+function stripExpandedRequestLeak(value) {
+  let output = String(value ?? "").trim();
+  if (!output) {
+    return output;
+  }
+
+  const lead = output.slice(0, 900);
+  const answerMarker = lead.search(
+    /\b(?:(?:certainly|sure|of course)[!.]?\s+)?(?:below is|here(?:'s| is)|the following|this program|a magic square|```)/i,
+  );
+  if (
+    answerMarker > 0 &&
+    /\b(?:i want to understand|please provide|i want to see|including all necessary|detailed explanation of the code)\b/i.test(
+      lead.slice(0, answerMarker),
+    )
+  ) {
+    output = output.slice(answerMarker).trim();
+  }
+
+  return output.replace(
+    /^(?:(?:i want to understand[^.!?\n]*[.!?]|i want to see[^.!?\n]*[.!?]|please provide[^.!?\n]*[.!?]|include all[^.!?\n]*[.!?])\s*){1,8}/i,
+    "",
+  ).trim();
 }
 
 function stripEmbeddedRoleLeak(value) {

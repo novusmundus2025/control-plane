@@ -1810,6 +1810,16 @@ test("removes assistant preambles before rendering chat output", () => {
   assert.doesNotMatch(output, /MundusX Chat|Certainly|Here is/i);
 });
 
+test("removes expanded request leakage before complete-code answers", () => {
+  const output = cleanChatOutput(
+    "I want to understand how it works. Please provide a complete source code, including all necessary imports, classes, methods, file operations, menu/input handling, and error handling. I want to see how the magic square works and how it is generated. Please provide a detailed explanation of the code. Certainly! Below is a complete Java program that generates a 3x3 magic square. A magic square is a square grid of numbers where each row adds to the same value.\n```java\nimport java.util.Scanner;\npublic class MagicSquare {\n  public static void main(String[] args) {}\n}\n```",
+  );
+
+  assert.match(output, /^Java program that generates a 3x3 magic square/);
+  assert.match(output, /```java[\s\S]*public class MagicSquare/);
+  assert.doesNotMatch(output, /I want to understand|Please provide|Certainly|Below is/i);
+});
+
 test("removes plain response labels before rendering chat output", () => {
   const output = cleanChatOutput(
     "Response: My name is Atlas.",
