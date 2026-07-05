@@ -19,6 +19,7 @@ import {
   needsGrounding,
   page,
   pollChatJob,
+  redactSensitiveText,
   submitChatJob,
   submitChatTurn,
 } from "../src/main.js";
@@ -265,6 +266,51 @@ test("submits chat work as an auto execution job", async () => {
   assert.equal(result.progress.total, 2);
   assert.equal(result.progress.waiting, 2);
   assert.equal(result.progress.final_synthesis, true);
+});
+
+test("redacts obvious secrets before submitting chat work", async () => {
+  const rawPrompt =
+    "Use api_key=plainsecret123 and OpenAI key sk-proj-abc123456789XYZ to debug token ghp_abcdefghijklmnopqrstuvwxyz123456.";
+  const redacted = redactSensitiveText(rawPrompt);
+  assert.doesNotMatch(redacted, /plainsecret123|sk-proj-abc123456789XYZ|ghp_abcdefghijklmnopqrstuvwxyz123456/);
+  assert.match(redacted, /api_key=\[REDACTED_SECRET\]/);
+  assert.match(redacted, /\[REDACTED_OPENAI_KEY\]/);
+  assert.match(redacted, /\[REDACTED_GITHUB_TOKEN\]/);
+
+  const calls = [];
+  const fetchImpl = async (url, init) => {
+    calls.push({ url, init });
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
+    if (url.includes("/v1/conversations/conv-secret/messages") && init?.method === "POST") {
+      const body = JSON.parse(init.body);
+      assert.equal(body.role, "user");
+      assert.equal(body.content, redacted);
+      return jsonResponse({ id: 1, conversation_id: "conv-secret", role: "user", content: redacted }, true, 201);
+    }
+    if (url.includes("/v1/conversations/conv-secret/messages")) {
+      return jsonResponse({ conversation_id: "conv-secret", messages: [] });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+    const body = JSON.parse(init.body);
+    assert.equal(body.prompt, redacted);
+    assert.doesNotMatch(body.system_prompt, /plainsecret123|sk-proj-abc123456789XYZ|ghp_abcdefghijklmnopqrstuvwxyz123456/);
+    return jsonResponse({
+      job_id: "job-secret",
+      status: "queued",
+      job: { job_id: "job-secret", status: "queued", graph_execution_enabled: false },
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: rawPrompt, conversationId: "conv-secret" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.job_id, "job-secret");
+  assert.equal(calls.filter((call) => call.url.includes("/v1/jobs")).length, 1);
 });
 
 test("uses Atlas persona for male voice chat jobs", async () => {

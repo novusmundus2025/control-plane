@@ -96,6 +96,30 @@ const escapeHtml = (input) =>
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
 
+const redactSensitiveText = (input) => {
+  let text = String(input ?? "");
+  if (!text) {
+    return text;
+  }
+  text = text.replace(
+    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+    "[REDACTED_PRIVATE_KEY]",
+  );
+  text = text.replace(/\bsk-proj-[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_OPENAI_KEY]");
+  text = text.replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED_OPENAI_KEY]");
+  text = text.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]");
+  text = text.replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]");
+  text = text.replace(/\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]");
+  text = text.replace(
+    /\b(api[_-]?key|access[_-]?token|auth[_-]?token|bearer[_-]?token|client[_-]?secret|password|secret)\b(\s*[:=]\s*)(["']?)([^\s"',;]{8,})\3/gi,
+    (_match, key, separator) => `${key}${separator}[REDACTED_SECRET]`,
+  );
+  text = text.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/gi, "Bearer [REDACTED_TOKEN]");
+  return text;
+};
+
+const displayText = (input) => redactSensitiveText(input);
+
 async function fetchJson(path) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2500);
@@ -559,7 +583,7 @@ function renderJobs(jobs = []) {
           const submittedAt = job.submitted_at ?? "unknown";
           const assignedAt = job.assigned_at ?? "pending";
           const completedAt = job.completed_at ?? "pending";
-          const prompt = String(job.prompt ?? "").trim();
+          const prompt = displayText(String(job.prompt ?? "").trim());
           const classification = job.classification ?? {};
           const plan = job.plan ?? {};
           const planJobs = Array.isArray(plan.jobs) ? plan.jobs : [];
@@ -659,7 +683,7 @@ function renderEvents(events = []) {
                 <span class="meta">${escapeHtml(event.created_at ?? "unknown")}</span>
               </div>
               <div class="meta">node ${escapeHtml(event.node_id ?? "n/a")} • job ${escapeHtml(event.job_id ?? "n/a")}</div>
-              <pre>${escapeHtml(JSON.stringify(event.payload ?? {}, null, 2))}</pre>
+              <pre>${escapeHtml(displayText(JSON.stringify(event.payload ?? {}, null, 2)))}</pre>
             </div>`,
         )
         .join("")}
@@ -1099,7 +1123,7 @@ function renderContributorJobHistoryPage(requestUrl, basePath = "/portal") {
                         </div>
                         <span class="pill pill-green">${escapeHtml(job.status)}</span>
                       </div>
-                      <div class="job-prompt">${escapeHtml(job.prompt)}</div>
+                      <div class="job-prompt">${escapeHtml(displayText(job.prompt))}</div>
                       <div class="job-meta">
                         <div class="meta-box">
                           <div class="meta-label">Credits</div>

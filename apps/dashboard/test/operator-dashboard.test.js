@@ -246,6 +246,51 @@ test("renders chunk plan progress for decomposed jobs", () => {
   assert.match(html, /Blocked by job\.modern_era/i);
 });
 
+test("redacts secrets in operator job and event displays", () => {
+  const html = page({
+    health: {
+      status: "ok",
+      storage_source: "supabase",
+      supabase: "enabled",
+    },
+    status: {
+      storage_source: "supabase",
+      queued_job_count: 0,
+      nodes: [],
+      jobs: [
+        {
+          job_id: "job-secret",
+          request_id: "job-secret",
+          prompt: "debug password=supersecret123 with key sk-proj-abc123456789XYZ",
+          status: "completed",
+          preferred_backend: "auto",
+          execution_mode: "single",
+          graph_execution_enabled: false,
+          submitted_at: "1",
+          assigned_at: "2",
+          completed_at: "3",
+        },
+      ],
+    },
+    events: [
+      {
+        event_type: "completed",
+        created_at: "4",
+        node_id: "node-1",
+        job_id: "job-secret",
+        payload: { output: "Bearer abcdefghijklmnopqrstuvwxyz1234567890" },
+      },
+    ],
+    credits: {},
+    error: null,
+  });
+
+  assert.match(html, /password=\[REDACTED_SECRET\]/);
+  assert.match(html, /\[REDACTED_OPENAI_KEY\]/);
+  assert.match(html, /Bearer \[REDACTED_TOKEN\]/);
+  assert.doesNotMatch(html, /supersecret123|sk-proj-abc123456789XYZ|abcdefghijklmnopqrstuvwxyz1234567890/);
+});
+
 test("renders the high-impact command deck shell with replacement logo and live metrics", () => {
   const html = page({
     health: {

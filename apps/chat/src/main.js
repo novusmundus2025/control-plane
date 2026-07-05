@@ -2894,10 +2894,11 @@ export async function submitChatTurn(body, config = configFromEnv(), fetchImpl =
 }
 
 export async function submitChatJob(body, config = configFromEnv(), fetchImpl = fetch) {
-  const message = String(body?.message ?? "").trim();
-  if (!message) {
+  const rawMessage = String(body?.message ?? "").trim();
+  if (!rawMessage) {
     throw httpError(400, "message is required");
   }
+  const message = redactSensitiveText(rawMessage);
   const conversationId = String(body?.conversationId ?? "").trim() || null;
   if (conversationId) {
     await appendConversationMessage(conversationId, "user", message, config, fetchImpl).catch((error) => {
@@ -3056,16 +3057,20 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
 }
 
 async function recordAssistantTurn(conversationId, config, fetchImpl, result) {
+  const sanitizedOutput = redactSensitiveText(result?.output ?? "");
+  const sanitizedResult = result && sanitizedOutput !== result.output
+    ? { ...result, output: sanitizedOutput }
+    : result;
   if (conversationId && result?.status === "completed") {
     const isRealJobId = typeof result.job_id === "string" && !/^(math|weather|facts)-/.test(result.job_id);
-    await appendConversationMessage(conversationId, "assistant", result.output, config, fetchImpl, {
+    await appendConversationMessage(conversationId, "assistant", sanitizedOutput, config, fetchImpl, {
       jobId: isRealJobId ? result.job_id : null,
       tool: result.tool ?? null,
     }).catch((error) => {
       console.warn(`[conversation] failed to persist assistant message: ${error.message}`);
     });
   }
-  return result;
+  return sanitizedResult;
 }
 
 function buildGenericJobBody(message, config, options = {}) {
@@ -5875,6 +5880,29 @@ export function escapeHtml(value) {
     .replaceAll(">", "&gt;")
     .replaceAll('"', "&quot;")
     .replaceAll("'", "&#39;");
+}
+
+export function redactSensitiveText(value) {
+  let text = String(value ?? "");
+  if (!text) {
+    return text;
+  }
+
+  text = text.replace(
+    /-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g,
+    "[REDACTED_PRIVATE_KEY]",
+  );
+  text = text.replace(/\bsk-proj-[A-Za-z0-9_-]{12,}\b/g, "[REDACTED_OPENAI_KEY]");
+  text = text.replace(/\bsk-[A-Za-z0-9_-]{20,}\b/g, "[REDACTED_OPENAI_KEY]");
+  text = text.replace(/\bgithub_pat_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]");
+  text = text.replace(/\bgh[pousr]_[A-Za-z0-9_]{20,}\b/g, "[REDACTED_GITHUB_TOKEN]");
+  text = text.replace(/\beyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{10,}\b/g, "[REDACTED_JWT]");
+  text = text.replace(
+    /\b(api[_-]?key|access[_-]?token|auth[_-]?token|bearer[_-]?token|client[_-]?secret|password|secret)\b(\s*[:=]\s*)(["']?)([^\s"',;]{8,})\3/gi,
+    (_match, key, separator) => `${key}${separator}[REDACTED_SECRET]`,
+  );
+  text = text.replace(/\bBearer\s+[A-Za-z0-9._~+/=-]{20,}\b/gi, "Bearer [REDACTED_TOKEN]");
+  return text;
 }
 
 export function cleanChatOutput(value) {
