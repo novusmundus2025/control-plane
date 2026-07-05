@@ -224,6 +224,7 @@ test("submits chat work as an auto execution job", async () => {
     assert.match(body.system_prompt, /the MundusX assistant/);
     assert.match(body.system_prompt, /My name is \*\*Atlas\*\*/);
     assert.match(body.system_prompt, /Answer only what the user asked/);
+    assert.match(body.system_prompt, /Do not complete, rewrite, correct, or expand the user's prompt/);
     assert.match(body.system_prompt, /Do not echo persona notes/);
     assert.doesNotMatch(body.system_prompt, /male voice experiences/);
     assert.doesNotMatch(body.system_prompt, /Use the Atlas persona/);
@@ -517,6 +518,8 @@ test("uses larger token budgets for complete program prompts", async () => {
   assert.equal(calls[3].execution_mode, "decompose");
   assert.equal(calls[4].execution_mode, "auto");
   assert.match(calls[1].system_prompt, /complete compilable source file/i);
+  assert.match(calls[1].system_prompt, /start the answer with the complete compilable source file/i);
+  assert.match(calls[1].system_prompt, /explanation, compile notes, or usage notes after the code/i);
   assert.match(calls[1].system_prompt, /Do not use ellipses, TODO comments, placeholder bodies/i);
 });
 
@@ -2214,6 +2217,35 @@ test("pollChatJob persists the assistant turn exactly once on completion", async
   assert.equal(body.role, "assistant");
   assert.equal(body.content, "Done.");
   assert.equal(body.jobId, "job-1");
+});
+
+test("pollChatJob exposes quality flags for suspicious cleaned output", async () => {
+  const fetchImpl = async (url) => {
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-quality");
+    return jsonResponse({
+      job: {
+        job_id: "job-quality",
+        status: "completed",
+        model: "Qwen/Test",
+        output:
+          "llama.cpp mode=cuda; response=MundusX code subjob: Name: Magic square Responsibility: implementation Required output: matrix. The program should take a 3x3 matrix as input, perform the magic square operation, and print the result. The program should take a 3x3 matrix as input, perform the magic square operation, and print the result. The program should take a 3x3 matrix as input, perform the magic square operation, and print the result.",
+      },
+    });
+  };
+
+  const result = await pollChatJob(
+    "job-quality",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.needs_repair, true);
+  assert.match(result.output, /explanation instead of source code/i);
+  assert.deepEqual(
+    result.quality_flags.map((flag) => flag.code),
+    ["sanitized_output", "worker_or_role_leak", "instruction_leak", "repeated_text", "code_missing"],
+  );
 });
 
 test("pollChatJob does not persist a turn for a non-completed job", async () => {

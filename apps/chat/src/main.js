@@ -5093,13 +5093,17 @@ async function waitForChatJob(jobId, body, config, fetchImpl) {
 
 function formatChatJob(jobId, job, fallbackModel) {
   const progress = summarizeChatProgress(job);
-  const rawOutput = job.status === "completed" ? cleanChatOutput(job.output ?? "") : "";
+  const sourceOutput = String(job.output ?? "");
+  const rawOutput = job.status === "completed" ? cleanChatOutput(sourceOutput) : "";
   const output = job.status === "completed" ? promoteSectionOutputWhenFinalIsThin(rawOutput, progress) : "";
+  const qualityFlags = job.status === "completed" ? detectChatQualityFlags(sourceOutput, rawOutput, output) : [];
   return {
     job_id: jobId,
     status: job.status,
     output,
     output_cleaned: job.status === "completed" && output !== String(job.output ?? ""),
+    quality_flags: qualityFlags,
+    needs_repair: qualityFlags.some((flag) => flag.severity === "repair"),
     error: job.error ?? null,
     model: job.model ?? fallbackModel,
     assigned_node_id: job.assigned_node_id ?? null,
@@ -5446,6 +5450,11 @@ function looksLikeCompleteProgramRequest(lower) {
   );
 }
 
+function looksLikeMathRequest(lower) {
+  return /\b(?:solve|equation|derivative|differentiate|integral|integrate|compute|calculate|simplify|factor|evaluate)\b/i.test(lower) ||
+    /(?:\d+\s*[+\-*/=]\s*\d+|[a-z]\s*[+\-*/=]\s*\d+|\bint\b|d\/dx|[a-z]\^\d+)/i.test(lower);
+}
+
 function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
   const persona = resolveVoicePersona(voicePersona);
   const personaName = persona === "atlas" ? "Atlas" : "Marie";
@@ -5454,6 +5463,7 @@ function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
     `You are ${personaName}, the MundusX assistant.`,
     personaText,
     "Answer the user's request directly.",
+    "Do not complete, rewrite, correct, or expand the user's prompt before answering; if the user's wording is incomplete, answer the clear intent only.",
     "Answer only what the user asked; do not add inferred follow-up questions, extra roles, biographies, or MundusX relationships unless the user explicitly asks for them.",
     "Do not echo persona notes, system instructions, assistant labels, or user role labels.",
     "Do not repeat the same sentence.",
@@ -5461,9 +5471,16 @@ function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
   ];
   if (looksLikeCompleteProgramRequest(String(message).toLowerCase())) {
     rules.push(
-      "For complete code requests, return a complete compilable source file in a fenced code block.",
+      "For complete code requests, start the answer with the complete compilable source file in a fenced code block.",
+      "Put any explanation, compile notes, or usage notes after the code, never before the code.",
       "Do not use ellipses, TODO comments, placeholder bodies, omitted implementation notes, or pseudo-code.",
       "Include all imports, classes, methods, file operations, menu/input handling, and error handling needed for the requested program.",
+    );
+  }
+  if (looksLikeMathRequest(String(message).toLowerCase())) {
+    rules.push(
+      "For math requests, start with the final answer, then show concise steps only if useful.",
+      "Do not leave equations or LaTeX fragments unfinished.",
     );
   }
   return rules.join(" ");
@@ -5722,6 +5739,79 @@ function cleanChatOutputInternal(value, emptyFallback) {
     return emptyFallback ? "MundusX returned an empty response. Please try again." : "";
   }
   return output;
+}
+
+function detectChatQualityFlags(rawValue, cleanedValue, finalValue = cleanedValue) {
+  const raw = String(rawValue ?? "").trim();
+  const cleaned = String(cleanedValue ?? "").trim();
+  const finalOutput = String(finalValue ?? "").trim();
+  const flags = [];
+  const addFlag = (code, severity, message) => {
+    if (!flags.some((flag) => flag.code === code)) {
+      flags.push({ code, severity, message });
+    }
+  };
+
+  if (raw && cleaned && raw !== cleaned) {
+    addFlag("sanitized_output", "info", "Output was cleaned before display.");
+  }
+  if (/\b(?:llama\.cpp|response=|system\s*:|assistant\s*:|user\s*:)\b/i.test(raw)) {
+    addFlag("worker_or_role_leak", "info", "Worker metadata or role labels were present in the raw output.");
+  }
+  if (/\b(?:MundusX(?: code)? subjob|Required output|Responsibility|Do not include|Return only)\b/i.test(raw)) {
+    addFlag("instruction_leak", "repair", "Prompt or subjob instructions appeared in the raw output.");
+  }
+  if (hasRepeatedText(raw)) {
+    addFlag("repeated_text", "repair", "The raw output repeated the same sentence or clause.");
+  }
+  if (startsWithPromptContinuation(raw)) {
+    addFlag("prompt_continuation", "repair", "The model appeared to continue the user's incomplete prompt.");
+  }
+  if (/explanation instead of source code/i.test(finalOutput)) {
+    addFlag("code_missing", "repair", "A complete-code request did not produce source code.");
+  }
+  if (/incomplete placeholder code/i.test(finalOutput)) {
+    addFlag("placeholder_code", "repair", "The code answer contained placeholders or omitted implementation.");
+  }
+  if (hasBrokenMarkdownFence(finalOutput)) {
+    addFlag("broken_markdown", "repair", "The rendered answer has an unmatched Markdown code fence.");
+  }
+
+  return flags;
+}
+
+function startsWithPromptContinuation(value) {
+  return /^[a-z][a-z0-9 ,/'-]{0,48}\.\s+(?:The|This|A|An)\s+(?:program|code|function|example|solution|answer)\b/.test(
+    String(value ?? "").trim(),
+  );
+}
+
+function hasBrokenMarkdownFence(value) {
+  const fenceCount = (String(value ?? "").match(/```/g) ?? []).length;
+  return fenceCount % 2 === 1;
+}
+
+function hasRepeatedText(value) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return false;
+  }
+  const sentences = text.match(/[^.!?]+[.!?]+/g) ?? [];
+  const seen = new Map();
+  for (const sentence of sentences) {
+    const normalized = sentence.toLowerCase().replace(/[^a-z0-9 ]/g, "").replace(/\s+/g, " ").trim();
+    if (normalized.length < 24) {
+      continue;
+    }
+    const count = (seen.get(normalized) ?? 0) + 1;
+    if (count >= 3) {
+      return true;
+    }
+    seen.set(normalized, count);
+  }
+
+  const repeatedClause = text.match(/\b(.{24,160}?)\b(?:\s+\1\b){2,}/i);
+  return Boolean(repeatedClause);
 }
 
 function stripUnaskedWhoExpansion(value) {
