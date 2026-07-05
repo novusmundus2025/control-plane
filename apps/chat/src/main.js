@@ -2952,6 +2952,16 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
       );
     }
 
+    const polynomialSubtraction = extractPolynomialSubtraction(toolMessage);
+    if (polynomialSubtraction) {
+      return recordAssistantTurn(
+        conversationId,
+        config,
+        fetchImpl,
+        fetchPolynomialSubtractionJob(toolMessage, polynomialSubtraction),
+      );
+    }
+
     const polynomialIntegral = extractPolynomialIntegral(toolMessage);
     if (polynomialIntegral) {
       return recordAssistantTurn(
@@ -3540,6 +3550,35 @@ export function extractPolynomialDerivative(message) {
   };
 }
 
+export function extractPolynomialSubtraction(message) {
+  const text = String(message ?? "").trim();
+  if (!/\bsubtract\b/i.test(text) || !/\bfrom\b/i.test(text) || !/[xX]/.test(text)) {
+    return null;
+  }
+  const match = text.match(/\bsubtract\s+(.+?)\s+from\s+(.+?)(?:[?.!]*$)/i);
+  if (!match) {
+    return null;
+  }
+  const subtrahend = parsePolynomialExpression(match[1]);
+  const minuend = parsePolynomialExpression(match[2]);
+  if (!subtrahend.length || !minuend.length) {
+    return null;
+  }
+  const resultTerms = combinePolynomialTerms([
+    ...minuend,
+    ...subtrahend.map((term) => ({ coefficient: -term.coefficient, power: term.power })),
+  ]);
+  if (!resultTerms.length) {
+    return null;
+  }
+  return {
+    minuend: formatPolynomial(minuend),
+    subtrahend: formatPolynomial(subtrahend),
+    result: formatPolynomial(resultTerms),
+    terms: resultTerms,
+  };
+}
+
 function parsePolynomialTerms(expression) {
   const normalized = String(expression)
     .replace(/\s+/g, "")
@@ -3559,6 +3598,63 @@ function parsePolynomialTerms(expression) {
     terms.push(term);
   }
   return combinePolynomialTerms(terms);
+}
+
+function parsePolynomialExpression(expression) {
+  const normalized = normalizePolynomialExpression(expression);
+  if (!normalized) {
+    return [];
+  }
+  const grouped = normalized.match(/^([+-]?\d+(?:\.\d+)?)?\(([^()]+)\)\^?([1-4])$/);
+  if (grouped) {
+    const factor = Number(grouped[1] ?? 1);
+    const inner = parsePolynomialTerms(grouped[2]);
+    const power = Number(grouped[3]);
+    if (!inner.length) {
+      return [];
+    }
+    return scalePolynomial(powPolynomial(inner, power), factor);
+  }
+  return parsePolynomialTerms(normalized);
+}
+
+function normalizePolynomialExpression(expression) {
+  return String(expression ?? "")
+    .replace(/[âˆ’â€“â€”]/g, "-")
+    .replace(/\s+/g, "")
+    .replace(/\*/g, "")
+    .replace(/([xX])(\d+)/g, "$1^$2")
+    .replace(/\)(\d+)/g, ")^$1")
+    .replace(/[?!.,]+$/g, "")
+    .trim();
+}
+
+function scalePolynomial(terms, factor) {
+  return combinePolynomialTerms(terms.map((term) => ({
+    coefficient: term.coefficient * factor,
+    power: term.power,
+  })));
+}
+
+function multiplyPolynomials(left, right) {
+  const terms = [];
+  for (const leftTerm of left) {
+    for (const rightTerm of right) {
+      terms.push({
+        coefficient: leftTerm.coefficient * rightTerm.coefficient,
+        power: leftTerm.power + rightTerm.power,
+      });
+    }
+  }
+  return combinePolynomialTerms(terms);
+}
+
+function powPolynomial(terms, power) {
+  let result = [{ coefficient: 1, power: 0 }];
+  for (let index = 0; index < power; index += 1) {
+    result = multiplyPolynomials(result, terms);
+  }
+  return result;
 }
 
 function polynomialsEqual(leftTerms, rightTerms) {
@@ -3867,6 +3963,46 @@ async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePerso
       continue;
     }
 
+    if (intent.type === "math") {
+      const mathJob = fetchMathJobForPrompt(intent.prompt);
+      if (mathJob) {
+        sections.push({
+          type: "math",
+          title: mathJob.response?.title ?? intent.title ?? "Math",
+          output: mathJob.output,
+          response: mathJob.response ?? null,
+        });
+        continue;
+      }
+      try {
+        const llmJob = await fetchPlannedLlmSectionJob(message, {
+          type: "llm",
+          title: intent.title ?? "Math",
+          prompt: intent.prompt,
+          executionMode: "auto",
+        }, config, fetchImpl, voicePersona);
+        sections.push({
+          type: "llm",
+          title: intent.title ?? "Math",
+          output: llmJob.output,
+          response: {
+            type: "llm_section_result",
+            job_id: llmJob.job_id,
+            execution_mode: llmJob.execution_mode,
+            model: llmJob.model ?? null,
+          },
+        });
+      } catch (error) {
+        sections.push({
+          type: "math",
+          title: intent.title ?? "Math",
+          output: `I could not complete this math section: ${error.message ?? "request failed"}`,
+          response: null,
+        });
+      }
+      continue;
+    }
+
     if (intent.type === "llm") {
       try {
         const llmJob = await fetchPlannedLlmSectionJob(message, intent, config, fetchImpl, voicePersona);
@@ -3977,7 +4113,7 @@ function isMultiIntentPlanningCandidate(message) {
   if (/\b(?:code|program|source|class|function|compile|implementation|test|backend|frontend)\b/i.test(text)) {
     return false;
   }
-  if (!/\b(?:and|also|then|after that|finally|next)\b|[.;]/i.test(text)) {
+  if (!/\b(?:and|also|then|after that|finally|next)\b|[.;?]/i.test(text)) {
     return false;
   }
   return splitLikelyPromptClauses(text).filter(isLikelyIndependentIntentClause).length > 1;
@@ -3985,13 +4121,13 @@ function isMultiIntentPlanningCandidate(message) {
 
 function splitLikelyPromptClauses(text) {
   return String(text ?? "")
-    .split(/\s*(?:[,;.]|\b(?:and|also|then|after that|finally|next)\b)\s*/i)
+    .split(/\s*(?:[,;.?]|\b(?:and|also|then|after that|finally|next)\b)\s*/i)
     .map((part) => part.trim())
     .filter((part) => part.length >= 4);
 }
 
 function isLikelyIndependentIntentClause(clause) {
-  return /\b(?:what|who|where|when|why|how|tell|show|give|explain|translate|write|create|code|program|solve|compute|calculate|weather|forecast|temperature|temp|details?|information|info|introduce|your\s+(?:name|mission|vision)|do\s+(?:you|u))\b/i.test(
+  return /\b(?:what|who|where|when|why|how|tell|show|give|explain|translate|write|create|code|program|solve|compute|calculate|subtract|simplify|expand|differentiate|integrate|weather|forecast|temperature|temp|details?|information|info|introduce|your\s+(?:name|mission|vision)|do\s+(?:you|u))\b/i.test(
     String(clause ?? ""),
   );
 }
@@ -4054,9 +4190,10 @@ function buildToolPlannerSystemPrompt() {
     "You do not answer the user. You split multi-intent prompts and choose the correct execution path for each intent.",
     "Return strict JSON only, with this shape:",
     "{\"intents\":[{\"type\":\"weather\",\"location\":\"Berlin\"},{\"type\":\"factual\",\"topic\":\"University of the Philippines Diliman\"},{\"type\":\"llm_auto\",\"title\":\"Product tagline\",\"prompt\":\"Write one short product tagline for MundusX.\"}]}",
-    "Allowed intent types: weather, factual, assistant_identity, mundusx_knowledge, llm_auto, llm_single, llm_decompose.",
+    "Allowed intent types: weather, factual, assistant_identity, mundusx_knowledge, math, llm_auto, llm_single, llm_decompose.",
     "Use weather for weather, forecast, temperature, humidity, wind, or current condition requests.",
     "Use factual for public factual lookup requests about people, schools, organizations, places, or history.",
+    "Use math for algebra, arithmetic, equations, derivatives, integrals, simplify, expand, subtract, compute, or calculate requests.",
     "Use assistant_identity for questions about Atlas name, purpose, creator, mission, or vision.",
     "Use mundusx_knowledge for questions asking what MundusX is, MundusX mission, vision, benefits, architecture, contributors, or network.",
     "Use llm_single for short generation, translation, summarization, or reasoning that needs a model but does not need splitting.",
@@ -4064,7 +4201,7 @@ function buildToolPlannerSystemPrompt() {
     "Use llm_decompose for long code, detailed research, multi-deliverable work, advanced math explanations, or requests that should be chunked.",
     "For llm_* include prompt and a concise title. The prompt must be only that intent, not the whole user message.",
     "Preserve the user's order. Include each requested intent once. Do not invent missing questions.",
-    "For weather include location. For factual include topic. For assistant_identity include topic: name, identity, creator, or mission. For mundusx_knowledge include topic: overview, benefits, mission, or architecture.",
+    "For weather include location. For factual include topic. For math include prompt. For assistant_identity include topic: name, identity, creator, or mission. For mundusx_knowledge include topic: overview, benefits, mission, or architecture.",
   ].join("\n");
 }
 
@@ -4103,6 +4240,13 @@ function normalizePlannerIntents(intents) {
       }
       continue;
     }
+    if (type === "math") {
+      const prompt = cleanPlannerLlmPrompt(rawIntent?.prompt ?? rawIntent?.topic ?? rawIntent?.query);
+      if (prompt) {
+        normalized.push({ type, prompt, title: cleanPlannerLlmTitle(rawIntent?.title) ?? "Math", index: normalized.length });
+      }
+      continue;
+    }
     if (type === "assistant_identity") {
       const topic = normalizeAssistantIdentityPlannerTopic(rawIntent?.topic);
       normalized.push({ type: "identity", topic, index: normalized.length });
@@ -4133,7 +4277,7 @@ function normalizePlannerIntents(intents) {
 
 function normalizePlannerIntentType(value) {
   const type = String(value ?? "").toLowerCase().replace(/[-\s]+/g, "_").trim();
-  if (["weather", "factual", "assistant_identity", "mundusx_knowledge"].includes(type)) {
+  if (["weather", "factual", "assistant_identity", "mundusx_knowledge", "math"].includes(type)) {
     return type;
   }
   if (["identity", "persona", "assistant"].includes(type)) {
@@ -4141,6 +4285,9 @@ function normalizePlannerIntentType(value) {
   }
   if (["mundusx", "mundusx_overview", "product_knowledge"].includes(type)) {
     return "mundusx_knowledge";
+  }
+  if (["algebra", "arithmetic", "calculation", "calculate", "compute", "equation"].includes(type)) {
+    return "math";
   }
   if (["llm", "llm_auto", "llm_single", "llm_decompose", "auto", "single", "decompose", "gpu", "model"].includes(type)) {
     return "llm";
@@ -4252,6 +4399,67 @@ function fetchLinearEquationJob(message, equation) {
       processing: null,
       merging: false,
       strategy: "linear_equation_tool",
+    },
+  };
+}
+
+function fetchMathJobForPrompt(message) {
+  const linearEquation = extractLinearEquation(message);
+  if (linearEquation) {
+    return fetchLinearEquationJob(message, linearEquation);
+  }
+  const polynomialDerivative = extractPolynomialDerivative(message);
+  if (polynomialDerivative) {
+    return fetchPolynomialDerivativeJob(message, polynomialDerivative);
+  }
+  const polynomialSubtraction = extractPolynomialSubtraction(message);
+  if (polynomialSubtraction) {
+    return fetchPolynomialSubtractionJob(message, polynomialSubtraction);
+  }
+  const polynomialIntegral = extractPolynomialIntegral(message);
+  if (polynomialIntegral) {
+    return fetchPolynomialIntegralJob(message, polynomialIntegral);
+  }
+  return null;
+}
+
+function fetchPolynomialSubtractionJob(message, subtraction) {
+  const answer = subtraction.result;
+  const output = [
+    `Expression: ${subtraction.minuend} - (${subtraction.subtrahend})`,
+    `Answer: ${answer}`,
+    "Method: expand the expression being subtracted, then combine like terms.",
+  ].join("\n\n");
+  return {
+    job_id: `math-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "math-tool",
+    assigned_node_id: "math-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "polynomial_subtraction",
+    response: {
+      type: "math_solution",
+      title: "Polynomial subtraction",
+      answer,
+      steps: [
+        `Start with ${subtraction.minuend} - (${subtraction.subtrahend}).`,
+        "Distribute the subtraction and combine like terms.",
+        `Answer: ${answer}.`,
+      ],
+    },
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "polynomial_subtraction_tool",
     },
   };
 }
@@ -4595,7 +4803,7 @@ function dedupeCompoundIntents(intents) {
       ? intent.location
       : intent.type === "factual"
         ? intent.topic
-        : intent.type === "llm"
+        : ["llm", "math"].includes(intent.type)
           ? intent.prompt
           : intent.topic;
     const key = `${intent.type}:${String(value ?? "").toLowerCase()}`;
@@ -4637,8 +4845,9 @@ function cleanWeatherLocation(value) {
     .trim();
   location = location.replace(/^(?:the\s+)?weather\s+(?:in|for|at|of)\s+/i, "").trim();
   location = location
+    .replace(/[?!.]\s*(?:subtract|solve|compute|calculate|differentiate|integrate|what|who|tell|explain|write|create|show|give)\b.*$/i, "")
     .replace(/\s+\b(?:and|with)\s+(?:humidity|wind|forecast|temperature|temp|conditions|rain|snow|uv|air quality)\b.*$/i, "")
-    .replace(/\s*,?\s+\b(?:and|also|then|finally|next)\b\s+(?:who|what|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)|(?:school|university|college)\b).*$/i, "")
+    .replace(/\s*,?\s+\b(?:and|also|then|finally|next)\b\s+(?:who|what|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)|subtract|solve|compute|calculate|differentiate|integrate|(?:school|university|college)\b).*$/i, "")
     .replace(/\s*,?\s+\b(?:and|also|then|finally|next)\b\s+(?:please\s+|pls\s+)?(?:tell me (?:your|ur) name|what'?s your name|do (?:you|u) have a name|introduce yourself|who are you|tell me about yourself)\b.*$/i, "")
     .trim();
   if (!location || location.length < 2 || location.length > 120) {

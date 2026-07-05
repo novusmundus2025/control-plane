@@ -14,6 +14,7 @@ import {
   extractLinearEquation,
   extractPolynomialDerivative,
   extractPolynomialIntegral,
+  extractPolynomialSubtraction,
   extractWeatherLocation,
   fetchChatConversation,
   fetchNetworkSummary,
@@ -807,6 +808,25 @@ test("routes simple polynomial derivatives to the math tool", async () => {
   assert.doesNotMatch(result.output, /Certainly|To solve|\\frac/i);
 });
 
+test("routes polynomial subtraction expansion to the math tool", async () => {
+  const result = await submitChatJob(
+    { message: "Subtract 3(x2+1)2 from 6x3 -9x2 -13x -4" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("polynomial subtraction tool requests should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "math-tool");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "polynomial_subtraction");
+  assert.equal(result.response.type, "math_solution");
+  assert.equal(result.response.answer, "-3x^4 + 6x^3 - 15x^2 - 13x - 7");
+  assert.match(result.output, /Expression: 6x\^3 - 9x\^2 - 13x - 4 - \(3x\^4 \+ 6x\^2 \+ 3\)/);
+  assert.match(result.output, /Answer: -3x\^4 \+ 6x\^3 - 15x\^2 - 13x - 7/);
+});
+
 test("routes assistant identity prompts to deterministic persona answers", async () => {
   const result = await submitChatJob(
     { message: "Introduce yourself please" },
@@ -1449,6 +1469,78 @@ test("honors planner-requested decomposed LLM sections", async () => {
   ]);
   assert.equal(result.response.sections[1].response.execution_mode, "decompose");
   assert.match(result.output, /Plan section output/);
+});
+
+test("cleans planned weather locations and routes planned math in compound prompts", async () => {
+  const calls = [];
+  const prompt = "What is mundusx? What is the weather in Manila? Subtract 3(x2+1)2 from 6x3 -9x2 -13x -4";
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      assert.match(body.system_prompt, /You are the MundusX tool planner/);
+      return jsonResponse({
+        job_id: "planner-math-1",
+        status: "completed",
+        job: {
+          job_id: "planner-math-1",
+          status: "completed",
+          output: JSON.stringify({
+            intents: [
+              { type: "mundusx_knowledge", topic: "overview" },
+              { type: "weather", location: "Manila? Subtract 3(x2+1)2 from 6x3 -9x2 -13x -4" },
+              { type: "math", prompt: "Subtract 3(x2+1)2 from 6x3 -9x2 -13x -4" },
+            ],
+          }),
+        },
+      });
+    }
+    if (url === "https://wttr.in/Manila?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Manila" }],
+            region: [{ value: "Metro Manila" }],
+            country: [{ value: "Philippines" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Partly cloudy" }],
+            temp_C: "30",
+            temp_F: "86",
+            FeelsLikeC: "34",
+            FeelsLikeF: "93",
+            humidity: "70",
+            windspeedKmph: "12",
+          },
+        ],
+      });
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "compound_tools");
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://uat.mundusx.ai/v1/jobs",
+    "https://wttr.in/Manila?format=j1",
+  ]);
+  assert.deepEqual(result.response.sections.map((section) => section.type), [
+    "mundusx_knowledge",
+    "weather",
+    "math",
+  ]);
+  assert.match(result.output, /## MundusX/);
+  assert.match(result.output, /## Weather for Manila, Metro Manila, Philippines/);
+  assert.match(result.output, /## Polynomial subtraction/);
+  assert.match(result.output, /Answer: -3x\^4 \+ 6x\^3 - 15x\^2 - 13x - 7/);
 });
 
 test("answers compound weather and name prompts without polluting the weather location", async () => {
@@ -2235,6 +2327,25 @@ test("extracts simple polynomial derivatives", () => {
   );
   assert.equal(extractPolynomialDerivative("derivative of sin(x)"), null);
   assert.equal(extractPolynomialDerivative("write a history of derivatives"), null);
+});
+
+test("extracts polynomial subtraction with compact exponent notation", () => {
+  assert.deepEqual(
+    extractPolynomialSubtraction("Subtract 3(x2+1)2 from 6x3 -9x2 -13x -4"),
+    {
+      minuend: "6x^3 - 9x^2 - 13x - 4",
+      subtrahend: "3x^4 + 6x^2 + 3",
+      result: "-3x^4 + 6x^3 - 15x^2 - 13x - 7",
+      terms: [
+        { coefficient: -3, power: 4 },
+        { coefficient: 6, power: 3 },
+        { coefficient: -15, power: 2 },
+        { coefficient: -13, power: 1 },
+        { coefficient: -7, power: 0 },
+      ],
+    },
+  );
+  assert.equal(extractPolynomialSubtraction("subtract apples from oranges"), null);
 });
 
 test("extracts only factual summary topics", () => {
