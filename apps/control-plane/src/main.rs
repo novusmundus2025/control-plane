@@ -748,6 +748,15 @@ fn compact_preview(value: Option<&str>) -> String {
     preview
 }
 
+fn private_content_summary(value: Option<&str>, label: &str) -> String {
+    let text = value.unwrap_or("").trim();
+    if text.is_empty() {
+        return format!("{label} not recorded");
+    }
+    let chars = text.chars().count();
+    format!("{label} hidden for privacy ({chars} chars)")
+}
+
 fn job_execution_mode_label(mode: contracts::JobExecutionMode) -> &'static str {
     match mode {
         contracts::JobExecutionMode::Single => "single",
@@ -1311,7 +1320,7 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
         let result_preview = if result_label == "error" {
             compact_preview(job.error.as_deref())
         } else {
-            compact_preview(job.output.as_deref())
+            private_content_summary(job.output.as_deref(), "Output")
         };
 
         html.push_str(&format!(
@@ -1346,7 +1355,7 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
             </div>"#,
             job_detail_link(&job.job_id),
             escape_html(&job.request_id),
-            escape_html(&compact_preview(Some(&job.prompt))),
+            escape_html(&private_content_summary(Some(&job.prompt), "Request")),
             escape_html(model),
             escape_html(job_execution_mode_label(job.execution_mode)),
             if job.graph_execution_enabled {
@@ -1398,7 +1407,7 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
                 {
                     compact_preview(node.error.as_deref())
                 } else {
-                    compact_preview(node.output.as_deref())
+                    private_content_summary(node.output.as_deref(), "Output")
                 };
                 let depends_on = if node.depends_on.is_empty() {
                     "none".to_string()
@@ -1447,7 +1456,10 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
                     escape_html(&node.name),
                     escape_html(&node.id),
                     escape_html(&compact_preview(Some(&node.responsibility))),
-                    escape_html(&compact_preview(Some(&node.required_output))),
+                    escape_html(&private_content_summary(
+                        Some(&node.required_output),
+                        "Requirement",
+                    )),
                     sub_status_bg,
                     sub_status_fg,
                     escape_html(&sub_status),
@@ -1711,7 +1723,7 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
             {
                 compact_preview(node.error.as_deref())
             } else {
-                compact_preview(node.output.as_deref())
+                private_content_summary(node.output.as_deref(), "Output")
             };
             let payout = state
                 .credits_ledger
@@ -1804,7 +1816,10 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
                 payout = payout,
                 result_preview = escape_html(&result_preview),
                 output_size = escape_html(&output_size),
-                required = escape_html(&compact_preview(Some(&node.required_output))),
+                required = escape_html(&private_content_summary(
+                    Some(&node.required_output),
+                    "Requirement",
+                )),
             ));
         }
         html.push_str("</div>");
@@ -1815,7 +1830,7 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
         .final_output
         .as_deref()
         .or(job.output.as_deref())
-        .map(|output| compact_preview(Some(output)))
+        .map(|output| private_content_summary(Some(output), "Output"))
         .unwrap_or_else(|| "not produced".to_string());
     let merge_error = job
         .graph
@@ -1891,7 +1906,7 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
         backend = escape_html(&backend),
         model = escape_html(model),
         total_payout = total_payout,
-        prompt = escape_html(&compact_preview(Some(&job.prompt))),
+        prompt = escape_html(&private_content_summary(Some(&job.prompt), "Request")),
         assigned_node = node_profile_link(job.assigned_node_id.as_deref().unwrap_or("unassigned")),
         assigned = escape_html(job.assigned_at.as_deref().unwrap_or("not assigned")),
         completed = escape_html(job.completed_at.as_deref().unwrap_or("not completed")),
@@ -5963,7 +5978,10 @@ mod tests {
 
         assert!(response.starts_with("HTTP/1.1 200 OK"));
         assert!(response.contains("Job Detail"));
-        assert!(response.contains("Summarize Tesla history"));
+        assert!(response.contains("Request hidden for privacy"));
+        assert!(!response.contains("Summarize Tesla history"));
+        assert!(response.contains("Output hidden for privacy"));
+        assert!(!response.contains("Tesla output"));
         assert!(response.contains("single"));
         assert!(response.contains("Graph Chunks"));
         assert!(response.contains("advisory"));
@@ -6026,7 +6044,8 @@ mod tests {
         assert!(html.contains("Job Detail"));
         assert!(html.contains("mode auto"));
         assert!(html.contains("graph advisory"));
-        assert!(html.contains("Atlas introduction"));
+        assert!(html.contains("Output hidden for privacy"));
+        assert!(!html.contains("Atlas introduction"));
         assert!(html.contains("advisory only and was not executed as chunks"));
         assert!(!html.contains("chunk job.direct_response"));
         assert!(!html.contains(">Direct response<"));
@@ -6197,7 +6216,8 @@ mod tests {
         assert!(html.contains("failed nodes"));
         assert!(html.contains(r#"href="/nodes/node-1""#));
         assert!(html.contains(r#"href="/nodes/node-2""#));
-        assert!(html.contains("BMW chunk output"));
+        assert!(html.contains("Output hidden for privacy"));
+        assert!(!html.contains("BMW chunk output"));
         assert!(html.contains("latency 25 ms"));
         assert!(html.contains("queue wait 3000 ms"));
         assert!(html.contains("runtime 25 ms"));
@@ -6321,7 +6341,8 @@ mod tests {
 
         assert!(html.contains("Job Queue"));
         assert!(html.contains("job-completed"));
-        assert!(html.contains("Summarize Tesla history"));
+        assert!(html.contains("Request hidden for privacy"));
+        assert!(!html.contains("Summarize Tesla history"));
         assert!(html.contains("Assigned node / worker"));
         assert!(html.contains("Graph progress"));
         assert!(html.contains(r#"name="submitted_after""#));
@@ -6330,7 +6351,8 @@ mod tests {
         assert!(html.contains("worker-123"));
         assert!(html.contains("single job completed"));
         assert!(html.contains("advisory plan was not executed as subjobs"));
-        assert!(html.contains("Tesla summary output"));
+        assert!(html.contains("Output hidden for privacy"));
+        assert!(!html.contains("Tesla summary output"));
         assert!(html.contains("Showing 1-1 of 1"));
         assert!(html.contains(r#"href="/v1/jobs?page=1&amp;page_size=10&amp;status=completed""#));
         assert!(!html.contains("Subjobs for"));
@@ -6390,7 +6412,8 @@ mod tests {
         assert!(html.contains("mode auto &middot; graph advisory"));
         assert!(html.contains("single job completed"));
         assert!(html.contains("advisory plan was not executed as subjobs"));
-        assert!(html.contains("Atlas introduction"));
+        assert!(html.contains("Output hidden for privacy"));
+        assert!(!html.contains("Atlas introduction"));
         assert!(!html.contains("Subjobs for"));
         assert!(!html.contains("Direct response"));
         assert!(!html.contains("0/1 chunks complete"));
