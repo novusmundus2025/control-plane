@@ -8,6 +8,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 
 const DEFAULT_CONTROL_PLANE_URL = "https://uat.mundusx.ai";
 const DEFAULT_TIMEOUT_SECONDS = 90;
+const DEFAULT_TOOL_PLANNER_TIMEOUT_SECONDS = 12;
 const DEFAULT_WEATHER_TTL_SECONDS = 7200;
 const DEFAULT_WEATHER_URL = "https://wttr.in";
 const DEFAULT_FACTUAL_SUMMARY_URL = "https://en.wikipedia.org/api/rest_v1/page/summary";
@@ -100,6 +101,10 @@ export function configFromEnv(env = process.env) {
     defaultTimeoutSeconds: positiveInteger(
       env.MUNDUSX_CHAT_TIMEOUT_SECONDS,
       DEFAULT_TIMEOUT_SECONDS,
+    ),
+    toolPlannerTimeoutSeconds: positiveInteger(
+      env.MUNDUSX_TOOL_PLANNER_TIMEOUT_SECONDS,
+      DEFAULT_TOOL_PLANNER_TIMEOUT_SECONDS,
     ),
     webSearchBaseUrl: normalizeOrigin(env.MUNDUSX_WEB_SEARCH_URL ?? DEFAULT_WEB_SEARCH_URL),
     webSearchApiKey: (env.MUNDUSX_WEB_SEARCH_API_KEY ?? "").trim(),
@@ -2921,10 +2926,11 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
 
   const toolMode = isToolModeEnabled(body);
   const toolMessage = stripToolModePrefix(message);
-  const compoundToolPrompt = isCompoundPromptForDirectTools(toolMessage);
+  const compoundToolPrompt = isMultiIntentPlanningCandidate(toolMessage);
 
   if (compoundToolPrompt) {
-    const compoundJob = await fetchCompoundDirectToolJob(toolMessage, config, fetchImpl, body?.voicePersona);
+    const compoundJob = await fetchPlannedCompoundToolJob(toolMessage, config, fetchImpl, body?.voicePersona)
+      || await fetchCompoundDirectToolJob(toolMessage, config, fetchImpl, body?.voicePersona);
     if (compoundJob) {
       return recordAssistantTurn(conversationId, config, fetchImpl, compoundJob);
     }
@@ -3787,8 +3793,16 @@ async function fetchWeatherJob(message, location, config, fetchImpl) {
   };
 }
 
-async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePersona = "atlas") {
-  const intents = extractCompoundDirectToolIntents(message);
+async function fetchPlannedCompoundToolJob(message, config, fetchImpl, voicePersona = "atlas") {
+  const plannerIntents = await fetchToolPlannerIntents(message, config, fetchImpl);
+  if (!plannerIntents.length) {
+    return null;
+  }
+  return fetchCompoundDirectToolJob(message, config, fetchImpl, voicePersona, plannerIntents);
+}
+
+async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePersona = "atlas", plannedIntents = null) {
+  const intents = Array.isArray(plannedIntents) ? plannedIntents : extractCompoundDirectToolIntents(message);
   if (intents.length < 2) {
     return null;
   }
@@ -3897,6 +3911,191 @@ function formatCompoundWeatherOutput(weatherJob) {
     return details ? `${response.summary}\n${details}` : response.summary;
   }
   return String(weatherJob?.output ?? "").replace(/^Weather for .+?:\s*/i, "").trim();
+}
+
+function isMultiIntentPlanningCandidate(message) {
+  const text = String(message ?? "").trim();
+  if (!text) {
+    return false;
+  }
+  if (/\b(?:code|program|source|class|function|compile|implementation|test|backend|frontend)\b/i.test(text)) {
+    return false;
+  }
+  if (!/\b(?:and|also|then|after that|finally|next)\b|[.;]/i.test(text)) {
+    return false;
+  }
+  return splitLikelyPromptClauses(text).filter(isLikelyIndependentIntentClause).length > 1;
+}
+
+function splitLikelyPromptClauses(text) {
+  return String(text ?? "")
+    .split(/\s*(?:[,;.]|\b(?:and|also|then|after that|finally|next)\b)\s*/i)
+    .map((part) => part.trim())
+    .filter((part) => part.length >= 4);
+}
+
+function isLikelyIndependentIntentClause(clause) {
+  return /\b(?:what|who|where|when|why|how|tell|show|give|explain|translate|write|create|code|program|solve|compute|calculate|weather|forecast|temperature|temp|details?|information|info|introduce|your\s+(?:name|mission|vision)|do\s+(?:you|u))\b/i.test(
+    String(clause ?? ""),
+  );
+}
+
+async function fetchToolPlannerIntents(message, config, fetchImpl) {
+  try {
+    const job = await submitToolPlannerJob(message, config, fetchImpl);
+    const intents = normalizePlannerIntents(parseToolPlannerOutput(job.output ?? ""));
+    return intents.length >= 2 ? intents : [];
+  } catch {
+    return [];
+  }
+}
+
+async function submitToolPlannerJob(message, config, fetchImpl) {
+  const jobBody = {
+    request_id: `chatplan-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    prompt: String(message ?? "").trim(),
+    preferred_backend: "auto",
+    runtime_mode: "local",
+    execution_mode: "single",
+    stream: false,
+    system_prompt: buildToolPlannerSystemPrompt(),
+    max_tokens: 384,
+    temperature: 0,
+    top_p: 0.1,
+  };
+  const jobResponse = await controlPlaneFetch(fetchImpl, config, "/v1/jobs", {
+    method: "POST",
+    body: JSON.stringify(jobBody),
+  });
+  const job = jobResponse.job ?? jobResponse;
+  const jobId = jobResponse.job_id ?? job.job_id;
+  if (String(job.status ?? "").toLowerCase() === "completed") {
+    return job;
+  }
+  if (!jobId) {
+    throw httpError(502, "tool planner did not return a job id");
+  }
+  const deadline = Date.now() + positiveInteger(config.toolPlannerTimeoutSeconds, DEFAULT_TOOL_PLANNER_TIMEOUT_SECONDS) * 1000;
+  let latest = job;
+  while (Date.now() <= deadline) {
+    const payload = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
+    latest = payload.job ?? payload;
+    const status = String(latest.status ?? "").toLowerCase();
+    if (status === "completed") {
+      return latest;
+    }
+    if (status === "failed") {
+      throw httpError(502, latest.error || "tool planner failed");
+    }
+    await delay(POLL_INTERVAL_MS);
+  }
+  throw httpError(504, "tool planner timed out");
+}
+
+function buildToolPlannerSystemPrompt() {
+  return [
+    "You are the MundusX tool planner.",
+    "You do not answer the user. You split multi-intent prompts and choose tools.",
+    "Return strict JSON only, with this shape:",
+    "{\"intents\":[{\"type\":\"weather\",\"location\":\"Berlin\"},{\"type\":\"factual\",\"topic\":\"University of the Philippines Diliman\"},{\"type\":\"mundusx_knowledge\",\"topic\":\"overview\"}]}",
+    "Allowed intent types: weather, factual, assistant_identity, mundusx_knowledge.",
+    "Use weather for weather, forecast, temperature, humidity, wind, or current condition requests.",
+    "Use factual for public factual lookup requests about people, schools, organizations, places, or history.",
+    "Use assistant_identity for questions about Atlas name, purpose, creator, mission, or vision.",
+    "Use mundusx_knowledge for questions asking what MundusX is, MundusX mission, vision, benefits, architecture, contributors, or network.",
+    "Preserve the user's order. Include each requested intent once. Do not invent missing questions.",
+    "For weather include location. For factual include topic. For assistant_identity include topic: name, identity, creator, or mission. For mundusx_knowledge include topic: overview, benefits, mission, or architecture.",
+  ].join("\n");
+}
+
+function parseToolPlannerOutput(output) {
+  const text = String(output ?? "")
+    .replace(/^```(?:json)?/i, "")
+    .replace(/```$/i, "")
+    .trim();
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start < 0 || end <= start) {
+    return [];
+  }
+  const payload = JSON.parse(text.slice(start, end + 1));
+  return Array.isArray(payload?.intents) ? payload.intents : [];
+}
+
+function normalizePlannerIntents(intents) {
+  const normalized = [];
+  for (const rawIntent of Array.isArray(intents) ? intents : []) {
+    const type = normalizePlannerIntentType(rawIntent?.type);
+    if (!type) {
+      continue;
+    }
+    if (type === "weather") {
+      const location = cleanWeatherLocation(rawIntent?.location ?? rawIntent?.topic);
+      if (location) {
+        normalized.push({ type, location, index: normalized.length });
+      }
+      continue;
+    }
+    if (type === "factual") {
+      const topic = cleanFactualTopic(rawIntent?.topic ?? rawIntent?.query);
+      if (topic) {
+        normalized.push({ type, topic, index: normalized.length });
+      }
+      continue;
+    }
+    if (type === "assistant_identity") {
+      const topic = normalizeAssistantIdentityPlannerTopic(rawIntent?.topic);
+      normalized.push({ type: "identity", topic, index: normalized.length });
+      continue;
+    }
+    if (type === "mundusx_knowledge") {
+      const topic = normalizeMundusXKnowledgePlannerTopic(rawIntent?.topic);
+      normalized.push({ type, topic, index: normalized.length });
+    }
+  }
+  return dedupeCompoundIntents(normalized).slice(0, MAX_COMPOUND_DIRECT_TOOL_INTENTS);
+}
+
+function normalizePlannerIntentType(value) {
+  const type = String(value ?? "").toLowerCase().replace(/[-\s]+/g, "_").trim();
+  if (["weather", "factual", "assistant_identity", "mundusx_knowledge"].includes(type)) {
+    return type;
+  }
+  if (["identity", "persona", "assistant"].includes(type)) {
+    return "assistant_identity";
+  }
+  if (["mundusx", "mundusx_overview", "product_knowledge"].includes(type)) {
+    return "mundusx_knowledge";
+  }
+  return null;
+}
+
+function normalizeAssistantIdentityPlannerTopic(value) {
+  const topic = String(value ?? "").toLowerCase();
+  if (/\bname\b/.test(topic)) {
+    return "name";
+  }
+  if (/\b(?:created|creator|made|built|owner|owns)\b/.test(topic)) {
+    return "creator";
+  }
+  if (/\b(?:purpose|mission|vision)\b/.test(topic)) {
+    return "mission";
+  }
+  return "identity";
+}
+
+function normalizeMundusXKnowledgePlannerTopic(value) {
+  const topic = String(value ?? "").toLowerCase();
+  if (/\bbenefit|advantage|value\b/.test(topic)) {
+    return "benefits";
+  }
+  if (/\bmission|vision\b/.test(topic)) {
+    return "mission";
+  }
+  if (/\barchitecture|node|contributor|network\b/.test(topic)) {
+    return "architecture";
+  }
+  return "overview";
 }
 
 function fetchLinearEquationJob(message, equation) {

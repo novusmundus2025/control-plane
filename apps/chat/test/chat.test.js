@@ -1015,6 +1015,7 @@ test("answers compound weather person and identity prompts with direct tools", a
   assert.equal(result.tool, "compound_tools");
   assert.equal(result.assigned_node_id, "chat-tools");
   assert.deepEqual(calls, [
+    "https://uat.mundusx.ai/v1/jobs",
     "https://wttr.in/Berlin?format=j1",
     "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=David%20Batalla",
     "https://en.wikipedia.org/api/rest_v1/page/summary/David%20Batalla",
@@ -1099,6 +1100,7 @@ test("answers compound weather and malformed school lookup prompts with direct t
   assert.equal(result.execution_mode, "tool");
   assert.equal(result.tool, "compound_tools");
   assert.deepEqual(calls, [
+    "https://uat.mundusx.ai/v1/jobs",
     "https://wttr.in/Manila?format=j1",
     "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=Saint%20Louis%20University%20Baguio%20City",
     "https://en.wikipedia.org/api/rest_v1/page/summary/Saint%20Louis%20University%20(Philippines)",
@@ -1176,6 +1178,7 @@ test("answers compound weather factual and MundusX prompts with direct tools", a
   assert.equal(result.execution_mode, "tool");
   assert.equal(result.tool, "compound_tools");
   assert.deepEqual(calls, [
+    "https://uat.mundusx.ai/v1/jobs",
     "https://wttr.in/Berlin?format=j1",
     "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=University%20of%20the%20Philippines%20Diliman",
     "https://en.wikipedia.org/api/rest_v1/page/summary/University%20of%20the%20Philippines%20Diliman",
@@ -1187,6 +1190,95 @@ test("answers compound weather factual and MundusX prompts with direct tools", a
   assert.match(result.output, /## MundusX/);
   assert.match(result.output, /decentralized AI compute/i);
   assert.equal(result.response.type, "compound_tool_result");
+  assert.deepEqual(result.response.sections.map((section) => section.type), [
+    "weather",
+    "factual_summary",
+    "mundusx_knowledge",
+  ]);
+});
+
+test("uses the LLM planner before tools for multi-intent prompts", async () => {
+  const calls = [];
+  const prompt =
+    "What is the weather in Berlin, also tell me details of University of the Philippines Diliman finally what is MundusX?";
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      assert.match(body.system_prompt, /You are the MundusX tool planner/);
+      assert.equal(body.execution_mode, "single");
+      assert.equal(body.max_tokens, 384);
+      assert.equal(body.temperature, 0);
+      return jsonResponse({
+        job_id: "planner-1",
+        status: "completed",
+        job: {
+          job_id: "planner-1",
+          status: "completed",
+          output: JSON.stringify({
+            intents: [
+              { type: "weather", location: "Berlin" },
+              { type: "factual", topic: "University of the Philippines Diliman" },
+              { type: "mundusx_knowledge", topic: "overview" },
+            ],
+          }),
+        },
+      });
+    }
+    if (url === "https://wttr.in/Berlin?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Berlin" }],
+            region: [{ value: "Berlin" }],
+            country: [{ value: "Germany" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Sunny" }],
+            temp_C: "20",
+            temp_F: "68",
+            FeelsLikeC: "20",
+            FeelsLikeF: "68",
+            humidity: "56",
+            windspeedKmph: "19",
+          },
+        ],
+      });
+    }
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=University%20of%20the%20Philippines%20Diliman/);
+      return jsonResponse([
+        "University of the Philippines Diliman",
+        ["University of the Philippines Diliman"],
+        [""],
+        ["https://en.wikipedia.org/wiki/University_of_the_Philippines_Diliman"],
+      ]);
+    }
+    if (url === "https://en.wikipedia.org/api/rest_v1/page/summary/University%20of%20the%20Philippines%20Diliman") {
+      return jsonResponse({
+        title: "University of the Philippines Diliman",
+        extract: "The University of the Philippines Diliman is a public research university in Quezon City, Philippines.",
+      });
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "compound_tools");
+  assert.deepEqual(calls.map((call) => call.url), [
+    "https://uat.mundusx.ai/v1/jobs",
+    "https://wttr.in/Berlin?format=j1",
+    "https://en.wikipedia.org/w/api.php?action=opensearch&limit=1&namespace=0&format=json&search=University%20of%20the%20Philippines%20Diliman",
+    "https://en.wikipedia.org/api/rest_v1/page/summary/University%20of%20the%20Philippines%20Diliman",
+  ]);
   assert.deepEqual(result.response.sections.map((section) => section.type), [
     "weather",
     "factual_summary",
@@ -1230,7 +1322,10 @@ test("answers compound weather and name prompts without polluting the weather lo
 
   assert.equal(result.status, "completed");
   assert.equal(result.tool, "compound_tools");
-  assert.deepEqual(calls, ["https://wttr.in/stuttgart%20germany?format=j1"]);
+  assert.deepEqual(calls, [
+    "https://uat.mundusx.ai/v1/jobs",
+    "https://wttr.in/stuttgart%20germany?format=j1",
+  ]);
   assert.match(result.output, /## Weather for Stuttgart, .*Germany/);
   assert.match(result.output, /Cloudy, 18C\/64F/);
   assert.match(result.output, /## Atlas/);
@@ -1277,7 +1372,10 @@ test("answers multiple assistant identity intents in one compound prompt", async
 
   assert.equal(result.status, "completed");
   assert.equal(result.tool, "compound_tools");
-  assert.deepEqual(calls, ["https://wttr.in/Stuttgart?format=j1"]);
+  assert.deepEqual(calls, [
+    "https://uat.mundusx.ai/v1/jobs",
+    "https://wttr.in/Stuttgart?format=j1",
+  ]);
   assert.deepEqual(result.response.sections.map((section) => section.type), [
     "assistant_identity",
     "weather",
