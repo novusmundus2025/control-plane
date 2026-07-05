@@ -606,6 +606,40 @@ test("routes assistant identity prompts to deterministic persona answers", async
   assert.doesNotMatch(result.output, /I'm a new user|Can you tell me|valuable resource/i);
 });
 
+test("routes shorthand assistant name prompts to a direct persona answer", async () => {
+  const result = await submitChatJob(
+    { message: "do u have a name?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("assistant name prompts should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "mundusx-identity");
+  assert.equal(result.tool, "assistant_identity");
+  assert.equal(result.output, "My name is Atlas.");
+  assert.equal(result.response.text, "My name is Atlas.");
+  assert.doesNotMatch(result.output, /No, I do not have a name|My purpose|feel free to ask/i);
+});
+
+test("routes shorthand assistant purpose prompts to deterministic persona answers", async () => {
+  const result = await submitChatJob(
+    { message: "do u have a purpose?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("assistant purpose prompts should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "mundusx-identity");
+  assert.equal(result.tool, "assistant_identity");
+  assert.match(result.output, /^I'm Atlas, the MundusX assistant\./);
+  assert.match(result.output, /My mission is to help people understand/i);
+  assert.doesNotMatch(result.output, /^what is your purpose\?|As an AI language model|Is there anything/i);
+});
+
 test("routes assistant creator prompts to deterministic persona answers", async () => {
   const result = await submitChatJob(
     { message: "Who created you?" },
@@ -1750,6 +1784,15 @@ test("removes assistant preambles before rendering chat output", () => {
     "1. **Founding**: Apple was founded in 1976. 2. **Early Years**: Apple released the Apple II.",
   );
   assert.doesNotMatch(output, /MundusX Chat|Certainly|Here is/i);
+});
+
+test("removes plain response labels before rendering chat output", () => {
+  const output = cleanChatOutput(
+    "Response: My name is Atlas.",
+  );
+
+  assert.equal(output, "My name is Atlas.");
+  assert.doesNotMatch(output, /^Response:/i);
 });
 
 test("removes leaked persona labels before rendering chat output", () => {

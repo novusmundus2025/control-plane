@@ -3756,13 +3756,21 @@ function extractAssistantIdentityTopic(message) {
   if (!lower) {
     return null;
   }
+  if (/\b(?:do\s+(?:you|u)\s+have\s+a\s+name|what(?:'s| is)\s+your\s+name)\b/i.test(lower)) {
+    return "name";
+  }
+  if (/\b(?:do\s+(?:you|u)\s+have\s+a\s+purpose|your\s+mission|your\s+vision|mission and vision|what(?:'s| is)\s+your purpose)\b/i.test(lower)) {
+    return "mission";
+  }
   if (
-    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do you have a name|what(?:'s| is) your name|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you)\b/i.test(lower)
+    /\b(?:who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you)\b/i.test(lower)
+  ) {
+    return "creator";
+  }
+  if (
+    /\b(?:introduce yourself|tell me about yourself|who are you|what are you)\b/i.test(lower)
   ) {
     return "identity";
-  }
-  if (/\b(?:your mission|your vision|mission and vision|what(?:'s| is) your purpose)\b/i.test(lower)) {
-    return "mission";
   }
   return null;
 }
@@ -3770,13 +3778,20 @@ function extractAssistantIdentityTopic(message) {
 function fetchAssistantIdentityJob(message, topic, voicePersona = "atlas") {
   const persona = resolveVoicePersona(voicePersona);
   const personaName = persona === "marie" ? "Marie" : "Atlas";
-  const output = topic === "mission"
-    ? [
+  const output = topic === "name"
+    ? `My name is ${personaName}.`
+    : topic === "mission"
+      ? [
         `I'm ${personaName}, the MundusX assistant.`,
         "My mission is to help people understand, build with, and participate in MundusX: a community-powered decentralized AI compute network.",
         "My vision is simple: make useful AI more accessible, affordable, and collaborative by connecting contributor machines into a shared compute ecosystem.",
       ].join("\n")
-    : [
+      : topic === "creator"
+        ? [
+          `I'm ${personaName}, the MundusX assistant.`,
+          "I was created by the MundusX open-source team to support the MundusX community.",
+        ].join("\n")
+        : [
         `I'm ${personaName}, the MundusX assistant.`,
         "I was created by the MundusX open-source team to support the MundusX community.",
         "I help answer questions, explain MundusX, troubleshoot nodes and jobs, and support developers and contributors using the network.",
@@ -3929,7 +3944,7 @@ function isCompoundPromptForDirectTools(message) {
   }
   const intentChecks = [
     /\b(?:weather|forecast|temperature|temp)\b/i,
-    /\b(?:introduce yourself|who are you|what'?s your name|do you have a name|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i,
+    /\b(?:introduce yourself|who are you|what'?s your name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i,
     /\b(?:who is|who's|tell me who|tell me about)\b/i,
     /\b(?:history of|translate|write|create|code|program|explain|summarize)\b/i,
     /\b(?:solve|derivative|integral|differentiate|compute|calculate)\b/i,
@@ -4000,12 +4015,16 @@ function extractCompoundFactualIntent(text) {
 
 function extractCompoundIdentityIntent(text) {
   const match = text.match(
-    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do you have a name|what(?:'s| is) your name|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision|mission and vision)\b/i,
+    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do (?:you|u) have a name|what(?:'s| is) your name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision|mission and vision)\b/i,
   );
   if (!match) {
     return null;
   }
-  const topic = /\b(?:mission|vision)\b/i.test(match[0]) ? "mission" : "identity";
+  const topic = /\b(?:name)\b/i.test(match[0])
+    ? "name"
+    : /\b(?:purpose|mission|vision)\b/i.test(match[0])
+      ? "mission"
+      : "identity";
   return {
     type: "identity",
     index: match.index ?? 0,
@@ -4019,7 +4038,7 @@ function hasNonWeatherCompoundIntent(lowerText) {
     return false;
   }
   const nonWeatherIntent =
-    /\b(?:introduce yourself|who are you|what'?s your name|do you have a name|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i.test(
+    /\b(?:introduce yourself|who are you|what'?s your name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i.test(
       lowerText,
     ) ||
     /\b(?:who is|who's|tell me who|tell me about|history of|translate|write|create|code|program|explain|summarize)\b/i.test(
@@ -5574,7 +5593,7 @@ function stripWorkerTrace(value) {
 function stripRolePrefixes(value) {
   let output = value.trim();
   for (let i = 0; i < 3; i += 1) {
-    const next = output.replace(/^(?:system|assistant|user|mundusx chat)\s*:\s*/i, "").trim();
+    const next = output.replace(/^(?:system|assistant|user|mundusx chat|response)\s*:\s*/i, "").trim();
     if (next === output) {
       break;
     }
