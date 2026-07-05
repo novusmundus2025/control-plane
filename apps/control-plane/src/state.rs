@@ -340,8 +340,18 @@ impl ControlPlaneState {
         let scheduling_requirements = scheduling_requirements_for(&request, &classification);
         let fallback_decision = fallback_decision_for(&scheduling_requirements);
         let compatible_ready_nodes = self.compatible_ready_node_count_for_request(&request);
-        let plan =
+        let mut plan =
             plan_job_request_for_submission(&request, &classification, compatible_ready_nodes);
+        if request.execution_mode == JobExecutionMode::Single
+            && plan.strategy == "complete_code_generation"
+        {
+            plan = single_execution_plan(
+                &request,
+                &classification,
+                "Explicit single execution requested; decomposition plan suppressed.",
+                "Single mode must run the submitted prompt as one direct response, not expose advisory chunks.",
+            );
+        }
         let graph = build_job_graph(&request.request_id, &plan, &submitted_at);
         let graph_execution_enabled = graph_execution_allowed(&request, &classification, &plan);
         let record = JobRecord {
@@ -2745,6 +2755,30 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
     }
 }
 
+fn single_execution_plan(
+    request: &JobRequest,
+    classification: &RequestClassification,
+    summary: &str,
+    reason: &str,
+) -> JobPlan {
+    JobPlan {
+        plan_id: format!("plan-{}", request.request_id),
+        strategy: "single_job".to_string(),
+        summary: summary.to_string(),
+        jobs: vec![PlannedJob {
+            id: "job.direct_response".to_string(),
+            name: "Direct response".to_string(),
+            responsibility: classification.task_type.as_str().to_string(),
+            depends_on: Vec::new(),
+            required_output: format!(
+                "Produce the requested {:?} output for the submitted prompt.",
+                classification.output_format
+            ),
+            reason: reason.to_string(),
+        }],
+    }
+}
+
 fn plan_job_request_for_submission(
     request: &JobRequest,
     classification: &RequestClassification,
@@ -4569,6 +4603,25 @@ mod tests {
                 .and_then(|job| job.active_graph_node_id.as_deref()),
             None
         );
+    }
+
+    #[test]
+    fn explicit_single_complete_code_request_stores_direct_graph_only() {
+        let mut state = ready_state();
+        let mut request = classification_request(
+            "possible for you to show a complete program in java for magic square, 3x3 ?",
+        );
+        request.execution_mode = JobExecutionMode::Single;
+
+        let record = state.submit_job(request, "1".to_string());
+
+        assert_eq!(record.execution_mode, JobExecutionMode::Single);
+        assert!(!record.graph_execution_enabled);
+        assert_eq!(record.plan.strategy, "single_job");
+        assert_eq!(record.graph.nodes.len(), 1);
+        assert_eq!(record.graph.nodes[0].id, "job.direct_response");
+        assert_eq!(record.graph.nodes[0].name, "Direct response");
+        assert_eq!(record.graph.final_node_id, None);
     }
 
     #[test]
