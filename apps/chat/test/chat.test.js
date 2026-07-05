@@ -27,6 +27,18 @@ import {
   submitChatTurn,
 } from "../src/main.js";
 
+function plannerJobResponse(intents, jobId = "planner-test") {
+  return jsonResponse({
+    job_id: jobId,
+    status: "completed",
+    job: {
+      job_id: jobId,
+      status: "completed",
+      output: JSON.stringify({ intents }),
+    },
+  });
+}
+
 test("renders a usable chat page", () => {
   const html = page(
     configFromEnv({
@@ -990,8 +1002,17 @@ test("answers compound weather person and identity prompts with direct tools", a
   const calls = [];
   const prompt =
     "What's the weather today in Berlin, and can you tell me who David Batalla is? finally pls introduce yourself";
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init = {}) => {
     calls.push(url);
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      assert.match(body.system_prompt, /You are the MundusX tool planner/);
+      return plannerJobResponse([
+        { type: "weather", location: "Berlin" },
+        { type: "factual", topic: "David Batalla" },
+        { type: "assistant_identity", topic: "identity" },
+      ], "planner-weather-person-identity");
+    }
     if (url === "https://wttr.in/Berlin?format=j1") {
       return jsonResponse({
         nearest_area: [
@@ -1063,8 +1084,16 @@ test("answers compound weather person and identity prompts with direct tools", a
 test("answers compound weather and malformed school lookup prompts with direct tools", async () => {
   const calls = [];
   const prompt = "What' the weather in Manila And What chool i in Baguio City they call it Saint Loui Univer ity";
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init = {}) => {
     calls.push(url);
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      assert.match(body.system_prompt, /You are the MundusX tool planner/);
+      return plannerJobResponse([
+        { type: "weather", location: "Manila" },
+        { type: "factual", topic: "Saint Louis University Baguio City" },
+      ], "planner-weather-school");
+    }
     if (url === "https://wttr.in/Manila?format=j1") {
       return jsonResponse({
         nearest_area: [
@@ -1141,8 +1170,17 @@ test("answers compound weather factual and MundusX prompts with direct tools", a
   const calls = [];
   const prompt =
     "What is the weather in Berlin, also tell me Details of University of the Philippines Diliman finally what is mundusx?";
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init = {}) => {
     calls.push(url);
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      assert.match(body.system_prompt, /You are the MundusX tool planner/);
+      return plannerJobResponse([
+        { type: "weather", location: "Berlin" },
+        { type: "factual", topic: "University of the Philippines Diliman" },
+        { type: "mundusx_knowledge", topic: "overview" },
+      ], "planner-weather-factual-mundusx");
+    }
     if (url === "https://wttr.in/Berlin?format=j1") {
       return jsonResponse({
         nearest_area: [
@@ -1543,11 +1581,60 @@ test("cleans planned weather locations and routes planned math in compound promp
   assert.match(result.output, /Answer: -3x\^4 \+ 6x\^3 - 15x\^2 - 13x - 7/);
 });
 
+test("does not guess compound tool chunks when the LLM planner returns no usable plan", async () => {
+  const calls = [];
+  const prompt = "What is mundusx? What is the weather in Manila? Who created you?";
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      if (/You are the MundusX tool planner/.test(body.system_prompt ?? "")) {
+        return plannerJobResponse([], "planner-empty");
+      }
+      return jsonResponse({
+        job_id: "normal-after-empty-planner",
+        status: "completed",
+        job: {
+          job_id: "normal-after-empty-planner",
+          status: "completed",
+          output: "Routed through the control plane after planner returned no chunks.",
+          model: "Qwen/Qwen2.5-1.5B-Instruct",
+          execution_mode: "auto",
+        },
+      });
+    }
+    throw new Error(`unexpected direct tool call ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, undefined);
+  assert.equal(result.output, "Routed through the control plane after planner returned no chunks.");
+  assert.equal(calls.filter((call) => call.url === "https://uat.mundusx.ai/v1/jobs").length, 2);
+  assert.deepEqual(
+    calls.filter((call) => call.url !== "https://uat.mundusx.ai/v1/jobs").map((call) => call.url),
+    ["https://uat.mundusx.ai/v1/nodes?page=1&page_size=25"],
+  );
+});
+
 test("answers compound weather and name prompts without polluting the weather location", async () => {
   const calls = [];
   const prompt = "Can you tell me the weather in stuttgart germany today, and please tell me your name?";
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init = {}) => {
     calls.push(url);
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      assert.match(body.system_prompt, /You are the MundusX tool planner/);
+      return plannerJobResponse([
+        { type: "weather", location: "stuttgart germany" },
+        { type: "assistant_identity", topic: "name" },
+      ], "planner-weather-name");
+    }
     assert.equal(url, "https://wttr.in/stuttgart%20germany?format=j1");
     return jsonResponse({
       nearest_area: [
@@ -1596,8 +1683,17 @@ test("answers compound weather and name prompts without polluting the weather lo
 test("answers multiple assistant identity intents in one compound prompt", async () => {
   const calls = [];
   const prompt = "Please tell me your name And tell me the weather in Stuttgart today And Who created you";
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init = {}) => {
     calls.push(url);
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      assert.match(body.system_prompt, /You are the MundusX tool planner/);
+      return plannerJobResponse([
+        { type: "assistant_identity", topic: "name" },
+        { type: "weather", location: "Stuttgart" },
+        { type: "assistant_identity", topic: "creator" },
+      ], "planner-identity-weather-creator");
+    }
     assert.equal(url, "https://wttr.in/Stuttgart?format=j1");
     return jsonResponse({
       nearest_area: [
@@ -1653,8 +1749,20 @@ test("caps and preserves order for larger compound direct-tool prompts", async (
   const calls = [];
   const prompt =
     "Tell me your name, weather in Berlin, who is David Batalla, weather in Stuttgart, who created you, and your mission";
-  const fetchImpl = async (url) => {
+  const fetchImpl = async (url, init = {}) => {
     calls.push(url);
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      assert.match(body.system_prompt, /You are the MundusX tool planner/);
+      return plannerJobResponse([
+        { type: "assistant_identity", topic: "name" },
+        { type: "weather", location: "Berlin" },
+        { type: "factual", topic: "David Batalla" },
+        { type: "weather", location: "Stuttgart" },
+        { type: "assistant_identity", topic: "creator" },
+        { type: "assistant_identity", topic: "mission" },
+      ], "planner-six-intents");
+    }
     if (url === "https://wttr.in/Berlin?format=j1") {
       return jsonResponse({
         nearest_area: [

@@ -2929,8 +2929,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   const compoundToolPrompt = isMultiIntentPlanningCandidate(toolMessage);
 
   if (compoundToolPrompt) {
-    const compoundJob = await fetchPlannedCompoundToolJob(toolMessage, config, fetchImpl, body?.voicePersona)
-      || await fetchCompoundDirectToolJob(toolMessage, config, fetchImpl, body?.voicePersona);
+    const compoundJob = await fetchPlannedCompoundToolJob(toolMessage, config, fetchImpl, body?.voicePersona);
     if (compoundJob) {
       return recordAssistantTurn(conversationId, config, fetchImpl, compoundJob);
     }
@@ -3898,7 +3897,10 @@ async function fetchPlannedCompoundToolJob(message, config, fetchImpl, voicePers
 }
 
 async function fetchCompoundDirectToolJob(message, config, fetchImpl, voicePersona = "atlas", plannedIntents = null) {
-  const intents = Array.isArray(plannedIntents) ? plannedIntents : extractCompoundDirectToolIntents(message);
+  if (!Array.isArray(plannedIntents)) {
+    return null;
+  }
+  const intents = plannedIntents;
   if (intents.length < 2) {
     return null;
   }
