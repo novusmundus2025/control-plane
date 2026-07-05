@@ -93,6 +93,9 @@ test("renders a usable chat page", () => {
   assert.match(html, /function appendInlineMarkdown/);
   assert.match(html, /function formatCodeForDisplay/);
   assert.match(html, /function shouldShowSourceSections/);
+  assert.match(html, /function isIncompleteCodeFallback/);
+  assert.match(html, /function progressLooksLikeCodePlan/);
+  assert.match(html, /shouldShowSourceSections\(payload, output\)/);
   assert.match(html, /function progressUnit/);
   assert.match(html, /\.message-body ol/);
   assert.match(html, /\.message-body strong/);
@@ -479,9 +482,28 @@ test("uses larger token budgets for complete program prompts", async () => {
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     fetchImpl,
   );
+  await submitChatJob(
+    {
+      message: "possible for you to show a complete program in java for magic square, 3x3 ?",
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+  await submitChatJob(
+    {
+      message: "Create a complete backend project with API, database, authentication, and regression tests",
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
 
   assert.equal(calls[0].max_tokens, 4096);
   assert.equal(calls[1].max_tokens, 4096);
+  assert.equal(calls[2].max_tokens, 4096);
+  assert.equal(calls[0].execution_mode, "single");
+  assert.equal(calls[1].execution_mode, "single");
+  assert.equal(calls[2].execution_mode, "single");
+  assert.equal(calls[3].execution_mode, "auto");
   assert.match(calls[1].system_prompt, /complete compilable source file/i);
   assert.match(calls[1].system_prompt, /Do not use ellipses, TODO comments, placeholder bodies/i);
 });

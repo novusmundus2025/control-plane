@@ -1883,7 +1883,7 @@ export function page(config = configFromEnv()) {
       } else {
         appendRichMessage(body, output);
       }
-      if (shouldShowSourceSections(payload)) {
+      if (shouldShowSourceSections(payload, output)) {
         body.appendChild(createSourceSections(payload));
       }
       if (Array.isArray(payload.sources) && payload.sources.length) {
@@ -2244,9 +2244,29 @@ export function page(config = configFromEnv()) {
       return wrapper;
     }
 
-    function shouldShowSourceSections(payload) {
+    function shouldShowSourceSections(payload, output = "") {
+      if (isIncompleteCodeFallback(output) || progressLooksLikeCodePlan(payload.progress)) {
+        return false;
+      }
       return Boolean(payload.progress?.final_synthesis) &&
         payload.progress?.nodes?.some((chunk) => chunk.output);
+    }
+
+    function isIncompleteCodeFallback(value) {
+      return /MundusX returned incomplete placeholder code/i.test(String(value ?? ""));
+    }
+
+    function progressLooksLikeCodePlan(progress) {
+      const nodes = Array.isArray(progress?.nodes) ? progress.nodes : [];
+      if (!nodes.length) {
+        return false;
+      }
+      const codePlanNames = nodes.filter((node) =>
+        /\b(?:code contract|structs?|constants?|prototypes?|functions?|implementation|compile|usage|tests?|backend|source code|read functions?|write functions?)\b/i.test(
+          String(node.name ?? "") + " " + String(node.responsibility ?? ""),
+        ),
+      ).length;
+      return codePlanNames >= 2;
     }
 
     function createSourceSections(payload) {
@@ -2958,12 +2978,13 @@ async function recordAssistantTurn(conversationId, config, fetchImpl, result) {
 
 function buildGenericJobBody(message, config, options = {}) {
   const model = String(options.model ?? config.modelOverride ?? "").trim();
+  const executionMode = chooseChatExecutionMode(message, options.executionMode);
   const jobBody = {
     request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
     prompt: message,
     preferred_backend: "auto",
     runtime_mode: "local",
-    execution_mode: normalizeExecutionMode(options.executionMode ?? "auto"),
+    execution_mode: executionMode,
     stream: false,
     system_prompt: options.systemPrompt ?? buildChatSystemPrompt(message, options.voicePersona),
     max_tokens: inferMaxTokens(message, options.maxTokens, options.capacityProfile ?? null),
@@ -2974,6 +2995,46 @@ function buildGenericJobBody(message, config, options = {}) {
     jobBody.model = model;
   }
   return jobBody;
+}
+
+function chooseChatExecutionMode(message, requestedMode = "auto") {
+  const normalized = normalizeExecutionMode(requestedMode ?? "auto");
+  if (normalized !== "auto") {
+    return normalized;
+  }
+  const text = String(message ?? "").trim();
+  if (shouldUseSingleCodeExecution(text)) {
+    return "single";
+  }
+  return normalized;
+}
+
+function shouldUseSingleCodeExecution(message) {
+  const lower = String(message ?? "").toLowerCase();
+  if (!looksLikeCompleteProgramRequest(lower)) {
+    return false;
+  }
+  if (looksLikeLargeCodeProject(lower)) {
+    return false;
+  }
+  return message.length <= 420 || /\b(?:magic square|calculator|sorting?|sort string|factorial|fibonacci|prime|palindrome|simple|3x3|5x5)\b/i.test(lower);
+}
+
+function looksLikeLargeCodeProject(lower) {
+  return containsAny(lower, [
+    "backend",
+    "frontend",
+    "database",
+    "api",
+    "authentication",
+    "regression test",
+    "unit test",
+    "multiple files",
+    "multi file",
+    "project",
+    "architecture",
+    "launch plan",
+  ]);
 }
 
 async function fetchChatCapacityProfile(config, fetchImpl, requestedModel = "") {
@@ -5572,6 +5633,23 @@ function isIncompletePlaceholderCode(value) {
     /(?:\/\/\s*(?:\.\.\.|todo|add .* here|implement .* here|save\.\.\.|load\.\.\.|delete .* here)|\/\*|\b(?:TODO|TBD)\b|\.{3,})/i.test(line),
   ).length;
   return placeholderLineCount >= 2 || placeholderMatches.length >= 2;
+}
+
+function isIncompleteCodeFallback(value) {
+  return /MundusX returned incomplete placeholder code/i.test(String(value ?? ""));
+}
+
+function progressLooksLikeCodePlan(progress) {
+  const nodes = Array.isArray(progress?.nodes) ? progress.nodes : [];
+  if (!nodes.length) {
+    return false;
+  }
+  const codePlanNames = nodes.filter((node) =>
+    /\b(?:code contract|structs?|constants?|prototypes?|functions?|implementation|compile|usage|tests?|backend|source code|read functions?|write functions?)\b/i.test(
+      `${node.name ?? ""} ${node.responsibility ?? ""}`,
+    ),
+  ).length;
+  return codePlanNames >= 2;
 }
 
 function looksLikeCodeOutput(value) {
