@@ -22,6 +22,18 @@ const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LOGO_PATH = resolve(MODULE_DIR, "../public/mundusx-logo.png");
 const MARIE_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/marie-persona.md");
 const ATLAS_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/atlas-persona.md");
+const SKILLS_DIR = resolve(MODULE_DIR, "../../../docs/skills");
+const CHAT_SKILLS = {
+  router: loadMarkdownSkill("router.md", "# Router Skill\nRoute requests conservatively."),
+  formatter: loadMarkdownSkill("formatter.md", "# Formatter Skill\nAnswer directly and cleanly."),
+  personaAtlas: loadMarkdownSkill("persona-atlas.md", "# Atlas Persona Skill\nMy name is Atlas."),
+  code: loadMarkdownSkill("code.md", "# Code Generation Skill\nReturn complete code first."),
+  math: loadMarkdownSkill("math.md", "# Math Skill\nReturn the final answer first."),
+  weather: loadMarkdownSkill("weather.md", "# Weather Skill\nUse the weather tool for weather."),
+  facts: loadMarkdownSkill("facts.md", "# Facts Skill\nUse grounded factual sources."),
+  chunkPlanner: loadMarkdownSkill("chunk-planner.md", "# Chunk Planner Skill\nChunk only when useful."),
+  verifier: loadMarkdownSkill("verifier.md", "# Verifier Skill\nFlag malformed output."),
+};
 const MARIE_PERSONA = loadPersona(
   MARIE_PERSONA_PATH,
   [
@@ -5638,13 +5650,16 @@ function looksLikeMathRequest(lower) {
     /(?:\d+\s*[+\-*/=]\s*\d+|[a-z]\s*[+\-*/=]\s*\d+|\bint\b|d\/dx|[a-z]\^\d+)/i.test(lower);
 }
 
-function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
+export function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
   const persona = resolveVoicePersona(voicePersona);
   const personaName = persona === "atlas" ? "Atlas" : "Marie";
   const personaText = persona === "atlas" ? ATLAS_PERSONA : MARIE_PERSONA;
+  const selectedSkills = selectChatSkills(message);
   const rules = [
     `You are ${personaName}, the MundusX assistant.`,
     personaText,
+    "Selected MundusX Markdown skills:",
+    formatSelectedSkillBlock(selectedSkills),
     "Answer the user's request directly.",
     "Do not complete, rewrite, correct, or expand the user's prompt before answering; if the user's wording is incomplete, answer the clear intent only.",
     "Answer only what the user asked; do not add inferred follow-up questions, extra roles, biographies, or MundusX relationships unless the user explicitly asks for them.",
@@ -5667,6 +5682,64 @@ function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
     );
   }
   return rules.join(" ");
+}
+
+export function selectChatSkills(message = "") {
+  const text = String(message ?? "");
+  const lower = text.toLowerCase();
+  const skills = [
+    { name: "router.md", content: CHAT_SKILLS.router },
+    { name: "formatter.md", content: CHAT_SKILLS.formatter },
+    { name: "persona-atlas.md", content: CHAT_SKILLS.personaAtlas },
+  ];
+
+  if (looksLikeMathRequest(lower)) {
+    skills.push({ name: "math.md", content: CHAT_SKILLS.math });
+  }
+  if (looksLikeCompleteProgramRequest(lower)) {
+    skills.push({ name: "code.md", content: CHAT_SKILLS.code });
+  }
+  if (looksLikeWeatherRequest(lower)) {
+    skills.push({ name: "weather.md", content: CHAT_SKILLS.weather });
+  }
+  if (needsGrounding(text) || extractFactualSummaryTopic(text) || extractCurrentOfficeQuery(text)) {
+    skills.push({ name: "facts.md", content: CHAT_SKILLS.facts });
+  }
+  const complexity = classifyChatRequestComplexity(text);
+  if (complexity.requiresDecomposition || looksLikeCompleteProgramRequest(lower) || complexity.size === "long") {
+    skills.push({ name: "chunk-planner.md", content: CHAT_SKILLS.chunkPlanner });
+  }
+  if (
+    looksLikeCompleteProgramRequest(lower) ||
+    looksLikeMathRequest(lower) ||
+    needsGrounding(text) ||
+    extractFactualSummaryTopic(text)
+  ) {
+    skills.push({ name: "verifier.md", content: CHAT_SKILLS.verifier });
+  }
+
+  return dedupeSkills(skills);
+}
+
+function looksLikeWeatherRequest(lower) {
+  return /\b(?:weather|forecast|temperature|temp|humidity|wind)\b/i.test(String(lower ?? ""));
+}
+
+function dedupeSkills(skills) {
+  const seen = new Set();
+  return skills.filter((skill) => {
+    if (seen.has(skill.name)) {
+      return false;
+    }
+    seen.add(skill.name);
+    return true;
+  });
+}
+
+function formatSelectedSkillBlock(skills) {
+  return skills
+    .map((skill) => `--- skill: ${skill.name}\n${skill.content}`)
+    .join("\n\n");
 }
 
 function resolveVoicePersona(value) {
@@ -5696,6 +5769,14 @@ export function buildHistoryContext(messages, maxChars = 3000, maxTurns = 8) {
 function loadPersona(path, fallback) {
   try {
     return readFileSync(path, "utf8").trim();
+  } catch {
+    return fallback;
+  }
+}
+
+function loadMarkdownSkill(fileName, fallback) {
+  try {
+    return readFileSync(resolve(SKILLS_DIR, fileName), "utf8").trim();
   } catch {
     return fallback;
   }

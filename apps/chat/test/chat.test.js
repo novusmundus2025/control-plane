@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildHistoryContext,
+  buildChatSystemPrompt,
   cleanChatOutput,
   configFromEnv,
   deleteChatConversation,
@@ -20,6 +21,7 @@ import {
   page,
   pollChatJob,
   redactSensitiveText,
+  selectChatSkills,
   submitChatJob,
   submitChatTurn,
 } from "../src/main.js";
@@ -178,6 +180,49 @@ test("accepts an explicit chat model override without making it a default", () =
   });
 
   assert.equal(config.modelOverride, "Qwen/Explicit");
+});
+
+test("composes chat system prompts from selected markdown skills", () => {
+  const prompt = buildChatSystemPrompt(
+    "Show me a complete program in Java for magic square three by three and explain how it works.",
+    "atlas",
+  );
+
+  assert.match(prompt, /Selected MundusX Markdown skills:/);
+  assert.match(prompt, /--- skill: router\.md/);
+  assert.match(prompt, /# Router Skill/);
+  assert.match(prompt, /--- skill: formatter\.md/);
+  assert.match(prompt, /# Formatter Skill/);
+  assert.match(prompt, /--- skill: persona-atlas\.md/);
+  assert.match(prompt, /# Atlas Persona Skill/);
+  assert.match(prompt, /--- skill: code\.md/);
+  assert.match(prompt, /# Code Generation Skill/);
+  assert.match(prompt, /--- skill: chunk-planner\.md/);
+  assert.match(prompt, /# Chunk Planner Skill/);
+  assert.match(prompt, /--- skill: verifier\.md/);
+  assert.match(prompt, /# Verifier Skill/);
+  assert.match(prompt, /Start with the complete compilable source file in a fenced code block/);
+  assert.match(prompt, /Do not introduce the answer with a rewritten version of the user's request/);
+  assert.match(prompt, /Answer only what the user asked/);
+  assert.doesNotMatch(prompt, /Use the Atlas persona/);
+});
+
+test("selects focused markdown skills by request type", () => {
+  assert.deepEqual(
+    selectChatSkills("Say hi.").map((skill) => skill.name),
+    ["router.md", "formatter.md", "persona-atlas.md"],
+  );
+  assert.deepEqual(
+    selectChatSkills("Differentiate y = cosh(arcsin(x^2 ln x))").map((skill) => skill.name),
+    ["router.md", "formatter.md", "persona-atlas.md", "math.md", "chunk-planner.md", "verifier.md"],
+  );
+  assert.deepEqual(
+    selectChatSkills("What is the weather in Berlin today?").map((skill) => skill.name),
+    ["router.md", "formatter.md", "persona-atlas.md", "weather.md", "facts.md", "verifier.md"],
+  );
+  assert.ok(
+    selectChatSkills("Who is Sara Duterte from PH?").some((skill) => skill.name === "facts.md"),
+  );
 });
 
 test("escapes runtime values rendered into html", () => {
