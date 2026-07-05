@@ -3043,6 +3043,17 @@ test("removes leaked subjob instructions while keeping chunk content", () => {
   assert.doesNotMatch(output, /Do not include|Required output|MundusX subjob|Write the factual/i);
 });
 
+test("removes embedded section instruction leaks from decomposed answers", () => {
+  const output = cleanChatOutput(
+    "## Product description\nMundusX AI coordinates contributor GPUs for useful AI work.\n\n## Technical architecture Avoid jargon and technical terms unless absolutely necessary. Use a formal tone. Name: Pricing and credits Responsibility: section Required output: Outline the pricing model, credits, and revenue streams. Include details on how MundusX will be compensated for its services. Write the factual content for this section only, in plain prose or compact bullets. Pricing and credits: Contributors earn credits for completed work and users spend credits for jobs.\n\nName: Go-to-market plan Required output: Develop a comprehensive go-to-market strategy, including target audience, marketing channels, sales approach, and timeline. Go-to-market plan: Start with developers and GPU contributors.",
+  );
+
+  assert.match(output, /## Product description/);
+  assert.match(output, /MundusX AI coordinates contributor GPUs/);
+  assert.match(output, /Pricing and credits: Contributors earn credits/);
+  assert.doesNotMatch(output, /Avoid jargon|Use a formal tone|Required output|Responsibility|Write the factual/i);
+});
+
 test("removes leaked code subjob instructions and keeps C code", () => {
   const output = cleanChatOutput(
     "MundusX code subjob: Name: Student record storage Responsibility: implementation Required output: Implement a function to store student records in a list. - The function should return the list of student records. h> // Helper function to validate input void validate_input(char *input) { /* validation */ }",

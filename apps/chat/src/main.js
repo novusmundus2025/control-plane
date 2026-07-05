@@ -2363,8 +2363,10 @@ export function page(config = configFromEnv()) {
       if (isIncompleteCodeFallback(output) || progressLooksLikeCodePlan(payload.progress)) {
         return false;
       }
-      return Boolean(payload.progress?.final_synthesis) &&
-        payload.progress?.nodes?.some((chunk) => chunk.output);
+      return payload.progress?.nodes?.some((chunk) =>
+        String(chunk.status || "").toLowerCase() === "completed" &&
+        String(chunk.output || "").trim(),
+      );
     }
 
     function isIncompleteCodeFallback(value) {
@@ -6936,6 +6938,15 @@ function stripPromptInstructionLeak(value) {
     }
   }
 
+  const embeddedInstructionIndex = output.search(/\b(?:Name|Responsibility|Required output)\s*:/i);
+  const beforeEmbeddedInstruction = embeddedInstructionIndex > 0 ? output.slice(0, embeddedInstructionIndex) : "";
+  if (
+    embeddedInstructionIndex > 40 &&
+    !/\b(?:MundusX(?: code)? subjob|Do not include|Do not generate|Return only|Write only)\b/i.test(beforeEmbeddedInstruction)
+  ) {
+    return stripEmbeddedSectionInstructionLeak(output);
+  }
+
   const requiredOutputIndex = output.search(/\brequired output\s*:/i);
   if (requiredOutputIndex !== -1) {
     const afterRequiredOutput = output.slice(requiredOutputIndex);
@@ -6959,7 +6970,53 @@ function stripPromptInstructionLeak(value) {
     "",
   ).trim();
 
+  output = stripEmbeddedSectionInstructionLeak(output);
+
   return output;
+}
+
+function stripEmbeddedSectionInstructionLeak(value) {
+  let output = String(value ?? "").trim();
+  if (!output) {
+    return output;
+  }
+
+  output = output
+    .replace(/\bAvoid jargon and technical terms unless absolutely necessary\.?\s*/gi, "")
+    .replace(/\bUse a formal tone\.?\s*/gi, "")
+    .replace(
+      /\bName\s*:\s*[A-Z][A-Za-z0-9 &,'-]{1,100}\s+(?:Responsibility\s*:\s*[a-z_ -]+\s+)?Required output\s*:\s*[\s\S]{0,700}?(?=(?:##\s*)?[A-Z][A-Za-z0-9 &,'-]{2,80}\s*:)/gi,
+      "",
+    )
+    .replace(
+      /\b(?:Explain|Outline|Develop|Describe|Summarize|Provide|Return|Include|Write)\b[\s\S]{0,420}?\b(?:plain prose|compact bullets|for this section only|factual content|pricing model|go-to-market strategy)\b[^.?!]*(?:[.?!]\s*)/gi,
+      "",
+    )
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+
+  const requiredOutputIndex = output.search(/\b(?:Name|Responsibility|Required output)\s*:/i);
+  if (requiredOutputIndex === -1) {
+    return output;
+  }
+
+  const before = output.slice(0, requiredOutputIndex).trim();
+  const after = output.slice(requiredOutputIndex);
+  const contentMatch = after.match(
+    /\b(?:Write|Explain|Outline|Develop|Describe|Summarize|Provide|Return|Include)\b[\s\S]{0,500}?(?:\.\s+|\n+)(?=(?:##\s+)?[A-Z][A-Za-z0-9 &,'-]{2,80}(?:\s*:|\n|$)|[-*]\s+|[A-Z][a-z])/,
+  );
+  const recovered = contentMatch?.index !== undefined
+    ? after.slice(contentMatch.index + contentMatch[0].length).trim()
+    : "";
+
+  if (before && recovered && !/^(?:Name|Responsibility|Required output)\s*:/i.test(recovered)) {
+    return `${before}\n\n${recovered}`.trim();
+  }
+  if (before.length >= 40) {
+    return before;
+  }
+  return recovered || before || output;
 }
 
 function stripSystemPromptLeak(value) {
