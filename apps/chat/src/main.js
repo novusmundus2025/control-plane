@@ -1880,8 +1880,12 @@ export function page(config = configFromEnv()) {
         let payload = submitted;
         while (!["completed", "failed"].includes(payload.status)) {
           await sleep(1500);
+          const pollParams = new URLSearchParams({
+            conversationId,
+            prompt: message,
+          });
           const polled = await fetch(
-            "/api/chat/jobs/" + encodeURIComponent(submitted.job_id) + "?conversationId=" + encodeURIComponent(conversationId),
+            "/api/chat/jobs/" + encodeURIComponent(submitted.job_id) + "?" + pollParams.toString(),
           );
           payload = await polled.json();
           if (!polled.ok) {
@@ -2892,7 +2896,8 @@ export function createServerApp(config = configFromEnv()) {
       if (request.method === "GET" && url.pathname.startsWith("/api/chat/jobs/")) {
         const jobId = decodeURIComponent(url.pathname.slice("/api/chat/jobs/".length));
         const conversationId = url.searchParams.get("conversationId") || null;
-        const result = await pollChatJob(jobId, config, fetch, { conversationId });
+        const message = url.searchParams.get("prompt") || null;
+        const result = await pollChatJob(jobId, config, fetch, { conversationId, message });
         return sendJson(response, 200, result);
       }
       return sendJson(response, 404, { error: "not found" });
@@ -3080,6 +3085,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   if (!jobId) {
     throw httpError(502, "control plane did not return a job id");
   }
+  rememberPromptForJob(jobId, message);
 
   return formatChatJob(jobId, job, jobBody.model || null, { prompt: message });
 }
@@ -4097,6 +4103,7 @@ async function fetchPlannedLlmSectionJob(parentMessage, intent, config, fetchImp
   if (!jobId) {
     throw httpError(502, "control plane did not return a section job id");
   }
+  rememberPromptForJob(jobId, prompt);
   const formatted = formatChatJob(jobId, job, jobBody.model || null, { prompt });
   if (formatted.status === "completed") {
     return formatted;
@@ -5523,6 +5530,7 @@ async function fetchWebSearchJob(message, query, config, fetchImpl, jobOptions =
     throw httpError(502, "control plane did not return a job id");
   }
 
+  rememberPromptForJob(jobId, message);
   trackGroundingSources(jobId, sources, config);
 
   const formatted = formatChatJob(jobId, job, jobBody.model || null, { prompt: message });
@@ -5544,6 +5552,32 @@ function buildGroundedSystemPrompt(message, voicePersona, sources) {
 }
 
 const groundingSourcesByJobId = new Map();
+const promptContextByJobId = new Map();
+const MAX_TRACKED_PROMPT_CONTEXTS = 250;
+
+function rememberPromptForJob(jobId, prompt) {
+  const key = String(jobId ?? "").trim();
+  const value = String(prompt ?? "").trim();
+  if (!key || !value) {
+    return;
+  }
+  promptContextByJobId.set(key, value);
+  while (promptContextByJobId.size > MAX_TRACKED_PROMPT_CONTEXTS) {
+    const oldestKey = promptContextByJobId.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    promptContextByJobId.delete(oldestKey);
+  }
+}
+
+function lookupPromptForJob(jobId) {
+  return promptContextByJobId.get(String(jobId ?? "").trim()) || "";
+}
+
+function forgetPromptForJob(jobId) {
+  promptContextByJobId.delete(String(jobId ?? "").trim());
+}
 
 function trackGroundingSources(jobId, sources, config) {
   groundingSourcesByJobId.set(jobId, sources);
@@ -5725,9 +5759,13 @@ export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = f
     throw httpError(400, "job id is required");
   }
   const conversationId = options.conversationId ?? null;
+  const prompt = String(options.message ?? "").trim() || lookupPromptForJob(jobId);
   const latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
   const job = latest.job ?? latest;
-  const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null, { prompt: options.message });
+  const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null, { prompt });
+  if (["completed", "failed"].includes(String(formatted.status ?? "").toLowerCase())) {
+    forgetPromptForJob(jobId);
+  }
   if (formatted.status === "completed" && conversationId) {
     await appendConversationMessage(conversationId, "assistant", formatted.output, config, fetchImpl, {
       jobId,
@@ -5767,7 +5805,7 @@ async function waitForChatJob(jobId, body, config, fetchImpl) {
   const deadline = Date.now() + timeoutSeconds * 1000;
   let latest = null;
   while (Date.now() <= deadline) {
-    latest = await pollChatJob(jobId, config, fetchImpl, { conversationId });
+    latest = await pollChatJob(jobId, config, fetchImpl, { conversationId, message: body?.message });
     if (latest.status === "completed") {
       return latest;
     }
