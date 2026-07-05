@@ -1825,9 +1825,9 @@ test("removes expanded request leakage before complete-code answers", () => {
     "I want to understand how it works. Please provide a complete source code, including all necessary imports, classes, methods, file operations, menu/input handling, and error handling. I want to see how the magic square works and how it is generated. Please provide a detailed explanation of the code. Certainly! Below is a complete Java program that generates a 3x3 magic square. A magic square is a square grid of numbers where each row adds to the same value.\n```java\nimport java.util.Scanner;\npublic class MagicSquare {\n  public static void main(String[] args) {}\n}\n```",
   );
 
-  assert.match(output, /^Java program that generates a 3x3 magic square/);
+  assert.match(output, /^```java/);
   assert.match(output, /```java[\s\S]*public class MagicSquare/);
-  assert.doesNotMatch(output, /I want to understand|Please provide|Certainly|Below is/i);
+  assert.doesNotMatch(output, /I want to understand|Please provide|Certainly|Below is|A magic square is/i);
 });
 
 test("removes orphaned prompt continuation fragments before answers", () => {
@@ -1835,10 +1835,19 @@ test("removes orphaned prompt continuation fragments before answers", () => {
     "matrix. The program should take a 3x3 matrix as input, perform the magic square operation, and print the result.",
   );
 
-  assert.equal(
-    output,
-    "The program should take a 3x3 matrix as input, perform the magic square operation, and print the result.",
+  assert.match(output, /explanation instead of source code/i);
+  assert.doesNotMatch(output, /^matrix\.|The program should/i);
+});
+
+test("removes pre-code narration so complete program answers start with code", () => {
+  const output = cleanChatOutput(
+    "The program should take a 3x3 matrix as input, perform the magic square operation on it, and then print the result. The explanation is below.\n```java\npublic class MagicSquare {\n  public static void main(String[] args) {}\n}\n```\nThis code reads input and prints the result.",
   );
+
+  assert.match(output, /^```java/);
+  assert.match(output, /public class MagicSquare/);
+  assert.match(output, /This code reads input/);
+  assert.doesNotMatch(output, /^The program should/i);
 });
 
 test("removes plain response labels before rendering chat output", () => {

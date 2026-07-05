@@ -5703,11 +5703,16 @@ function cleanChatOutputInternal(value, emptyFallback) {
   output = stripExpandedRequestLeak(output);
   output = stripAssistantPreamble(output);
   output = stripOrphanedPromptContinuation(output);
+  output = stripPreCodeNarration(output);
   output = stripSystemPromptLeak(output);
   output = collapseRepeatedOpeningClause(output);
   output = collapseRepeatedSentences(output);
   output = collapseRepeatedLines(output);
   output = output.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+
+  if (isExplanationOnlyCodeAnswer(output)) {
+    return "MundusX returned an explanation instead of source code. Please retry the request; complete-code jobs must return the code first, with any explanation after it.";
+  }
 
   if (isIncompletePlaceholderCode(output)) {
     return "MundusX returned incomplete placeholder code. Please retry the request; complete-code jobs must return a full compilable source file, not stubs or ellipses.";
@@ -5852,6 +5857,47 @@ function stripOrphanedPromptContinuation(value) {
   }
 
   return output;
+}
+
+function stripPreCodeNarration(value) {
+  const output = String(value ?? "").trim();
+  if (!output) {
+    return output;
+  }
+
+  const fenceIndex = output.search(/```(?:[a-zA-Z0-9_+#.-]{0,24})?\s*\n/);
+  if (fenceIndex > 0 && isDisposableCodeLeadIn(output.slice(0, fenceIndex))) {
+    return output.slice(fenceIndex).trim();
+  }
+
+  const rawCodeMatch = output.match(
+    /\b(?:import\s+java\.|public\s+class\s+\w+|#include\s*<|using\s+System\s*;|def\s+\w+\s*\(|function\s+\w+\s*\(|const\s+\w+\s*=)/,
+  );
+  if (rawCodeMatch?.index > 0 && isDisposableCodeLeadIn(output.slice(0, rawCodeMatch.index))) {
+    return output.slice(rawCodeMatch.index).trim();
+  }
+
+  return output;
+}
+
+function isDisposableCodeLeadIn(value) {
+  const lead = String(value ?? "").trim();
+  if (!lead || lead.length > 1200) {
+    return false;
+  }
+  return /\b(?:the|this|a|an)\s+(?:program|code|function|example|solution)\s+(?:should|will|takes?|uses?|includes?|performs?|prints?|handles?|is)\b/i.test(lead) ||
+    /\b(?:complete|detailed)\s+(?:source\s+)?(?:code|program)\b/i.test(lead) ||
+    /\b(?:magic\s+square|matrix|input|output|comments?|well-documented|error handling)\b/i.test(lead);
+}
+
+function isExplanationOnlyCodeAnswer(value) {
+  const output = String(value ?? "").trim();
+  if (!output || looksLikeCodeOutput(output) || /```/.test(output)) {
+    return false;
+  }
+  return /\b(?:the|this)\s+program\s+should\b/i.test(output) &&
+    /\b(?:input|print|file|matrix|operation|function|class|comments?|well-documented|error handling|invalid input)\b/i.test(output) &&
+    /\b(?:complete|program|source code|code)\b/i.test(output);
 }
 
 function stripExpandedRequestLeak(value) {
