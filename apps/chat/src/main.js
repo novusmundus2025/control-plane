@@ -4130,8 +4130,8 @@ function extractCompoundDirectToolIntents(message) {
     intents.push(factual);
   }
 
-  const identity = extractCompoundIdentityIntent(text);
-  if (identity) {
+  const identities = extractCompoundIdentityIntents(text);
+  for (const identity of identities) {
     intents.push(identity);
   }
 
@@ -4174,23 +4174,31 @@ function extractCompoundFactualIntent(text) {
   return null;
 }
 
-function extractCompoundIdentityIntent(text) {
-  const match = text.match(
-    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do (?:you|u) have a name|what(?:'s| is) your name|tell me (?:your|ur) name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision|mission and vision)\b/i,
-  );
-  if (!match) {
-    return null;
+function extractCompoundIdentityIntents(text) {
+  const pattern =
+    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do (?:you|u) have a name|what(?:'s| is) your name|tell me (?:your|ur) name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision|mission and vision)\b/gi;
+  const seenTopics = new Set();
+  const intents = [];
+  for (const match of text.matchAll(pattern)) {
+    const matchedText = match[0] ?? "";
+    const topic = /\b(?:name)\b/i.test(matchedText)
+      ? "name"
+      : /\b(?:purpose|mission|vision)\b/i.test(matchedText)
+        ? "mission"
+        : /\b(?:created|made|built|owns)\b/i.test(matchedText)
+          ? "creator"
+          : "identity";
+    if (seenTopics.has(topic)) {
+      continue;
+    }
+    seenTopics.add(topic);
+    intents.push({
+      type: "identity",
+      index: match.index ?? 0,
+      topic,
+    });
   }
-  const topic = /\b(?:name)\b/i.test(match[0])
-    ? "name"
-    : /\b(?:purpose|mission|vision)\b/i.test(match[0])
-      ? "mission"
-      : "identity";
-  return {
-    type: "identity",
-    index: match.index ?? 0,
-    topic,
-  };
+  return intents;
 }
 
 function hasNonWeatherCompoundIntent(lowerText) {

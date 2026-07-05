@@ -903,6 +903,59 @@ test("answers compound weather and name prompts without polluting the weather lo
   ]);
 });
 
+test("answers multiple assistant identity intents in one compound prompt", async () => {
+  const calls = [];
+  const prompt = "Please tell me your name And tell me the weather in Stuttgart today And Who created you";
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    assert.equal(url, "https://wttr.in/Stuttgart?format=j1");
+    return jsonResponse({
+      nearest_area: [
+        {
+          areaName: [{ value: "Stuttgart" }],
+          region: [{ value: "Baden-Wurttemberg" }],
+          country: [{ value: "Germany" }],
+        },
+      ],
+      current_condition: [
+        {
+          weatherDesc: [{ value: "Rain Shower" }],
+          temp_C: "27",
+          temp_F: "81",
+          FeelsLikeC: "27",
+          FeelsLikeF: "81",
+          humidity: "34",
+          windspeedKmph: "21",
+        },
+      ],
+    });
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "compound_tools");
+  assert.deepEqual(calls, ["https://wttr.in/Stuttgart?format=j1"]);
+  assert.deepEqual(result.response.sections.map((section) => section.type), [
+    "assistant_identity",
+    "weather",
+    "assistant_identity",
+  ]);
+  assert.deepEqual(result.response.sections.map((section) => section.response.topic ?? section.type), [
+    "name",
+    "weather",
+    "creator",
+  ]);
+  assert.match(result.output, /## Atlas\nMy name is Atlas\./);
+  assert.match(result.output, /## Weather for Stuttgart, .*Germany/);
+  assert.match(result.output, /Rain Shower, 27C\/81F/);
+  assert.match(result.output, /created by the MundusX open-source team/i);
+});
+
 test("routes malformed voice who-is prompts to cautious factual fallback instead of the LLM", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
