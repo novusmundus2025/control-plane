@@ -956,6 +956,99 @@ test("answers multiple assistant identity intents in one compound prompt", async
   assert.match(result.output, /created by the MundusX open-source team/i);
 });
 
+test("caps and preserves order for larger compound direct-tool prompts", async () => {
+  const calls = [];
+  const prompt =
+    "Tell me your name, weather in Berlin, who is David Batalla, weather in Stuttgart, who created you, and your mission";
+  const fetchImpl = async (url) => {
+    calls.push(url);
+    if (url === "https://wttr.in/Berlin?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Berlin" }],
+            region: [{ value: "Berlin" }],
+            country: [{ value: "Germany" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Clear" }],
+            temp_C: "20",
+            temp_F: "68",
+            FeelsLikeC: "20",
+            FeelsLikeF: "68",
+            humidity: "45",
+            windspeedKmph: "9",
+          },
+        ],
+      });
+    }
+    if (url === "https://wttr.in/Stuttgart?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Stuttgart" }],
+            region: [{ value: "Baden-Wurttemberg" }],
+            country: [{ value: "Germany" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Rain Shower" }],
+            temp_C: "27",
+            temp_F: "81",
+            FeelsLikeC: "27",
+            FeelsLikeF: "81",
+            humidity: "34",
+            windspeedKmph: "21",
+          },
+        ],
+      });
+    }
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=David%20Batalla/);
+      return jsonResponse(["David Batalla", [], [], []]);
+    }
+    if (url === "https://en.wikipedia.org/api/rest_v1/page/summary/David%20Batalla") {
+      return jsonResponse({ title: "Not found" }, false, 404);
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "compound_tools");
+  assert.equal(result.response.sections.length, 6);
+  assert.deepEqual(result.response.sections.map((section) => section.type), [
+    "assistant_identity",
+    "weather",
+    "factual_summary",
+    "weather",
+    "assistant_identity",
+    "assistant_identity",
+  ]);
+  assert.deepEqual(result.response.sections.map((section) => section.response.topic ?? section.type), [
+    "name",
+    "weather",
+    "factual_summary",
+    "weather",
+    "creator",
+    "mission",
+  ]);
+  assert.match(result.output, /## Atlas\nMy name is Atlas\./);
+  assert.match(result.output, /## Weather for Berlin, Germany/);
+  assert.match(result.output, /## David Batalla/);
+  assert.match(result.output, /## Weather for Stuttgart, Baden-Wurttemberg, Germany/);
+  assert.match(result.output, /created by the MundusX open-source team/i);
+  assert.match(result.output, /My mission is to help people understand/i);
+});
+
 test("routes malformed voice who-is prompts to cautious factual fallback instead of the LLM", async () => {
   const calls = [];
   const fetchImpl = async (url) => {

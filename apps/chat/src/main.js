@@ -4113,6 +4113,8 @@ function isCompoundPromptForDirectTools(message) {
   return intentChecks.reduce((count, pattern) => count + (pattern.test(lower) ? 1 : 0), 0) > 1;
 }
 
+const MAX_COMPOUND_DIRECT_TOOL_INTENTS = 6;
+
 function extractCompoundDirectToolIntents(message) {
   const text = String(message ?? "").replace(/\s+/g, " ").trim();
   if (!text) {
@@ -4120,13 +4122,12 @@ function extractCompoundDirectToolIntents(message) {
   }
 
   const intents = [];
-  const weather = extractCompoundWeatherIntent(text);
-  if (weather) {
+
+  for (const weather of extractCompoundWeatherIntents(text)) {
     intents.push(weather);
   }
 
-  const factual = extractCompoundFactualIntent(text);
-  if (factual) {
+  for (const factual of extractCompoundFactualIntents(text)) {
     intents.push(factual);
   }
 
@@ -4135,43 +4136,51 @@ function extractCompoundDirectToolIntents(message) {
     intents.push(identity);
   }
 
-  return intents.sort((a, b) => a.index - b.index);
+  return dedupeCompoundIntents(intents)
+    .sort((a, b) => a.index - b.index)
+    .slice(0, MAX_COMPOUND_DIRECT_TOOL_INTENTS);
 }
 
-function extractCompoundWeatherIntent(text) {
-  const match = text.match(
-    /\b(?:weather|forecast|temperature|temp)\b(?:\s+\w+){0,4}?\s+(?:in|for|at|of)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
-  );
-  const location = cleanWeatherLocation(match?.[1]);
-  if (!match || !location) {
-    return null;
+function extractCompoundWeatherIntents(text) {
+  const pattern =
+    /\b(?:weather|forecast|temperature|temp)\b(?:\s+\w+){0,4}?\s+(?:in|for|at|of)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi;
+  const intents = [];
+  for (const match of text.matchAll(pattern)) {
+    const location = cleanWeatherLocation(match?.[1]);
+    if (!location) {
+      continue;
+    }
+    intents.push({
+      type: "weather",
+      index: match.index ?? 0,
+      location,
+    });
   }
-  return {
-    type: "weather",
-    index: match.index ?? 0,
-    location,
-  };
+  return intents;
 }
 
-function extractCompoundFactualIntent(text) {
+function extractCompoundFactualIntents(text) {
   const patterns = [
-    /\b(?:who|what)\s+(?:is|i)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
-    /\b(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
-    /\b(?:tell me|let me know|explain|share)\s+(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
-    /\b(?:tell me about|background of|overview of)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|[?!.;]|$))/i,
+    /\b(?:who|what)\s+(?:is|i)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
+    /\b(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
+    /\b(?:tell me|let me know|explain|share)\s+(?:who|what)\s+(.+?)\s+is\b(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
+    /\b(?:tell me about|background of|overview of)\s+(.+?)(?=\s*(?:,?\s+(?:and|also|then|finally|next)\b|,\s*(?=(?:who|what|weather|forecast|temperature|temp|tell me|let me know|introduce|do\s+(?:you|u)|your\s+(?:mission|vision)))|[?!.;]|$))/gi,
   ];
+  const intents = [];
   for (const pattern of patterns) {
-    const match = text.match(pattern);
-    const topic = cleanFactualTopic(match?.[1]);
-    if (match && topic) {
-      return {
+    for (const match of text.matchAll(pattern)) {
+      const topic = cleanFactualTopic(match?.[1]);
+      if (!topic) {
+        continue;
+      }
+      intents.push({
         type: "factual",
         index: match.index ?? 0,
         topic,
-      };
+      });
     }
   }
-  return null;
+  return intents;
 }
 
 function extractCompoundIdentityIntents(text) {
@@ -4199,6 +4208,25 @@ function extractCompoundIdentityIntents(text) {
     });
   }
   return intents;
+}
+
+function dedupeCompoundIntents(intents) {
+  const seen = new Set();
+  const deduped = [];
+  for (const intent of intents) {
+    const value = intent.type === "weather"
+      ? intent.location
+      : intent.type === "factual"
+        ? intent.topic
+        : intent.topic;
+    const key = `${intent.type}:${String(value ?? "").toLowerCase()}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    deduped.push(intent);
+  }
+  return deduped;
 }
 
 function hasNonWeatherCompoundIntent(lowerText) {
