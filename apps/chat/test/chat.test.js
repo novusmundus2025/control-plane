@@ -346,6 +346,59 @@ test("uses compact token budgets for direct chat prompts", async () => {
   assert.equal(calls[4].max_tokens, 1024);
 });
 
+test("decomposes advanced nested calculus prompts", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-calculus",
+      job: {
+        job_id: "job-calculus",
+        status: "queued",
+        execution_mode: "decompose",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  await submitChatJob(
+    { message: "Differentiate y = cosh(arcsin(x^2 ln x))" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].execution_mode, "decompose");
+  assert.equal(calls[0].max_tokens, 768);
+});
+
+test("decomposes long multi-deliverable prompts", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-long",
+      job: {
+        job_id: "job-long",
+        status: "queued",
+        execution_mode: "decompose",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  await submitChatJob(
+    {
+      message:
+        "Create a product description, technical architecture, launch plan, implementation notes, tests, and documentation for MundusX AI.",
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].execution_mode, "decompose");
+  assert.equal(calls[0].max_tokens, 1024);
+});
+
 test("adapts token budgets to stronger node model and GPU capacity", async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {

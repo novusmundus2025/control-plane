@@ -3095,11 +3095,15 @@ function chooseChatExecutionMode(message, requestedMode = "auto") {
     return normalized;
   }
   const text = String(message ?? "").trim();
+  const complexity = classifyChatRequestComplexity(text);
   if (shouldUseCodeWithExplanationDecomposition(text)) {
     return "decompose";
   }
   if (shouldUseSingleCodeExecution(text)) {
     return "single";
+  }
+  if (complexity.size === "long" || complexity.requiresDecomposition) {
+    return "decompose";
   }
   return normalized;
 }
@@ -5376,6 +5380,7 @@ function inferMaxTokens(message, explicitValue, capacityProfile = null) {
   }
 
   const lower = message.toLowerCase();
+  const complexity = classifyChatRequestComplexity(message);
   if (looksLikeCompleteProgramRequest(lower)) {
     if (looksLikeSmallCompleteProgramRequest(message)) {
       return adaptiveTokenBudget("codeSmall", 1536, capacityProfile);
@@ -5412,6 +5417,12 @@ function inferMaxTokens(message, explicitValue, capacityProfile = null) {
   ) {
     return adaptiveTokenBudget("detailed", 1024, capacityProfile);
   }
+  if (complexity.size === "long") {
+    return adaptiveTokenBudget("detailed", 1024, capacityProfile);
+  }
+  if (complexity.size === "medium") {
+    return adaptiveTokenBudget("long", 768, capacityProfile);
+  }
   if (message.length > 600) {
     return adaptiveTokenBudget("long", 768, capacityProfile);
   }
@@ -5430,6 +5441,99 @@ function adaptiveTokenBudget(kind, fallback, capacityProfile) {
     xlarge: { normal: 2048, long: 3072, detailed: 4096, codeSmall: 4096, code: 6144 },
   };
   return budgets[tier]?.[kind] ?? fallback;
+}
+
+function classifyChatRequestComplexity(message) {
+  const text = String(message ?? "").replace(/\s+/g, " ").trim();
+  const lower = text.toLowerCase();
+  if (!text) {
+    return { size: "short", requiresDecomposition: false, reasons: ["empty"] };
+  }
+
+  const reasons = [];
+  const independentRequestCount = countIndependentRequestSignals(lower);
+  const advancedMath = looksLikeAdvancedMathRequest(lower);
+  const multiDeliverable = looksLikeMultiDeliverableRequest(lower);
+  const detailedResearch = looksLikeDetailedResearchRequest(lower);
+  const largeCode = looksLikeCompleteProgramRequest(lower) && !looksLikeSmallCompleteProgramRequest(text);
+
+  if (independentRequestCount >= 4) reasons.push("many-independent-requests");
+  if (advancedMath) reasons.push("advanced-math");
+  if (multiDeliverable) reasons.push("multi-deliverable");
+  if (detailedResearch) reasons.push("detailed-research");
+  if (largeCode) reasons.push("large-code");
+  if (text.length > 600) reasons.push("long-text");
+
+  if (
+    independentRequestCount >= 4 ||
+    multiDeliverable ||
+    detailedResearch ||
+    largeCode ||
+    text.length > 900
+  ) {
+    return { size: "long", requiresDecomposition: true, reasons };
+  }
+
+  if (
+    advancedMath ||
+    independentRequestCount >= 2 ||
+    text.length > 180
+  ) {
+    return {
+      size: "medium",
+      requiresDecomposition: advancedMath,
+      reasons: reasons.length ? reasons : ["multi-step"],
+    };
+  }
+
+  return { size: "short", requiresDecomposition: false, reasons: ["direct"] };
+}
+
+function countIndependentRequestSignals(lower) {
+  const patterns = [
+    /\b(?:weather|forecast|temperature|temp)\b/g,
+    /\b(?:who is|who's|who i|what is|what's|tell me about)\b/g,
+    /\b(?:introduce yourself|tell me (?:your|ur) name|do (?:you|u) have a name|who (?:created|made|built) you|your mission|your vision)\b/g,
+    /\b(?:write|create|make|build|draft|summarize|explain|translate|solve|differentiate|integrate|derive)\b/g,
+  ];
+  let count = 0;
+  for (const pattern of patterns) {
+    count += [...lower.matchAll(pattern)].length;
+  }
+  return count;
+}
+
+function looksLikeAdvancedMathRequest(lower) {
+  if (!/\b(?:differentiate|derivative|integrate|integral|limit|solve|calculus)\b/.test(lower)) {
+    return false;
+  }
+  return (
+    /\b(?:sin|cos|tan|sinh|cosh|tanh|arcsin|arccos|arctan|ln|log|exp|sqrt)\b/.test(lower) ||
+    /[()]/.test(lower) && containsAny(lower, ["chain rule", "product rule", "quotient rule"]) ||
+    /\([^)]*\([^)]*\)/.test(lower)
+  );
+}
+
+function looksLikeMultiDeliverableRequest(lower) {
+  const deliverables = [
+    "product description",
+    "technical architecture",
+    "architecture",
+    "launch plan",
+    "implementation",
+    "tests",
+    "documentation",
+    "explanation",
+    "usage notes",
+  ];
+  return deliverables.filter((item) => lower.includes(item)).length >= 2;
+}
+
+function looksLikeDetailedResearchRequest(lower) {
+  return (
+    containsAny(lower, ["detailed history", "complete history", "from its origins to today", "comprehensive", "full report"]) ||
+    /\b(?:history of|timeline of)\b/.test(lower) && containsAny(lower, ["detailed", "origins", "today", "modern"])
+  );
 }
 
 function looksLikeSmallCompleteProgramRequest(message) {
