@@ -82,6 +82,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /function createToolBadge/);
   assert.match(html, /response\.type === "factual_summary"/);
   assert.match(html, /response\.type === "assistant_identity"/);
+  assert.match(html, /response\.type === "compound_tool_result"/);
+  assert.match(html, /section\.response\?\.type === "weather_result"/);
   assert.match(html, /\.citation-sources/);
   assert.match(html, /\.tool-badge/);
   assert.match(html, /\.message\.assistant \.message-body/);

@@ -2051,6 +2051,42 @@ export function page(config = configFromEnv()) {
         }
         return wrapper;
       }
+      if (response.type === "compound_tool_result") {
+        const sections = Array.isArray(response.sections) ? response.sections : [];
+        for (const section of sections) {
+          const sectionCard = document.createElement("section");
+          sectionCard.className = "typed-card";
+          const kicker = document.createElement("div");
+          kicker.className = "typed-kicker";
+          kicker.textContent = section.title || "Result";
+          sectionCard.appendChild(kicker);
+          if (section.response?.type === "weather_result") {
+            const answer = document.createElement("div");
+            answer.className = "typed-answer";
+            answer.textContent = section.response.summary || section.output || "";
+            sectionCard.appendChild(answer);
+            const facts = Object.entries(section.response.facts || {}).filter(([, value]) => value !== null && value !== undefined && value !== "");
+            if (facts.length) {
+              const factWrap = document.createElement("div");
+              factWrap.className = "typed-facts";
+              for (const [key, value] of facts) {
+                const fact = document.createElement("span");
+                fact.className = "typed-fact";
+                fact.textContent = key + ": " + value;
+                factWrap.appendChild(fact);
+              }
+              sectionCard.appendChild(factWrap);
+            }
+          } else {
+            appendRichMessage(sectionCard, section.response?.text || section.response?.summary || section.output || "");
+          }
+          wrapper.appendChild(sectionCard);
+        }
+        if (!sections.length) {
+          appendRichMessage(wrapper, response.text || "");
+        }
+        return wrapper;
+      }
       if (response.type === "factual_summary") {
         appendRichMessage(wrapper, response.text || response.summary || "");
         return wrapper;
