@@ -240,13 +240,15 @@ test("renders chunk plan progress for decomposed jobs", () => {
 
   assert.match(html, /mode decompose/i);
   assert.match(html, /graph enabled/i);
+  assert.match(html, /Request hidden for privacy/);
+  assert.doesNotMatch(html, /Write a history of Mercedes-Benz/);
   assert.match(html, /1\/3 sections complete/i);
   assert.match(html, /Origins and founders/i);
   assert.match(html, /Modern era/i);
   assert.match(html, /Blocked by job\.modern_era/i);
 });
 
-test("redacts secrets in operator job and event displays", () => {
+test("hides request and response content in operator job and event displays", () => {
   const html = page({
     health: {
       status: "ok",
@@ -278,17 +280,25 @@ test("redacts secrets in operator job and event displays", () => {
         created_at: "4",
         node_id: "node-1",
         job_id: "job-secret",
-        payload: { output: "Bearer abcdefghijklmnopqrstuvwxyz1234567890" },
+        payload: {
+          prompt: "Who is David Batalla?",
+          output: "Bearer abcdefghijklmnopqrstuvwxyz1234567890",
+          nested: { content: "raw user content" },
+        },
       },
     ],
     credits: {},
     error: null,
   });
 
-  assert.match(html, /password=\[REDACTED_SECRET\]/);
-  assert.match(html, /\[REDACTED_OPENAI_KEY\]/);
-  assert.match(html, /Bearer \[REDACTED_TOKEN\]/);
-  assert.doesNotMatch(html, /supersecret123|sk-proj-abc123456789XYZ|abcdefghijklmnopqrstuvwxyz1234567890/);
+  assert.match(html, /Request hidden for privacy/);
+  assert.match(html, /prompt hidden for privacy/);
+  assert.match(html, /output hidden for privacy/);
+  assert.match(html, /content hidden for privacy/);
+  assert.doesNotMatch(
+    html,
+    /debug password|supersecret123|sk-proj-abc123456789XYZ|Who is David Batalla|abcdefghijklmnopqrstuvwxyz1234567890|raw user content/,
+  );
 });
 
 test("renders the high-impact command deck shell with replacement logo and live metrics", () => {

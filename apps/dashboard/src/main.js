@@ -120,6 +120,31 @@ const redactSensitiveText = (input) => {
 
 const displayText = (input) => redactSensitiveText(input);
 
+const privateTextSummary = (input, label = "Content") => {
+  const text = String(input ?? "").trim();
+  if (!text) {
+    return `${label} not recorded`;
+  }
+  return `${label} hidden for privacy (${text.length} chars)`;
+};
+
+const privatePayloadForDisplay = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((entry) => privatePayloadForDisplay(entry));
+  }
+  if (!value || typeof value !== "object") {
+    return value;
+  }
+  return Object.fromEntries(
+    Object.entries(value).map(([key, rawValue]) => {
+      if (/^(prompt|system_prompt|message|content|output|response|result|final_output)$/i.test(key)) {
+        return [key, privateTextSummary(rawValue, key)];
+      }
+      return [key, privatePayloadForDisplay(rawValue)];
+    }),
+  );
+};
+
 async function fetchJson(path) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 2500);
@@ -583,7 +608,7 @@ function renderJobs(jobs = []) {
           const submittedAt = job.submitted_at ?? "unknown";
           const assignedAt = job.assigned_at ?? "pending";
           const completedAt = job.completed_at ?? "pending";
-          const prompt = displayText(String(job.prompt ?? "").trim());
+          const prompt = privateTextSummary(job.prompt, "Request");
           const classification = job.classification ?? {};
           const plan = job.plan ?? {};
           const planJobs = Array.isArray(plan.jobs) ? plan.jobs : [];
@@ -683,7 +708,7 @@ function renderEvents(events = []) {
                 <span class="meta">${escapeHtml(event.created_at ?? "unknown")}</span>
               </div>
               <div class="meta">node ${escapeHtml(event.node_id ?? "n/a")} • job ${escapeHtml(event.job_id ?? "n/a")}</div>
-              <pre>${escapeHtml(displayText(JSON.stringify(event.payload ?? {}, null, 2)))}</pre>
+              <pre>${escapeHtml(JSON.stringify(privatePayloadForDisplay(event.payload ?? {}), null, 2))}</pre>
             </div>`,
         )
         .join("")}
@@ -729,7 +754,7 @@ function renderCredits(credits = {}) {
                 device ${escapeHtml(entry.device_id ?? "n/a")} • job ${escapeHtml(entry.job_id ?? "n/a")} •
                   ${formatCredits(entry.amount ?? 0)} ${escapeHtml(entry.currency ?? "credits")}
               </div>
-                ${entry.metadata ? `<pre>${escapeHtml(JSON.stringify(entry.metadata, null, 2))}</pre>` : ""}
+                ${entry.metadata ? `<pre>${escapeHtml(JSON.stringify(privatePayloadForDisplay(entry.metadata), null, 2))}</pre>` : ""}
               </div>`,
           )
           .join("")}
@@ -1070,7 +1095,7 @@ function renderContributorJobHistoryPage(requestUrl, basePath = "/portal") {
             <h1>${escapeHtml(pageTitle)}</h1>
             <div class="sub">
               Completed jobs live on their own page so the list can scale with search and pagination.
-              This view is contributor-first: every row shows the prompt, credits earned, duration,
+              This view is contributor-first: every row shows request metadata, credits earned, duration,
               and the node that completed the work.
             </div>
             <div class="statusline">
@@ -1123,7 +1148,7 @@ function renderContributorJobHistoryPage(requestUrl, basePath = "/portal") {
                         </div>
                         <span class="pill pill-green">${escapeHtml(job.status)}</span>
                       </div>
-                      <div class="job-prompt">${escapeHtml(displayText(job.prompt))}</div>
+                      <div class="job-prompt">${escapeHtml(privateTextSummary(job.prompt, "Request"))}</div>
                       <div class="job-meta">
                         <div class="meta-box">
                           <div class="meta-label">Credits</div>
