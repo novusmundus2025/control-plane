@@ -1,6 +1,6 @@
-# MundusX Operator Repo
+# Operator Control Plane Repo
 
-This private repository contains the company-owned operator surface for MundusX:
+This private repository contains the operator-owned control-plane surface:
 
 - `apps/control-plane/` - scheduler, routing, auth, and job management
 - `apps/dashboard/` - operator web UI

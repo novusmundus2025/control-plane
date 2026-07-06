@@ -2840,9 +2840,9 @@ export function page({ health, status, events, credits, error }) {
           <div>
             <div class="brand">
               <a class="brand-logo-action motion-glow" href="${escapeHtml(appUrl)}/#nodes" aria-label="Show first 25 nodes and clear filters">
-                <img class="brand-mark" alt="MundusX control plane logo" src="${escapeHtml(controlPlaneLogoUrl)}" />
+                <img class="brand-mark" alt="Control plane logo" src="${escapeHtml(controlPlaneLogoUrl)}" />
               </a>
-              MundusX Command Deck
+              Command Deck
             </div>
             <h1>Control Plane</h1>
             <div class="sub">High-signal operator view for fleet readiness, routing pressure, policy gates, storage source, and audit trail.</div>

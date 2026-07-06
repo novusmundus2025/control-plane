@@ -321,9 +321,9 @@ test("renders the high-impact command deck shell with replacement logo and live 
     error: null,
   });
 
-  assert.match(html, /MundusX Command Deck/i);
+  assert.match(html, /Command Deck/i);
   assert.match(html, /Control Plane/i);
-  assert.match(html, /MundusX control plane logo/i);
+  assert.match(html, /Control plane logo/i);
   assert.match(html, /\/assets\/mundusx-logo\.png/);
   assert.match(html, /href="http:\/\/127\.0\.0\.1:3001\/#nodes"/);
   assert.match(html, /aria-label="Show first 25 nodes and clear filters"/);

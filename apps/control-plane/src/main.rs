@@ -2436,7 +2436,7 @@ fn control_plane_operator_page(
   <body>
     <div class="shell">
       <aside class="sidebar" aria-label="Control plane navigation">
-        <a class="brand motion-glow" href="/" aria-label="MundusX control plane home"><img class="brand-mark" alt="MundusX control plane logo" src="{logo_path}" /> <span>MundusX</span></a>
+        <a class="brand motion-glow" href="/" aria-label="Control plane home"><img class="brand-mark" alt="Control plane logo" src="{logo_path}" /> <span>Control Plane</span></a>
         <nav class="nav"><a class="nav-item motion-lift" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6"/></svg>Overview</a>{nav}</nav>
         <div class="sidebar-bottom">
           <div class="side-card">
@@ -2445,9 +2445,9 @@ fn control_plane_operator_page(
           </div>
           <div class="side-card operator">
             <div class="avatar">NX</div>
-            <div><strong>Operator</strong><div class="meta">operator@mundusx.ai</div></div>
+            <div><strong>Operator</strong><div class="meta">operator@control-plane.local</div></div>
           </div>
-          <div class="foot">MundusX Control Plane<br/>v1.0.0</div>
+          <div class="foot">Control Plane<br/>v1.0.0</div>
         </div>
       </aside>
       <main>
@@ -2509,7 +2509,7 @@ fn control_plane_home(
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>MundusX Control Plane</title>
+    <title>Control Plane</title>
     <style>
       :root {{
         color-scheme: dark;
@@ -3311,7 +3311,7 @@ fn control_plane_home(
   <body>
     <div class="app-shell">
       <aside class="sidebar" aria-label="Control plane navigation">
-        <a class="brand motion-glow" href="/" aria-label="MundusX control plane home"><img class="brand-mark" alt="MundusX control plane logo" src="{logo_path}" /> <span>MundusX</span></a>
+        <a class="brand motion-glow" href="/" aria-label="Control plane home"><img class="brand-mark" alt="Control plane logo" src="{logo_path}" /> <span>Control Plane</span></a>
         <nav class="nav">
           <a class="nav-item motion-lift active" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>Overview</a>
           <a class="nav-item motion-lift" href="/nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>Nodes</a>
@@ -3327,9 +3327,9 @@ fn control_plane_home(
           </div>
           <div class="side-card operator">
             <div class="avatar">NX</div>
-            <div><strong>Operator</strong><div class="meta">operator@mundusx.ai</div></div>
+            <div><strong>Operator</strong><div class="meta">operator@control-plane.local</div></div>
           </div>
-          <div class="foot">MundusX Control Plane<br/>v1.0.0</div>
+          <div class="foot">Control Plane<br/>v1.0.0</div>
         </div>
       </aside>
 
@@ -3337,7 +3337,7 @@ fn control_plane_home(
         <header class="topbar">
           <div>
             <div class="title-line">
-              <h1>MundusX Control Plane</h1>
+              <h1>Control Plane</h1>
               <svg class="shield-mini" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v8"/><path d="M9 12h6"/></svg>
             </div>
             <div class="sub">Real-time overview of your compute network, security posture, jobs, storage, and audit trail.</div>
@@ -3375,14 +3375,14 @@ fn control_plane_home(
         <section class="work-grid">
           <div class="section">
             <div class="section-head">
-              <div class="section-title-row"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="16" r="2.5"/><circle cx="19" cy="16" r="2.5"/><path d="M10 7 6.5 14"/><path d="m14 7 3.5 7"/><path d="M7.5 16h9"/></svg><div><h2 class="section-title">Network Topology</h2><div class="meta">Live view of MundusX compute network</div></div></div>
+              <div class="section-title-row"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="16" r="2.5"/><circle cx="19" cy="16" r="2.5"/><path d="M10 7 6.5 14"/><path d="m14 7 3.5 7"/><path d="M7.5 16h9"/></svg><div><h2 class="section-title">Network Topology</h2><div class="meta">Live view of compute network</div></div></div>
               <div class="legend"><span><i class="legend-dot"></i>Online</span><span><i class="legend-dot trusted"></i>Trusted</span><span><i class="legend-dot paused"></i>Paused</span><span><i class="legend-dot offline"></i>Offline</span></div>
             </div>
             <div class="section-body">
               <div class="topology">
                 <div class="orbit"></div><div class="grid-ring"></div>
                 <div class="radial"></div><div class="radial r2"></div><div class="radial r3"></div><div class="radial r4"></div><div class="radial r5"></div><div class="radial r6"></div><div class="radial r7"></div><div class="radial r8"></div>
-                <div class="topology-center motion-glow"><span class="logo-signal s1" aria-hidden="true"></span><span class="logo-signal s2" aria-hidden="true"></span><span class="logo-signal s3" aria-hidden="true"></span><img class="center-logo" alt="MundusX topology logo" src="{logo_path}" /></div>
+                <div class="topology-center motion-glow"><span class="logo-signal s1" aria-hidden="true"></span><span class="logo-signal s2" aria-hidden="true"></span><span class="logo-signal s3" aria-hidden="true"></span><img class="center-logo" alt="Compute topology logo" src="{logo_path}" /></div>
                 {topology_slots}
               </div>
               <div class="panel-footer">{nodes} nodes registered</div>
@@ -5189,7 +5189,7 @@ fn main() {
     let state = Arc::new(Mutex::new(restored_state));
     let sync_status = Arc::new(Mutex::new(sync_status));
 
-    println!("MundusX control plane listening on http://{bind_addr}");
+    println!("control plane listening on http://{bind_addr}");
     println!(
         "supabase: {}",
         sync_status.lock().expect("sync status lock").summary()
@@ -5585,8 +5585,8 @@ mod tests {
             &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
         );
 
-        assert!(html.contains("MundusX Control Plane"));
-        assert!(html.contains("MundusX control plane logo"));
+        assert!(html.contains("Control Plane"));
+        assert!(html.contains("Control plane logo"));
         assert!(html.contains(CONTROL_PLANE_LOGO_PATH));
         assert!(html.contains("Status API"));
         assert!(html.contains("Network Topology"));
@@ -6249,7 +6249,7 @@ mod tests {
         assert!(html.contains("min-height:54px"));
         assert!(html.contains("sidebar-bottom"));
         assert!(html.contains("overflow-wrap:anywhere"));
-        assert!(html.contains("MundusX Control Plane<br/>v1.0.0"));
+        assert!(html.contains("Control Plane<br/>v1.0.0"));
         assert!(html.contains(r#"value="node-new""#));
         assert!(html.contains(r#"name="state""#));
         assert!(html.contains(r#"value="online" selected"#));
