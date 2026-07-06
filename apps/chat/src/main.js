@@ -2363,7 +2363,10 @@ export function page(config = configFromEnv()) {
       if (isIncompleteCodeFallback(output) || progressLooksLikeCodePlan(payload.progress)) {
         return false;
       }
-      return payload.progress?.nodes?.some((chunk) =>
+      const nodes = payload.progress?.nodes || [];
+      if (!nodes.length) return false;
+      if (nodes.length > 1) return true;
+      return nodes.some((chunk) =>
         String(chunk.status || "").toLowerCase() === "completed" &&
         String(chunk.output || "").trim(),
       );
@@ -2389,16 +2392,35 @@ export function page(config = configFromEnv()) {
     function createSourceSections(payload) {
       const details = document.createElement("details");
       details.className = "source-sections";
+      details.open = shouldOpenSourceSections(payload);
       const summary = document.createElement("summary");
-      summary.textContent = "Completed source sections";
+      summary.textContent = sourceSectionsSummary(payload);
       details.appendChild(summary);
       const list = document.createElement("div");
       list.className = "chunk-list";
-      for (const chunk of payload.progress.nodes.filter((node) => node.output)) {
+      for (const chunk of payload.progress.nodes) {
         list.appendChild(createChunkRow(chunk));
       }
       details.appendChild(list);
       return details;
+    }
+
+    function shouldOpenSourceSections(payload) {
+      const total = payload.progress?.total || payload.progress?.nodes?.length || 0;
+      return total > 1 && total <= 4;
+    }
+
+    function sourceSectionsSummary(payload) {
+      const progress = payload.progress || {};
+      const total = progress.total || progress.nodes?.length || 0;
+      const completed = progress.completed || 0;
+      const failed = progress.failed || 0;
+      const running = progress.running || 0;
+      const unit = progressUnit(progress);
+      const parts = [completed + "/" + total + " " + unit + " complete"];
+      if (running) parts.push(running + " running");
+      if (failed) parts.push(failed + " failed");
+      return "Completed work sections - " + parts.join(" - ");
     }
 
     function createChunkRow(chunk) {

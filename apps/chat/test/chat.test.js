@@ -83,7 +83,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);
-  assert.match(html, /Completed source sections/);
+  assert.match(html, /Completed work sections/);
   assert.match(html, /Ask everyone/);
   assert.doesNotMatch(html, /<span class="kbd">\/<\/span>Commands/);
   assert.match(html, /id="web-search-toggle"/);
@@ -111,6 +111,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /function appendInlineMarkdown/);
   assert.match(html, /function formatCodeForDisplay/);
   assert.match(html, /function shouldShowSourceSections/);
+  assert.match(html, /function shouldOpenSourceSections/);
+  assert.match(html, /function sourceSectionsSummary/);
   assert.match(html, /function isIncompleteCodeFallback/);
   assert.match(html, /function progressLooksLikeCodePlan/);
   assert.match(html, /shouldShowSourceSections\(payload, output\)/);
