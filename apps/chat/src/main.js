@@ -6010,7 +6010,7 @@ function estimateDisplayTokens(value) {
 
 function compactChunkOutput(value, expectedName = "") {
   const raw = String(value ?? "");
-  const cleaned = cleanChatOutputInternal(value, false);
+  const cleaned = trimChunkToExpectedSection(cleanChatOutputInternal(value, false), expectedName);
   if (isLeakedPlannerChunkOutput(raw, cleaned, expectedName)) {
     return "";
   }
@@ -6018,6 +6018,65 @@ function compactChunkOutput(value, expectedName = "") {
     return "";
   }
   return truncateText(cleaned, 900);
+}
+
+function trimChunkToExpectedSection(value, expectedName = "") {
+  const text = String(value ?? "").trim();
+  const expected = normalizeSectionName(expectedName);
+  if (!text || !expected) {
+    return text;
+  }
+
+  const firstMarker = findKnownSectionMarker(text, 0);
+  if (firstMarker && firstMarker.index <= 8 && firstMarker.name !== expected) {
+    return "";
+  }
+
+  let searchFrom = Math.max(firstMarker?.end ?? 0, 1);
+  while (searchFrom < text.length) {
+    const marker = findKnownSectionMarker(text, searchFrom);
+    if (!marker) {
+      break;
+    }
+    if (marker.name !== expected) {
+      return text.slice(0, marker.index).replace(/[\s\-*•]+$/g, "").trim();
+    }
+    searchFrom = marker.end;
+  }
+  return text;
+}
+
+function findKnownSectionMarker(text, startIndex = 0) {
+  const pattern = /(?:^|[\n\r]\s*|\s{2,}|\s+[-*•]\s*|\s+\d+[.)]\s*)(?:[-*•]\s*|\d+[.)]\s*)?(?:\*\*)?([A-Z][A-Za-z &]{1,40})(?:\*\*)?\s*(?::|-|\b)/g;
+  pattern.lastIndex = startIndex;
+  let match;
+  while ((match = pattern.exec(text)) !== null) {
+    const normalized = normalizeSectionName(match[1]);
+    if (isKnownSectionName(normalized)) {
+      return {
+        index: match.index + match[0].indexOf(match[1]),
+        end: pattern.lastIndex,
+        name: normalized,
+      };
+    }
+  }
+  return null;
+}
+
+function isKnownSectionName(normalizedName) {
+  return new Set([
+    "founding",
+    "origins",
+    "origins founders",
+    "early years",
+    "early development",
+    "expansion",
+    "expansion milestones",
+    "cloud era",
+    "ai era",
+    "modern era",
+    "summary",
+  ]).has(normalizedName);
 }
 
 function isLeakedPlannerChunkOutput(rawValue, cleanedValue, expectedName = "") {
@@ -7118,6 +7177,12 @@ function stripSkillPromptLeak(value) {
   if (!output) {
     return output;
   }
+  output = output
+    .replace(
+      /\s*\[(?:router|formatter|chunk-planner|verifier|math|weather|facts|translation|code-generation)\]\s+[^\[]*(?=\s+\[(?:router|formatter|chunk-planner|verifier|math|weather|facts|translation|code-generation)\]|$)/gi,
+      "",
+    )
+    .trim();
   if (
     /^#\s*(?:Router|Formatter|Atlas Persona|Marie Persona|Translation|Code Generation|Math|Weather|Facts|Chunk Planner|Verifier)\s+Skill\b/i.test(output)
   ) {

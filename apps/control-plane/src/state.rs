@@ -1706,6 +1706,80 @@ fn looks_sectionable_prompt(prompt: &str) -> bool {
     )
 }
 
+fn explicit_split_sections(prompt: &str) -> Vec<String> {
+    let lower = prompt.to_ascii_lowercase();
+    let Some(index) = lower.find("split by") else {
+        return Vec::new();
+    };
+    let mut section_text = prompt[index + "split by".len()..]
+        .split(['.', '?', '!', '\n'])
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    section_text = section_text.replace(" and ", ", ");
+    section_text = section_text.replace(" then ", ", ");
+    section_text
+        .split([',', ';'])
+        .filter_map(|part| {
+            let cleaned = part
+                .trim()
+                .trim_matches(|ch: char| ch == '-' || ch == ':' || ch == '.')
+                .trim();
+            if cleaned.len() < 2 || cleaned.len() > 64 {
+                return None;
+            }
+            if cleaned
+                .chars()
+                .all(|ch| ch.is_ascii_punctuation() || ch.is_ascii_whitespace())
+            {
+                return None;
+            }
+            Some(title_case_section(cleaned))
+        })
+        .take(8)
+        .collect()
+}
+
+fn title_case_section(value: &str) -> String {
+    value
+        .split_whitespace()
+        .map(|word| {
+            let lower = word.to_ascii_lowercase();
+            match lower.as_str() {
+                "ai" => "AI".to_string(),
+                "api" => "API".to_string(),
+                "ui" => "UI".to_string(),
+                "ux" => "UX".to_string(),
+                _ => {
+                    let mut chars = lower.chars();
+                    match chars.next() {
+                        Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                        None => String::new(),
+                    }
+                }
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn section_job_id(section: &str, index: usize) -> String {
+    let mut slug = section
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '_' })
+        .collect::<String>();
+    while slug.contains("__") {
+        slug = slug.replace("__", "_");
+    }
+    slug = slug.trim_matches('_').to_string();
+    if slug.is_empty() {
+        slug = format!("section_{}", index + 1);
+    }
+    format!("job.{slug}")
+}
+
 fn looks_product_plan_prompt(lower_prompt: &str) -> bool {
     let matches = [
         "product description",
@@ -2564,6 +2638,33 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
         && classification.task_type != RequestTaskType::Coding
     {
         let mut jobs = Vec::new();
+        let requested_sections = explicit_split_sections(&request.prompt);
+        if requested_sections.len() >= 2 {
+            for (index, section) in requested_sections.iter().enumerate() {
+                push_planned_job(
+                    &mut jobs,
+                    &section_job_id(section, index),
+                    section,
+                    "section",
+                    Vec::new(),
+                    &format!(
+                        "Write only the {section} section requested by the user. Do not include any other requested section."
+                    ),
+                    "The user explicitly requested this split section.",
+                );
+            }
+
+            return JobPlan {
+                plan_id: format!("plan-{}", request.request_id),
+                strategy: "sectioned_research".to_string(),
+                summary: format!(
+                    "Planned {} user-requested sections. Sections are returned directly; final synthesis is optional.",
+                    jobs.len()
+                ),
+                jobs,
+            };
+        }
+
         push_planned_job(
             &mut jobs,
             "job.origins",
@@ -4030,6 +4131,39 @@ mod tests {
             .jobs
             .iter()
             .any(|job| job.name == "Complete source code"));
+    }
+
+    #[test]
+    fn sectioned_research_honors_user_requested_split_sections() {
+        let mut request = classification_request(
+            "Write a detailed history of Microsoft from its origins to today, split by founding, early years, expansion, cloud era, AI era, and summary.",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+
+        let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
+
+        assert_eq!(plan.strategy, "sectioned_research");
+        let names = plan
+            .jobs
+            .iter()
+            .map(|job| job.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "Founding",
+                "Early Years",
+                "Expansion",
+                "Cloud Era",
+                "AI Era",
+                "Summary",
+            ]
+        );
+        assert!(plan
+            .jobs
+            .iter()
+            .all(|job| job.required_output.contains("Do not include any other requested section")));
     }
 
     #[test]

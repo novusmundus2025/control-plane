@@ -2879,6 +2879,41 @@ test("hides completed chunk output when it is leaked planner text for another se
   );
 });
 
+test("trims completed section output before it bleeds into later sections", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-section-bleed",
+        status: "completed",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        graph: {
+          nodes: [
+            {
+              id: "job.origins",
+              name: "Origins and founders",
+              status: "completed",
+              output:
+                "Origins and Founders: Microsoft was founded in 1975 by Bill Gates and Paul Allen.\n\n- Early Years: Microsoft developed software for early personal computers.\n- Expansion: Microsoft grew through Windows and enterprise software.",
+            },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-section-bleed",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(
+    result.progress.nodes[0].output,
+    "Origins and Founders: Microsoft was founded in 1975 by Bill Gates and Paul Allen.",
+  );
+  assert.doesNotMatch(result.progress.nodes[0].output, /Early Years|Expansion/);
+});
+
 test("exposes blocked graph dependencies in chat progress", async () => {
   const fetchImpl = async () =>
     jsonResponse({
@@ -3096,6 +3131,15 @@ test("removes embedded section instruction leaks from decomposed answers", () =>
   assert.match(output, /MundusX AI coordinates contributor GPUs/);
   assert.match(output, /Pricing and credits: Contributors earn credits/);
   assert.doesNotMatch(output, /Avoid jargon|Use a formal tone|Required output|Responsibility|Write the factual/i);
+});
+
+test("removes inline selected skill labels from rendered output", () => {
+  const output = cleanChatOutput(
+    "Founding: Microsoft was founded in 1975. [router] Route requests conservatively. [formatter] Answer directly and cleanly. [chunk-planner] Chunk only when useful.",
+  );
+
+  assert.equal(output, "Founding: Microsoft was founded in 1975.");
+  assert.doesNotMatch(output, /\[router\]|\[formatter\]|\[chunk-planner\]/);
 });
 
 test("removes leaked code subjob instructions and keeps C code", () => {
