@@ -2090,9 +2090,32 @@ fn graph_node_execution_prompt(
         );
     }
 
+    let all_section_titles = job
+        .graph
+        .nodes
+        .iter()
+        .filter(|candidate| candidate.responsibility != "merge")
+        .map(|candidate| candidate.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let other_section_titles = job
+        .graph
+        .nodes
+        .iter()
+        .filter(|candidate| candidate.id != node.id)
+        .filter(|candidate| candidate.responsibility != "merge")
+        .map(|candidate| candidate.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
     format!(
-        "Original user request:\n{}\n\nYou are completing one section for a larger answer.\nSection title: {}\nSection type: {}\nSection goal: {}\n\nReturn only this section's user-facing content. Do not repeat these instructions, do not describe other sections, and do not continue the user's prompt. Use plain prose or compact bullets.",
-        job.prompt, node.name, node.responsibility, node.required_output
+        "Original user request:\n{}\n\nYou are completing exactly one section for a larger answer.\nAll requested section titles, in order: {}\nCurrent section title: {}\nSection type: {}\nSection goal: {}\n\nReturn only the user-facing content for the current section. Do not repeat these instructions, do not describe the plan, and do not continue the user's prompt. Do not write content for these other sections: {}. Stop before the next section begins. Use plain prose or compact bullets and keep the answer focused on the current section title.",
+        job.prompt,
+        all_section_titles,
+        node.name,
+        node.responsibility,
+        node.required_output,
+        other_section_titles
     )
 }
 
@@ -2116,9 +2139,9 @@ fn graph_node_max_tokens(job: &JobRecord, active_node_id: &str) -> u32 {
                     512
                 }
             } else if requested > 1_024 {
-                320
+                512
             } else {
-                256
+                384
             }
         }
         "complete_code_generation" => match node.id.as_str() {
@@ -5029,7 +5052,7 @@ mod tests {
             .expect("first active graph node");
         assert!(first_claim.prompt.contains("Original user request"));
         assert!(first_claim.prompt.contains("one section for a larger answer"));
-        assert!(first_claim.prompt.contains("Section title:"));
+        assert!(first_claim.prompt.contains("Current section title:"));
 
         let first_completed = state
             .complete_job(
@@ -5098,7 +5121,7 @@ mod tests {
             .claim_job("node-1", "3".to_string())
             .job
             .expect("first section claim");
-        assert_eq!(first_claim.max_tokens, Some(256));
+        assert_eq!(first_claim.max_tokens, Some(384));
 
         state
             .complete_job(
@@ -5129,7 +5152,7 @@ mod tests {
                 .claim_job("node-1", (index + 5).to_string())
                 .job
                 .expect("section claim");
-            assert_eq!(claim.max_tokens, Some(256));
+            assert_eq!(claim.max_tokens, Some(384));
             completed = Some(
                 state
                     .complete_job(
@@ -5178,7 +5201,7 @@ mod tests {
             .claim_job("node-1", "3".to_string())
             .job
             .expect("first section claim");
-        assert_eq!(first_claim.max_tokens, Some(320));
+        assert_eq!(first_claim.max_tokens, Some(512));
 
         state
             .complete_job(
@@ -5208,7 +5231,7 @@ mod tests {
                 .claim_job("node-1", (index + 5).to_string())
                 .job
                 .expect("section claim");
-            assert_eq!(claim.max_tokens, Some(320));
+            assert_eq!(claim.max_tokens, Some(512));
             state
                 .complete_job(
                     JobCompletion {
