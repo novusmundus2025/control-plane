@@ -1583,9 +1583,9 @@ test("cleans planned weather locations and routes planned math in compound promp
   assert.match(result.output, /Answer: -3x\^4 \+ 6x\^3 - 15x\^2 - 13x - 7/);
 });
 
-test("does not guess compound tool chunks when the LLM planner returns no usable plan", async () => {
+test("falls back to normal chat when the LLM planner returns no usable plan and no safe direct tools", async () => {
   const calls = [];
-  const prompt = "What is mundusx? What is the weather in Manila? Who created you?";
+  const prompt = "Tell me something interesting about math and explain why learning is useful?";
   const fetchImpl = async (url, init = {}) => {
     calls.push({ url, init });
     if (url === "https://uat.mundusx.ai/v1/jobs") {
@@ -1624,8 +1624,76 @@ test("does not guess compound tool chunks when the LLM planner returns no usable
   );
 });
 
+test("falls back to deterministic compound tools when planner misses obvious direct intents", async () => {
+  const calls = [];
+  const prompt = "what's the weather in Stuttgart Germany? and Introduced yourself? Who is Donald Trump?";
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      const body = JSON.parse(init.body);
+      assert.match(body.system_prompt, /You are the MundusX tool planner/);
+      return plannerJobResponse([], "planner-empty");
+    }
+    if (url === "https://wttr.in/Stuttgart%20Germany?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Stuttgart" }],
+            region: [{ value: "Baden-Wurttemberg" }],
+            country: [{ value: "Germany" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Cloudy" }],
+            temp_C: "19",
+            temp_F: "66",
+            FeelsLikeC: "19",
+            FeelsLikeF: "66",
+            humidity: "55",
+            windspeedKmph: "12",
+          },
+        ],
+      });
+    }
+    if (url.includes("opensearch")) {
+      assert.match(url, /search=Donald%20Trump/);
+      return jsonResponse(["Donald Trump", ["Donald Trump"], [""], ["https://en.wikipedia.org/wiki/Donald_Trump"]]);
+    }
+    if (url === "https://en.wikipedia.org/api/rest_v1/page/summary/Donald%20Trump") {
+      return jsonResponse({
+        title: "Donald Trump",
+        extract: "Donald Trump is an American politician, media personality, and businessman.",
+        content_urls: { desktop: { page: "https://en.wikipedia.org/wiki/Donald_Trump" } },
+      });
+    }
+    throw new Error(`unexpected call ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: prompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.tool, "compound_tools");
+  assert.deepEqual(result.response.sections.map((section) => section.type), [
+    "weather",
+    "assistant_identity",
+    "factual_summary",
+  ]);
+  assert.match(result.output, /## Weather for Stuttgart, Baden-Wurttemberg, Germany/);
+  assert.match(result.output, /Cloudy, 19C\/66F/);
+  assert.match(result.output, /## Atlas/);
+  assert.match(result.output, /I'm Atlas/);
+  assert.match(result.output, /## Donald Trump/);
+  assert.match(result.output, /American politician/);
+  assert.doesNotMatch(result.output, /generated unrelated questions/i);
+});
+
 test("rejects fallback answers that drift into invented question lists", async () => {
-  const prompt = "What is mundusx? What is the weather in Manila? Subtract 3(x2+1)2 from 6x3 -9x2 -13x -4";
+  const prompt = "Tell me something interesting about math and explain why learning is useful?";
   const fetchImpl = async (url, init = {}) => {
     if (url === "https://uat.mundusx.ai/v1/jobs") {
       const body = JSON.parse(init.body);
@@ -1670,7 +1738,7 @@ test("rejects fallback answers that drift into invented question lists", async (
 });
 
 test("rejects drifting fallback answers when async polling completes later", async () => {
-  const prompt = "What is mundusx? What is the weather in Manila? Subtract 3(x2+1)2 from 6x3 -9x2 -13x -4";
+  const prompt = "Tell me something interesting about math and explain why learning is useful?";
   const fetchImpl = async (url, init = {}) => {
     if (url === "https://uat.mundusx.ai/v1/jobs" && init.method === "POST") {
       const body = JSON.parse(init.body);

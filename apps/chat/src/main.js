@@ -3920,8 +3920,11 @@ async function fetchWeatherJob(message, location, config, fetchImpl) {
 }
 
 async function fetchPlannedCompoundToolJob(message, config, fetchImpl, voicePersona = "atlas") {
-  const plannerIntents = await fetchToolPlannerIntents(message, config, fetchImpl);
+  let plannerIntents = await fetchToolPlannerIntents(message, config, fetchImpl);
   if (!plannerIntents.length) {
+    plannerIntents = extractCompoundDirectToolIntents(message);
+  }
+  if (plannerIntents.length < 2) {
     return null;
   }
   return fetchCompoundDirectToolJob(message, config, fetchImpl, voicePersona, plannerIntents);
@@ -4691,7 +4694,7 @@ function isCompoundPromptForDirectTools(message) {
   }
   const intentChecks = [
     /\b(?:weather|forecast|temperature|temp)\b/i,
-    /\b(?:introduce yourself|who are you|what'?s your name|tell me (?:your|ur) name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i,
+    /\b(?:introduce yourself|introduced yourself|who are you|what'?s your name|tell me (?:your|ur) name|do (?:you|u) have a name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision)\b/i,
     /\b(?:what\s+is\s+mundusx|tell me about mundusx|explain mundusx|details?\s+of\s+mundusx)\b/i,
     /\b(?:who is|who's|tell me who|tell me about)\b/i,
     /\b(?:what\s+(?:school|chool|university|college)|(?:school|university|college)\s+(?:called|named|in))\b/i,
@@ -4804,7 +4807,7 @@ function extractCompoundFactualIntents(text) {
 
 function extractCompoundIdentityIntents(text) {
   const pattern =
-    /\b(?:introduce yourself|tell me about yourself|who are you|what are you|do (?:you|u) have a name|what(?:'s| is) your name|tell me (?:your|ur) name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision|mission and vision)\b/gi;
+    /\b(?:introduce yourself|introduced yourself|tell me about yourself|who are you|what are you|do (?:you|u) have a name|what(?:'s| is) your name|tell me (?:your|ur) name|do (?:you|u) have a purpose|who (?:created|made|built) you|who are you (?:created|made|built) by|who owns you|your mission|your vision|mission and vision)\b/gi;
   const seenTopics = new Set();
   const intents = [];
   for (const match of text.matchAll(pattern)) {
