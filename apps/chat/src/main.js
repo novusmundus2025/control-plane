@@ -5963,7 +5963,7 @@ function summarizeChatProgress(job) {
 function formatChatProgressNode(node, job, nodeNameById = {}) {
   const completed = node.status === "completed";
   const rawOutput = completed ? String(node.output ?? "") : "";
-  const compactOutput = rawOutput ? compactChunkOutput(rawOutput) : "";
+  const compactOutput = rawOutput ? compactChunkOutput(rawOutput, node.name) : "";
   const outputChars = positiveNumberOrNull(node.output_chars) ?? (compactOutput ? compactOutput.length : null);
   const estimatedOutputTokens =
     positiveNumberOrNull(node.estimated_output_tokens) ?? estimateDisplayTokens(compactOutput);
@@ -6008,12 +6008,54 @@ function estimateDisplayTokens(value) {
   return Math.max(1, Math.ceil(text.length / 4));
 }
 
-function compactChunkOutput(value) {
+function compactChunkOutput(value, expectedName = "") {
+  const raw = String(value ?? "");
   const cleaned = cleanChatOutputInternal(value, false);
+  if (isLeakedPlannerChunkOutput(raw, cleaned, expectedName)) {
+    return "";
+  }
   if (isInstructionOnlyChunkOutput(cleaned)) {
     return "";
   }
   return truncateText(cleaned, 900);
+}
+
+function isLeakedPlannerChunkOutput(rawValue, cleanedValue, expectedName = "") {
+  const raw = String(rawValue ?? "");
+  const cleaned = String(cleanedValue ?? "").trim();
+  if (!cleaned) {
+    return true;
+  }
+
+  const rawHasPlannerLeak = /\b(?:subjob\s*:|required output\s*:|responsibility\s*:|write the factual content|for this section only)/i.test(raw);
+  const cleanedStillHasPlannerLeak = /\b(?:required output\s*:?|responsibility\s*:?|write the factual content|for this section only)/i.test(cleaned);
+  if (rawHasPlannerLeak && cleanedStillHasPlannerLeak) {
+    return true;
+  }
+
+  const expected = normalizeSectionName(expectedName);
+  const leadingHeading = cleaned.match(/^(?:#{1,6}\s*)?([A-Z][A-Za-z0-9 &,'-]{2,80})\s*:/);
+  if (rawHasPlannerLeak && expected && leadingHeading) {
+    const actual = normalizeSectionName(leadingHeading[1]);
+    if (actual && actual !== expected) {
+      return true;
+    }
+  }
+
+  if (rawHasPlannerLeak && /\bName\s*:\s*[A-Z][A-Za-z0-9 &,'-]{2,80}\b/i.test(cleaned)) {
+    return true;
+  }
+
+  return false;
+}
+
+function normalizeSectionName(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/^#+\s*/, "")
+    .replace(/\b(?:and|the|a|an)\b/g, " ")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
 }
 
 function isInstructionOnlyChunkOutput(value) {

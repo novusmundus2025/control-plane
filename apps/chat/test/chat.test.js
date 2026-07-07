@@ -2837,6 +2837,48 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
   assert.equal(result.progress.final_synthesis, false);
 });
 
+test("hides completed chunk output when it is leaked planner text for another section", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-leaked-planner",
+        status: "completed",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        graph: {
+          nodes: [
+            {
+              id: "job.origins",
+              name: "Origins and founders",
+              status: "completed",
+              output:
+                "MundusX subjob: Name: Expansion Responsibility: section Required output: Explain the expansion, including significant milestones and major events, for the requested topic. Name: Cloud era Required output: Explain the cloud era, including significant milestones and major events, for the requested topic.",
+            },
+            {
+              id: "job.modern",
+              name: "Modern era",
+              status: "completed",
+              output:
+                "Modern era: Microsoft expanded cloud and AI services while continuing enterprise software growth.",
+            },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-leaked-planner",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.progress.nodes[0].output, "");
+  assert.equal(
+    result.progress.nodes[1].output,
+    "Modern era: Microsoft expanded cloud and AI services while continuing enterprise software growth.",
+  );
+});
+
 test("exposes blocked graph dependencies in chat progress", async () => {
   const fetchImpl = async () =>
     jsonResponse({

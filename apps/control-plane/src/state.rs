@@ -2011,13 +2011,13 @@ fn graph_node_execution_prompt(
 
     if job.classification.task_type == RequestTaskType::Coding {
         return format!(
-            "Original user request:\n{}\n\nMundusX code subjob:\nName: {}\nResponsibility: {}\nRequired output: {}\n\nReturn only the requested code contract, code block, or concise compile notes for this subjob. Keep names consistent with earlier contract sections. You may introduce private helper functions only when they are needed by this subjob; list any helper names you introduce.",
+            "Original user request:\n{}\n\nYou are completing one code work unit for a larger answer.\nWork unit title: {}\nWork unit type: {}\nDeliverable: {}\n\nReturn only the deliverable for this work unit. Do not repeat these instructions, do not describe other work units, and do not continue the user's prompt. Keep names consistent with earlier contract sections. You may introduce private helper functions only when they are needed by this work unit; list any helper names you introduce.",
             job.prompt, node.name, node.responsibility, node.required_output
         );
     }
 
     format!(
-        "Original user request:\n{}\n\nMundusX subjob:\nName: {}\nResponsibility: {}\nRequired output: {}\n\nWrite the factual content for this section only, in plain prose or compact bullets.",
+        "Original user request:\n{}\n\nYou are completing one section for a larger answer.\nSection title: {}\nSection type: {}\nSection goal: {}\n\nReturn only this section's user-facing content. Do not repeat these instructions, do not describe other sections, and do not continue the user's prompt. Use plain prose or compact bullets.",
         job.prompt, node.name, node.responsibility, node.required_output
     )
 }
@@ -4799,8 +4799,8 @@ mod tests {
             .claim_job("node-1", "2".to_string())
             .job
             .expect("scope claim");
-        assert!(first_claim.prompt.contains("MundusX code subjob"));
-        assert!(first_claim.prompt.contains("Name: Scope and constraints"));
+        assert!(first_claim.prompt.contains("one code work unit"));
+        assert!(first_claim.prompt.contains("Work unit title: Scope and constraints"));
         assert_eq!(
             state
                 .jobs
@@ -4837,10 +4837,10 @@ mod tests {
             .expect("implementation claim");
         assert!(second_claim.prompt.contains("Original user request"));
         assert!(
-            second_claim.prompt.contains("Name: Backend implementation")
+            second_claim.prompt.contains("Work unit title: Backend implementation")
                 || second_claim
                     .prompt
-                    .contains("Name: Frontend implementation")
+                    .contains("Work unit title: Frontend implementation")
         );
     }
 
@@ -4894,7 +4894,8 @@ mod tests {
             .clone()
             .expect("first active graph node");
         assert!(first_claim.prompt.contains("Original user request"));
-        assert!(first_claim.prompt.contains("MundusX subjob"));
+        assert!(first_claim.prompt.contains("one section for a larger answer"));
+        assert!(first_claim.prompt.contains("Section title:"));
 
         let first_completed = state
             .complete_job(
