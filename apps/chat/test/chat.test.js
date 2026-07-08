@@ -2930,6 +2930,82 @@ test("returns compact completed chunk outputs for decomposed jobs", async () => 
   assert.equal(result.progress.final_synthesis, false);
 });
 
+test("exposes runtime metrics from completed chunk output", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-runtime-metrics",
+        status: "completed",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        graph: {
+          nodes: [
+            {
+              id: "job.direct",
+              name: "Direct response",
+              status: "completed",
+              output:
+                "llama.cpp mode=cuda; total_duration=3000000000; load_duration=500000000; prompt_eval_count=20; prompt_eval_duration=100000000; prompt_eval_rate=200; eval_count=40; eval_duration=2000000000; eval_rate=20; response=Done.",
+            },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-runtime-metrics",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.deepEqual(result.progress.nodes[0].runtime_metrics, {
+    total_duration_ms: 3000,
+    load_duration_ms: 500,
+    prompt_eval_count: 20,
+    prompt_eval_duration_ms: 100,
+    prompt_eval_rate: 200,
+    eval_count: 40,
+    eval_duration_ms: 2000,
+    eval_rate: 20,
+  });
+});
+
+test("exposes runtime metrics from llama server timings", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-llama-server-metrics",
+        status: "completed",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        graph: {
+          nodes: [
+            {
+              id: "job.direct",
+              name: "Direct response",
+              status: "completed",
+              output:
+                'llama.cpp mode=persistent-warm-cuda; timings={"prompt_n":12,"prompt_ms":80,"prompt_per_second":150,"predicted_n":24,"predicted_ms":1200,"predicted_per_second":20}; response=Done.',
+            },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-llama-server-metrics",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.progress.nodes[0].runtime_metrics.prompt_eval_count, 12);
+  assert.equal(result.progress.nodes[0].runtime_metrics.prompt_eval_duration_ms, 80);
+  assert.equal(result.progress.nodes[0].runtime_metrics.prompt_eval_rate, 150);
+  assert.equal(result.progress.nodes[0].runtime_metrics.eval_count, 24);
+  assert.equal(result.progress.nodes[0].runtime_metrics.eval_duration_ms, 1200);
+  assert.equal(result.progress.nodes[0].runtime_metrics.eval_rate, 20);
+});
+
 test("hides completed chunk output when it is leaked planner text for another section", async () => {
   const fetchImpl = async () =>
     jsonResponse({

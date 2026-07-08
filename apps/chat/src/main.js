@@ -2474,9 +2474,39 @@ export function page(config = configFromEnv()) {
       else if (chunk.depends_on?.length) parts.push("depends on " + chunk.depends_on.join(", "));
       if (Number.isFinite(chunk.latency_ms)) parts.push("latency " + chunk.latency_ms + " ms");
       if (Number.isFinite(chunk.queue_wait_ms)) parts.push("queue " + chunk.queue_wait_ms + " ms");
+      if (chunk.runtime_metrics) parts.push(formatRuntimeMetrics(chunk.runtime_metrics));
       if (Number.isFinite(chunk.output_chars)) parts.push(chunk.output_chars + " chars");
       if (Number.isFinite(chunk.effective_max_tokens)) parts.push("max " + chunk.effective_max_tokens + " tokens");
       return parts.join(" - ");
+    }
+
+    function formatRuntimeMetrics(metrics) {
+      const parts = [];
+      if (Number.isFinite(metrics.total_duration_ms)) parts.push("total " + formatDuration(metrics.total_duration_ms));
+      if (Number.isFinite(metrics.load_duration_ms)) parts.push("load " + formatDuration(metrics.load_duration_ms));
+      const prompt = formatEvalMetrics("prompt", metrics.prompt_eval_count, metrics.prompt_eval_duration_ms, metrics.prompt_eval_rate);
+      if (prompt) parts.push(prompt);
+      const evalText = formatEvalMetrics("eval", metrics.eval_count, metrics.eval_duration_ms, metrics.eval_rate);
+      if (evalText) parts.push(evalText);
+      return parts.join(" / ");
+    }
+
+    function formatEvalMetrics(label, count, durationMs, rate) {
+      const parts = [];
+      if (Number.isFinite(count)) parts.push(count + " tok");
+      if (Number.isFinite(durationMs)) parts.push(formatDuration(durationMs));
+      if (Number.isFinite(rate)) parts.push(formatRate(rate));
+      return parts.length ? label + " " + parts.join(" ") : "";
+    }
+
+    function formatDuration(ms) {
+      if (!Number.isFinite(ms)) return "";
+      if (ms >= 1000) return (ms / 1000).toFixed(ms >= 10000 ? 1 : 2).replace(/\.0+$/, "") + "s";
+      return Math.round(ms) + "ms";
+    }
+
+    function formatRate(value) {
+      return Number(value).toFixed(value >= 100 ? 0 : 1).replace(/\.0$/, "") + " tok/s";
     }
 
     function isActiveChunkStatus(status) {
@@ -6102,6 +6132,7 @@ function summarizeChatProgress(job) {
 function formatChatProgressNode(node, job, nodeNameById = {}) {
   const completed = node.status === "completed";
   const rawOutput = completed ? String(node.output ?? "") : "";
+  const runtimeMetrics = extractRuntimeMetrics(rawOutput);
   const compactOutput = rawOutput ? compactChunkOutput(rawOutput, node.name) : "";
   const outputChars = positiveNumberOrNull(node.output_chars) ?? (compactOutput ? compactOutput.length : null);
   const estimatedOutputTokens =
@@ -6125,13 +6156,100 @@ function formatChatProgressNode(node, job, nodeNameById = {}) {
     output_chars: outputChars,
     estimated_output_tokens: estimatedOutputTokens,
     effective_max_tokens: effectiveMaxTokens,
+    runtime_metrics: runtimeMetrics,
     output: compactOutput,
   };
+}
+
+function extractRuntimeMetrics(value) {
+  const text = String(value ?? "");
+  if (!text) {
+    return null;
+  }
+
+  const timings = extractTimingsObject(text);
+  const raw = {
+    total_duration: timingValue(text, "total_duration") ?? timingValue(text, "total_duration_ms") ?? timings?.total_ms,
+    load_duration: timingValue(text, "load_duration") ?? timingValue(text, "load_duration_ms") ?? timings?.load_ms,
+    prompt_eval_count: timingValue(text, "prompt_eval_count") ?? timingValue(text, "prompt_n") ?? timings?.prompt_n,
+    prompt_eval_duration:
+      timingValue(text, "prompt_eval_duration") ??
+      timingValue(text, "prompt_eval_duration_ms") ??
+      timingValue(text, "prompt_ms") ??
+      timings?.prompt_ms,
+    prompt_eval_rate:
+      timingValue(text, "prompt_eval_rate") ??
+      timingValue(text, "prompt_eval_rate_tps") ??
+      timingValue(text, "prompt_per_second") ??
+      timings?.prompt_per_second,
+    eval_count: timingValue(text, "eval_count") ?? timingValue(text, "predicted_n") ?? timings?.predicted_n,
+    eval_duration:
+      timingValue(text, "eval_duration") ??
+      timingValue(text, "eval_duration_ms") ??
+      timingValue(text, "predicted_ms") ??
+      timings?.predicted_ms,
+    eval_rate:
+      timingValue(text, "eval_rate") ??
+      timingValue(text, "eval_rate_tps") ??
+      timingValue(text, "predicted_per_second") ??
+      timings?.predicted_per_second,
+  };
+
+  const metrics = {
+    total_duration_ms: durationToMs(raw.total_duration),
+    load_duration_ms: durationToMs(raw.load_duration),
+    prompt_eval_count: integerOrNull(raw.prompt_eval_count),
+    prompt_eval_duration_ms: durationToMs(raw.prompt_eval_duration),
+    prompt_eval_rate: numberOrNull(raw.prompt_eval_rate),
+    eval_count: integerOrNull(raw.eval_count),
+    eval_duration_ms: durationToMs(raw.eval_duration),
+    eval_rate: numberOrNull(raw.eval_rate),
+  };
+
+  return Object.values(metrics).some((entry) => Number.isFinite(entry)) ? metrics : null;
+}
+
+function extractTimingsObject(value) {
+  const text = String(value ?? "");
+  const match = text.match(/"timings"\s*:\s*(\{[^{}]*\})/i) ?? text.match(/\btimings\s*=\s*(\{[^{}]*\})/i);
+  if (!match) {
+    return null;
+  }
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+}
+
+function timingValue(text, key) {
+  const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match =
+    String(text ?? "").match(new RegExp(`(?:^|[;,\\s{"])${escaped}(?:"?\\s*[:=]|=)\\s*"?(-?\\d+(?:\\.\\d+)?)`, "i"));
+  if (!match) {
+    return null;
+  }
+  const value = Number(match[1]);
+  return Number.isFinite(value) ? value : null;
+}
+
+function durationToMs(value) {
+  const number = numberOrNull(value);
+  if (number === null) {
+    return null;
+  }
+  // Ollama-style durations are nanoseconds. llama.cpp timing fields are usually milliseconds.
+  return number > 1_000_000 ? number / 1_000_000 : number;
 }
 
 function numberOrNull(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : null;
+}
+
+function integerOrNull(value) {
+  const number = numberOrNull(value);
+  return number === null ? null : Math.round(number);
 }
 
 function positiveNumberOrNull(value) {
