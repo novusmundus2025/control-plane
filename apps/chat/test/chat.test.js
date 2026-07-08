@@ -2947,6 +2947,45 @@ test("hides completed chunk output when it is leaked planner text for another se
   );
 });
 
+test("hides completed chunk output when it is only section instructions", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-instruction-only-section",
+        status: "completed",
+        execution_mode: "decompose",
+        graph_execution_enabled: true,
+        graph: {
+          nodes: [
+            {
+              id: "job.ai_era",
+              name: "AI Era",
+              status: "completed",
+              output:
+                "Stop before the next section begins. Use plain prose or compact bullets and keep the answer focused on the current section title. Write only the AI Era section requested by the user. Do not include any other requested section. Return only the user-facing content for the current section. Do not repeat these instructions, do not describe the plan, and do not continue the user's prompt. Do not write content for these other sections: Founding, Early Years, Expansion, Cloud Era, Summary.",
+            },
+            {
+              id: "job.summary",
+              name: "Summary",
+              status: "completed",
+              output:
+                "The answer should be a single, clear, and concise sentence that is informative and to the point. The answer should not include any section headings or subheadings, and it should not be overly verbose or detailed.",
+            },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-instruction-only-section",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.progress.nodes[0].output, "");
+  assert.equal(result.progress.nodes[1].output, "");
+});
+
 test("trims completed section output before it bleeds into later sections", async () => {
   const fetchImpl = async () =>
     jsonResponse({

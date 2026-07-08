@@ -6133,10 +6133,15 @@ function isInstructionOnlyChunkOutput(value) {
     sentence.startsWith("do not ") ||
     sentence.startsWith("don't ") ||
     sentence.startsWith("avoid ") ||
+    sentence.startsWith("keep ") ||
+    sentence.startsWith("stop before ") ||
+    sentence.startsWith("use plain prose") ||
+    sentence.startsWith("write only ") ||
     sentence.startsWith("return only ") ||
-    sentence.startsWith("not include "),
+    sentence.startsWith("not include ") ||
+    sentence.startsWith("the answer should "),
   );
-  return instructionSentences.length / sentences.length >= 0.75;
+  return instructionSentences.length / sentences.length >= 0.6;
 }
 
 function truncateText(value, maxLength) {
