@@ -37,6 +37,7 @@ const CHAT_SKILLS = {
   chunkPlanner: loadMarkdownSkill("chunk-planner.md", "# Chunk Planner Skill\nChunk only when useful."),
   verifier: loadMarkdownSkill("verifier.md", "# Verifier Skill\nFlag malformed output."),
 };
+const loggedChatJobs = new Set();
 const MARIE_PERSONA = loadPersona(
   MARIE_PERSONA_PATH,
   [
@@ -5959,6 +5960,7 @@ export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = f
   const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null, { prompt });
   if (["completed", "failed"].includes(String(formatted.status ?? "").toLowerCase())) {
     forgetPromptForJob(jobId);
+    logChatJobTerminalState(jobId, formatted);
   }
   if (formatted.status === "completed" && conversationId) {
     await appendConversationMessage(conversationId, "assistant", formatted.output, config, fetchImpl, {
@@ -6159,6 +6161,129 @@ function formatChatProgressNode(node, job, nodeNameById = {}) {
     runtime_metrics: runtimeMetrics,
     output: compactOutput,
   };
+}
+
+function logChatJobTerminalState(jobId, formatted) {
+  if (!jobId || loggedChatJobs.has(jobId)) {
+    return;
+  }
+  loggedChatJobs.add(jobId);
+
+  const status = String(formatted.status ?? "unknown");
+  const progress = formatted.progress ?? {};
+  const chunks = Number.isFinite(progress.total)
+    ? `${progress.completed ?? 0}/${progress.total}`
+    : "n/a";
+  const nodes = Array.isArray(progress.nodes) ? progress.nodes : [];
+  const completedNodes = nodes.filter((node) => node.status === "completed");
+  const primaryNode = completedNodes.find((node) => node.assigned_node_id) ?? completedNodes[0] ?? null;
+  const output = String(formatted.output ?? "");
+  const outputChars = output.length;
+  const outputTokens = estimateDisplayTokens(output) ?? 0;
+  const metrics = mergeRuntimeMetrics(completedNodes);
+  const parts = [
+    `[chat] ${status}`,
+    `job=${jobId}`,
+    `mode=${formatted.execution_mode ?? "unknown"}`,
+    `model=${formatted.model ?? "unknown"}`,
+    `node=${primaryNode?.assigned_node_id ?? formatted.assigned_node_id ?? "unassigned"}`,
+    `chunks=${chunks}`,
+    `output_chars=${outputChars}`,
+    `output_tokens_est=${outputTokens}`,
+    serverFormatRuntimeMetrics(metrics),
+  ].filter(Boolean);
+
+  console.log(parts.join(" "));
+
+  if (formatted.error) {
+    console.log(`[chat] error job=${jobId} ${formatted.error}`);
+    return;
+  }
+
+  const preview = firstLinePreview(output, 260);
+  if (preview) {
+    console.log(`[chat] preview job=${jobId} ${preview}`);
+  }
+}
+
+function mergeRuntimeMetrics(nodes) {
+  const metricsList = nodes.map((node) => node.runtime_metrics).filter(Boolean);
+  if (!metricsList.length) {
+    return null;
+  }
+
+  return {
+    total_duration_ms: sumMetric(metricsList, "total_duration_ms"),
+    load_duration_ms: sumMetric(metricsList, "load_duration_ms"),
+    prompt_eval_count: sumMetric(metricsList, "prompt_eval_count"),
+    prompt_eval_duration_ms: sumMetric(metricsList, "prompt_eval_duration_ms"),
+    prompt_eval_rate: averageMetric(metricsList, "prompt_eval_rate"),
+    eval_count: sumMetric(metricsList, "eval_count"),
+    eval_duration_ms: sumMetric(metricsList, "eval_duration_ms"),
+    eval_rate: averageMetric(metricsList, "eval_rate"),
+  };
+}
+
+function sumMetric(metricsList, key) {
+  const values = metricsList.map((metrics) => metrics?.[key]).filter(Number.isFinite);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) : null;
+}
+
+function averageMetric(metricsList, key) {
+  const values = metricsList.map((metrics) => metrics?.[key]).filter(Number.isFinite);
+  return values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : null;
+}
+
+function serverFormatRuntimeMetrics(metrics) {
+  if (!metrics) {
+    return "";
+  }
+  const parts = [];
+  if (Number.isFinite(metrics.total_duration_ms)) {
+    parts.push(`total=${serverFormatDuration(metrics.total_duration_ms)}`);
+  }
+  if (Number.isFinite(metrics.load_duration_ms)) {
+    parts.push(`load=${serverFormatDuration(metrics.load_duration_ms)}`);
+  }
+  if (Number.isFinite(metrics.prompt_eval_count)) {
+    const prompt = [`prompt_eval_count=${metrics.prompt_eval_count}`];
+    if (Number.isFinite(metrics.prompt_eval_duration_ms)) {
+      prompt.push(`prompt_eval_duration=${serverFormatDuration(metrics.prompt_eval_duration_ms)}`);
+    }
+    if (Number.isFinite(metrics.prompt_eval_rate)) {
+      prompt.push(`prompt_eval_rate=${metrics.prompt_eval_rate.toFixed(1)}/s`);
+    }
+    parts.push(prompt.join(" "));
+  }
+  if (Number.isFinite(metrics.eval_count)) {
+    const evaluation = [`eval_count=${metrics.eval_count}`];
+    if (Number.isFinite(metrics.eval_duration_ms)) {
+      evaluation.push(`eval_duration=${serverFormatDuration(metrics.eval_duration_ms)}`);
+    }
+    if (Number.isFinite(metrics.eval_rate)) {
+      evaluation.push(`eval_rate=${metrics.eval_rate.toFixed(1)}/s`);
+    }
+    parts.push(evaluation.join(" "));
+  }
+  return parts.join(" ");
+}
+
+function serverFormatDuration(ms) {
+  if (!Number.isFinite(ms)) {
+    return "";
+  }
+  if (ms >= 1000) {
+    return `${(ms / 1000).toFixed(2)}s`;
+  }
+  return `${Math.round(ms)}ms`;
+}
+
+function firstLinePreview(value, maxLength) {
+  const text = String(value ?? "").replace(/\s+/g, " ").trim();
+  if (!text) {
+    return "";
+  }
+  return text.length > maxLength ? `${text.slice(0, maxLength - 1)}...` : text;
 }
 
 function extractRuntimeMetrics(value) {
