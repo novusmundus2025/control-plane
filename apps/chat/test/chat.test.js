@@ -3261,6 +3261,17 @@ test("cleans duplicated opening clauses before rendering chat output", () => {
   );
 });
 
+test("cleans near-duplicate intent loops before rendering chat output", () => {
+  const output = cleanChatOutput(
+    "I am looking for a way to create a conversation that has context and context compression. I want to be able to start a conversation and have it flow naturally while also being able to compress the context as the conversation progresses. I want to be able to start a conversation and have it flow naturally while also be able to compress the context as the conversation progresses. Use a rolling summary plus recent turns.",
+  );
+
+  assert.equal(
+    output,
+    "I am looking for a way to create a conversation that has context and context compression. I want to be able to start a conversation and have it flow naturally while also being able to compress the context as the conversation progresses. Use a rolling summary plus recent turns.",
+  );
+});
+
 test("returns a user-facing fallback for empty cleaned responses", () => {
   assert.equal(
     cleanChatOutput("llama.cpp mode=cuda; response=system:"),
@@ -3552,6 +3563,34 @@ test("pollChatJob exposes quality flags for suspicious cleaned output", async ()
     result.quality_flags.map((flag) => flag.code),
     ["sanitized_output", "worker_or_role_leak", "instruction_leak", "repeated_text", "code_missing"],
   );
+});
+
+test("pollChatJob rejects answers that only restate the user intent", async () => {
+  const prompt = "How can we begin creating a conversation with context on, and with compacting context as well?";
+  const fetchImpl = async (url) => {
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-restated-intent");
+    return jsonResponse({
+      job: {
+        job_id: "job-restated-intent",
+        status: "completed",
+        model: "Qwen/Test",
+        output:
+          "I am looking for a way to create a conversation that has context and context compression. I want to be able to start a conversation and have it flow naturally while also being able to compress the context as the conversation progresses. I want to be able to start a conversation and have it flow naturally while also be able to compress the context as the conversation progresses.",
+      },
+    });
+  };
+
+  const result = await pollChatJob(
+    "job-restated-intent",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+    { message: prompt },
+  );
+
+  assert.equal(result.status, "failed");
+  assert.equal(result.output, "");
+  assert.match(result.error, /restated the request/i);
+  assert.ok(result.quality_flags.some((flag) => flag.code === "prompt_restatement"));
 });
 
 test("pollChatJob does not persist a turn for a non-completed job", async () => {

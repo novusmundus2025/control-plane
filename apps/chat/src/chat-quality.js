@@ -21,6 +21,13 @@ export function detectChatQualityFlags(rawValue, cleanedValue, finalValue = clea
   if (hasRepeatedText(raw)) {
     addFlag("repeated_text", "repair", "The raw output repeated the same sentence or clause.");
   }
+  if (isRestatedUserIntent(promptValue, finalOutput)) {
+    addFlag(
+      "prompt_restatement",
+      "reject",
+      "MundusX restated the request instead of answering it. Please retry.",
+    );
+  }
   if (startsWithPromptContinuation(raw)) {
     addFlag("prompt_continuation", "repair", "The model appeared to continue the user's incomplete prompt.");
   }
@@ -42,6 +49,36 @@ export function detectChatQualityFlags(rawValue, cleanedValue, finalValue = clea
   }
 
   return flags;
+}
+
+function isRestatedUserIntent(promptValue, outputValue) {
+  const prompt = String(promptValue ?? "").trim();
+  const output = String(outputValue ?? "").trim();
+  if (!prompt || !output) {
+    return false;
+  }
+  if (!/^(?:i am looking for|i'?m looking for|i want to|i need to|the user wants|you want to)\b/i.test(output)) {
+    return false;
+  }
+  const promptTokens = contentTokens(prompt);
+  const outputTokens = contentTokens(output);
+  if (promptTokens.length < 4 || outputTokens.length < 8) {
+    return false;
+  }
+  const promptSet = new Set(promptTokens);
+  const overlap = outputTokens.filter((token) => promptSet.has(token)).length / outputTokens.length;
+  const answerMarkers = /\b(?:first\s+step|steps?\s+are|use\s+(?:a|the)|store\s+(?:the|conversation)|send\s+(?:only|the)|configure|implement|answer|solution|for example|you can|we can)\b/i.test(output);
+  return overlap >= 0.32 && !answerMarkers;
+}
+
+function contentTokens(value) {
+  const stopWords = new Set(["want", "able", "that", "with", "while", "also", "have", "this", "that"]);
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .split(/\s+/)
+    .filter((token) => token.length >= 4)
+    .filter((token) => !stopWords.has(token));
 }
 
 function hasUnrequestedQuestionDrift(promptValue, outputValue) {

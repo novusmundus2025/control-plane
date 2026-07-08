@@ -7231,6 +7231,8 @@ function collapseRepeatedSentences(value) {
 
   const collapsed = [];
   const seen = new Set();
+  const seenTokenSets = [];
+  const seenIntentRestatementPrefixes = new Set();
 
   for (const sentence of sentences) {
     const trimmed = sentence.trim();
@@ -7241,13 +7243,47 @@ function collapseRepeatedSentences(value) {
     if (key && seen.has(key)) {
       continue;
     }
+    const intentRestatementPrefix = key.match(/^(i want to be able|i am looking for|i m looking for)\b/)?.[1] ?? "";
+    if (intentRestatementPrefix) {
+      if (seenIntentRestatementPrefixes.has(intentRestatementPrefix)) {
+        continue;
+      }
+      seenIntentRestatementPrefixes.add(intentRestatementPrefix);
+    }
+    const tokenSet = repeatTokenSet(trimmed);
+    if (tokenSet.size >= 8 && seenTokenSets.some((previous) => tokenSetSimilarity(previous, tokenSet) >= 0.68)) {
+      continue;
+    }
     if (key) {
       seen.add(key);
+    }
+    if (tokenSet.size >= 8) {
+      seenTokenSets.push(tokenSet);
     }
     collapsed.push(trimmed);
   }
 
   return collapsed.join(" ");
+}
+
+function repeatTokenSet(value) {
+  return new Set(
+    normalizeRepeatKey(value)
+      .split(/\s+/)
+      .filter((token) => token.length >= 4)
+      .filter((token) => !["want", "able", "that", "with", "while", "also", "have", "this"].includes(token)),
+  );
+}
+
+function tokenSetSimilarity(left, right) {
+  let intersection = 0;
+  for (const token of left) {
+    if (right.has(token)) {
+      intersection += 1;
+    }
+  }
+  const union = new Set([...left, ...right]).size;
+  return union ? intersection / union : 0;
 }
 
 function collapseRepeatedLines(value) {
