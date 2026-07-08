@@ -798,6 +798,31 @@ test("routes simple linear equations to the math tool", async () => {
   assert.doesNotMatch(result.output, /\\frac|Certainly|To solve/i);
 });
 
+test("routes simple rate-distance word problems to the math tool", async () => {
+  const result = await submitChatJob(
+    { message: "answer this problem. if a train travels 120 miles in 2 hours, then slows to 40 mph for the next hour, what's the total distance?" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("rate-distance word problems should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "math-tool");
+  assert.equal(result.execution_mode, "tool");
+  assert.equal(result.tool, "rate_distance");
+  assert.equal(result.response.type, "math_solution");
+  assert.equal(result.response.answer, "160 miles");
+  assert.deepEqual(result.response.steps, [
+    "120 miles in the first segment.",
+    "40 miles/hour × 1 hour = 40 miles.",
+    "120 + 40 = 160 miles.",
+  ]);
+  assert.match(result.output, /Answer: 160 miles/);
+  assert.match(result.output, /Total distance = 120 \+ 40 = 160 miles/);
+  assert.doesNotMatch(result.output, /I need to know|First, you need|two-hour period/i);
+});
+
 test("routes simple polynomial derivatives to the math tool", async () => {
   const result = await submitChatJob(
     { message: "derivative of the polynomial function f(x) = 3x^2 + 5x is f(x) = 6x + 5 ? is this true" },

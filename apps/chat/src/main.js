@@ -2966,6 +2966,11 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   if (!compoundToolPrompt) {
+    const rateDistance = extractRateDistanceWordProblem(toolMessage);
+    if (rateDistance) {
+      return recordAssistantTurn(conversationId, config, fetchImpl, fetchRateDistanceJob(toolMessage, rateDistance));
+    }
+
     const linearEquation = extractLinearEquation(toolMessage);
     if (linearEquation) {
       return recordAssistantTurn(conversationId, config, fetchImpl, fetchLinearEquationJob(toolMessage, linearEquation));
@@ -3504,6 +3509,85 @@ function divideLinear(left, right) {
 function mergeLinearVariable(left, right) {
   if (left && right && left !== right) return false;
   return left || right || null;
+}
+
+export function extractRateDistanceWordProblem(message) {
+  const text = String(message ?? "").trim();
+  if (!/\b(?:distance|miles?|kilometers?|km|mph|kph|km\/h)\b/i.test(text)) {
+    return null;
+  }
+
+  const normalized = text.replace(/\s+/g, " ");
+  const knownDistanceMatch = normalized.match(
+    /\b(?:travels?|traveled|goes?|went|covers?|covered)\s+(\d+(?:\.\d+)?)\s*(miles?|kilometers?|km)\s+in\s+(\d+(?:\.\d+)?)\s*(hours?|hrs?|h)\b/i,
+  );
+  if (!knownDistanceMatch) {
+    return null;
+  }
+
+  const nextSegmentText = normalized.slice((knownDistanceMatch.index ?? 0) + knownDistanceMatch[0].length);
+  const nextSpeedMatch = nextSegmentText.match(
+    /\b(?:then\s+)?(?:slows?\s+to|speeds?\s+up\s+to|continues?\s+at|travels?\s+at|goes?\s+at|at)\s+(\d+(?:\.\d+)?)\s*(mph|kph|km\/h|miles?\s+per\s+hour|kilometers?\s+per\s+hour)\s+(?:for\s+)?(?:the\s+)?(?:next\s+)?(\d+(?:\.\d+)?|one|two|three|four|five)?\s*(hours?|hrs?|h)?\b/i,
+  );
+  if (!nextSpeedMatch) {
+    return null;
+  }
+
+  const knownDistance = Number(knownDistanceMatch[1]);
+  const knownTime = Number(knownDistanceMatch[3]);
+  const nextSpeed = Number(nextSpeedMatch[1]);
+  const nextTime = wordNumber(nextSpeedMatch[3]) ?? 1;
+  if (![knownDistance, knownTime, nextSpeed, nextTime].every((value) => Number.isFinite(value) && value > 0)) {
+    return null;
+  }
+
+  const unit = normalizeDistanceUnit(knownDistanceMatch[2]);
+  const speedUnit = normalizeSpeedDistanceUnit(nextSpeedMatch[2]);
+  if (unit !== speedUnit) {
+    return null;
+  }
+
+  const nextDistance = normalizeNumber(nextSpeed * nextTime);
+  return {
+    unit,
+    timeUnit: "hour",
+    knownDistance: normalizeNumber(knownDistance),
+    knownTime: normalizeNumber(knownTime),
+    nextSpeed: normalizeNumber(nextSpeed),
+    nextTime: normalizeNumber(nextTime),
+    nextDistance,
+    totalDistance: normalizeNumber(knownDistance + nextDistance),
+  };
+}
+
+function normalizeDistanceUnit(value) {
+  const unit = String(value ?? "").toLowerCase();
+  return unit === "km" || unit.startsWith("kilometer") ? "kilometers" : "miles";
+}
+
+function normalizeSpeedDistanceUnit(value) {
+  const unit = String(value ?? "").toLowerCase().replace(/\s+/g, " ");
+  if (unit === "kph" || unit === "km/h" || unit.startsWith("kilometer")) {
+    return "kilometers";
+  }
+  return "miles";
+}
+
+function wordNumber(value) {
+  const text = String(value ?? "").toLowerCase().trim();
+  if (!text) {
+    return null;
+  }
+  if (/^\d+(?:\.\d+)?$/.test(text)) {
+    return Number(text);
+  }
+  return {
+    one: 1,
+    two: 2,
+    three: 3,
+    four: 4,
+    five: 5,
+  }[text] ?? null;
 }
 
 export function extractPolynomialIntegral(message) {
@@ -4394,6 +4478,54 @@ function normalizeMundusXKnowledgePlannerTopic(value) {
   return "overview";
 }
 
+function fetchRateDistanceJob(message, problem) {
+  const answer = `${formatNumber(problem.totalDistance)} ${problem.unit}`;
+  const output = [
+    `Answer: ${answer}`,
+    "",
+    "Method:",
+    `${formatNumber(problem.knownDistance)} ${problem.unit} were already traveled in the first ${formatNumber(problem.knownTime)} ${pluralizeUnit(problem.timeUnit, problem.knownTime)}.`,
+    `${formatNumber(problem.nextSpeed)} ${problem.unit}/${problem.timeUnit} for ${formatNumber(problem.nextTime)} ${pluralizeUnit(problem.timeUnit, problem.nextTime)} adds ${formatNumber(problem.nextDistance)} ${problem.unit}.`,
+    `Total distance = ${formatNumber(problem.knownDistance)} + ${formatNumber(problem.nextDistance)} = ${answer}.`,
+  ].join("\n");
+  return {
+    job_id: `math-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
+    status: "completed",
+    output,
+    output_cleaned: false,
+    error: null,
+    model: "math-tool",
+    assigned_node_id: "math-tool",
+    execution_mode: "tool",
+    graph_execution_enabled: false,
+    tool: "rate_distance",
+    response: {
+      type: "math_solution",
+      title: "Rate and distance",
+      answer,
+      steps: [
+        `${formatNumber(problem.knownDistance)} ${problem.unit} in the first segment.`,
+        `${formatNumber(problem.nextSpeed)} ${problem.unit}/${problem.timeUnit} × ${formatNumber(problem.nextTime)} ${pluralizeUnit(problem.timeUnit, problem.nextTime)} = ${formatNumber(problem.nextDistance)} ${problem.unit}.`,
+        `${formatNumber(problem.knownDistance)} + ${formatNumber(problem.nextDistance)} = ${answer}.`,
+      ],
+    },
+    progress: {
+      total: 0,
+      completed: 0,
+      running: 0,
+      failed: 0,
+      waiting: 0,
+      processing: null,
+      merging: false,
+      strategy: "rate_distance_tool",
+    },
+  };
+}
+
+function pluralizeUnit(unit, value) {
+  return Math.abs(Number(value)) === 1 ? unit : `${unit}s`;
+}
+
 function fetchLinearEquationJob(message, equation) {
   const answer = `${equation.variable} = ${formatNumber(equation.solution)}`;
   const reducedCoefficient = normalizeNumber(equation.left.coefficient - equation.right.coefficient);
@@ -4441,6 +4573,10 @@ function fetchLinearEquationJob(message, equation) {
 }
 
 function fetchMathJobForPrompt(message) {
+  const rateDistance = extractRateDistanceWordProblem(message);
+  if (rateDistance) {
+    return fetchRateDistanceJob(message, rateDistance);
+  }
   const linearEquation = extractLinearEquation(message);
   if (linearEquation) {
     return fetchLinearEquationJob(message, linearEquation);
