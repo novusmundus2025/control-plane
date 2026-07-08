@@ -590,6 +590,8 @@ pub struct JobRequest {
     pub model: Option<String>,
     pub system_prompt: Option<String>,
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub max_tokens_source: Option<String>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub seed: Option<u64>,
@@ -660,6 +662,8 @@ pub struct JobRecord {
     pub model: Option<String>,
     pub system_prompt: Option<String>,
     pub max_tokens: Option<u32>,
+    #[serde(default)]
+    pub max_tokens_source: Option<String>,
     pub temperature: Option<f32>,
     pub top_p: Option<f32>,
     pub seed: Option<u64>,

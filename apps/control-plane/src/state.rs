@@ -365,6 +365,7 @@ impl ControlPlaneState {
             model: request.model,
             system_prompt: request.system_prompt,
             max_tokens: request.max_tokens,
+            max_tokens_source: request.max_tokens_source,
             temperature: request.temperature,
             top_p: request.top_p,
             seed: request.seed,
@@ -887,6 +888,9 @@ impl ControlPlaneState {
             } else {
                 None
             };
+            if active_graph_node_id.is_none() {
+                job.max_tokens = Some(job_max_tokens_for_node(job, &claiming_node));
+            }
             if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref())
                 && reducer_profile(&claiming_node) == ReducerProfile::Compact
                 && complete_compact_reducer_fallback(job, node_id, node_backend, claimed_at.clone())
@@ -895,7 +899,8 @@ impl ControlPlaneState {
                 return JobClaimResponse { job: None };
             }
             if let Some(active_node_id) = active_graph_node_id.as_ref() {
-                let effective_max_tokens = graph_node_max_tokens(job, active_node_id);
+                let effective_max_tokens =
+                    graph_node_max_tokens(job, active_node_id, Some(&claiming_node));
                 let queue_wait_ms = elapsed_ms_between(&job.submitted_at, &claimed_at);
                 let model = job.model.clone();
                 let runtime_mode = Some(job.runtime_mode.as_str().to_string());
@@ -957,7 +962,13 @@ impl ControlPlaneState {
                     .iter()
                     .find(|node| node.id == active_node_id)
                     .and_then(|node| node.effective_max_tokens)
-                    .or_else(|| Some(graph_node_max_tokens(job, active_node_id)));
+                    .or_else(|| {
+                        Some(graph_node_max_tokens(
+                            job,
+                            active_node_id,
+                            Some(&claiming_node),
+                        ))
+                    });
             }
 
             let claimed = JobClaimResponse {
@@ -2119,7 +2130,104 @@ fn graph_node_execution_prompt(
     )
 }
 
-fn graph_node_max_tokens(job: &JobRecord, active_node_id: &str) -> u32 {
+fn job_uses_auto_max_tokens(job: &JobRecord) -> bool {
+    job.max_tokens_source
+        .as_deref()
+        .map(|source| source.eq_ignore_ascii_case("auto"))
+        .unwrap_or(false)
+}
+
+fn model_generation_ceiling(model_name: Option<&str>) -> u32 {
+    let Some(model_name) = model_name.map(str::to_ascii_lowercase) else {
+        return 4_096;
+    };
+
+    if model_name.contains("70b") || model_name.contains("72b") || model_name.contains("64b") {
+        8_192
+    } else if model_name.contains("32b") || model_name.contains("34b") {
+        8_192
+    } else if model_name.contains("14b") || model_name.contains("13b") || model_name.contains("12b")
+    {
+        6_144
+    } else if model_name.contains("8b") || model_name.contains("7b") {
+        4_096
+    } else if model_name.contains("3b") {
+        3_072
+    } else if model_name.contains("1.5b")
+        || model_name.contains("1_5b")
+        || model_name.contains("0.5b")
+        || model_name.contains("0_5b")
+        || model_name.contains("135m")
+    {
+        2_048
+    } else {
+        4_096
+    }
+}
+
+fn memory_generation_ceiling(available_memory_mb: u32) -> u32 {
+    match available_memory_mb {
+        48_000.. => 8_192,
+        24_000.. => 6_144,
+        16_000.. => 4_096,
+        8_000.. => 3_072,
+        _ => 2_048,
+    }
+}
+
+fn node_generation_ceiling(node: Option<&NodeRecord>) -> u32 {
+    let Some(node) = node else {
+        return 4_096;
+    };
+    let model_ceiling = model_generation_ceiling(
+        node.worker_health
+            .as_ref()
+            .and_then(|health| health.model_name.as_deref()),
+    );
+    let memory_ceiling = memory_generation_ceiling(node.available_memory_mb);
+    model_ceiling.min(memory_ceiling)
+}
+
+fn scale_auto_generation_budget(baseline: u32, ceiling: u32) -> u32 {
+    if baseline <= 16 {
+        return baseline.max(1);
+    }
+
+    let target = match baseline {
+        17..=512 => 1_024,
+        513..=1_536 => 3_072,
+        1_537..=2_048 => 4_096,
+        _ => 8_192,
+    };
+    target.min(ceiling).max(baseline).max(1)
+}
+
+fn job_max_tokens_for_node(job: &JobRecord, claiming_node: &NodeRecord) -> u32 {
+    let requested = job.max_tokens.unwrap_or_else(|| {
+        match (
+            job.classification.output_format,
+            job.classification.complexity,
+            job.classification.context_size,
+        ) {
+            (ExpectedOutputFormat::Code, _, _) => 2_048,
+            (_, RequestComplexity::High, _) | (_, _, ContextSize::Large) => 1_536,
+            (_, RequestComplexity::Medium, _) | (_, _, ContextSize::Medium) => 1_024,
+            _ => 512,
+        }
+    });
+
+    if job_uses_auto_max_tokens(job) {
+        scale_auto_generation_budget(requested, node_generation_ceiling(Some(claiming_node)))
+    } else {
+        requested.max(1)
+    }
+}
+
+fn graph_node_max_tokens(
+    job: &JobRecord,
+    active_node_id: &str,
+    claiming_node: Option<&NodeRecord>,
+) -> u32 {
     let requested = job.max_tokens.unwrap_or(0);
     let Some(node) = job
         .graph
@@ -2131,6 +2239,7 @@ fn graph_node_max_tokens(job: &JobRecord, active_node_id: &str) -> u32 {
     };
 
     let stage_budget = match job.plan.strategy.as_str() {
+        "single_job" => requested.max(512),
         "sectioned_research" => {
             if node.responsibility == "merge" {
                 if requested > 1_024 {
@@ -2168,8 +2277,11 @@ fn graph_node_max_tokens(job: &JobRecord, active_node_id: &str) -> u32 {
         },
     };
 
-    if requested > 0 {
+    if requested > 0 && !job_uses_auto_max_tokens(job) {
         requested.min(stage_budget)
+    } else if job_uses_auto_max_tokens(job) {
+        let baseline = requested.max(stage_budget);
+        scale_auto_generation_budget(baseline, node_generation_ceiling(claiming_node))
     } else {
         stage_budget
     }
@@ -2744,7 +2856,8 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
             return JobPlan {
                 plan_id: format!("plan-{}", request.request_id),
                 strategy: "code_with_explanation".to_string(),
-                summary: "Planned complete source code first, followed by a concise explanation.".to_string(),
+                summary: "Planned complete source code first, followed by a concise explanation."
+                    .to_string(),
                 jobs,
             };
         }
@@ -4019,6 +4132,7 @@ mod tests {
             model: Some("demo".to_string()),
             system_prompt: None,
             max_tokens: None,
+            max_tokens_source: None,
             temperature: None,
             top_p: None,
             seed: None,
@@ -4091,6 +4205,7 @@ mod tests {
             model: Some("demo".to_string()),
             system_prompt: None,
             max_tokens: None,
+            max_tokens_source: None,
             temperature: None,
             top_p: None,
             seed: None,
@@ -4183,10 +4298,9 @@ mod tests {
                 "Summary",
             ]
         );
-        assert!(plan
-            .jobs
-            .iter()
-            .all(|job| job.required_output.contains("Do not include any other requested section")));
+        assert!(plan.jobs.iter().all(|job| job
+            .required_output
+            .contains("Do not include any other requested section")));
     }
 
     #[test]
@@ -4353,6 +4467,7 @@ mod tests {
                 model: Some("Qwen/Qwen2.5-1.5B-Instruct".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -4409,6 +4524,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -4459,6 +4575,34 @@ mod tests {
             claim.job.map(|job| (job.job_id, job.status)),
             Some(("job-1".to_string(), JobStatus::Assigned))
         );
+    }
+
+    #[test]
+    fn auto_max_tokens_expand_for_claiming_node_capacity() {
+        let mut state = ready_state();
+        let mut request = classification_request("Explain why local inference can be slow");
+        request.max_tokens = Some(512);
+        request.max_tokens_source = Some("auto".to_string());
+        state.submit_job(request, "2".to_string());
+
+        let claim = state.claim_job("node-1", "3".to_string());
+        let claimed_job = claim.job.expect("claimed job");
+
+        assert_eq!(claimed_job.max_tokens, Some(1_024));
+    }
+
+    #[test]
+    fn explicit_max_tokens_do_not_expand_for_claiming_node_capacity() {
+        let mut state = ready_state();
+        let mut request = classification_request("Explain why local inference can be slow");
+        request.max_tokens = Some(512);
+        request.max_tokens_source = Some("explicit".to_string());
+        state.submit_job(request, "2".to_string());
+
+        let claim = state.claim_job("node-1", "3".to_string());
+        let claimed_job = claim.job.expect("claimed job");
+
+        assert_eq!(claimed_job.max_tokens, Some(512));
     }
 
     #[test]
@@ -4568,6 +4712,7 @@ mod tests {
                 model: Some("missing-model".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -4957,7 +5102,9 @@ mod tests {
             .job
             .expect("scope claim");
         assert!(first_claim.prompt.contains("one code work unit"));
-        assert!(first_claim.prompt.contains("Work unit title: Scope and constraints"));
+        assert!(first_claim
+            .prompt
+            .contains("Work unit title: Scope and constraints"));
         assert_eq!(
             state
                 .jobs
@@ -4994,7 +5141,9 @@ mod tests {
             .expect("implementation claim");
         assert!(second_claim.prompt.contains("Original user request"));
         assert!(
-            second_claim.prompt.contains("Work unit title: Backend implementation")
+            second_claim
+                .prompt
+                .contains("Work unit title: Backend implementation")
                 || second_claim
                     .prompt
                     .contains("Work unit title: Frontend implementation")
@@ -5051,7 +5200,9 @@ mod tests {
             .clone()
             .expect("first active graph node");
         assert!(first_claim.prompt.contains("Original user request"));
-        assert!(first_claim.prompt.contains("one section for a larger answer"));
+        assert!(first_claim
+            .prompt
+            .contains("one section for a larger answer"));
         assert!(first_claim.prompt.contains("Current section title:"));
 
         let first_completed = state
@@ -6469,6 +6620,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: Some("You are a terse assistant.".to_string()),
                 max_tokens: Some(32),
+                max_tokens_source: None,
                 temperature: Some(0.2),
                 top_p: Some(0.9),
                 seed: Some(42),
@@ -6547,6 +6699,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -6588,6 +6741,7 @@ mod tests {
                 model: None,
                 system_prompt: Some("You are a terse assistant.".to_string()),
                 max_tokens: Some(32),
+                max_tokens_source: None,
                 temperature: Some(0.2),
                 top_p: Some(0.9),
                 seed: Some(42),
@@ -6665,6 +6819,7 @@ mod tests {
                 model: None,
                 system_prompt: Some("You are a terse assistant.".to_string()),
                 max_tokens: Some(32),
+                max_tokens_source: None,
                 temperature: Some(0.2),
                 top_p: Some(0.9),
                 seed: Some(42),
@@ -6730,6 +6885,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -6795,6 +6951,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -6841,6 +6998,7 @@ mod tests {
                 model: None,
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -6894,6 +7052,7 @@ mod tests {
                 model: None,
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -6951,6 +7110,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -7189,6 +7349,7 @@ mod tests {
                 model: None,
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -7206,6 +7367,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -7244,6 +7406,7 @@ mod tests {
                     model: None,
                     system_prompt: None,
                     max_tokens: None,
+                    max_tokens_source: None,
                     temperature: None,
                     top_p: None,
                     seed: None,
@@ -7587,6 +7750,7 @@ mod tests {
                 model: None,
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -7616,6 +7780,7 @@ mod tests {
                 model: None,
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -7709,6 +7874,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -7794,6 +7960,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -7827,6 +7994,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
@@ -7856,6 +8024,7 @@ mod tests {
                 model: Some("demo".to_string()),
                 system_prompt: None,
                 max_tokens: None,
+                max_tokens_source: None,
                 temperature: None,
                 top_p: None,
                 seed: None,
