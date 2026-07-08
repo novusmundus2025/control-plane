@@ -57,7 +57,7 @@ function isRestatedUserIntent(promptValue, outputValue) {
   if (!prompt || !output) {
     return false;
   }
-  if (!/^(?:i am looking for|i'?m looking for|i want to|i need to|the user wants|you want to)\b/i.test(output)) {
+  if (!/^(?:i am looking for|i'?m looking for|i want to be able to|the user wants|you want to)\b/i.test(output)) {
     return false;
   }
   const promptTokens = contentTokens(prompt);

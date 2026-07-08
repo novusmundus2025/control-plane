@@ -6792,9 +6792,11 @@ export function cleanChatOutput(value) {
 }
 
 function cleanChatOutputInternal(value, emptyFallback) {
+  const domainDotToken = "__MUNDUSX_DOMAIN_DOT__";
   let output = String(value ?? "")
     .replace(/\r\n/g, "\n")
     .trim();
+  output = protectDomainDots(output, domainDotToken);
 
   output = stripWorkerTrace(output);
   output = stripRolePrefixes(output);
@@ -6827,7 +6829,15 @@ function cleanChatOutputInternal(value, emptyFallback) {
   if (!output) {
     return emptyFallback ? "MundusX returned an empty response. Please try again." : "";
   }
-  return output;
+  return restoreDomainDots(output, domainDotToken);
+}
+
+function protectDomainDots(value, token) {
+  return String(value ?? "").replace(/\b([a-z0-9-]{2,})\.([a-z]{2,})(?=\b)/gi, `$1${token}$2`);
+}
+
+function restoreDomainDots(value, token) {
+  return String(value ?? "").replaceAll(token, ".");
 }
 
 function stripUnaskedWhoExpansion(value) {

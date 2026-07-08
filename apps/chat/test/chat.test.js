@@ -3593,6 +3593,33 @@ test("pollChatJob rejects answers that only restate the user intent", async () =
   assert.ok(result.quality_flags.some((flag) => flag.code === "prompt_restatement"));
 });
 
+test("pollChatJob allows self-evaluation answers that reuse prompt terms", async () => {
+  const prompt = "what do u think of rentakoto.com ? is it a good ui/ux ? give me you detailed self evaluation";
+  const fetchImpl = async (url) => {
+    assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-ui-eval");
+    return jsonResponse({
+      job: {
+        job_id: "job-ui-eval",
+        status: "completed",
+        model: "Qwen/Test",
+        output:
+          "I need to evaluate Rentakoto.com across UI clarity, UX flow, visual hierarchy, mobile responsiveness, trust signals, and conversion friction. The strongest path is to review the homepage, booking flow, and support pages, then score each area with concrete recommendations.",
+      },
+    });
+  };
+
+  const result = await pollChatJob(
+    "job-ui-eval",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+    { message: prompt },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.match(result.output, /evaluate Rentakoto\.com/);
+  assert.ok(!result.quality_flags.some((flag) => flag.code === "prompt_restatement"));
+});
+
 test("pollChatJob does not persist a turn for a non-completed job", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
