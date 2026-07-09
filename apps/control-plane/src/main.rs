@@ -6095,7 +6095,7 @@ mod tests {
         );
 
         assert!(html.contains("Job Detail"));
-        assert!(html.contains("queued: no compatible ready node available"));
+        assert!(html.contains("queued: no compatible node slot available"));
         assert!(html.contains("scheduler reasons"));
     }
 

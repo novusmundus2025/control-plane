@@ -497,12 +497,112 @@ impl ControlPlaneState {
         self.nodes
             .values()
             .filter(|node| {
-                node.state == AgentState::Ready
+                Self::node_is_schedulable_state(node)
                     && node.policy_allowed
                     && Self::node_backend_can_run_request(node.backend, request.preferred_backend)
                     && Self::node_worker_can_run_request(node, request)
             })
             .count()
+    }
+
+    fn node_is_schedulable_state(node: &NodeRecord) -> bool {
+        matches!(node.state, AgentState::Ready | AgentState::Busy)
+    }
+
+    fn node_has_available_slot_for_job(&self, node: &NodeRecord, job: &JobRecord) -> bool {
+        if !Self::node_is_schedulable_state(node) || !node.policy_allowed {
+            return false;
+        }
+
+        let active_assignments = self.active_assignment_count_for_node(&node.node_id);
+        let capacity = Self::node_parallel_capacity_for_job(node, job);
+        match node.state {
+            AgentState::Ready => active_assignments < capacity,
+            AgentState::Busy => active_assignments > 0 && active_assignments < capacity,
+            _ => false,
+        }
+    }
+
+    fn active_assignment_count_for_node(&self, node_id: &str) -> usize {
+        self.jobs
+            .values()
+            .map(|job| {
+                if job.graph_execution_enabled {
+                    job.graph
+                        .nodes
+                        .iter()
+                        .filter(|graph_node| {
+                            graph_node.status == JobGraphNodeStatus::Running
+                                && graph_node.assigned_node_id.as_deref() == Some(node_id)
+                        })
+                        .count()
+                } else if job.status == JobStatus::Assigned
+                    && job.assigned_node_id.as_deref() == Some(node_id)
+                {
+                    1
+                } else {
+                    0
+                }
+            })
+            .sum()
+    }
+
+    fn node_parallel_capacity_for_job(node: &NodeRecord, job: &JobRecord) -> usize {
+        let Some(worker_health) = node.worker_health.as_ref() else {
+            return 1;
+        };
+
+        if !worker_health.healthy
+            || !worker_health.runtime_ready
+            || !worker_health.llama_cli_available
+            || node.available_gpu_percent < 25
+        {
+            return 1;
+        }
+
+        let runtime_mode = worker_health.runtime_mode.to_ascii_lowercase();
+        let warm_persistent_runtime =
+            runtime_mode.contains("persistent") || runtime_mode.contains("warm");
+        if !warm_persistent_runtime {
+            return 1;
+        }
+
+        let memory_mb = node.available_memory_mb;
+        let mut capacity = match memory_mb {
+            0..=12_287 => 1,
+            12_288..=24_575 => 2,
+            24_576..=32_767 => 3,
+            32_768..=49_151 => 4,
+            49_152..=65_535 => 6,
+            _ => 8,
+        };
+
+        if let Some(model_name) = worker_health.model_name.as_deref() {
+            let lower_model = model_name.to_ascii_lowercase();
+            if contains_any(&lower_model, &["70b", "72b", "65b", "64b"]) {
+                capacity = capacity.min(if memory_mb >= 131_072 { 2 } else { 1 });
+            } else if contains_any(&lower_model, &["32b", "34b"]) {
+                capacity = capacity.min(if memory_mb >= 131_072 { 3 } else { 1 });
+            } else if contains_any(&lower_model, &["14b", "13b"]) {
+                capacity = capacity.min(if memory_mb >= 65_536 { 3 } else { 2 });
+            } else if contains_any(&lower_model, &["7b", "8b"]) {
+                capacity = capacity.min(3);
+            }
+        }
+
+        let heavy_job = job.scheduling_requirements.context_size == ContextSize::Large
+            || job.scheduling_requirements.task_type == RequestTaskType::Coding;
+        if heavy_job {
+            capacity = capacity.min(if memory_mb >= 65_536 {
+                3
+            } else if memory_mb >= 32_768 {
+                2
+            } else {
+                1
+            });
+        }
+
+        capacity.max(1)
     }
 
     fn node_backend_can_run_request(node_backend: Backend, preferred_backend: Backend) -> bool {
@@ -694,6 +794,14 @@ impl ControlPlaneState {
             }
         }
 
+        let active_assignments = self.active_assignment_count_for_node(&node.node_id);
+        let parallel_capacity = Self::node_parallel_capacity_for_job(node, job);
+        score += parallel_capacity.saturating_sub(active_assignments).min(4) as i32;
+        score -= (active_assignments.min(4) * 4) as i32;
+        reasons.push(format!(
+            "parallel_slots:{active_assignments}/{parallel_capacity}"
+        ));
+
         let trust_bonus = node.trust.score as i32 / 5 - 10;
         score += trust_bonus;
         reasons.push(format!(
@@ -715,12 +823,12 @@ impl ControlPlaneState {
 
     fn best_scheduler_decision_for_job(&self, job: &JobRecord) -> SchedulerDecision {
         let ready_m_exists = self.nodes.values().any(|candidate| {
-            candidate.state == AgentState::Ready
+            Self::node_is_schedulable_state(candidate)
                 && candidate.policy_allowed
                 && candidate.backend == Backend::M
         });
         let ready_cuda_exists = self.nodes.values().any(|candidate| {
-            candidate.state == AgentState::Ready
+            Self::node_is_schedulable_state(candidate)
                 && candidate.policy_allowed
                 && candidate.backend == Backend::Cuda
         });
@@ -733,8 +841,7 @@ impl ControlPlaneState {
                 } else {
                     None
                 };
-                node.state == AgentState::Ready
-                    && node.policy_allowed
+                self.node_has_available_slot_for_job(node, job)
                     && (!job.graph_execution_enabled || active_graph_node_id.is_some())
                     && Self::node_backend_matches(
                         job,
@@ -761,7 +868,7 @@ impl ControlPlaneState {
                 node_id: String::new(),
                 score: 0,
                 reasons: vec![format!(
-                    "queued: no compatible ready node available for backend {:?}, runtime {:?}, model {}",
+                    "queued: no compatible node slot available for backend {:?}, runtime {:?}, model {}",
                     job.preferred_backend,
                     job.runtime_mode,
                     job.model.as_deref().unwrap_or("any")
@@ -791,23 +898,19 @@ impl ControlPlaneState {
             return JobClaimResponse { job: None };
         };
 
-        if node.state != AgentState::Ready {
-            return JobClaimResponse { job: None };
-        }
-
-        if !node.policy_allowed {
+        if !Self::node_is_schedulable_state(node) || !node.policy_allowed {
             return JobClaimResponse { job: None };
         }
 
         let claiming_node = node.clone();
         let node_backend = node.backend;
         let ready_m_exists = self.nodes.values().any(|candidate| {
-            candidate.state == AgentState::Ready
+            Self::node_is_schedulable_state(candidate)
                 && candidate.policy_allowed
                 && candidate.backend == Backend::M
         });
         let ready_cuda_exists = self.nodes.values().any(|candidate| {
-            candidate.state == AgentState::Ready
+            Self::node_is_schedulable_state(candidate)
                 && candidate.policy_allowed
                 && candidate.backend == Backend::Cuda
         });
@@ -827,6 +930,7 @@ impl ControlPlaneState {
                     return None;
                 }
                 if self.job_can_be_claimed(job)
+                    && self.node_has_available_slot_for_job(node, job)
                     && (!job.graph_execution_enabled || active_graph_node_id.is_some())
                     && Self::node_backend_matches(
                         job,
@@ -990,12 +1094,12 @@ impl ControlPlaneState {
     ) -> Option<SchedulerDecision> {
         let active_graph_node_id = active_graph_node_id?;
         let ready_m_exists = self.nodes.values().any(|candidate| {
-            candidate.state == AgentState::Ready
+            Self::node_is_schedulable_state(candidate)
                 && candidate.policy_allowed
                 && candidate.backend == Backend::M
         });
         let ready_cuda_exists = self.nodes.values().any(|candidate| {
-            candidate.state == AgentState::Ready
+            Self::node_is_schedulable_state(candidate)
                 && candidate.policy_allowed
                 && candidate.backend == Backend::Cuda
         });
@@ -1003,8 +1107,7 @@ impl ControlPlaneState {
         self.nodes
             .values()
             .filter(|node| {
-                node.state == AgentState::Ready
-                    && node.policy_allowed
+                self.node_has_available_slot_for_job(node, job)
                     && next_ready_graph_node_id_for_node(&job.graph, &node.node_id).as_deref()
                         == Some(active_graph_node_id)
                     && Self::node_backend_matches(
@@ -1141,9 +1244,14 @@ impl ControlPlaneState {
             }
         };
 
+        let remaining_assignments = self.active_assignment_count_for_node(&completion.node_id);
         if let Some(node) = self.nodes.get_mut(&completion.node_id) {
             if node.reported_state == AgentState::Busy {
-                node.reported_state = AgentState::Ready;
+                node.reported_state = if remaining_assignments > 0 {
+                    AgentState::Busy
+                } else {
+                    AgentState::Ready
+                };
             }
             node.backend = completion.backend;
             node.updated_at = completed_at;
@@ -1196,7 +1304,7 @@ impl ControlPlaneState {
                 .as_ref()
                 .and_then(|decision| decision.reasons.first())
                 .cloned()
-                .unwrap_or_else(|| "no compatible ready node available".to_string());
+                .unwrap_or_else(|| "no compatible node slot available".to_string());
             let error = format!(
                 "queued job expired after {timeout_seconds}s without an eligible worker; {scheduler_reason}"
             );
@@ -2440,19 +2548,18 @@ fn graph_node_is_merge(graph: &JobGraph, graph_node_id: Option<&str>) -> bool {
 
 fn reducer_capable_node_available_for_job(state: &ControlPlaneState, job: &JobRecord) -> bool {
     let ready_m_exists = state.nodes.values().any(|candidate| {
-        candidate.state == AgentState::Ready
+        ControlPlaneState::node_is_schedulable_state(candidate)
             && candidate.policy_allowed
             && candidate.backend == Backend::M
     });
     let ready_cuda_exists = state.nodes.values().any(|candidate| {
-        candidate.state == AgentState::Ready
+        ControlPlaneState::node_is_schedulable_state(candidate)
             && candidate.policy_allowed
             && candidate.backend == Backend::Cuda
     });
 
     state.nodes.values().any(|candidate| {
-        candidate.state == AgentState::Ready
-            && candidate.policy_allowed
+        state.node_has_available_slot_for_job(candidate, job)
             && ControlPlaneState::node_backend_matches(
                 job,
                 candidate.backend,
@@ -3080,7 +3187,7 @@ fn plan_job_request_for_submission(
             plan_id: format!("plan-{}", request.request_id),
             strategy: "single_job_latency_optimized".to_string(),
             summary: format!(
-                "Single execution selected for latency: {compatible_ready_nodes} compatible ready node(s); sectioned research is reserved for multi-node fan-out, explicit decomposition, or larger context."
+                "Single execution selected for latency: {compatible_ready_nodes} compatible node slot(s); sectioned research is reserved for multi-node fan-out, explicit decomposition, or larger context."
             ),
             jobs: vec![PlannedJob {
                 id: "job.direct_response".to_string(),
@@ -3092,7 +3199,7 @@ fn plan_job_request_for_submission(
                     classification.output_format
                 ),
                 reason:
-                    "Auto mode avoided sectioned decomposition because it would run sequentially on the current ready node set."
+                    "Auto mode avoided sectioned decomposition because it would run sequentially on the current available node slot set."
                         .to_string(),
             }],
         };
@@ -3104,7 +3211,7 @@ fn plan_job_request_for_submission(
         && compatible_ready_nodes >= 2
     {
         plan.summary = format!(
-            "{} Auto decomposition enabled because {compatible_ready_nodes} compatible ready nodes can fan out independent sections.",
+            "{} Auto decomposition enabled because {compatible_ready_nodes} compatible node slots can fan out independent sections.",
             plan.summary
         );
     }
@@ -4531,7 +4638,7 @@ mod tests {
         assert!(decision
             .reasons
             .iter()
-            .any(|reason| reason.contains("no compatible ready node")));
+            .any(|reason| reason.contains("no compatible node slot")));
     }
 
     #[test]
@@ -4546,7 +4653,7 @@ mod tests {
         assert!(decision
             .reasons
             .iter()
-            .any(|reason| reason.contains("no compatible ready node")));
+            .any(|reason| reason.contains("no compatible node slot")));
     }
 
     #[test]
@@ -4599,7 +4706,7 @@ mod tests {
             .error
             .as_deref()
             .unwrap_or_default()
-            .contains("no compatible ready node"));
+            .contains("no compatible node slot"));
         assert!(job
             .graph
             .nodes
@@ -4650,7 +4757,7 @@ mod tests {
         assert!(decision
             .reasons
             .iter()
-            .any(|reason| reason.contains("no compatible ready node")));
+            .any(|reason| reason.contains("no compatible node slot")));
     }
 
     #[test]
@@ -5329,7 +5436,7 @@ mod tests {
         assert!(one_node_record
             .plan
             .summary
-            .contains("1 compatible ready node"));
+            .contains("1 compatible node slot"));
 
         let mut two_node_state = ready_state();
         two_node_state.register(m_series_registration("node-2"));
@@ -5340,7 +5447,7 @@ mod tests {
         assert!(two_node_record
             .plan
             .summary
-            .contains("2 compatible ready nodes"));
+            .contains("2 compatible node slots"));
     }
 
     #[test]
@@ -7926,6 +8033,100 @@ mod tests {
         assert_eq!(
             state.jobs.get("job-1").map(|job| job.status),
             Some(JobStatus::Queued)
+        );
+    }
+
+    #[test]
+    fn warm_high_capacity_busy_node_can_claim_another_job_slot() {
+        let mut state = ready_state();
+        let mut warm_health = healthy_worker_health("2");
+        warm_health.model_name = Some("Qwen/Qwen2.5-1.5B-Instruct".to_string());
+        warm_health.runtime_mode = "persistent-warm-cuda".to_string();
+        warm_health.streaming_supported = true;
+
+        state.heartbeat(
+            Heartbeat {
+                node_id: "node-1".to_string(),
+                backend: Backend::Cuda,
+                agent_state: AgentState::Ready,
+                available_memory_mb: 49_152,
+                available_gpu_percent: 80,
+                updated_at: "2".to_string(),
+                contribution_percent: 80,
+                hostname: "host-1".to_string(),
+                identity_trust_path: "local-encrypted-fallback".to_string(),
+                power_source: "AC Power".to_string(),
+                on_battery: false,
+                battery_percent: Some(90),
+                policy_allowed: true,
+                policy_reason: None,
+                worker_health: warm_health,
+            },
+            "2".to_string(),
+        );
+
+        for request_id in ["job-1", "job-2"] {
+            state.submit_job(
+                JobRequest {
+                    request_id: request_id.to_string(),
+                    prompt: "short answer".to_string(),
+                    preferred_backend: Backend::Auto,
+                    runtime_mode: RuntimeMode::Local,
+                    execution_mode: JobExecutionMode::Single,
+                    stream: false,
+                    model: None,
+                    system_prompt: None,
+                    max_tokens: None,
+                    max_tokens_source: None,
+                    temperature: None,
+                    top_p: None,
+                    seed: None,
+                },
+                "3".to_string(),
+            );
+        }
+
+        let first_claim = state.claim_job("node-1", "4".to_string());
+        assert_eq!(
+            first_claim.job.as_ref().map(|job| job.request_id.as_str()),
+            Some("job-1")
+        );
+        assert_eq!(
+            state.nodes.get("node-1").map(|node| node.state),
+            Some(AgentState::Busy)
+        );
+
+        let second_claim = state.claim_job("node-1", "5".to_string());
+        assert_eq!(
+            second_claim.job.as_ref().map(|job| job.request_id.as_str()),
+            Some("job-2")
+        );
+        let decision = second_claim
+            .job
+            .as_ref()
+            .and_then(|job| job.scheduler_decision.as_ref())
+            .expect("scheduler decision");
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.starts_with("parallel_slots:1/")));
+
+        state.complete_job(
+            JobCompletion {
+                job_id: "job-1".to_string(),
+                node_id: "node-1".to_string(),
+                worker_id: "worker-1".to_string(),
+                backend: Backend::Cuda,
+                status: JobStatus::Completed,
+                output: Some("done".to_string()),
+                error: None,
+                latency_ms: Some(100),
+            },
+            "6".to_string(),
+        );
+        assert_eq!(
+            state.nodes.get("node-1").map(|node| node.state),
+            Some(AgentState::Busy)
         );
     }
 
