@@ -969,6 +969,8 @@ impl ControlPlaneState {
                             Some(&claiming_node),
                         ))
                     });
+            } else {
+                claim_job.prompt = direct_job_execution_prompt(job);
             }
 
             let claimed = JobClaimResponse {
@@ -1126,10 +1128,11 @@ impl ControlPlaneState {
                 if job.assigned_node_id.as_deref() != Some(completion.node_id.as_str()) {
                     return Some(job.clone());
                 }
+                let output = clean_direct_job_output(job, completion.output.clone());
                 job.status = completion.status;
                 job.worker_id = Some(completion.worker_id.clone());
                 job.backend = Some(completion.backend);
-                job.output = completion.output.clone();
+                job.output = output;
                 job.error = completion.error.clone();
                 job.completed_at = Some(completed_at.clone());
                 apply_job_completion_to_graph(job, &completion);
@@ -2053,6 +2056,23 @@ fn graph_has_running_nodes(graph: &JobGraph) -> bool {
         .any(|node| node.status == JobGraphNodeStatus::Running)
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct TranslationRequest {
+    target_language: &'static str,
+    source_text: String,
+}
+
+fn direct_job_execution_prompt(job: &JobRecord) -> String {
+    if let Some(translation) = parse_translation_request(&job.prompt) {
+        return format!(
+            "Translate the source text to {}.\nReturn only the translated text in {}.\nDo not add labels, explanations, alternatives, quotes, greetings, or the source text.\n\nSource text:\n{}",
+            translation.target_language, translation.target_language, translation.source_text
+        );
+    }
+
+    job.prompt.clone()
+}
+
 fn graph_node_execution_prompt(
     job: &JobRecord,
     active_node_id: &str,
@@ -2369,6 +2389,20 @@ fn clean_worker_output(output: &str) -> String {
         .filter(|line| !is_reducer_boilerplate_line(line))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn clean_direct_job_output(job: &JobRecord, output: Option<String>) -> Option<String> {
+    let output = output?;
+    let Some(translation) = parse_translation_request(&job.prompt) else {
+        return Some(output);
+    };
+    let trimmed = output.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let target_prefix = format!("{}:", translation.target_language.to_ascii_lowercase());
+    if lower.starts_with(&target_prefix) {
+        return Some(trimmed[target_prefix.len()..].trim().to_string());
+    }
+    Some(trimmed.to_string())
 }
 
 fn is_reducer_boilerplate_line(line: &str) -> bool {
@@ -3681,6 +3715,69 @@ fn looks_like_small_code_prompt(lower: &str) -> bool {
 
 fn contains_any(input: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| input.contains(needle))
+}
+
+fn parse_translation_request(prompt: &str) -> Option<TranslationRequest> {
+    let trimmed = prompt.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    let rest = lower.strip_prefix("translate to ")?;
+    let original_rest = &trimmed["translate to ".len()..];
+
+    let languages = [
+        ("german", "German"),
+        ("english", "English"),
+        ("spanish", "Spanish"),
+        ("french", "French"),
+        ("italian", "Italian"),
+        ("portuguese", "Portuguese"),
+        ("dutch", "Dutch"),
+        ("polish", "Polish"),
+        ("arabic", "Arabic"),
+        ("japanese", "Japanese"),
+        ("korean", "Korean"),
+        ("chinese", "Chinese"),
+        ("tagalog", "Tagalog"),
+        ("filipino", "Filipino"),
+    ];
+
+    for (language_key, language_label) in languages {
+        let Some(after_language_lower) = rest.strip_prefix(language_key) else {
+            continue;
+        };
+        if after_language_lower
+            .chars()
+            .next()
+            .map(|ch| ch.is_ascii_alphabetic())
+            .unwrap_or(false)
+        {
+            continue;
+        }
+
+        let after_language = &original_rest[language_key.len()..];
+        let source_text = clean_translation_source(after_language);
+        if source_text.chars().count() >= 2 {
+            return Some(TranslationRequest {
+                target_language: language_label,
+                source_text,
+            });
+        }
+    }
+
+    None
+}
+
+fn clean_translation_source(value: &str) -> String {
+    let mut source = value.trim();
+    if let Some(next) = source.strip_prefix("only") {
+        source = next.trim();
+    }
+    if let Some(next) = source.strip_prefix("the following") {
+        source = next.trim();
+    }
+    source = source
+        .trim_start_matches(|ch: char| ch == ':' || ch == '-' || ch == '>' || ch.is_whitespace())
+        .trim();
+    source.to_string()
 }
 
 pub fn scheduling_requirements_for(
@@ -5021,6 +5118,72 @@ mod tests {
                 .get("job-1")
                 .and_then(|job| job.active_graph_node_id.as_deref()),
             None
+        );
+    }
+
+    #[test]
+    fn translation_job_claim_uses_strict_worker_prompt_without_changing_stored_prompt() {
+        let mut state = ready_state();
+        let prompt = "Translate to German only: Our idea is cost savings of AI.";
+        let record = state.submit_job(classification_request(prompt), "1".to_string());
+
+        let claim = state
+            .claim_job("node-1", "2".to_string())
+            .job
+            .expect("translation job claim");
+
+        assert_eq!(record.prompt, prompt);
+        assert_eq!(
+            state.jobs.get("job-1").map(|job| job.prompt.as_str()),
+            Some(prompt)
+        );
+        assert!(claim
+            .prompt
+            .contains("Translate the source text to German."));
+        assert!(claim
+            .prompt
+            .contains("Return only the translated text in German."));
+        assert!(claim
+            .prompt
+            .contains("Do not add labels, explanations, alternatives"));
+        assert!(claim
+            .prompt
+            .contains("Source text:\nOur idea is cost savings of AI."));
+    }
+
+    #[test]
+    fn translation_completion_strips_target_language_label() {
+        let mut state = ready_state();
+        state.submit_job(
+            classification_request("Translate to German only: Our idea is cost savings of AI."),
+            "1".to_string(),
+        );
+        state
+            .claim_job("node-1", "2".to_string())
+            .job
+            .expect("translation claim");
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some(
+                        "German: Unsere Idee ist die Kosteneinsparung durch KI.".to_string(),
+                    ),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "3".to_string(),
+            )
+            .expect("translation completion");
+
+        assert_eq!(
+            completed.output.as_deref(),
+            Some("Unsere Idee ist die Kosteneinsparung durch KI.")
         );
     }
 
