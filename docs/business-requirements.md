@@ -266,6 +266,179 @@ The onboarding panel should summarize identity, hostname, backend, active model,
 - Admin console requirements identify read-only dashboard boundaries, MVP administrative actions, role-scoped permissions, and audit metadata requirements.
 - MVP scope remains focused on the working distributed AI execution loop before marketplace, blockchain, or complex billing features.
 
+## Small Production Architecture Reference
+
+For small production, the control plane should stay a coordination service, not a model host. It should classify work, store state, own the queue, enforce policy, account credits, and route jobs to contributed or dedicated inference nodes.
+
+```mermaid
+flowchart LR
+    user["User or developer client"]:::machine
+    chat["Chat or CLI client"]:::program
+    cp["Control plane API and scheduler"]:::program
+    router["Planner and request router"]:::program
+    queue["Queue: Valkey or Redis"]:::queue
+    db["Result store: Postgres or Supabase"]:::store
+    obs["Observability and ledger"]:::program
+
+    light["Light nodes: 16 GB shared memory or small GPU"]:::machine
+    medium["Medium nodes: 32 GB to 64 GB shared memory or 12 GB to 24 GB VRAM"]:::machine
+    strong["Strong nodes: 96 GB plus shared memory or 24 GB plus VRAM"]:::machine
+    reducer["Reducer node: trusted high-context worker"]:::reducer
+    tools["Tool services: weather, wiki, math, search"]:::tool
+    moe["Optional MoE specialist node"]:::moe
+
+    user --> chat --> cp --> router
+    router --> queue
+    router --> tools
+    queue --> light
+    queue --> medium
+    queue --> strong
+    queue --> moe
+    light --> db
+    medium --> db
+    strong --> db
+    moe --> db
+    db --> reducer
+    tools --> db
+    reducer --> db
+    db --> chat
+    cp --> obs
+    db --> obs
+
+    classDef machine fill:#e8f1ff,stroke:#3b82f6,color:#0f172a
+    classDef program fill:#ecfeff,stroke:#06b6d4,color:#0f172a
+    classDef queue fill:#fff7ed,stroke:#f97316,color:#0f172a
+    classDef store fill:#f0fdf4,stroke:#22c55e,color:#0f172a
+    classDef reducer fill:#f5f3ff,stroke:#8b5cf6,color:#0f172a
+    classDef tool fill:#fefce8,stroke:#eab308,color:#0f172a
+    classDef moe fill:#fdf2f8,stroke:#ec4899,color:#0f172a
+```
+
+### Legend
+
+| Type | Meaning |
+|---|---|
+| Real machine | Physical or virtual hardware that contributes CPU, GPU, memory, or storage. |
+| Program component | Software service owned by the platform, such as the API, scheduler, router, or ledger. |
+| Queue | Durable work buffer used to separate request intake from worker execution. |
+| Result store | Shared database for job metadata, chunk outputs, reducer outputs, metrics, and credits. |
+| Tool service | Deterministic or externally-backed service for weather, wiki, math, search, or other non-LLM work. |
+| Reducer | Trusted worker that merges section outputs, cleans formatting, and produces the final user-facing response. |
+| MoE node | Optional specialist inference node that routes inside a mixture-of-experts model or expert pool. |
+
+### Baseline Capacity
+
+| Layer | Recommended small-production baseline |
+|---|---|
+| Control plane | 2 replicas, 4 vCPU, 8 GB RAM each, no GPU required. |
+| Database | Managed Postgres or Supabase with backups, indexes for jobs, nodes, events, and credits. |
+| Queue | Valkey or Redis with separate queues for light, medium, strong, reducer, tool, and dead-letter jobs. |
+| Light worker | 16 GB shared memory or small GPU; short chat, translation, simple formatting, small code snippets. |
+| Medium worker | 32 GB to 64 GB shared memory or 12 GB to 24 GB VRAM; normal coding, summaries, medium answers. |
+| Strong worker | 96 GB plus shared memory or 24 GB plus VRAM; large code, long context, reducer, higher-quality answers. |
+| Reducer worker | Trusted medium or strong node; should prioritize context size, reliability, and output quality over raw speed. |
+| Tool worker | Can run inside the control plane or as small services; no GPU required. |
+
+### Scheduling Requirements
+
+- The control plane should score nodes by readiness, backend, model capability, context budget, queue depth, latency, reliability, failure rate, and trust level.
+- One-node systems should avoid unnecessary decomposition unless the request needs progressive UI sections or exceeds safe output limits.
+- Multi-node systems should run independent chunks in parallel when dependencies allow it.
+- Dependent chunks must not start until required parent chunks complete.
+- Reducer work should be routed to the best available context and quality node, not simply the first available node.
+- Tool-routable requests should use tools before LLM work when the tool can answer accurately and cheaply.
+- Results must be persisted per chunk so the UI can show completed sections even before the final answer is ready.
+
+## MoE-Aware Rearchitecture Reference
+
+Mixture-of-Experts support should be treated as an advanced worker capability, not as the control plane itself. The control plane remains the orchestrator. MoE nodes become specialist inference providers that can handle routing inside a model or between expert models.
+
+```mermaid
+flowchart TD
+    client["Client: chat, CLI, API"]:::machine
+    api["Control plane API"]:::program
+    planner["Planner: classify, split, dependencies"]:::program
+    scheduler["Scheduler: score nodes and queues"]:::program
+    queues["Queues by capability"]:::queue
+    results["Result store"]:::store
+    reducer["Reducer and formatter"]:::reducer
+
+    toolRouter["Tool router"]:::tool
+    weather["Weather API"]:::tool
+    wiki["Knowledge lookup"]:::tool
+    math["Math solver"]:::tool
+
+    simple["Simple LLM nodes"]:::machine
+    code["Code-specialist nodes"]:::machine
+    reasoning["Reasoning nodes"]:::machine
+    moeGateway["MoE gateway node"]:::moe
+    expertA["Expert A: code"]:::moe
+    expertB["Expert B: math"]:::moe
+    expertC["Expert C: writing"]:::moe
+
+    client --> api --> planner
+    planner --> toolRouter
+    planner --> scheduler
+    toolRouter --> weather --> results
+    toolRouter --> wiki --> results
+    toolRouter --> math --> results
+    scheduler --> queues
+    queues --> simple --> results
+    queues --> code --> results
+    queues --> reasoning --> results
+    queues --> moeGateway
+    moeGateway --> expertA --> results
+    moeGateway --> expertB --> results
+    moeGateway --> expertC --> results
+    results --> reducer --> results
+    results --> api --> client
+
+    classDef machine fill:#e8f1ff,stroke:#3b82f6,color:#0f172a
+    classDef program fill:#ecfeff,stroke:#06b6d4,color:#0f172a
+    classDef queue fill:#fff7ed,stroke:#f97316,color:#0f172a
+    classDef store fill:#f0fdf4,stroke:#22c55e,color:#0f172a
+    classDef reducer fill:#f5f3ff,stroke:#8b5cf6,color:#0f172a
+    classDef tool fill:#fefce8,stroke:#eab308,color:#0f172a
+    classDef moe fill:#fdf2f8,stroke:#ec4899,color:#0f172a
+```
+
+### MoE Role Boundaries
+
+| Component | Responsibility |
+|---|---|
+| Control plane | Owns API, auth, queueing, policy, scheduling, job graph state, credits, and result persistence. |
+| Planner | Decides whether the request is direct, tool-routed, decomposed, or reducer-backed. |
+| Scheduler | Chooses the best node or queue for each chunk based on capability and health. |
+| MoE gateway node | Presents one worker endpoint to the control plane while routing internally to experts. |
+| Expert models | Handle domain-specific work such as code, math, factual writing, summarization, or translation. |
+| Reducer | Combines chunk outputs, removes leaked instructions, deduplicates, formats, and returns the final answer. |
+
+### Recommended Adoption Order
+
+1. Keep the existing control plane as the source of truth for jobs, chunks, nodes, credits, and results.
+2. Add stronger deterministic routing first: tools for weather, wiki, math, and direct identity/persona responses.
+3. Add capability queues so small, medium, strong, reducer, and tool jobs are separated.
+4. Add reducer node selection using context budget, reliability, and model quality.
+5. Add optional MoE workers as specialist nodes after the ordinary node scheduler is stable.
+6. Add MoE-specific telemetry: expert selected, expert latency, expert failure rate, token budget, and output quality flags.
+
+### MoE Node Requirements
+
+| MoE size | Practical host target | Expected use |
+|---|---|---|
+| Small MoE | 32 GB to 64 GB RAM or 16 GB plus VRAM | Lightweight routing between small experts, short answers, classification, formatting. |
+| Medium MoE | 96 GB to 128 GB RAM or 24 GB to 48 GB VRAM | Coding, math, long summaries, multi-section responses. |
+| Large MoE | 192 GB plus RAM or 80 GB plus VRAM | Heavy coding, long context, high-quality reducers, expensive specialist workloads. |
+
+### Business Requirements
+
+- MoE must be optional. Normal nodes must continue working when no MoE node exists.
+- MoE nodes must advertise capability, model family, context size, estimated throughput, and expert domains.
+- The scheduler must not assume every MoE node is better than a smaller direct node; it must compare latency, cost, context, and quality.
+- Credits must be attributed to the actual node that completed work, including MoE gateway work and reducer work.
+- MoE routing decisions should be logged for auditability and future quality tuning.
+- A failed MoE node must degrade to ordinary node scheduling or tool routing when possible.
+
 ## Open Questions
 
 1. What approval process should govern new node contributors before registration?
