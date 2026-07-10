@@ -272,22 +272,49 @@ For small production, the control plane should stay a coordination service, not 
 
 ```mermaid
 flowchart LR
-    user["User or developer client"]:::machine
-    chat["Chat or CLI client"]:::program
-    cp["Control plane API and scheduler"]:::program
-    router["Planner and request router"]:::program
-    queue["Queue: Valkey or Redis"]:::queue
-    db["Result store: Postgres or Supabase"]:::store
-    obs["Observability and ledger"]:::program
+    subgraph userMachine["REAL MACHINE: user laptop, browser, or developer workstation"]
+        chat["Program: Chat UI, CLI, or API client"]:::program
+    end
 
-    light["Light nodes: 16 GB shared memory or small GPU"]:::machine
-    medium["Medium nodes: 32 GB to 64 GB shared memory or 12 GB to 24 GB VRAM"]:::machine
-    strong["Strong nodes: 96 GB plus shared memory or 24 GB plus VRAM"]:::machine
-    reducer["Reducer node: trusted high-context worker"]:::reducer
-    tools["Tool services: weather, wiki, math, search"]:::tool
-    moe["Optional MoE specialist node"]:::moe
+    subgraph controlPlaneMachine["REAL MACHINE: cloud app host, for example Railway"]
+        cp["Program: control plane API"]:::program
+        router["Program: planner and request router"]:::program
+        obs["Program: observability, policy, and credit ledger"]:::program
+    end
 
-    user --> chat --> cp --> router
+    subgraph queueMachine["MANAGED SERVICE: queue host"]
+        queue["Queue: Valkey or Redis"]:::queue
+    end
+
+    subgraph storeMachine["MANAGED SERVICE: database host"]
+        db["Result store: Postgres or Supabase"]:::store
+    end
+
+    subgraph toolMachine["PROGRAM SERVICE: tool runtime"]
+        tools["Tools: weather, wiki, math, search"]:::tool
+    end
+
+    subgraph lightMachine["REAL MACHINE: contributor light worker"]
+        light["Program: node agent plus small model runtime"]:::worker
+    end
+
+    subgraph mediumMachine["REAL MACHINE: contributor medium worker"]
+        medium["Program: node agent plus normal model runtime"]:::worker
+    end
+
+    subgraph strongMachine["REAL MACHINE: strong GPU or high-memory worker"]
+        strong["Program: node agent plus large model runtime"]:::worker
+    end
+
+    subgraph reducerMachine["REAL MACHINE: trusted reducer worker"]
+        reducer["Program: dense reducer runtime"]:::reducer
+    end
+
+    subgraph moeMachine["REAL MACHINE: optional specialist worker"]
+        moe["Program: MoE gateway and expert runtimes"]:::moe
+    end
+
+    chat --> cp --> router
     router --> queue
     router --> tools
     queue --> light
@@ -307,6 +334,7 @@ flowchart LR
 
     classDef machine fill:#e8f1ff,stroke:#3b82f6,color:#0f172a
     classDef program fill:#ecfeff,stroke:#06b6d4,color:#0f172a
+    classDef worker fill:#e8f1ff,stroke:#2563eb,color:#0f172a
     classDef queue fill:#fff7ed,stroke:#f97316,color:#0f172a
     classDef store fill:#f0fdf4,stroke:#22c55e,color:#0f172a
     classDef reducer fill:#f5f3ff,stroke:#8b5cf6,color:#0f172a
@@ -318,13 +346,15 @@ flowchart LR
 
 | Type | Meaning |
 |---|---|
-| Real machine | Physical or virtual hardware that contributes CPU, GPU, memory, or storage. |
-| Program component | Software service owned by the platform, such as the API, scheduler, router, or ledger. |
+| REAL MACHINE subgraph | Physical or virtual hardware. Anything inside that box is software running on that machine. |
+| MANAGED SERVICE subgraph | Hosted infrastructure such as Redis, Valkey, Postgres, or Supabase. |
+| PROGRAM SERVICE subgraph | A separately deployed service that may run on the control plane host or its own small host. |
+| Program component | Software process such as API, planner, scheduler, node agent, model runtime, ledger, or tool adapter. |
 | Queue | Durable work buffer used to separate request intake from worker execution. |
 | Result store | Shared database for job metadata, chunk outputs, reducer outputs, metrics, and credits. |
 | Tool service | Deterministic or externally-backed service for weather, wiki, math, search, or other non-LLM work. |
-| Reducer | Trusted worker that merges section outputs, cleans formatting, and produces the final user-facing response. |
-| MoE node | Optional specialist inference node that routes inside a mixture-of-experts model or expert pool. |
+| Reducer | Trusted worker machine and runtime that merges sections, cleans formatting, and produces final responses. |
+| MoE node | Optional specialist worker machine that hosts a MoE gateway or expert runtimes. |
 
 ### Baseline Capacity
 
@@ -355,26 +385,53 @@ Mixture-of-Experts support should be treated as an advanced worker capability, n
 
 ```mermaid
 flowchart TD
-    client["Client: chat, CLI, API"]:::machine
-    api["Control plane API"]:::program
-    planner["Planner: classify, split, dependencies"]:::program
-    scheduler["Scheduler: score nodes and queues"]:::program
-    queues["Queues by capability"]:::queue
-    results["Result store"]:::store
-    reducer["Reducer and formatter"]:::reducer
+    subgraph clientMachine["REAL MACHINE: user device"]
+        client["Program: chat, CLI, or API client"]:::program
+    end
 
-    toolRouter["Tool router"]:::tool
-    weather["Weather API"]:::tool
-    wiki["Knowledge lookup"]:::tool
-    math["Math solver"]:::tool
+    subgraph controlPlaneHost["REAL MACHINE: control plane cloud host"]
+        api["Program: control plane API"]:::program
+        planner["Program: planner, classifier, and chunk graph builder"]:::program
+        scheduler["Program: scheduler and node scorer"]:::program
+        toolRouter["Program: tool router"]:::tool
+    end
 
-    simple["Simple LLM nodes"]:::machine
-    code["Code-specialist nodes"]:::machine
-    reasoning["Reasoning nodes"]:::machine
-    moeGateway["MoE gateway node"]:::moe
-    expertA["Expert A: code"]:::moe
-    expertB["Expert B: math"]:::moe
-    expertC["Expert C: writing"]:::moe
+    subgraph queueHost["MANAGED SERVICE: queue host"]
+        queues["Queues: light, medium, strong, reducer, tool, dead-letter"]:::queue
+    end
+
+    subgraph resultHost["MANAGED SERVICE: result database"]
+        results["Result store: jobs, chunks, outputs, metrics, credits"]:::store
+    end
+
+    subgraph toolHost["PROGRAM SERVICE: deterministic tool host"]
+        weather["Tool: weather API"]:::tool
+        wiki["Tool: knowledge lookup"]:::tool
+        math["Tool: math solver"]:::tool
+    end
+
+    subgraph simpleNode["REAL MACHINE: ordinary contributor worker"]
+        simple["Program: node agent plus simple LLM runtime"]:::worker
+    end
+
+    subgraph codeNode["REAL MACHINE: code-specialist worker"]
+        code["Program: node agent plus code model runtime"]:::worker
+    end
+
+    subgraph reasoningNode["REAL MACHINE: reasoning worker"]
+        reasoning["Program: node agent plus reasoning model runtime"]:::worker
+    end
+
+    subgraph reducerNode["REAL MACHINE: trusted high-context reducer"]
+        reducer["Program: dense reducer and formatter runtime"]:::reducer
+    end
+
+    subgraph moeNode["REAL MACHINE: optional MoE specialist worker"]
+        moeGateway["Program: MoE gateway"]:::moe
+        expertA["Program: expert runtime for code"]:::moe
+        expertB["Program: expert runtime for math"]:::moe
+        expertC["Program: expert runtime for writing"]:::moe
+    end
 
     client --> api --> planner
     planner --> toolRouter
@@ -395,6 +452,7 @@ flowchart TD
 
     classDef machine fill:#e8f1ff,stroke:#3b82f6,color:#0f172a
     classDef program fill:#ecfeff,stroke:#06b6d4,color:#0f172a
+    classDef worker fill:#e8f1ff,stroke:#2563eb,color:#0f172a
     classDef queue fill:#fff7ed,stroke:#f97316,color:#0f172a
     classDef store fill:#f0fdf4,stroke:#22c55e,color:#0f172a
     classDef reducer fill:#f5f3ff,stroke:#8b5cf6,color:#0f172a
