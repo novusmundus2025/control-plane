@@ -286,8 +286,13 @@ flowchart LR
         queue["Queue: Valkey or Redis"]:::queue
     end
 
-    subgraph storeMachine["MANAGED SERVICE: database host"]
-        db["Result store: Postgres or Supabase"]:::store
+    subgraph storeMachine["MANAGED SERVICE: transactional data host"]
+        tempStore["Temporary result store: active job outputs with TTL"]:::store
+        ledger["Permanent metadata ledger: status, timing, credits, no raw text by default"]:::ledger
+    end
+
+    subgraph memoryMachine["MANAGED SERVICE: optional vector memory host"]
+        vectorMemory["Vector DB: semantic memory and RAG, only when retention allows"]:::vector
     end
 
     subgraph toolMachine["PROGRAM SERVICE: tool runtime"]
@@ -321,22 +326,28 @@ flowchart LR
     queue --> medium
     queue --> strong
     queue --> moe
-    light --> db
-    medium --> db
-    strong --> db
-    moe --> db
-    db --> reducer
-    tools --> db
-    reducer --> db
-    db --> chat
+    light --> tempStore
+    medium --> tempStore
+    strong --> tempStore
+    moe --> tempStore
+    tools --> tempStore
+    tempStore --> reducer
+    reducer --> tempStore
+    tempStore --> cp
+    cp --> chat
+    tempStore --> ledger
+    cp --> ledger
+    tempStore -. "optional embedding after retention check" .-> vectorMemory
     cp --> obs
-    db --> obs
+    ledger --> obs
 
     classDef machine fill:#e8f1ff,stroke:#3b82f6,color:#0f172a
     classDef program fill:#ecfeff,stroke:#06b6d4,color:#0f172a
     classDef worker fill:#e8f1ff,stroke:#2563eb,color:#0f172a
     classDef queue fill:#fff7ed,stroke:#f97316,color:#0f172a
     classDef store fill:#f0fdf4,stroke:#22c55e,color:#0f172a
+    classDef ledger fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    classDef vector fill:#eef2ff,stroke:#6366f1,color:#0f172a
     classDef reducer fill:#f5f3ff,stroke:#8b5cf6,color:#0f172a
     classDef tool fill:#fefce8,stroke:#eab308,color:#0f172a
     classDef moe fill:#fdf2f8,stroke:#ec4899,color:#0f172a
@@ -351,7 +362,9 @@ flowchart LR
 | PROGRAM SERVICE subgraph | A separately deployed service that may run on the control plane host or its own small host. |
 | Program component | Software process such as API, planner, scheduler, node agent, model runtime, ledger, or tool adapter. |
 | Queue | Durable work buffer used to separate request intake from worker execution. |
-| Result store | Shared database for job metadata, chunk outputs, reducer outputs, metrics, and credits. |
+| Temporary result store | Shared active-job storage for chunk outputs and reducer outputs, with TTL cleanup for raw text. |
+| Permanent metadata ledger | Long-lived status, timing, node, queue, credit, and audit metadata; raw prompts and outputs are not stored by default. |
+| Vector memory | Optional semantic memory/RAG layer. It is not the execution ledger and should only receive data allowed by retention policy. |
 | Tool service | Deterministic or externally-backed service for weather, wiki, math, search, or other non-LLM work. |
 | Reducer | Trusted worker machine and runtime that merges sections, cleans formatting, and produces final responses. |
 | MoE node | Optional specialist worker machine that hosts a MoE gateway or expert runtimes. |
@@ -361,8 +374,9 @@ flowchart LR
 | Layer | Recommended small-production baseline |
 |---|---|
 | Control plane | 2 replicas, 4 vCPU, 8 GB RAM each, no GPU required. |
-| Database | Managed Postgres or Supabase with backups, indexes for jobs, nodes, events, and credits. |
+| Database | Managed Postgres or Supabase with separate active-result retention and permanent metadata tables. |
 | Queue | Valkey or Redis with separate queues for light, medium, strong, reducer, tool, and dead-letter jobs. |
+| Vector DB | Optional semantic memory/RAG store; not required for job coordination. |
 | Light worker | 16 GB shared memory or small GPU; short chat, translation, simple formatting, small code snippets. |
 | Medium worker | 32 GB to 64 GB shared memory or 12 GB to 24 GB VRAM; normal coding, summaries, medium answers. |
 | Strong worker | 96 GB plus shared memory or 24 GB plus VRAM; large code, long context, reducer, higher-quality answers. |
@@ -377,7 +391,9 @@ flowchart LR
 - Dependent chunks must not start until required parent chunks complete.
 - Reducer work should be routed to the best available context and quality node, not simply the first available node.
 - Tool-routable requests should use tools before LLM work when the tool can answer accurately and cheaply.
-- Results must be persisted per chunk so the UI can show completed sections even before the final answer is ready.
+- Active results must be persisted per chunk so the UI can show completed sections even before the final answer is ready.
+- Raw prompts, chunk outputs, and final outputs should use retention controls and TTL cleanup by default.
+- Permanent ledgers should keep metadata required for billing, credits, audit, and reliability scoring without storing raw text by default.
 
 ## MoE-Aware Rearchitecture Reference
 
@@ -400,8 +416,13 @@ flowchart TD
         queues["Queues: light, medium, strong, reducer, tool, dead-letter"]:::queue
     end
 
-    subgraph resultHost["MANAGED SERVICE: result database"]
-        results["Result store: jobs, chunks, outputs, metrics, credits"]:::store
+    subgraph resultHost["MANAGED SERVICE: transactional data host"]
+        results["Temporary result store: active job and chunk outputs with TTL"]:::store
+        ledger2["Permanent metadata ledger: statuses, timings, credits, audit"]:::ledger
+    end
+
+    subgraph vectorHost["MANAGED SERVICE: optional vector memory host"]
+        vector2["Vector DB: semantic memory and RAG, opt-in only"]:::vector
     end
 
     subgraph toolHost["PROGRAM SERVICE: deterministic tool host"]
@@ -448,6 +469,9 @@ flowchart TD
     moeGateway --> expertB --> results
     moeGateway --> expertC --> results
     results --> reducer --> results
+    results --> ledger2
+    api --> ledger2
+    results -. "optional embedding after retention check" .-> vector2
     results --> api --> client
 
     classDef machine fill:#e8f1ff,stroke:#3b82f6,color:#0f172a
@@ -455,6 +479,8 @@ flowchart TD
     classDef worker fill:#e8f1ff,stroke:#2563eb,color:#0f172a
     classDef queue fill:#fff7ed,stroke:#f97316,color:#0f172a
     classDef store fill:#f0fdf4,stroke:#22c55e,color:#0f172a
+    classDef ledger fill:#dcfce7,stroke:#16a34a,color:#0f172a
+    classDef vector fill:#eef2ff,stroke:#6366f1,color:#0f172a
     classDef reducer fill:#f5f3ff,stroke:#8b5cf6,color:#0f172a
     classDef tool fill:#fefce8,stroke:#eab308,color:#0f172a
     classDef moe fill:#fdf2f8,stroke:#ec4899,color:#0f172a
