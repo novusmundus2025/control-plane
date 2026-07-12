@@ -133,9 +133,15 @@ fn connect_client(database_url: &str) -> Result<Client, String> {
 
 fn applied_versions(client: &mut Client) -> Result<Vec<String>, String> {
     let rows = client
-        .query("select version from public.schema_migrations order by version asc", &[])
+        .query(
+            "select version from public.schema_migrations order by version asc",
+            &[],
+        )
         .map_err(|error| format!("failed to query schema_migrations: {error}"))?;
-    Ok(rows.into_iter().map(|row| row.get::<_, String>(0)).collect())
+    Ok(rows
+        .into_iter()
+        .map(|row| row.get::<_, String>(0))
+        .collect())
 }
 
 fn read_migration_file(path: &Path, version: &str, name: &str) -> Result<MigrationFile, String> {

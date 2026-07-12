@@ -1,13 +1,13 @@
 use crate::contracts::{
-    is_trusted_identity_path, AgentRegistration, AgentState, Backend, ContextSize,
-    ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, FallbackDecision,
-    FallbackDecisionStatus, FallbackPolicy, Heartbeat, JobClaimResponse, JobCompletion,
-    JobEventRecord, JobExecutionMode, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus,
-    JobPlan, JobRecord, JobRequest, JobResultRecord, JobResultVerificationStatus,
-    JobSchedulingRequirements, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
-    NodePolicyOverrideTarget, NodeRecord, NodeTrustRecord, PlannedJob, PrivacyLevel,
-    RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode, SchedulerDecision,
-    ToolRewardRequest, WorkerHealthReport,
+    is_trusted_identity_path, AdmissionPolicy, AdmissionPolicyUpdate, AgentRegistration,
+    AgentState, Backend, ContextSize, ControlPlaneSnapshot, CreditsLedgerRecord,
+    ExpectedOutputFormat, FallbackDecision, FallbackDecisionStatus, FallbackPolicy, Heartbeat,
+    JobClaimResponse, JobCompletion, JobEventRecord, JobExecutionMode, JobGraph, JobGraphNode,
+    JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest, JobResultRecord,
+    JobResultVerificationStatus, JobSchedulingRequirements, JobStatus, NodePolicyOverride,
+    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeTrustRecord, PlannedJob,
+    PrivacyLevel, RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode,
+    SchedulerDecision, ToolRewardRequest, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -34,6 +34,8 @@ enum ReducerProfile {
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ControlPlaneState {
+    #[serde(default)]
+    pub admission_policy: AdmissionPolicy,
     pub nodes: BTreeMap<String, NodeRecord>,
     pub jobs: BTreeMap<String, JobRecord>,
     pub job_events: Vec<JobEventRecord>,
@@ -113,6 +115,7 @@ impl ControlPlaneState {
         serde_json::to_value(ControlPlaneSnapshot {
             nodes,
             jobs,
+            admission_policy: self.admission_policy.clone(),
             job_events,
             credits_ledger,
             credits_total,
@@ -486,6 +489,54 @@ impl ControlPlaneState {
         let updated = node.clone();
         self.reevaluate_queued_jobs();
         Ok(updated)
+    }
+
+    pub fn set_admission_policy(
+        &mut self,
+        update: AdmissionPolicyUpdate,
+        updated_at: String,
+    ) -> AdmissionPolicy {
+        let policy = AdmissionPolicy {
+            enabled: update.enabled,
+            require_trusted_identity: update.require_trusted_identity,
+            require_healthy_runtime: update.require_healthy_runtime,
+            min_memory_mb: update.min_memory_mb,
+            min_cuda_vram_mb: update.min_cuda_vram_mb,
+            allowed_backends: normalize_admission_backends(update.allowed_backends),
+            updated_at: Some(updated_at),
+            updated_by: update
+                .actor
+                .map(|actor| actor.trim().to_string())
+                .filter(|actor| !actor.is_empty()),
+        };
+        self.admission_policy = policy.clone();
+
+        for node in self.nodes.values_mut() {
+            if let Some(worker_health) = node.worker_health.as_ref() {
+                let (policy_allowed, policy_reason) = evaluate_policy(
+                    node.reported_state,
+                    node.power_source.as_str(),
+                    node.on_battery,
+                    node.battery_percent,
+                    worker_health,
+                );
+                let (policy_allowed, policy_reason) = evaluate_admission_policy(
+                    policy_allowed,
+                    policy_reason,
+                    &self.admission_policy,
+                    node.backend,
+                    node.identity_trust_path.as_str(),
+                    node.available_memory_mb,
+                    worker_health,
+                );
+                node.computed_policy_allowed = policy_allowed;
+                node.computed_policy_reason = policy_reason;
+                Self::apply_policy_override(node);
+            }
+        }
+
+        self.reevaluate_queued_jobs();
+        policy
     }
 
     fn node_backend_matches(
@@ -1571,6 +1622,15 @@ impl ControlPlaneState {
             heartbeat.power_source.as_str(),
             heartbeat.on_battery,
             heartbeat.battery_percent,
+            &heartbeat.worker_health,
+        );
+        let (policy_allowed, policy_reason) = evaluate_admission_policy(
+            policy_allowed,
+            policy_reason,
+            &self.admission_policy,
+            heartbeat.backend,
+            heartbeat.identity_trust_path.as_str(),
+            heartbeat.available_memory_mb,
             &heartbeat.worker_health,
         );
         let existing_override = self
@@ -4212,6 +4272,79 @@ pub fn evaluate_policy(
     }
 }
 
+fn normalize_admission_backends(backends: Vec<Backend>) -> Vec<Backend> {
+    let mut normalized = if backends.is_empty() {
+        vec![Backend::Auto, Backend::M, Backend::Cuda]
+    } else {
+        backends
+    };
+    normalized.sort_by_key(|backend| backend.as_str());
+    normalized.dedup();
+    normalized
+}
+
+pub fn evaluate_admission_policy(
+    base_allowed: bool,
+    base_reason: Option<String>,
+    policy: &AdmissionPolicy,
+    backend: Backend,
+    identity_trust_path: &str,
+    available_memory_mb: u32,
+    worker_health: &WorkerHealthReport,
+) -> (bool, Option<String>) {
+    let mut reasons = base_reason.map(|reason| vec![reason]).unwrap_or_default();
+
+    if policy.enabled {
+        if !policy.allowed_backends.contains(&backend) {
+            reasons.push(format!(
+                "backend {backend} is not allowed by admission policy"
+            ));
+        }
+
+        if policy.require_trusted_identity && !is_trusted_identity_path(identity_trust_path) {
+            reasons.push("trusted identity is required by admission policy".to_string());
+        }
+
+        if policy.require_healthy_runtime {
+            if !worker_health.healthy {
+                reasons.push("healthy runtime is required by admission policy".to_string());
+            }
+            if !worker_health.runtime_ready {
+                reasons.push("runtime readiness is required by admission policy".to_string());
+            }
+        }
+
+        if policy.min_memory_mb > 0 && available_memory_mb < policy.min_memory_mb {
+            reasons.push(format!(
+                "node memory {available_memory_mb} MB is below admission minimum {} MB",
+                policy.min_memory_mb
+            ));
+        }
+
+        if backend == Backend::Cuda && policy.min_cuda_vram_mb > 0 {
+            match worker_health.cuda_memory_mb {
+                Some(cuda_memory_mb) if cuda_memory_mb < policy.min_cuda_vram_mb => {
+                    reasons.push(format!(
+                        "CUDA VRAM {cuda_memory_mb} MB is below admission minimum {} MB",
+                        policy.min_cuda_vram_mb
+                    ));
+                }
+                None => reasons.push(format!(
+                    "CUDA VRAM was not reported; admission minimum is {} MB",
+                    policy.min_cuda_vram_mb
+                )),
+                _ => {}
+            }
+        }
+    }
+
+    if base_allowed && reasons.is_empty() {
+        (true, None)
+    } else {
+        (false, Some(reasons.join("; ")))
+    }
+}
+
 fn node_path_starts_with(path: &str, base: &str) -> bool {
     let path = normalize_node_path(path);
     let base = normalize_node_path(base);
@@ -4307,6 +4440,7 @@ mod tests {
             cuda_device_available: false,
             cuda_driver_available: false,
             cuda_device_name: None,
+            cuda_memory_mb: None,
             power_source: "AC Power".to_string(),
             on_battery: false,
             battery_percent: Some(90),
@@ -4376,6 +4510,91 @@ mod tests {
         state.register(m_series_registration("node-1"));
         state.heartbeat(ready_heartbeat("node-1", "1"), "1".to_string());
         state
+    }
+
+    #[test]
+    fn admission_policy_blocks_disallowed_backend() {
+        let mut state = ControlPlaneState::default();
+        state.register(m_series_registration("node-1"));
+        state.set_admission_policy(
+            AdmissionPolicyUpdate {
+                enabled: true,
+                require_trusted_identity: false,
+                require_healthy_runtime: true,
+                min_memory_mb: 0,
+                min_cuda_vram_mb: 0,
+                allowed_backends: vec![Backend::Cuda],
+                actor: Some("operator".to_string()),
+            },
+            "1".to_string(),
+        );
+
+        let node = state.heartbeat(ready_heartbeat("node-1", "2"), "2".to_string());
+
+        assert!(!node.policy_allowed);
+        assert_eq!(node.computed_policy_allowed, false);
+        assert!(node
+            .policy_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("backend m is not allowed by admission policy"));
+    }
+
+    #[test]
+    fn admission_policy_blocks_underpowered_cuda_node() {
+        let mut state = ControlPlaneState::default();
+        state.register(cuda_registration("node-cuda"));
+        state.set_admission_policy(
+            AdmissionPolicyUpdate {
+                enabled: true,
+                require_trusted_identity: false,
+                require_healthy_runtime: true,
+                min_memory_mb: 0,
+                min_cuda_vram_mb: 8192,
+                allowed_backends: vec![Backend::Cuda],
+                actor: Some("operator".to_string()),
+            },
+            "1".to_string(),
+        );
+        let mut heartbeat = low_vram_cuda_heartbeat("node-cuda", "2");
+        heartbeat.available_memory_mb = 16_000;
+        heartbeat.worker_health.cuda_memory_mb = Some(4096);
+
+        let node = state.heartbeat(heartbeat, "2".to_string());
+
+        assert!(!node.policy_allowed);
+        assert!(node
+            .policy_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("CUDA VRAM 4096 MB is below admission minimum 8192 MB"));
+    }
+
+    #[test]
+    fn admission_policy_reapplies_to_existing_nodes() {
+        let mut state = ready_state();
+        assert!(state.nodes.get("node-1").expect("node").policy_allowed);
+
+        state.set_admission_policy(
+            AdmissionPolicyUpdate {
+                enabled: true,
+                require_trusted_identity: true,
+                require_healthy_runtime: true,
+                min_memory_mb: 0,
+                min_cuda_vram_mb: 0,
+                allowed_backends: vec![Backend::M],
+                actor: Some("operator".to_string()),
+            },
+            "2".to_string(),
+        );
+
+        let node = state.nodes.get("node-1").expect("node");
+        assert!(!node.policy_allowed);
+        assert!(node
+            .policy_reason
+            .as_deref()
+            .unwrap_or_default()
+            .contains("trusted identity is required by admission policy"));
     }
 
     fn completed_graph_history_job(
@@ -7188,6 +7407,7 @@ mod tests {
                     cuda_device_available: false,
                     cuda_driver_available: false,
                     cuda_device_name: None,
+                    cuda_memory_mb: None,
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
@@ -7859,6 +8079,7 @@ mod tests {
                     cuda_device_available: false,
                     cuda_driver_available: false,
                     cuda_device_name: None,
+                    cuda_memory_mb: None,
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
@@ -7938,6 +8159,7 @@ mod tests {
                     cuda_device_available: true,
                     cuda_driver_available: true,
                     cuda_device_name: Some("GeForce GTX 1650".to_string()),
+                    cuda_memory_mb: Some(4096),
                     power_source: "unknown".to_string(),
                     on_battery: false,
                     battery_percent: None,
@@ -8048,6 +8270,7 @@ mod tests {
                     cuda_device_available: false,
                     cuda_driver_available: false,
                     cuda_device_name: None,
+                    cuda_memory_mb: None,
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),
@@ -8119,6 +8342,7 @@ mod tests {
                     cuda_device_available: false,
                     cuda_driver_available: false,
                     cuda_device_name: None,
+                    cuda_memory_mb: None,
                     power_source: "AC Power".to_string(),
                     on_battery: false,
                     battery_percent: Some(90),

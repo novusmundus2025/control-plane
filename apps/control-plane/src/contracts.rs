@@ -730,6 +730,8 @@ pub struct WorkerHealthReport {
     pub cuda_driver_available: bool,
     #[serde(default)]
     pub cuda_device_name: Option<String>,
+    #[serde(default)]
+    pub cuda_memory_mb: Option<u32>,
     pub power_source: String,
     pub on_battery: bool,
     pub battery_percent: Option<u8>,
@@ -951,10 +953,55 @@ pub struct OperatorNodePolicyOverrideUpdate {
     pub actor: Option<String>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct AdmissionPolicy {
+    pub enabled: bool,
+    pub require_trusted_identity: bool,
+    pub require_healthy_runtime: bool,
+    pub min_memory_mb: u32,
+    pub min_cuda_vram_mb: u32,
+    pub allowed_backends: Vec<Backend>,
+    pub updated_at: Option<String>,
+    pub updated_by: Option<String>,
+}
+
+impl Default for AdmissionPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            require_trusted_identity: false,
+            require_healthy_runtime: true,
+            min_memory_mb: 0,
+            min_cuda_vram_mb: 0,
+            allowed_backends: vec![Backend::Auto, Backend::M, Backend::Cuda],
+            updated_at: None,
+            updated_by: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AdmissionPolicyUpdate {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub require_trusted_identity: bool,
+    #[serde(default)]
+    pub require_healthy_runtime: bool,
+    #[serde(default)]
+    pub min_memory_mb: u32,
+    #[serde(default)]
+    pub min_cuda_vram_mb: u32,
+    #[serde(default)]
+    pub allowed_backends: Vec<Backend>,
+    pub actor: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
 pub struct ControlPlaneSnapshot {
     pub nodes: Vec<NodeRecord>,
     pub jobs: Vec<JobRecord>,
+    pub admission_policy: AdmissionPolicy,
     pub job_events: usize,
     pub credits_ledger: usize,
     pub credits_total: f64,
@@ -1031,6 +1078,7 @@ mod tests {
             cuda_device_available: false,
             cuda_driver_available: false,
             cuda_device_name: None,
+            cuda_memory_mb: None,
             power_source: "AC Power".to_string(),
             on_battery: false,
             battery_percent: Some(90),

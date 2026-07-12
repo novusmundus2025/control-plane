@@ -4,11 +4,11 @@ mod state;
 mod supabase;
 
 use contracts::{
-    is_trusted_identity_path, trust_path_label, AgentRegistration, AppendChatMessageRequest,
-    ChatCompletionChoice, ChatCompletionChoiceMessage, ChatCompletionMundusX,
-    ChatCompletionRequest, ChatCompletionResponse, ChatMessagesResponse, CreditsLedgerRecord,
-    Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord, JobRequest,
-    JobStatus, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
+    is_trusted_identity_path, trust_path_label, AdmissionPolicyUpdate, AgentRegistration,
+    AppendChatMessageRequest, Backend, ChatCompletionChoice, ChatCompletionChoiceMessage,
+    ChatCompletionMundusX, ChatCompletionRequest, ChatCompletionResponse, ChatMessagesResponse,
+    CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord,
+    JobRequest, JobStatus, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
     OperatorNodePolicyOverrideUpdate, RuntimeMode, ToolRewardRequest,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -239,6 +239,12 @@ fn html_response(status: &str, body: &str) -> String {
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
+    )
+}
+
+fn redirect_response(location: &str) -> String {
+    format!(
+        "HTTP/1.1 303 See Other\r\nLocation: {location}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
     )
 }
 
@@ -2201,6 +2207,65 @@ fn operator_nav_item(page: OperatorPage, current: OperatorPage) -> String {
     )
 }
 
+fn checked_attr(value: bool) -> &'static str {
+    if value {
+        " checked"
+    } else {
+        ""
+    }
+}
+
+fn render_admission_policy(state: &ControlPlaneState) -> String {
+    let policy = &state.admission_policy;
+    let allow_auto = policy.allowed_backends.contains(&Backend::Auto);
+    let allow_m = policy.allowed_backends.contains(&Backend::M);
+    let allow_cuda = policy.allowed_backends.contains(&Backend::Cuda);
+    let updated = policy
+        .updated_at
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("not changed");
+    let updated_by = policy
+        .updated_by
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .unwrap_or("system");
+
+    format!(
+        r#"<section class="panel">
+              <h2>Admission Policy</h2>
+              <p class="meta">Control which registered nodes are allowed to take jobs. Blocked nodes remain visible in the registry with an explicit reason.</p>
+              <form method="post" action="/actions/admission-policy" class="policy-form">
+                <label class="check"><input type="checkbox" name="enabled" value="1"{enabled_checked}> Enforce admission rules</label>
+                <label class="check"><input type="checkbox" name="require_healthy_runtime" value="1"{runtime_checked}> Require healthy runtime</label>
+                <label class="check"><input type="checkbox" name="require_trusted_identity" value="1"{trusted_checked}> Require trusted identity</label>
+                <div class="policy-grid">
+                  <label><span>Minimum system RAM (MB)</span><input type="number" name="min_memory_mb" min="0" step="512" value="{min_memory_mb}"></label>
+                  <label><span>Minimum CUDA VRAM (MB)</span><input type="number" name="min_cuda_vram_mb" min="0" step="512" value="{min_cuda_vram_mb}"></label>
+                </div>
+                <div class="policy-backends">
+                  <span>Allowed backends</span>
+                  <label class="check"><input type="checkbox" name="allow_backend_auto" value="1"{allow_auto}> Auto</label>
+                  <label class="check"><input type="checkbox" name="allow_backend_m" value="1"{allow_m}> Apple/Metal</label>
+                  <label class="check"><input type="checkbox" name="allow_backend_cuda" value="1"{allow_cuda}> CUDA</label>
+                </div>
+                <button class="button primary" type="submit">Apply Policy</button>
+              </form>
+              <p class="meta">Last update: {updated} by {updated_by}</p>
+            </section>"#,
+        enabled_checked = checked_attr(policy.enabled),
+        runtime_checked = checked_attr(policy.require_healthy_runtime),
+        trusted_checked = checked_attr(policy.require_trusted_identity),
+        min_memory_mb = policy.min_memory_mb,
+        min_cuda_vram_mb = policy.min_cuda_vram_mb,
+        allow_auto = checked_attr(allow_auto),
+        allow_m = checked_attr(allow_m),
+        allow_cuda = checked_attr(allow_cuda),
+        updated = escape_html(updated),
+        updated_by = escape_html(updated_by),
+    )
+}
+
 fn control_plane_operator_page(
     state: &ControlPlaneState,
     storage_source: StorageSource,
@@ -2327,6 +2392,7 @@ fn control_plane_operator_page(
               <div class="metric"><span>Supabase sync</span><strong>{supabase_value}</strong></div>
               <div class="metric"><span>Deploy</span><strong>{deploy_value}</strong></div>
             </section>
+            {admission_policy_html}
             <section class="panel">
               <h2>Operator Controls</h2>
               <p class="meta">Authentication state, runtime caps, policy overrides, fallback approvals, and environment health should be managed here. Mutating controls stay behind operator-authenticated API calls.</p>
@@ -2335,7 +2401,8 @@ fn control_plane_operator_page(
             </section>"#,
             filters = control_filter_form(page, query, "/v1/status"),
             supabase_value = escape_html(&supabase),
-            deploy_value = escape_html(&deploy_fingerprint)
+            deploy_value = escape_html(&deploy_fingerprint),
+            admission_policy_html = render_admission_policy(state)
         ),
     };
     let nav = [
@@ -2381,12 +2448,19 @@ fn control_plane_operator_page(
       h2 {{ margin:0 0 10px; font-size:18px; }}
       .meta {{ color:var(--muted); line-height:1.55; }}
       .button {{ min-height:42px; display:inline-flex; align-items:center; justify-content:center; border:1px solid var(--line); border-radius:8px; padding:0 14px; background:rgba(4,12,23,.72); color:var(--text); font:inherit; font-weight:600; line-height:1; text-align:center; white-space:nowrap; cursor:pointer; }}
+      .button.primary {{ color:#fff; border-color:var(--line-strong); background:rgba(51,168,255,.18); font-weight:700; }}
       .button:hover,.button:focus-visible {{ border-color:var(--line-strong); background:rgba(51,168,255,.1); outline:none; }}
       .toolbar {{ display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:12px; margin-bottom:18px; align-items:center; }}
       .toolbar .button {{ width:100%; }}
       .panel .button {{ margin-top:10px; margin-right:8px; }}
       .topbar .button {{ margin-left:auto; }}
       input,select {{ width:100%; min-height:42px; border:1px solid var(--line); border-radius:8px; background:#030b14; color:var(--text); padding:0 12px; font:inherit; }}
+      input[type="checkbox"] {{ width:auto; min-height:auto; accent-color:var(--blue); }}
+      .policy-form {{ display:grid; gap:14px; margin-top:14px; }}
+      .policy-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }}
+      .policy-grid label {{ display:grid; gap:7px; color:var(--muted); font-size:13px; text-transform:uppercase; }}
+      .policy-backends {{ display:flex; align-items:center; flex-wrap:wrap; gap:12px; color:var(--muted); }}
+      .check {{ display:inline-flex; align-items:center; gap:8px; color:#dbe8f7; }}
       .grid {{ display:grid; gap:14px; margin-bottom:18px; }}
       .grid.four {{ grid-template-columns:repeat(4,minmax(0,1fr)); }}
       .grid.two {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
@@ -3593,6 +3667,39 @@ fn query_param<'a>(query: Option<&'a str>, key: &str) -> Option<&'a str> {
     None
 }
 
+fn form_flag(body: &str, key: &str) -> bool {
+    query_param(Some(body), key).is_some()
+}
+
+fn form_u32(body: &str, key: &str) -> u32 {
+    query_param(Some(body), key)
+        .and_then(|value| value.parse::<u32>().ok())
+        .unwrap_or(0)
+}
+
+fn admission_policy_update_from_form(body: &str) -> AdmissionPolicyUpdate {
+    let mut allowed_backends = Vec::new();
+    if form_flag(body, "allow_backend_auto") {
+        allowed_backends.push(Backend::Auto);
+    }
+    if form_flag(body, "allow_backend_m") {
+        allowed_backends.push(Backend::M);
+    }
+    if form_flag(body, "allow_backend_cuda") {
+        allowed_backends.push(Backend::Cuda);
+    }
+
+    AdmissionPolicyUpdate {
+        enabled: form_flag(body, "enabled"),
+        require_trusted_identity: form_flag(body, "require_trusted_identity"),
+        require_healthy_runtime: form_flag(body, "require_healthy_runtime"),
+        min_memory_mb: form_u32(body, "min_memory_mb"),
+        min_cuda_vram_mb: form_u32(body, "min_cuda_vram_mb"),
+        allowed_backends,
+        actor: Some("operator".to_string()),
+    }
+}
+
 fn parse_conversation_messages_path(path: &str) -> Option<&str> {
     let rest = path.strip_prefix("/v1/conversations/")?;
     let id = rest.strip_suffix("/messages")?;
@@ -4055,7 +4162,10 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
         ("GET", "/")
             | ("GET", "/v1/status")
             | ("GET", "/v1/nodes")
+            | ("GET", "/v1/admission-policy")
+            | ("POST", "/v1/admission-policy")
             | ("POST", "/v1/nodes/policy-override")
+            | ("POST", "/actions/admission-policy")
             | ("GET", "/v1/jobs")
             | ("GET", "/v1/job-events")
             | ("GET", "/v1/credits")
@@ -4323,6 +4433,33 @@ fn note_supabase_failure(sync_status: &Arc<Mutex<SupabaseSyncStatus>>, error: St
     }
 }
 
+fn apply_admission_policy_update(
+    state: &Arc<Mutex<ControlPlaneState>>,
+    sync_status: &Arc<Mutex<SupabaseSyncStatus>>,
+    supabase: Option<&SupabaseMirror>,
+    update: AdmissionPolicyUpdate,
+) -> Result<serde_json::Value, String> {
+    let mut guard = state.lock().expect("state lock");
+    let policy = guard.set_admission_policy(update, now_unix_seconds());
+    let event = guard.record_job_event(
+        None,
+        None,
+        "admission_policy_updated",
+        serde_json::to_value(&policy).expect("policy json"),
+        now_unix_seconds(),
+    );
+    if let Err(error) = save_state(&guard) {
+        return Err(format!("failed to save control-plane state: {error}"));
+    }
+    if let Some(db) = supabase {
+        if let Err(error) = db.record_job_event(&event) {
+            eprintln!("database admission policy event skipped: {error}");
+            note_supabase_failure(sync_status, error);
+        }
+    }
+    Ok(serde_json::to_value(policy).expect("policy json"))
+}
+
 fn handle_connection(
     mut stream: TcpStream,
     state: Arc<Mutex<ControlPlaneState>>,
@@ -4474,6 +4611,18 @@ fn handle_connection(
                 ),
             )
         }
+        ("POST", "/actions/admission-policy") => match apply_admission_policy_update(
+            &state,
+            &sync_status,
+            supabase,
+            admission_policy_update_from_form(&request.body),
+        ) {
+            Ok(_) => redirect_response("/settings"),
+            Err(error) => json_response(
+                "500 Internal Server Error",
+                serde_json::json!({ "error": error }),
+            ),
+        },
         ("GET", "/health") => {
             let snapshot = state
                 .lock()
@@ -4528,6 +4677,27 @@ fn handle_connection(
                 let nodes = guard.nodes.values().cloned().collect::<Vec<_>>();
                 let nodes = filter_json_items(nodes, query, "nodes");
                 json_response("200 OK", paginated_items_response(nodes, query, "nodes"))
+            }
+        }
+        ("GET", "/v1/admission-policy") => {
+            let policy = state.lock().expect("state lock").admission_policy.clone();
+            json_response("200 OK", serde_json::to_value(policy).expect("policy json"))
+        }
+        ("POST", "/v1/admission-policy") => {
+            match serde_json::from_str::<AdmissionPolicyUpdate>(&request.body) {
+                Ok(update) => {
+                    match apply_admission_policy_update(&state, &sync_status, supabase, update) {
+                        Ok(policy) => json_response("200 OK", policy),
+                        Err(error) => json_response(
+                            "500 Internal Server Error",
+                            serde_json::json!({ "error": error }),
+                        ),
+                    }
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
             }
         }
         ("POST", "/v1/nodes/contribution-cap") => {
@@ -5354,6 +5524,7 @@ mod tests {
             cuda_device_available: false,
             cuda_driver_available: false,
             cuda_device_name: None,
+            cuda_memory_mb: None,
             power_source: "AC Power".to_string(),
             on_battery: false,
             battery_percent: Some(90),
@@ -6977,6 +7148,13 @@ mod tests {
     #[test]
     fn protects_operator_policy_override_route() {
         assert!(requires_operator_auth("POST", "/v1/nodes/policy-override"));
+    }
+
+    #[test]
+    fn protects_operator_admission_policy_routes() {
+        assert!(requires_operator_auth("GET", "/v1/admission-policy"));
+        assert!(requires_operator_auth("POST", "/v1/admission-policy"));
+        assert!(requires_operator_auth("POST", "/actions/admission-policy"));
     }
 
     #[test]
