@@ -778,6 +778,22 @@ pub struct CreditsLedgerRecord {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ToolRewardRequest {
+    pub job_id: String,
+    pub tool: String,
+    #[serde(default)]
+    pub device_id: Option<String>,
+    #[serde(default)]
+    pub prompt_chars: Option<usize>,
+    #[serde(default)]
+    pub output_chars: Option<usize>,
+    #[serde(default)]
+    pub units: Option<f64>,
+    #[serde(default)]
+    pub metadata: serde_json::Value,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessageRecord {
     #[serde(default)]
     pub id: Option<u64>,

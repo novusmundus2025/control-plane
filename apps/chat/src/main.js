@@ -3165,7 +3165,48 @@ async function recordAssistantTurn(conversationId, config, fetchImpl, result) {
       console.warn(`[conversation] failed to persist assistant message: ${error.message}`);
     });
   }
+  if (
+    config.operatorToken &&
+    result?.status === "completed" &&
+    result?.execution_mode === "tool" &&
+    result?.tool
+  ) {
+    await recordToolReward(config, fetchImpl, result, sanitizedOutput).catch((error) => {
+      console.warn(`[credits] failed to record tool reward: ${error.message}`);
+    });
+  }
   return sanitizedResult;
+}
+
+async function recordToolReward(config, fetchImpl, result, output) {
+  const tool = String(result?.tool ?? "").trim();
+  const jobId = String(result?.job_id ?? "").trim();
+  if (!tool || !jobId) {
+    return null;
+  }
+  const sections = Array.isArray(result?.response?.sections) ? result.response.sections : null;
+  return controlPlaneFetch(
+    fetchImpl,
+    config,
+    "/v1/tool-rewards",
+    {
+      method: "POST",
+      body: JSON.stringify({
+        job_id: jobId,
+        tool,
+        device_id: result.assigned_node_id ?? `${tool}-tool`,
+        prompt_chars: null,
+        output_chars: String(output ?? "").length,
+        units: sections ? Math.max(1, sections.length) : 1,
+        metadata: {
+          model: result.model ?? null,
+          cache_hit: result.cache_hit ?? null,
+          execution_mode: result.execution_mode ?? null,
+          strategy: result.progress?.strategy ?? null,
+        },
+      }),
+    },
+  );
 }
 
 function buildGenericJobBody(message, config, options = {}) {

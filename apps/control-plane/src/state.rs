@@ -7,7 +7,7 @@ use crate::contracts::{
     JobSchedulingRequirements, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
     NodePolicyOverrideTarget, NodeRecord, NodeTrustRecord, PlannedJob, PrivacyLevel,
     RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode, SchedulerDecision,
-    WorkerHealthReport,
+    ToolRewardRequest, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -178,16 +178,18 @@ impl ControlPlaneState {
         job_id: Option<String>,
         parent_job_id: Option<String>,
         graph_node_id: Option<String>,
+        entry_type: &str,
         amount: f64,
         currency: &str,
         metadata: serde_json::Value,
         created_at: String,
     ) -> Option<CreditsLedgerRecord> {
+        let entry_type = entry_type.trim();
         let job_id_ref = job_id.as_deref();
         let parent_job_id_ref = parent_job_id.as_deref();
         let graph_node_id_ref = graph_node_id.as_deref();
         if self.credits_ledger.iter().any(|entry| {
-            entry.entry_type == "job_reward"
+            entry.entry_type == entry_type
                 && entry.job_id.as_deref() == job_id_ref
                 && entry.parent_job_id.as_deref() == parent_job_id_ref
                 && entry.graph_node_id.as_deref() == graph_node_id_ref
@@ -202,7 +204,7 @@ impl ControlPlaneState {
             job_id,
             parent_job_id,
             graph_node_id,
-            entry_type: "job_reward".to_string(),
+            entry_type: entry_type.to_string(),
             amount,
             currency: currency.to_string(),
             metadata,
@@ -293,6 +295,49 @@ impl ControlPlaneState {
             Some(job.job_id.clone()),
             parent_job_id,
             graph_node_id,
+            "job_reward",
+            amount,
+            "credits",
+            metadata,
+            completed_at,
+        )
+    }
+
+    pub fn award_tool_reward(
+        &mut self,
+        request: ToolRewardRequest,
+        completed_at: String,
+    ) -> Option<CreditsLedgerRecord> {
+        let tool = normalize_tool_name(&request.tool);
+        let job_id = request.job_id.trim().to_string();
+        if tool.is_empty() || job_id.is_empty() {
+            return None;
+        }
+        let units = request.units.unwrap_or(1.0).clamp(1.0, 100.0);
+        let amount = normalize_amount(tool_reward_base_amount(&tool) * units);
+        let device_id = request
+            .device_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| format!("{tool}-tool"));
+        let metadata = serde_json::json!({
+            "formula": "tool_base_amount * units",
+            "tool": tool,
+            "work_type": tool_reward_work_type(&tool),
+            "base_amount": tool_reward_base_amount(&tool),
+            "units": units,
+            "prompt_chars": request.prompt_chars,
+            "output_chars": request.output_chars,
+            "reported_metadata": request.metadata,
+        });
+        self.record_credit_award(
+            Some(device_id),
+            Some(job_id),
+            None,
+            None,
+            "tool_reward",
             amount,
             "credits",
             metadata,
@@ -2652,6 +2697,55 @@ fn normalize_amount(value: f64) -> f64 {
         0.0
     } else {
         rounded
+    }
+}
+
+fn normalize_tool_name(value: &str) -> String {
+    value
+        .trim()
+        .to_ascii_lowercase()
+        .chars()
+        .map(|ch| {
+            if ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' {
+                ch
+            } else {
+                '_'
+            }
+        })
+        .collect::<String>()
+        .trim_matches('_')
+        .to_string()
+}
+
+fn tool_reward_base_amount(tool: &str) -> f64 {
+    match tool {
+        "weather" => 0.05,
+        "assistant_identity" => 0.02,
+        "linear_equation"
+        | "polynomial_derivative"
+        | "polynomial_integral"
+        | "polynomial_subtraction"
+        | "rate_distance" => 0.03,
+        "mundusx_knowledge" | "factual_summary" | "current_office_holder" => 0.10,
+        "web_search" => 0.15,
+        "compound_tools" => 0.05,
+        _ => 0.05,
+    }
+}
+
+fn tool_reward_work_type(tool: &str) -> &'static str {
+    match tool {
+        "weather" => "tool_weather",
+        "assistant_identity" => "tool_identity",
+        "linear_equation"
+        | "polynomial_derivative"
+        | "polynomial_integral"
+        | "polynomial_subtraction"
+        | "rate_distance" => "tool_math",
+        "mundusx_knowledge" | "factual_summary" | "current_office_holder" => "tool_facts",
+        "web_search" => "tool_web_search",
+        "compound_tools" => "tool_compound",
+        _ => "tool_generic",
     }
 }
 
@@ -6179,6 +6273,35 @@ mod tests {
         assert!(state
             .award_job_reward(&second_completed, "6".to_string())
             .is_none());
+    }
+
+    #[test]
+    fn tool_rewards_use_fixed_work_type_amounts_and_dedupe() {
+        let mut state = ControlPlaneState::default();
+        let request = ToolRewardRequest {
+            job_id: "weather-job-1".to_string(),
+            tool: "weather".to_string(),
+            device_id: Some("weather-tool".to_string()),
+            prompt_chars: Some(24),
+            output_chars: Some(80),
+            units: None,
+            metadata: serde_json::json!({ "cache_hit": true }),
+        };
+
+        let award = state
+            .award_tool_reward(request.clone(), "10".to_string())
+            .expect("tool award");
+        let duplicate = state.award_tool_reward(request, "11".to_string());
+
+        assert!(duplicate.is_none());
+        assert_eq!(state.credits_ledger.len(), 1);
+        assert_eq!(award.entry_type, "tool_reward");
+        assert_eq!(award.device_id.as_deref(), Some("weather-tool"));
+        assert_eq!(award.amount, 0.05);
+        assert_eq!(award.metadata["work_type"], "tool_weather");
+        assert_eq!(award.metadata["prompt_chars"], 24);
+        assert_eq!(award.metadata["output_chars"], 80);
+        assert_eq!(award.metadata["reported_metadata"]["cache_hit"], true);
     }
 
     #[test]

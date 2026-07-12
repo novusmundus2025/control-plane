@@ -9,7 +9,7 @@ use contracts::{
     ChatCompletionRequest, ChatCompletionResponse, ChatMessagesResponse, CreditsLedgerRecord,
     Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord, JobRequest,
     JobStatus, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
-    OperatorNodePolicyOverrideUpdate, RuntimeMode,
+    OperatorNodePolicyOverrideUpdate, RuntimeMode, ToolRewardRequest,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::apply_migrations;
@@ -3773,7 +3773,7 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
               <input name="search" aria-label="Search credits" placeholder="Search ledger id, node, job, type" value="{search}" />
               <input name="node_id" aria-label="Node id" placeholder="node id" value="{node_id}" />
               <input name="job_id" aria-label="Job id" placeholder="parent job or subjob id" value="{job_id}" />
-              <select name="entry_type" aria-label="Entry type"><option value="">All entries</option><option value="job_reward"{job_reward}>Job reward</option></select>
+              <select name="entry_type" aria-label="Entry type"><option value="">All entries</option><option value="job_reward"{job_reward}>Job reward</option><option value="tool_reward"{tool_reward}>Tool reward</option></select>
               <select name="reward_scope" aria-label="Reward scope"><option value="">All scopes</option><option value="job"{scope_job}>Whole job</option><option value="graph_node"{scope_graph_node}>Graph chunk</option></select>
               <input name="recorded_after" aria-label="Recorded after timestamp" placeholder="recorded after timestamp" value="{start}" />
               <input name="recorded_before" aria-label="Recorded before timestamp" placeholder="recorded before timestamp" value="{end}" />
@@ -3781,6 +3781,7 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
               <a class="button" href="{api_href}">Credits JSON</a>
             </form>"#,
             job_reward = selected_attr(query, "entry_type", "job_reward"),
+            tool_reward = selected_attr(query, "entry_type", "tool_reward"),
             scope_job = selected_attr(query, "reward_scope", "job"),
             scope_graph_node = selected_attr(query, "reward_scope", "graph_node"),
         ),
@@ -4060,6 +4061,7 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
             | ("GET", "/v1/credits")
             | ("POST", "/v1/jobs")
             | ("POST", "/v1/chat/completions")
+            | ("POST", "/v1/tool-rewards")
             | ("POST", "/v1/nodes/contribution-cap")
     )
 }
@@ -4663,6 +4665,49 @@ fn handle_connection(
                 }
             }
             json_response("200 OK", response)
+        }
+        ("POST", "/v1/tool-rewards") => {
+            match serde_json::from_str::<ToolRewardRequest>(&request.body) {
+                Ok(tool_reward) => {
+                    let mut guard = state.lock().expect("state lock");
+                    let award = guard.award_tool_reward(tool_reward, now_unix_seconds());
+                    if let Some(award) = award.as_ref() {
+                        let award_event = guard.record_job_event(
+                            award.device_id.clone(),
+                            award.job_id.clone(),
+                            "tool_credit_awarded",
+                            serde_json::to_value(award).expect("json"),
+                            award.created_at.clone(),
+                        );
+                        if let Some(db) = supabase.as_ref() {
+                            if let Err(error) = db.record_credit_award(award) {
+                                eprintln!("database tool credit sync skipped: {error}");
+                                note_supabase_failure(&sync_status, error);
+                            }
+                            if let Err(error) = db.record_job_event(&award_event) {
+                                eprintln!("database tool credit event skipped: {error}");
+                                note_supabase_failure(&sync_status, error);
+                            }
+                        }
+                    }
+                    if let Err(error) = save_state(&guard) {
+                        eprintln!("failed to save control-plane state: {error}");
+                    }
+                    match award {
+                        Some(award) => {
+                            json_response("200 OK", serde_json::to_value(award).expect("json"))
+                        }
+                        None => json_response(
+                            "200 OK",
+                            serde_json::json!({ "status": "duplicate_or_ignored" }),
+                        ),
+                    }
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+            }
         }
         ("POST", "/v1/register") => {
             match serde_json::from_str::<AgentRegistration>(&request.body) {
@@ -5482,6 +5527,67 @@ mod tests {
     }
 
     #[test]
+    fn tool_rewards_endpoint_records_credit_and_event() {
+        let state = Arc::new(Mutex::new(ControlPlaneState::default()));
+        let sync_status = Arc::new(Mutex::new(SupabaseSyncStatus::disabled(
+            StorageSource::LocalJsonOnly,
+        )));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let handler_state = Arc::clone(&state);
+        let handler_sync_status = Arc::clone(&sync_status);
+
+        let handler = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept request");
+            handle_connection(
+                stream,
+                handler_state,
+                handler_sync_status,
+                None,
+                StorageSource::LocalJsonOnly,
+            );
+        });
+
+        let body = serde_json::json!({
+            "job_id": "weather-job-1",
+            "tool": "weather",
+            "device_id": "weather-tool",
+            "prompt_chars": 20,
+            "output_chars": 80,
+            "metadata": { "cache_hit": false }
+        })
+        .to_string();
+        let request = format!(
+            "POST /v1/tool-rewards HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let mut client = TcpStream::connect(address).expect("connect to test listener");
+        client.write_all(request.as_bytes()).expect("write request");
+
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read response");
+        handler.join().expect("handler completes");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains(r#""entry_type":"tool_reward""#));
+        assert!(response.contains(r#""amount":0.05"#));
+
+        let guard = state.lock().expect("state lock");
+        assert_eq!(guard.credits_ledger.len(), 1);
+        assert_eq!(
+            guard.credits_ledger[0].device_id.as_deref(),
+            Some("weather-tool")
+        );
+        assert_eq!(
+            guard.credits_ledger[0].metadata["work_type"],
+            "tool_weather"
+        );
+        assert_eq!(guard.job_events.len(), 1);
+        assert_eq!(guard.job_events[0].event_type, "tool_credit_awarded");
+    }
+
+    #[test]
     fn heartbeat_updates_node_without_creating_job_event() {
         let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
         let public_key_hex = hex::encode(signing_key.verifying_key().to_bytes());
@@ -5822,6 +5928,7 @@ mod tests {
                 Some("subjob-1".to_string()),
                 Some("job-1".to_string()),
                 Some("chunk-1".to_string()),
+                "job_reward",
                 2.5,
                 "credits",
                 serde_json::json!({
@@ -5840,6 +5947,7 @@ mod tests {
                 Some("job-2".to_string()),
                 None,
                 None,
+                "job_reward",
                 4.0,
                 "credits",
                 serde_json::json!({
@@ -5886,6 +5994,7 @@ mod tests {
                     Some(format!("job-{index:02}")),
                     None,
                     None,
+                    "job_reward",
                     1.0,
                     "credits",
                     serde_json::json!({
@@ -6868,6 +6977,11 @@ mod tests {
     #[test]
     fn protects_operator_policy_override_route() {
         assert!(requires_operator_auth("POST", "/v1/nodes/policy-override"));
+    }
+
+    #[test]
+    fn protects_tool_reward_route() {
+        assert!(requires_operator_auth("POST", "/v1/tool-rewards"));
     }
 
     #[test]

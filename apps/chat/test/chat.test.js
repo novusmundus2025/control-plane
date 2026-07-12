@@ -1025,6 +1025,60 @@ test("routes weather questions to wttr without queuing an LLM job", async () => 
   assert.match(result.output, /Partly cloudy, 31C\/88F/);
 });
 
+test("records tool rewards when an operator token is configured", async () => {
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url, init });
+    if (url === "https://wttr.in/Manila?format=j1") {
+      return jsonResponse({
+        nearest_area: [
+          {
+            areaName: [{ value: "Manila" }],
+            region: [{ value: "National Capital Region" }],
+            country: [{ value: "Philippines" }],
+          },
+        ],
+        current_condition: [
+          {
+            weatherDesc: [{ value: "Partly cloudy" }],
+            temp_C: "31",
+            temp_F: "88",
+            FeelsLikeC: "36",
+            FeelsLikeF: "97",
+            humidity: "70",
+            windspeedKmph: "12",
+            localObsDateTime: "2026-07-03 05:00 PM",
+          },
+        ],
+      });
+    }
+    assert.equal(url, "https://uat.mundusx.ai/v1/tool-rewards");
+    assert.equal(init.headers.Authorization, "Bearer test-token");
+    const body = JSON.parse(init.body);
+    assert.equal(body.job_id.startsWith("weather-"), true);
+    assert.equal(body.tool, "weather");
+    assert.equal(body.device_id, "weather-tool");
+    assert.equal(body.units, 1);
+    assert.equal(body.output_chars > 0, true);
+    return jsonResponse({ entry_type: "tool_reward", amount: 0.05 });
+  };
+
+  const result = await submitChatJob(
+    { message: "what is the weather in Manila today?" },
+    configFromEnv({
+      MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
+      MUNDUSX_OPERATOR_TOKEN: "test-token",
+    }),
+    fetchImpl,
+  );
+
+  assert.equal(result.status, "completed");
+  assert.deepEqual(
+    calls.map((call) => call.url),
+    ["https://wttr.in/Manila?format=j1", "https://uat.mundusx.ai/v1/tool-rewards"],
+  );
+});
+
 test("answers compound weather person and identity prompts with direct tools", async () => {
   const calls = [];
   const prompt =

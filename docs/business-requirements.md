@@ -71,7 +71,7 @@ The MundusX control plane provides the company-owned operator surface for coordi
 | BR-005 | The system must route jobs only to workers that satisfy backend and runtime compatibility requirements. | Must |
 | BR-006 | The system must record job lifecycle events from queued through assigned, completed, or failed. | Must |
 | BR-007 | The system must expose operator views for nodes, jobs, job events, credits, and health. | Must |
-| BR-008 | The system must maintain a credits ledger tied to completed work. | Must |
+| BR-008 | The system must maintain a credits ledger tied to completed work, including contributor inference jobs and fixed-rate deterministic tool work. | Must |
 | BR-009 | The system must persist state to Supabase when configured and continue operating with local fallback when Supabase is unavailable. | Must |
 | BR-010 | The system must require operator authentication in production using `MUNDUSX_OPERATOR_TOKEN`. | Must |
 | BR-011 | The system should provide an OpenAI-compatible non-streaming chat completion entry point that queues work and returns a job identifier. | Should |

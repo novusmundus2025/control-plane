@@ -30,7 +30,7 @@ This is intentionally conservative for low-VRAM GPUs.
 
 ### Credit Scoring
 
-Current credit scoring is character-based, not true token-metered accounting:
+Inference job credit scoring is character-based, not true token-metered accounting:
 
 ```text
 work_units = ceil((prompt_chars + output_chars) / 400)
@@ -56,6 +56,28 @@ credits = 3.00
 to decide how much work a contributor allows MundusX to schedule on that device,
 and it may influence model/workload eligibility. Credits are awarded for completed
 work, not for the configured contribution cap.
+
+Tool-routed work uses fixed small ledger rewards because it does not consume a
+contributor GPU job. The control plane records these as `entry_type=tool_reward`:
+
+| Tool class | Work type | Base credits |
+| --- | --- | ---: |
+| Weather | `tool_weather` | 0.05 |
+| Assistant identity/persona | `tool_identity` | 0.02 |
+| Deterministic math | `tool_math` | 0.03 |
+| Factual/wiki/current lookup | `tool_facts` | 0.10 |
+| Web search | `tool_web_search` | 0.15 |
+| Compound tool result | `tool_compound` | 0.05 |
+| Generic tool fallback | `tool_generic` | 0.05 |
+
+```text
+tool_credits = tool_base_amount * units
+units = clamp(reported_units_or_1, 1, 100)
+```
+
+For compound tool jobs, `units` can represent the number of completed tool
+sections. These entries are useful for internal cost visibility and tool
+accounting, not GPU contributor payout.
 
 ### Node Trust Score
 
