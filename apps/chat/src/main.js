@@ -7239,6 +7239,7 @@ function cleanChatOutputInternal(value, emptyFallback) {
   output = stripSkillPromptLeak(output);
   output = stripSystemPromptLeak(output);
   output = collapseRepeatedOpeningClause(output);
+  output = collapseRepeatedCodeFences(output);
   output = collapseRepeatedSentences(output);
   output = collapseRepeatedLines(output);
   output = output.replace(/[ \t]+\n/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
@@ -7453,7 +7454,7 @@ function stripExpandedRequestLeak(value) {
   );
   if (
     answerMarker > 0 &&
-    /\b(?:i want to understand|please provide|i want to see|including all necessary|detailed explanation of the code)\b/i.test(
+    /\b(?:i want to understand|i want to use it|can you provide me|please provide|i want to see|including all necessary|detailed explanation of the code)\b/i.test(
       lead.slice(0, answerMarker),
     )
   ) {
@@ -7461,7 +7462,7 @@ function stripExpandedRequestLeak(value) {
   }
 
   return output.replace(
-    /^(?:(?:i want to understand[^.!?\n]*[.!?]|i want to see[^.!?\n]*[.!?]|please provide[^.!?\n]*[.!?]|include all[^.!?\n]*[.!?])\s*){1,8}/i,
+    /^(?:(?:i want to understand[^.!?\n]*[.!?]|i want to use it[^.!?\n]*[.!?]|can you provide me[^.!?\n]*[.!?]|i want to see[^.!?\n]*[.!?]|please provide[^.!?\n]*[.!?]|include all[^.!?\n]*[.!?])\s*){1,8}/i,
     "",
   ).trim();
 }
@@ -7736,6 +7737,33 @@ function collapseRepeatedLines(value) {
   }
 
   return collapsed.join("\n");
+}
+
+function collapseRepeatedCodeFences(value) {
+  const output = String(value ?? "");
+  const fencePattern = /```[a-zA-Z0-9_+#.-]*\s*\n[\s\S]*?```/g;
+  let cursor = 0;
+  let collapsed = "";
+  const seen = new Set();
+  let match;
+
+  while ((match = fencePattern.exec(output)) !== null) {
+    const block = match[0];
+    const key = normalizeRepeatKey(block);
+    collapsed += output.slice(cursor, match.index);
+    if (!seen.has(key)) {
+      collapsed += block;
+      seen.add(key);
+    }
+    cursor = match.index + block.length;
+  }
+
+  if (!seen.size) {
+    return output;
+  }
+
+  collapsed += output.slice(cursor);
+  return collapsed.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 function normalizeRepeatKey(value) {

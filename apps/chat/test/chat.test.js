@@ -3304,6 +3304,16 @@ test("removes expanded request leakage before complete-code answers", () => {
   assert.doesNotMatch(output, /I want to understand|Please provide|Certainly|Below is|A magic square is/i);
 });
 
+test("removes prompt-completion leakage and duplicate fenced code blocks", () => {
+  const output = cleanChatOutput(
+    "llama.cpp mode=persistent-warm-cuda; response=I want to use it to generate a Fibonacci sequence up to the 10th number. I also want to add a function that checks if a given number is part of the sequence. Can you provide me with a complete code example?\n\n```python\ndef fibonacci(n):\n    return [0, 1]\n```\n\n```python\ndef fibonacci(n):\n    return [0, 1]\n```",
+  );
+
+  assert.match(output, /^```python/);
+  assert.equal((output.match(/```python/g) || []).length, 1);
+  assert.doesNotMatch(output, /I want to use it|Can you provide me/i);
+});
+
 test("removes orphaned prompt continuation fragments before answers", () => {
   const output = cleanChatOutput(
     "matrix. The program should take a 3x3 matrix as input, perform the magic square operation, and print the result.",
