@@ -622,7 +622,8 @@ fn supabase_rest_request(
     headers: &[(&str, &str)],
     body: Option<String>,
 ) -> Result<RestResponse, String> {
-    let parsed = parse_https_url(url)?;
+    let use_plain_http = url.starts_with("http://");
+    let parsed = parse_rest_url(url)?;
     let body = body.unwrap_or_default();
     let mut request = format!(
         "{method} {} HTTP/1.1\r\nHost: {}\r\napikey: {}\r\nAuthorization: Bearer {}\r\nConnection: close\r\nContent-Length: {}\r\n",
@@ -652,23 +653,38 @@ fn supabase_rest_request(
         .map_err(|error| format!("failed to set supabase REST read timeout: {error}"))?;
     tcp.set_write_timeout(Some(SUPABASE_REST_TIMEOUT))
         .map_err(|error| format!("failed to set supabase REST write timeout: {error}"))?;
-    let server_name = ServerName::try_from(parsed.host.clone())
-        .map_err(|_| format!("invalid supabase REST TLS host: {}", parsed.host))?;
-    let connection = ClientConnection::new(rustls_client_config()?, server_name)
-        .map_err(|error| format!("failed to negotiate TLS with supabase REST API: {error}"))?;
-    let mut stream = StreamOwned::new(connection, tcp);
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|error| format!("failed to send supabase REST request: {error}"))?;
-    stream
-        .flush()
-        .map_err(|error| format!("failed to flush supabase REST request: {error}"))?;
 
-    let mut raw = Vec::new();
-    stream
-        .read_to_end(&mut raw)
-        .map_err(|error| format!("failed to read supabase REST response: {error}"))?;
-    parse_http_response(&raw)
+    if use_plain_http {
+        let mut stream = tcp;
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|error| format!("failed to send supabase REST request: {error}"))?;
+        stream
+            .flush()
+            .map_err(|error| format!("failed to flush supabase REST request: {error}"))?;
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .map_err(|error| format!("failed to read supabase REST response: {error}"))?;
+        parse_http_response(&raw)
+    } else {
+        let server_name = ServerName::try_from(parsed.host.clone())
+            .map_err(|_| format!("invalid supabase REST TLS host: {}", parsed.host))?;
+        let connection = ClientConnection::new(rustls_client_config()?, server_name)
+            .map_err(|error| format!("failed to negotiate TLS with supabase REST API: {error}"))?;
+        let mut stream = StreamOwned::new(connection, tcp);
+        stream
+            .write_all(request.as_bytes())
+            .map_err(|error| format!("failed to send supabase REST request: {error}"))?;
+        stream
+            .flush()
+            .map_err(|error| format!("failed to flush supabase REST request: {error}"))?;
+        let mut raw = Vec::new();
+        stream
+            .read_to_end(&mut raw)
+            .map_err(|error| format!("failed to read supabase REST response: {error}"))?;
+        parse_http_response(&raw)
+    }
 }
 
 fn rustls_client_config() -> Result<Arc<ClientConfig>, String> {
@@ -702,10 +718,14 @@ fn rustls_client_config() -> Result<Arc<ClientConfig>, String> {
     ))
 }
 
-fn parse_https_url(url: &str) -> Result<RestUrl, String> {
-    let without_scheme = url
-        .strip_prefix("https://")
-        .ok_or_else(|| "supabase REST URL must start with https://".to_string())?;
+fn parse_rest_url(url: &str) -> Result<RestUrl, String> {
+    let (without_scheme, default_port) = if let Some(rest) = url.strip_prefix("https://") {
+        (rest, 443u16)
+    } else if let Some(rest) = url.strip_prefix("http://") {
+        (rest, 80u16)
+    } else {
+        return Err("supabase REST URL must start with http:// or https://".to_string());
+    };
     let (authority, path) = without_scheme
         .split_once('/')
         .map(|(authority, path)| (authority, format!("/{path}")))
@@ -720,13 +740,17 @@ fn parse_https_url(url: &str) -> Result<RestUrl, String> {
                 .map_err(|_| "supabase REST URL has an invalid port".to_string())?;
             (host.to_string(), port)
         }
-        _ => (authority.to_string(), 443),
+        _ => (authority.to_string(), default_port),
     };
     Ok(RestUrl {
         host,
         port,
         path_and_query: path,
     })
+}
+
+fn parse_https_url(url: &str) -> Result<RestUrl, String> {
+    parse_rest_url(url)
 }
 
 fn parse_http_response(raw: &[u8]) -> Result<RestResponse, String> {
