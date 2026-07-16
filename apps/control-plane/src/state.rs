@@ -583,7 +583,7 @@ impl ControlPlaneState {
             .to_ascii_lowercase()
             .as_str()
         {
-            "local" => vec![RuntimeMode::Local],
+            "local" | "mlx" | "blas" | "cuda" => vec![RuntimeMode::Local],
             "interactive" => vec![RuntimeMode::Interactive],
             _ => Vec::new(),
         }
@@ -762,7 +762,10 @@ impl ControlPlaneState {
         }
 
         let runtime_modes = Self::reported_runtime_modes(worker_health);
-        if !runtime_modes.contains(&job.runtime_mode) {
+        let runtime_matches = runtime_modes.contains(&job.runtime_mode)
+            || (job.runtime_mode == RuntimeMode::Local
+                && runtime_modes.contains(&RuntimeMode::Mlx));
+        if !runtime_matches {
             return false;
         }
 
@@ -4231,15 +4234,18 @@ pub fn evaluate_policy(
     }
 
     let runtime_mode = worker_health.runtime_mode.trim();
-    let supports_local_execution = worker_health
-        .supported_runtime_modes
-        .iter()
-        .any(|mode| matches!(mode, RuntimeMode::Local | RuntimeMode::Interactive));
+    let supports_local_execution = worker_health.supported_runtime_modes.iter().any(|mode| {
+        matches!(
+            mode,
+            RuntimeMode::Local | RuntimeMode::Interactive | RuntimeMode::Mlx
+        )
+    });
     if runtime_mode.is_empty() && !supports_local_execution {
         reasons.push("runtime mode is missing".to_string());
     } else if !supports_local_execution
         && !runtime_mode.eq_ignore_ascii_case("local")
         && !runtime_mode.eq_ignore_ascii_case("interactive")
+        && !runtime_mode.eq_ignore_ascii_case("mlx")
         && !runtime_mode.eq_ignore_ascii_case("cuda")
         && !runtime_mode.eq_ignore_ascii_case("blas")
     {

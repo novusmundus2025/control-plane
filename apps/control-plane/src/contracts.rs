@@ -52,6 +52,7 @@ impl Default for Backend {
 pub enum RuntimeMode {
     Local,
     Interactive,
+    Mlx,
 }
 
 impl RuntimeMode {
@@ -59,6 +60,7 @@ impl RuntimeMode {
         match self {
             Self::Local => "local",
             Self::Interactive => "interactive",
+            Self::Mlx => "mlx",
         }
     }
 }
@@ -1097,5 +1099,33 @@ mod tests {
             serde_json::json!(["local", "interactive"])
         );
         assert_eq!(json["streaming_supported"], false);
+    }
+
+    #[test]
+    fn worker_health_report_accepts_mlx_runtime_capability() {
+        let report: WorkerHealthReport = serde_json::from_value(serde_json::json!({
+            "healthy": true,
+            "model_dir": "/tmp/models",
+            "model_name": "demo",
+            "model_path": "/tmp/models/demo",
+            "llama_cli_available": false,
+            "blas_device_available": false,
+            "power_source": "AC Power",
+            "on_battery": false,
+            "battery_percent": null,
+            "runtime_ready": true,
+            "runtime_mode": "mlx",
+            "supported_runtime_modes": ["local", "mlx"],
+            "streaming_supported": false,
+            "checked_at": "1",
+            "notes": []
+        }))
+        .expect("mlx worker health payload");
+
+        assert_eq!(report.runtime_mode, "mlx");
+        assert_eq!(
+            report.supported_runtime_modes,
+            vec![RuntimeMode::Local, RuntimeMode::Mlx]
+        );
     }
 }
