@@ -2030,6 +2030,71 @@ fn looks_product_plan_prompt(lower_prompt: &str) -> bool {
     matches >= 2
 }
 
+fn looks_like_comparison_prompt(lower_prompt: &str) -> bool {
+    contains_any(lower_prompt, &["compare", "versus", " vs "])
+        && contains_any(
+            lower_prompt,
+            &[
+                "architecture",
+                "performance",
+                "developer",
+                "ecosystem",
+                "cost",
+                "risk",
+                "recommendation",
+            ],
+        )
+}
+
+fn comparison_plan_jobs() -> Vec<PlannedJob> {
+    let sections = [
+        (
+            "job.architecture",
+            "Architecture",
+            "Compare architecture and execution model. Return only the user-facing architecture section.",
+        ),
+        (
+            "job.performance",
+            "Performance",
+            "Compare throughput, latency, scaling behavior, and practical performance tradeoffs. Return only the user-facing performance section.",
+        ),
+        (
+            "job.developer_ecosystem",
+            "Developer ecosystem",
+            "Compare tooling, libraries, documentation, community, and developer adoption. Return only the user-facing developer ecosystem section.",
+        ),
+        (
+            "job.costs",
+            "Costs",
+            "Compare transaction costs, operational costs, and cost predictability. Return only the user-facing costs section.",
+        ),
+        (
+            "job.risks",
+            "Risks",
+            "Compare technical, governance, reliability, security, and ecosystem risks. Return only the user-facing risks section.",
+        ),
+        (
+            "job.recommendation",
+            "Recommendation",
+            "Give a concise recommendation based on the comparison criteria and likely dApp use cases. Return only the user-facing recommendation section.",
+        ),
+    ];
+
+    let mut jobs = Vec::new();
+    for (id, name, required_output) in sections {
+        push_planned_job(
+            &mut jobs,
+            id,
+            name,
+            "section",
+            Vec::new(),
+            required_output,
+            "Comparison prompts should be split by evaluation criteria, not historical chronology.",
+        );
+    }
+    jobs
+}
+
 fn looks_like_document_summary_prompt(lower_prompt: &str) -> bool {
     contains_any(
         lower_prompt,
@@ -3066,6 +3131,19 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
             strategy: "sectioned_product_plan".to_string(),
             summary: format!(
                 "Planned {} product-plan sections. Sections are returned directly; final synthesis is optional.",
+                jobs.len()
+            ),
+            jobs,
+        };
+    }
+
+    if looks_like_comparison_prompt(&lower) && classification.task_type != RequestTaskType::Coding {
+        let jobs = comparison_plan_jobs();
+        return JobPlan {
+            plan_id: format!("plan-{}", request.request_id),
+            strategy: "sectioned_comparison".to_string(),
+            summary: format!(
+                "Planned {} comparison sections. Sections are returned directly; final synthesis is optional.",
                 jobs.len()
             ),
             jobs,
@@ -4831,6 +4909,39 @@ mod tests {
     }
 
     #[test]
+    fn comparison_prompts_use_comparison_sections_not_history_sections() {
+        let mut request = classification_request(
+            "Compare Ethereum, Solana, and Polygon for decentralized apps. Cover architecture, performance, developer ecosystem, costs, risks, and recommendation.",
+        );
+        request.execution_mode = JobExecutionMode::Auto;
+
+        let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
+
+        assert_eq!(plan.strategy, "sectioned_comparison");
+        let names = plan
+            .jobs
+            .iter()
+            .map(|job| job.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "Architecture",
+                "Performance",
+                "Developer ecosystem",
+                "Costs",
+                "Risks",
+                "Recommendation",
+            ]
+        );
+        assert!(!plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Origins and founders"));
+    }
+
+    #[test]
     fn product_plan_prompts_return_user_facing_sections_without_reducer() {
         let mut request = classification_request(
             "Create a full product description, technical architecture, and launch plan for MundusX.AI.",
@@ -6415,6 +6526,48 @@ mod tests {
             second_result.output_chars,
             Some("node two output".chars().count())
         );
+    }
+
+    #[test]
+    fn comparison_plan_allows_parallel_claims_for_independent_sections() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        let mut request = classification_request(
+            "Compare Ethereum, Solana, and Polygon for decentralized apps. Cover architecture, performance, developer ecosystem, costs, risks, and recommendation.",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first comparison section claimed");
+        let second_claim = state
+            .claim_job("node-2", "3".to_string())
+            .job
+            .expect("second comparison section claimed");
+
+        assert_ne!(
+            first_claim.active_graph_node_id,
+            second_claim.active_graph_node_id
+        );
+
+        let job = state.jobs.get("job-1").expect("job");
+        let running = job
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.status == JobGraphNodeStatus::Running)
+            .collect::<Vec<_>>();
+        assert_eq!(running.len(), 2);
+        assert!(running
+            .iter()
+            .any(|node| node.assigned_node_id.as_deref() == Some("node-1")));
+        assert!(running
+            .iter()
+            .any(|node| node.assigned_node_id.as_deref() == Some("node-2")));
     }
 
     #[test]
