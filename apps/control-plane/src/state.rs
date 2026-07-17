@@ -2242,9 +2242,34 @@ fn complete_graph_execution_job(
         {
             match completion.status {
                 JobStatus::Completed => {
-                    graph_node.status = JobGraphNodeStatus::Completed;
-                    graph_node.output = completion.output.clone();
-                    graph_node.error = None;
+                    let unusable_section_output = graph_node.responsibility == "section"
+                        && completion
+                            .output
+                            .as_deref()
+                            .map(|output| clean_section_output(&graph_node.name, output).is_empty())
+                            .unwrap_or(true);
+                    if unusable_section_output {
+                        if !graph_node
+                            .failed_node_ids
+                            .iter()
+                            .any(|node_id| node_id == &completion.node_id)
+                        {
+                            graph_node.failed_node_ids.push(completion.node_id.clone());
+                        }
+                        graph_node.output = None;
+                        graph_node.error = Some(
+                            "section output contained only prompt echo or boilerplate".to_string(),
+                        );
+                        graph_node.status = if graph_node.attempt_count >= graph_node.max_attempts {
+                            JobGraphNodeStatus::Failed
+                        } else {
+                            JobGraphNodeStatus::Ready
+                        };
+                    } else {
+                        graph_node.status = JobGraphNodeStatus::Completed;
+                        graph_node.output = completion.output.clone();
+                        graph_node.error = None;
+                    }
                 }
                 JobStatus::Failed => {
                     let is_final_node = job.graph.final_node_id.as_deref() == Some(active_node_id);
@@ -3933,6 +3958,13 @@ fn verify_graph_result(
         return (
             JobResultVerificationStatus::Rejected,
             Some("completed result output was empty".to_string()),
+        );
+    }
+
+    if node.responsibility == "section" && clean_section_output(&node.name, output).is_empty() {
+        return (
+            JobResultVerificationStatus::Rejected,
+            Some("section output contained only prompt echo or boilerplate".to_string()),
         );
     }
 
@@ -7052,6 +7084,64 @@ mod tests {
         );
 
         assert_eq!(output, "");
+    }
+
+    #[test]
+    fn prompt_echo_section_is_requeued_for_a_different_node() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first section claim");
+        let section_id = first_claim
+            .active_graph_node_id
+            .clone()
+            .expect("active section");
+        let retried = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some(
+                        "Do not include a title. Do not include the user's request. Do not include the user's request."
+                            .to_string(),
+                    ),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("echo completion is handled");
+
+        assert_eq!(retried.status, JobStatus::Queued);
+        let section = retried
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == section_id)
+            .expect("retried section");
+        assert_eq!(section.status, JobGraphNodeStatus::Ready);
+        assert_eq!(section.failed_node_ids, vec!["node-1".to_string()]);
+        assert_eq!(section.output, None);
+
+        let second_claim = state
+            .claim_job("node-2", "5".to_string())
+            .job
+            .expect("different node retries section");
+        assert_eq!(
+            second_claim.active_graph_node_id.as_deref(),
+            Some(section_id.as_str())
+        );
     }
 
     #[test]
