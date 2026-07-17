@@ -2051,6 +2051,68 @@ fn looks_like_comparison_prompt(lower_prompt: &str) -> bool {
         )
 }
 
+fn looks_like_deployment_procedure_prompt(lower_prompt: &str) -> bool {
+    contains_any(lower_prompt, &["deploy", "deployment"])
+        && (contains_any(
+            lower_prompt,
+            &["smart contract", "mainnet", "mainet", "production"],
+        ) || contains_any(
+            lower_prompt,
+            &["step by step", "step-by-step", "detailed step", "how to"],
+        ))
+}
+
+fn deployment_procedure_jobs() -> Vec<PlannedJob> {
+    let mut jobs = Vec::new();
+    push_planned_job(
+        &mut jobs,
+        "job.prerequisites",
+        "Prerequisites and network setup",
+        "section",
+        Vec::new(),
+        "List the required wallet, network, funds, tools, RPC access, explorer, source files, and environment configuration before deployment.",
+        "Deployment must establish the target network and operator prerequisites first.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.contract_readiness",
+        "Contract readiness and security",
+        "section",
+        vec!["job.prerequisites".to_string()],
+        "Explain compilation, constructor arguments, permissions, secret handling, audits, and final security checks required before deployment.",
+        "Mainnet deployment should not proceed until the artifact and security configuration are ready.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.testnet_validation",
+        "Testnet deployment and validation",
+        "section",
+        vec!["job.contract_readiness".to_string()],
+        "Provide the testnet deployment, interaction tests, gas estimate, failure checks, and release approval steps.",
+        "A production procedure needs a rehearsal using the same artifact and parameters.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.mainnet_deployment",
+        "Mainnet deployment",
+        "section",
+        vec!["job.testnet_validation".to_string()],
+        "Give the ordered mainnet deployment commands and checks, including signer confirmation, network verification, transaction monitoring, and address capture.",
+        "The mainnet transaction follows successful testnet validation.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.verification_operations",
+        "Verification and operations",
+        "section",
+        vec!["job.mainnet_deployment".to_string()],
+        "Cover source verification, ownership or role checks, monitoring, documentation, upgrade or emergency procedures, and safe handoff.",
+        "Deployment is incomplete until the contract is verified and operational controls are confirmed.",
+    );
+    append_section_synthesis(&mut jobs);
+    jobs
+}
+
 fn comparison_plan_jobs() -> Vec<PlannedJob> {
     let sections = [
         (
@@ -2589,7 +2651,7 @@ fn graph_node_max_tokens(
 
     let stage_budget = match job.plan.strategy.as_str() {
         "single_job" => requested.max(512),
-        "sectioned_research" => {
+        "sectioned_research" | "deployment_procedure" => {
             if node.responsibility == "merge" {
                 requested.max(1_536)
             } else if requested > 1_024 {
@@ -3213,6 +3275,17 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
         };
     }
 
+    if looks_like_deployment_procedure_prompt(&lower) {
+        let jobs = deployment_procedure_jobs();
+        return JobPlan {
+            plan_id: format!("plan-{}", request.request_id),
+            strategy: "deployment_procedure".to_string(),
+            summary: "Planned an ordered deployment procedure followed by strongest-node final synthesis."
+                .to_string(),
+            jobs,
+        };
+    }
+
     if looks_product_plan_prompt(&lower) && classification.task_type != RequestTaskType::Coding {
         let mut jobs = Vec::new();
         push_planned_job(
@@ -3538,6 +3611,7 @@ fn plan_job_request_for_submission(
 ) -> JobPlan {
     if request.execution_mode == JobExecutionMode::Auto
         && looks_sectionable_prompt(&request.prompt)
+        && !looks_like_deployment_procedure_prompt(&request.prompt.to_ascii_lowercase())
         && classification.task_type != RequestTaskType::Coding
         && compatible_ready_nodes < 2
         && !sectionable_prompt_warrants_single_node_decomposition(request, classification)
@@ -5076,6 +5150,43 @@ mod tests {
             .jobs
             .iter()
             .any(|job| job.name == "Origins and founders"));
+    }
+
+    #[test]
+    fn smart_contract_mainnet_request_uses_ordered_deployment_plan() {
+        let mut request = classification_request(
+            "Give me a detailed step in deploying a smart contract into mainet?",
+        );
+        request.execution_mode = JobExecutionMode::Auto;
+
+        let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
+        let graph = build_job_graph("job-1", &plan, "1");
+
+        assert_eq!(plan.strategy, "deployment_procedure");
+        let names = plan
+            .jobs
+            .iter()
+            .map(|job| job.name.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            names,
+            vec![
+                "Prerequisites and network setup",
+                "Contract readiness and security",
+                "Testnet deployment and validation",
+                "Mainnet deployment",
+                "Verification and operations",
+                "Final synthesis",
+            ]
+        );
+        assert!(!names.contains(&"Origins and founders"));
+        assert!(!names.contains(&"Early development"));
+        assert_eq!(graph.final_node_id.as_deref(), Some("job.final_synthesis"));
+        assert_eq!(
+            plan.jobs[3].depends_on,
+            vec!["job.testnet_validation".to_string()]
+        );
     }
 
     #[test]
