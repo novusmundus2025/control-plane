@@ -2682,10 +2682,19 @@ fn clean_section_output(section_name: &str, output: &str) -> String {
     let mut body = cleaned.trim();
 
     loop {
+        let had_markdown_heading = body.starts_with('#');
         let candidate = body.trim_start_matches('#').trim_start();
         let Some(remainder) = strip_ascii_case_prefix(candidate, section_name) else {
             break;
         };
+        let trimmed_remainder = remainder.trim_start();
+        let has_title_separator = trimmed_remainder.starts_with(':')
+            || trimmed_remainder.starts_with('-')
+            || remainder.starts_with('\n');
+        let repeats_title = strip_ascii_case_prefix(trimmed_remainder, section_name).is_some();
+        if !had_markdown_heading && !has_title_separator && !repeats_title {
+            break;
+        }
         body = remainder
             .trim_start_matches(|character: char| character == ':' || character == '-')
             .trim_start();
@@ -2724,6 +2733,13 @@ fn clean_direct_job_output(job: &JobRecord, output: Option<String>) -> Option<St
 fn is_reducer_boilerplate_line(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
     lower.starts_with("calling `python -m mlx_lm")
+        || lower.starts_with("avoid jargon and technical language")
+        || lower.starts_with("provide the most relevant, specific information")
+        || lower.starts_with("provide a clear, concise, and direct answer")
+        || lower.starts_with("the answer should be short")
+        || lower.starts_with("the answer should be specific")
+        || lower.starts_with("the answer should be concise")
+        || lower.starts_with("the answer should be clear")
         || lower.starts_with("expand on the major ")
         || lower.starts_with("include details such as ")
         || lower.starts_with("include information about ")
@@ -3780,7 +3796,7 @@ fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
         }
         let section = clean_section_output(&result.name, output);
         if !section.is_empty() {
-            parts.push(format!("## {}\n\n{}", result.name, section));
+            parts.push(format!("{}\n{}", result.name, section));
         }
     }
 
@@ -6072,12 +6088,17 @@ mod tests {
             .output
             .as_deref()
             .expect("sectioned output")
-            .contains("## Origins and founders"));
+            .contains("Origins and founders\norigins complete"));
         assert!(completed
             .output
             .as_deref()
             .expect("sectioned output")
-            .contains("## Modern era"));
+            .contains("Modern era\nmodern era complete"));
+        assert!(!completed
+            .output
+            .as_deref()
+            .unwrap_or_default()
+            .contains("##"));
         assert!(state.claim_job("node-1", "12".to_string()).job.is_none());
     }
 
@@ -6153,7 +6174,7 @@ mod tests {
             .output
             .as_deref()
             .expect("sectioned output")
-            .contains("## Expansion and milestones"));
+            .contains("Expansion and milestones\nexpansion output"));
         assert!(state.claim_job("node-1", "9".to_string()).job.is_none());
     }
 
@@ -6940,6 +6961,16 @@ mod tests {
         );
 
         assert_eq!(output, "Bitcoin was introduced by Satoshi Nakamoto.");
+    }
+
+    #[test]
+    fn section_output_cleanup_drops_collapsed_prompt_echo() {
+        let output = clean_section_output(
+            "Origins and founders",
+            "Avoid jargon and technical language unless absolutely necessary. Provide a clear, concise, and direct answer to the user's request. The answer should be short and direct.",
+        );
+
+        assert_eq!(output, "");
     }
 
     #[test]
