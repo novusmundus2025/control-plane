@@ -1027,11 +1027,12 @@ impl ControlPlaneState {
                 } else {
                     None
                 };
-                if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref())
-                    && reducer_capable_node_available_for_job(self, job)
-                    && reducer_profile(node) != ReducerProfile::Strong
-                {
-                    return None;
+                if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref()) {
+                    if let Some(best_node_id) = best_reducer_node_id_for_job(self, job) {
+                        if best_node_id != node.node_id {
+                            return None;
+                        }
+                    }
                 }
                 if self.job_can_be_claimed(job)
                     && self.node_has_available_slot_for_job(node, job)
@@ -2099,6 +2100,19 @@ fn comparison_plan_jobs() -> Vec<PlannedJob> {
     jobs
 }
 
+fn append_section_synthesis(jobs: &mut Vec<PlannedJob>) {
+    let dependencies = jobs.iter().map(|job| job.id.clone()).collect::<Vec<_>>();
+    push_planned_job(
+        jobs,
+        "job.final_synthesis",
+        "Final synthesis",
+        "merge",
+        dependencies,
+        "Synthesize the completed sections into one accurate, coherent final answer. Preserve the requested section order, resolve repetition and contradictions, and use plain-text section titles without Markdown heading markers.",
+        "The strongest compatible node performs final quality control across all section outputs.",
+    );
+}
+
 fn looks_like_document_summary_prompt(lower_prompt: &str) -> bool {
     contains_any(
         lower_prompt,
@@ -2399,7 +2413,7 @@ fn graph_node_execution_prompt(
             .join("\n\n");
 
         return format!(
-            "Original user request:\n{}\n\nCompleted section notes:\n{}\n\nWrite one concise final answer. Use only useful factual content from the notes, remove duplication, ignore repeated instructions or boilerplate, and omit uncertain claims.",
+            "Original user request:\n{}\n\nCompleted section notes:\n{}\n\nWrite one accurate, coherent final answer. Preserve the requested section order and use plain-text section titles without # Markdown markers. Use only useful factual content from the notes, resolve contradictions in favor of well-established facts, remove duplication, ignore repeated instructions or boilerplate, omit uncertain claims, and finish every sentence. Return only the final answer.",
             job.prompt, sections
         );
     }
@@ -2776,7 +2790,7 @@ fn graph_node_is_merge(graph: &JobGraph, graph_node_id: Option<&str>) -> bool {
     })
 }
 
-fn reducer_capable_node_available_for_job(state: &ControlPlaneState, job: &JobRecord) -> bool {
+fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> Option<String> {
     let ready_m_exists = state.nodes.values().any(|candidate| {
         ControlPlaneState::node_is_schedulable_state(candidate)
             && candidate.policy_allowed
@@ -2788,18 +2802,45 @@ fn reducer_capable_node_available_for_job(state: &ControlPlaneState, job: &JobRe
             && candidate.backend == Backend::Cuda
     });
 
-    state.nodes.values().any(|candidate| {
-        state.node_has_available_slot_for_job(candidate, job)
-            && ControlPlaneState::node_backend_matches(
-                job,
-                candidate.backend,
-                ready_m_exists,
-                ready_cuda_exists,
+    state
+        .nodes
+        .values()
+        .filter(|candidate| {
+            state.node_has_available_slot_for_job(candidate, job)
+                && ControlPlaneState::node_backend_matches(
+                    job,
+                    candidate.backend,
+                    ready_m_exists,
+                    ready_cuda_exists,
+                )
+                && ControlPlaneState::node_can_run_job(candidate, job)
+                && next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).is_some()
+        })
+        .map(|candidate| {
+            let active_node_id = next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id);
+            let mut decision = state.scheduler_score(candidate, job, active_node_id.as_deref());
+            apply_reducer_scheduler_score(&mut decision, candidate);
+            let profile_rank = match reducer_profile(candidate) {
+                ReducerProfile::Strong => 3,
+                ReducerProfile::Standard => 2,
+                ReducerProfile::Compact => 1,
+            };
+            (
+                profile_rank,
+                node_generation_ceiling(Some(candidate)),
+                candidate.available_memory_mb,
+                decision,
             )
-            && ControlPlaneState::node_can_run_job(candidate, job)
-            && reducer_profile(candidate) == ReducerProfile::Strong
-            && next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).is_some()
-    })
+        })
+        .max_by(|left, right| {
+            left.0
+                .cmp(&right.0)
+                .then_with(|| left.1.cmp(&right.1))
+                .then_with(|| left.2.cmp(&right.2))
+                .then_with(|| left.3.score.cmp(&right.3.score))
+                .then_with(|| right.3.node_id.cmp(&left.3.node_id))
+        })
+        .map(|(_, _, _, decision)| decision.node_id)
 }
 
 fn apply_reducer_scheduler_score(decision: &mut SchedulerDecision, node: &NodeRecord) {
@@ -3221,13 +3262,14 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
                     "The user explicitly requested this split section.",
                 );
             }
+            append_section_synthesis(&mut jobs);
 
             return JobPlan {
                 plan_id: format!("plan-{}", request.request_id),
                 strategy: "sectioned_research".to_string(),
                 summary: format!(
-                    "Planned {} user-requested sections. Sections are returned directly; final synthesis is optional.",
-                    jobs.len()
+                    "Planned {} user-requested sections followed by strongest-node final synthesis.",
+                    jobs.len().saturating_sub(1)
                 ),
                 jobs,
             };
@@ -3269,13 +3311,14 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
             "Cover recent developments, current positioning, and future-facing themes.",
             "Modern context should be isolated from historical background as a user-facing section.",
         );
+        append_section_synthesis(&mut jobs);
 
         return JobPlan {
             plan_id: format!("plan-{}", request.request_id),
             strategy: "sectioned_research".to_string(),
             summary: format!(
-                "Planned {} sectioned research units. Sections are returned directly; final synthesis is optional.",
-                jobs.len()
+                "Planned {} sectioned research units followed by strongest-node final synthesis.",
+                jobs.len().saturating_sub(1)
             ),
             jobs,
         };
@@ -4955,11 +4998,20 @@ mod tests {
                 "Cloud Era",
                 "AI Era",
                 "Summary",
+                "Final synthesis",
             ]
         );
-        assert!(plan.jobs.iter().all(|job| job
-            .required_output
-            .contains("Do not include any other requested section")));
+        assert!(plan
+            .jobs
+            .iter()
+            .filter(|job| job.responsibility != "merge")
+            .all(|job| job
+                .required_output
+                .contains("Do not include any other requested section")));
+        assert_eq!(
+            plan.jobs.last().map(|job| job.responsibility.as_str()),
+            Some("merge")
+        );
     }
 
     #[test]
@@ -6018,7 +6070,7 @@ mod tests {
     }
 
     #[test]
-    fn sectioned_research_claims_use_section_token_budgets_and_completes_without_reducer() {
+    fn sectioned_research_claims_sections_then_completes_with_reducer() {
         let mut state = ready_state();
         let mut request =
             classification_request("Give me a detailed history of BMW from its origins to today.");
@@ -6081,29 +6133,48 @@ mod tests {
             );
         }
 
-        let completed = completed.expect("last section completion");
+        let sections_completed = completed.expect("last section completion");
+        assert_eq!(sections_completed.status, JobStatus::Queued);
+        assert_eq!(
+            sections_completed.graph.final_node_id.as_deref(),
+            Some("job.final_synthesis")
+        );
+
+        let reducer_claim = state
+            .claim_job("node-1", "12".to_string())
+            .job
+            .expect("strongest node claims synthesis");
+        assert_eq!(
+            reducer_claim.active_graph_node_id.as_deref(),
+            Some("job.final_synthesis")
+        );
+        assert!(reducer_claim.prompt.contains("origins complete"));
+        assert!(reducer_claim.prompt.contains("modern era complete"));
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-reducer".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("Final synthesized answer.".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "13".to_string(),
+            )
+            .expect("synthesis completion");
         assert_eq!(completed.status, JobStatus::Completed);
-        assert_eq!(completed.graph.final_node_id, None);
-        assert!(completed
-            .output
-            .as_deref()
-            .expect("sectioned output")
-            .contains("Origins and founders\norigins complete"));
-        assert!(completed
-            .output
-            .as_deref()
-            .expect("sectioned output")
-            .contains("Modern era\nmodern era complete"));
-        assert!(!completed
-            .output
-            .as_deref()
-            .unwrap_or_default()
-            .contains("##"));
-        assert!(state.claim_job("node-1", "12".to_string()).job.is_none());
+        assert_eq!(
+            completed.output.as_deref(),
+            Some("Final synthesized answer.")
+        );
     }
 
     #[test]
-    fn large_sectioned_research_uses_larger_section_caps_without_reducer() {
+    fn large_sectioned_research_uses_larger_section_caps_and_reducer() {
         let mut state = ready_state();
         let mut request =
             classification_request("Give me a detailed history of BMW from its origins to today.");
@@ -6168,14 +6239,22 @@ mod tests {
         }
 
         let job = state.jobs.get("job-1").expect("job");
-        assert_eq!(job.status, JobStatus::Completed);
-        assert_eq!(job.graph.final_node_id, None);
-        assert!(job
-            .output
-            .as_deref()
-            .expect("sectioned output")
-            .contains("Expansion and milestones\nexpansion output"));
-        assert!(state.claim_job("node-1", "9".to_string()).job.is_none());
+        assert_eq!(job.status, JobStatus::Queued);
+        assert_eq!(
+            job.graph.final_node_id.as_deref(),
+            Some("job.final_synthesis")
+        );
+
+        let reducer_claim = state
+            .claim_job("node-1", "12".to_string())
+            .job
+            .expect("reducer claim");
+        assert_eq!(
+            reducer_claim.active_graph_node_id.as_deref(),
+            Some("job.final_synthesis")
+        );
+        assert_eq!(reducer_claim.max_tokens, Some(768));
+        assert!(reducer_claim.prompt.contains("expansion output"));
     }
 
     #[test]
@@ -6897,7 +6976,9 @@ mod tests {
         assert!(claim.prompt.contains("backend complete"));
         assert!(claim.prompt.contains("frontend complete"));
         assert!(claim.prompt.contains("tests complete"));
-        assert!(claim.prompt.contains("Write one concise final answer"));
+        assert!(claim
+            .prompt
+            .contains("Write one accurate, coherent final answer"));
     }
 
     #[test]
@@ -8159,6 +8240,44 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("performance:avg_chunk_latency_ms:8000")));
+    }
+
+    #[test]
+    fn reducer_waits_for_highest_capacity_ready_node() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-strongest"));
+        let mut heartbeat = ready_heartbeat("node-strongest", "1");
+        heartbeat.available_memory_mb = 64_000;
+        heartbeat.worker_health.model_name = Some("Qwen/Qwen2.5-14B-Instruct".to_string());
+        state.heartbeat(heartbeat, "1".to_string());
+
+        let mut request = reducer_fixture_request();
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.model = None;
+        state.submit_job(request, "2".to_string());
+        make_reducer_ready(&mut state, "job-1");
+
+        assert!(state.claim_job("node-1", "3".to_string()).job.is_none());
+        let claim = state
+            .claim_job("node-strongest", "3".to_string())
+            .job
+            .expect("highest-capacity node claims reducer");
+        assert_eq!(
+            claim.active_graph_node_id.as_deref(),
+            Some("job.final_merge")
+        );
+        let reducer = state
+            .jobs
+            .get("job-1")
+            .and_then(|job| {
+                job.graph
+                    .nodes
+                    .iter()
+                    .find(|node| node.id == "job.final_merge")
+            })
+            .expect("assigned reducer node");
+        assert_eq!(reducer.assigned_node_id.as_deref(), Some("node-strongest"));
+        assert_eq!(reducer.model.as_deref(), Some("Qwen/Qwen2.5-14B-Instruct"));
     }
 
     #[test]
