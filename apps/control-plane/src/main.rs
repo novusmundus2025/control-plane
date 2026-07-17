@@ -1303,12 +1303,7 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
     for job in jobs {
         let status = job_operator_status_label(&job);
         let (status_bg, status_fg) = state_badge(&status);
-        let assigned_node = job.assigned_node_id.as_deref().unwrap_or("unassigned");
-        let worker = job.worker_id.as_deref().unwrap_or("none");
-        let backend = job
-            .backend
-            .map(|backend| backend.to_string())
-            .unwrap_or_else(|| job.preferred_backend.to_string());
+        let (assigned_node, worker, backend) = job_assignment_summary(&job);
         let model = job.model.as_deref().unwrap_or("default");
         let completed = job.completed_at.as_deref().unwrap_or("not completed");
         let assigned = job.assigned_at.as_deref().unwrap_or("not assigned");
@@ -1372,8 +1367,8 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
             status_bg,
             status_fg,
             escape_html(&status),
-            node_profile_link(assigned_node),
-            escape_html(worker),
+            assigned_node,
+            escape_html(&worker),
             escape_html(&backend),
             escape_html(&graph_progress),
             escape_html(&graph_attention),
@@ -1489,6 +1484,65 @@ fn render_job_records(jobs: Vec<JobRecord>) -> String {
 
     html.push_str("</div>");
     html
+}
+
+fn job_assignment_summary(job: &JobRecord) -> (String, String, String) {
+    if !job.graph_execution_enabled {
+        let assigned_node =
+            node_profile_link(job.assigned_node_id.as_deref().unwrap_or("unassigned"));
+        let worker = job.worker_id.as_deref().unwrap_or("none").to_string();
+        let backend = job
+            .backend
+            .map(|backend| backend.to_string())
+            .unwrap_or_else(|| job.preferred_backend.to_string());
+        return (assigned_node, worker, backend);
+    }
+
+    let mut assigned_nodes = Vec::<String>::new();
+    let mut workers = Vec::<String>::new();
+    let mut backends = Vec::<String>::new();
+    for node in &job.graph.nodes {
+        if let Some(node_id) = node
+            .assigned_node_id
+            .as_deref()
+            .filter(|value| !value.is_empty())
+        {
+            push_unique(&mut assigned_nodes, node_id.to_string());
+        }
+        if let Some(worker_id) = node.worker_id.as_deref().filter(|value| !value.is_empty()) {
+            push_unique(&mut workers, worker_id.to_string());
+        }
+        if let Some(backend) = node.backend {
+            push_unique(&mut backends, backend.to_string());
+        }
+    }
+
+    let assigned_node = match assigned_nodes.as_slice() {
+        [] => node_profile_link(job.assigned_node_id.as_deref().unwrap_or("unassigned")),
+        [node_id] => node_profile_link(node_id),
+        _ => format!("{} graph nodes", assigned_nodes.len()),
+    };
+    let worker = match workers.len() {
+        0 => job.worker_id.as_deref().unwrap_or("none").to_string(),
+        1 => workers[0].clone(),
+        count => format!("{count} workers"),
+    };
+    let backend = match backends.len() {
+        0 => job
+            .backend
+            .map(|backend| backend.to_string())
+            .unwrap_or_else(|| job.preferred_backend.to_string()),
+        1 => backends[0].clone(),
+        _ => format!("mixed {}", backends.join(" + ")),
+    };
+
+    (assigned_node, worker, backend)
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+    }
 }
 
 fn render_credit_records(credits: Vec<CreditsLedgerRecord>) -> String {
@@ -1610,10 +1664,7 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
     };
 
     let status = job.status.to_string();
-    let backend = job
-        .backend
-        .map(|backend| backend.to_string())
-        .unwrap_or_else(|| job.preferred_backend.to_string());
+    let (assigned_node, _worker, backend) = job_assignment_summary(job);
     let model = job.model.as_deref().unwrap_or("default");
     let scheduler = job
         .scheduler_decision
@@ -1913,7 +1964,7 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
         model = escape_html(model),
         total_payout = total_payout,
         prompt = escape_html(&private_content_summary(Some(&job.prompt), "Request")),
-        assigned_node = node_profile_link(job.assigned_node_id.as_deref().unwrap_or("unassigned")),
+        assigned_node = assigned_node,
         assigned = escape_html(job.assigned_at.as_deref().unwrap_or("not assigned")),
         completed = escape_html(job.completed_at.as_deref().unwrap_or("not completed")),
         scheduler = scheduler,
@@ -6764,6 +6815,82 @@ mod tests {
         assert!(html.contains(r#"value="1""#));
         assert!(html.contains(r#"name="submitted_before""#));
         assert!(html.contains(r#"value="4""#));
+    }
+
+    #[test]
+    fn jobs_page_summarizes_mixed_graph_assignment_without_parent_backend_confusion() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-m", "MAC", "1");
+        register_ready_node(&mut state, "node-cuda", "DAVE", "1");
+        if let Some(node) = state.nodes.get_mut("node-cuda") {
+            node.backend = Backend::Cuda;
+            node.worker_health
+                .as_mut()
+                .expect("worker health")
+                .runtime_mode = "cuda".to_string();
+            node.worker_health
+                .as_mut()
+                .expect("worker health")
+                .cuda_device_available = true;
+            node.worker_health
+                .as_mut()
+                .expect("worker health")
+                .cuda_driver_available = true;
+        }
+        state.submit_job(
+            JobRequest {
+                request_id: "job-mixed-graph".to_string(),
+                prompt: "Write a detailed history split into independent sections.".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Decompose,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(256),
+                max_tokens_source: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        {
+            let job = state.jobs.get_mut("job-mixed-graph").expect("job");
+            job.graph_execution_enabled = true;
+            job.status = JobStatus::Completed;
+            job.assigned_node_id = Some("node-cuda".to_string());
+            job.backend = Some(Backend::Cuda);
+            let mut nodes = job.graph.nodes.iter_mut();
+            let first = nodes.next().expect("first chunk");
+            first.status = JobGraphNodeStatus::Completed;
+            first.assigned_node_id = Some("node-cuda".to_string());
+            first.worker_id = Some("worker-cuda".to_string());
+            first.backend = Some(Backend::Cuda);
+            first.output = Some("cuda output".to_string());
+            let second = nodes.next().expect("second chunk");
+            second.status = JobGraphNodeStatus::Completed;
+            second.assigned_node_id = Some("node-m".to_string());
+            second.worker_id = Some("worker-m".to_string());
+            second.backend = Some(Backend::M);
+            second.output = Some("m output".to_string());
+        }
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Jobs,
+            Some("job_id=job-mixed-graph"),
+        );
+
+        assert!(html.contains("job-mixed-graph"));
+        assert!(html.contains("2 graph nodes"));
+        assert!(html.contains("2 workers"));
+        assert!(html.contains("mixed cuda + m") || html.contains("mixed m + cuda"));
+        assert!(html.contains("worker-cuda"));
+        assert!(html.contains("worker-m"));
     }
 
     #[test]
