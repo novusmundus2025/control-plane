@@ -3405,6 +3405,17 @@ test("removes embedded section instruction leaks from decomposed answers", () =>
   assert.doesNotMatch(output, /Avoid jargon|Use a formal tone|Required output|Responsibility|Write the factual/i);
 });
 
+test("removes deprecated-directly instruction leaks from decomposed answers", () => {
+  const output = cleanChatOutput(
+    "## Origins and founders directly is deprecated. instead. Microsoft was founded in 1975 by Bill Gates and Paul Allen.\n\n## Early years sections are returned directly are deprecated. Microsoft grew by selling software for early personal computers.",
+  );
+
+  assert.match(output, /## Origins and founders/);
+  assert.match(output, /Microsoft was founded in 1975/);
+  assert.match(output, /## Early years/);
+  assert.doesNotMatch(output, /directly is deprecated|sections are returned directly|instead\./i);
+});
+
 test("removes inline selected skill labels from rendered output", () => {
   const output = cleanChatOutput(
     "Founding: Microsoft was founded in 1975. [router] Route requests conservatively. [formatter] Answer directly and cleanly. [chunk-planner] Chunk only when useful.",

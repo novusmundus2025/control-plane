@@ -7546,6 +7546,8 @@ function stripEmbeddedSectionInstructionLeak(value) {
   output = output
     .replace(/\bAvoid jargon and technical terms unless absolutely necessary\.?\s*/gi, "")
     .replace(/\bUse a formal tone\.?\s*/gi, "")
+    .replace(/\b(?:directly|returned directly|sections are returned directly)\s+is\s+deprecated\.?\s*(?:use\s+\S+\s+instead\.?|instead\.?)?\s*/gi, "")
+    .replace(/\b(?:directly|returned directly|sections are returned directly)\s+(?:is|are)\s+deprecated\.?\s*/gi, "")
     .replace(
       /\bName\s*:\s*[A-Z][A-Za-z0-9 &,'-]{1,100}\s+(?:Responsibility\s*:\s*[a-z_ -]+\s+)?Required output\s*:\s*[\s\S]{0,700}?(?=(?:##\s*)?[A-Z][A-Za-z0-9 &,'-]{2,80}\s*:)/gi,
       "",
@@ -7590,6 +7592,7 @@ function stripSystemPromptLeak(value) {
   const markers = [
     /\bInternal MundusX response skills\b/i,
     /\bSelected MundusX Markdown skills\b/i,
+    /\b(?:directly|returned directly|sections are returned directly)\s+(?:is|are)\s+deprecated\b/i,
     /#\s*(?:Router|Formatter|Atlas Persona|Marie Persona|Translation|Code Generation|Math|Weather|Facts|Chunk Planner|Verifier)\s+Skill\b/i,
     /\bMundusX Chat is the product interface\b/i,
     /\bUse the (?:Atlas|Marie) persona\b/i,
