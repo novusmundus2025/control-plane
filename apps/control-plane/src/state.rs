@@ -18,9 +18,9 @@ const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_GRAPH_NODE_LEASE_SECONDS: u64 = 600;
 const DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS: u64 = 600;
 const DEFAULT_NODE_HEARTBEAT_STALE_SECONDS: u64 = 60;
-const REDUCER_SECTION_CHARS_COMPACT: usize = 450;
-const REDUCER_SECTION_CHARS_STANDARD: usize = 900;
-const REDUCER_SECTION_CHARS_STRONG: usize = 1_200;
+const REDUCER_SECTION_CHARS_COMPACT: usize = 1_200;
+const REDUCER_SECTION_CHARS_STANDARD: usize = 4_000;
+const REDUCER_SECTION_CHARS_STRONG: usize = 6_000;
 const GRAPH_NODE_LEASE_SECONDS_ENV: &str = "MUNDUSX_GRAPH_NODE_LEASE_SECONDS";
 const QUEUED_JOB_TIMEOUT_SECONDS_ENV: &str = "MUNDUSX_QUEUED_JOB_TIMEOUT_SECONDS";
 const NODE_HEARTBEAT_STALE_SECONDS_ENV: &str = "MUNDUSX_NODE_HEARTBEAT_STALE_SECONDS";
@@ -2413,7 +2413,7 @@ fn graph_node_execution_prompt(
             .join("\n\n");
 
         return format!(
-            "Original user request:\n{}\n\nCompleted section notes:\n{}\n\nWrite one accurate, coherent final answer. Preserve the requested section order and use plain-text section titles without # Markdown markers. Use only useful factual content from the notes, resolve contradictions in favor of well-established facts, remove duplication, ignore repeated instructions or boilerplate, omit uncertain claims, and finish every sentence. Return only the final answer.",
+            "Original user request:\n{}\n\nCompleted section notes:\n{}\n\nWrite one accurate, coherent final answer. Preserve the requested section order and every relevant, nonduplicated fact or detail from the completed notes; do not shorten the answer into a highlights summary. Use plain-text section titles without # Markdown markers. Resolve contradictions in favor of well-established facts, remove only genuine duplication, ignore repeated instructions or boilerplate, omit uncertain claims, and finish every sentence. Return only the final answer.",
             job.prompt, sections
         );
     }
@@ -2566,11 +2566,7 @@ fn graph_node_max_tokens(
         "single_job" => requested.max(512),
         "sectioned_research" => {
             if node.responsibility == "merge" {
-                if requested > 1_024 {
-                    768
-                } else {
-                    512
-                }
+                requested.max(1_536)
             } else if requested > 1_024 {
                 768
             } else {
@@ -2882,7 +2878,10 @@ fn reducer_profile(node: &NodeRecord) -> ReducerProfile {
         return ReducerProfile::Compact;
     }
 
-    if node.backend == Backend::M && worker_health.blas_device_available {
+    if node.backend == Backend::M
+        && (worker_health.blas_device_available
+            || worker_health.runtime_mode.eq_ignore_ascii_case("mlx"))
+    {
         return ReducerProfile::Strong;
     }
 
@@ -6253,7 +6252,7 @@ mod tests {
             reducer_claim.active_graph_node_id.as_deref(),
             Some("job.final_synthesis")
         );
-        assert_eq!(reducer_claim.max_tokens, Some(768));
+        assert_eq!(reducer_claim.max_tokens, Some(2_048));
         assert!(reducer_claim.prompt.contains("expansion output"));
     }
 
@@ -7022,7 +7021,8 @@ mod tests {
         assert!(!claim.prompt.contains("Do not return output"));
         assert!(!claim.prompt.contains("llama.cpp mode=cuda"));
         assert!(!claim.prompt.contains("C:\\models\\demo.gguf"));
-        assert!(claim.prompt.len() < 6_000);
+        assert!(claim.prompt.len() > 20_000);
+        assert!(claim.prompt.len() < 26_000);
     }
 
     #[test]
@@ -8278,6 +8278,19 @@ mod tests {
             .expect("assigned reducer node");
         assert_eq!(reducer.assigned_node_id.as_deref(), Some("node-strongest"));
         assert_eq!(reducer.model.as_deref(), Some("Qwen/Qwen2.5-14B-Instruct"));
+    }
+
+    #[test]
+    fn healthy_mlx_node_uses_strong_reducer_capacity_without_blas() {
+        let mut state = ready_state();
+        let node = state.nodes.get_mut("node-1").expect("ready node");
+        let health = node.worker_health.as_mut().expect("worker health");
+        health.runtime_mode = "mlx".to_string();
+        health.blas_device_available = false;
+        health.model_name = Some("mlx-community/Qwen2.5-3B-Instruct-4bit".to_string());
+
+        assert_eq!(reducer_profile(node), ReducerProfile::Strong);
+        assert_eq!(reducer_section_char_limit(node), 6_000);
     }
 
     #[test]
