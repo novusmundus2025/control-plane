@@ -546,6 +546,9 @@ impl ControlPlaneState {
         ready_cuda_exists: bool,
     ) -> bool {
         match job.preferred_backend {
+            Backend::Auto if job.graph_execution_enabled => {
+                matches!(node_backend, Backend::Auto | Backend::M | Backend::Cuda)
+            }
             Backend::Auto => {
                 if ready_m_exists {
                     node_backend == Backend::M
@@ -590,8 +593,7 @@ impl ControlPlaneState {
     }
 
     fn worker_runtime_dependencies_ready(worker_health: &WorkerHealthReport) -> bool {
-        worker_health.runtime_mode.eq_ignore_ascii_case("mlx")
-            || worker_health.llama_cli_available
+        worker_health.runtime_mode.eq_ignore_ascii_case("mlx") || worker_health.llama_cli_available
     }
 
     fn compatible_ready_node_count_for_request(&self, request: &JobRequest) -> usize {
@@ -778,12 +780,10 @@ impl ControlPlaneState {
             return false;
         }
 
-        if let Some(required_model) = job
-            .model
-            .as_deref()
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-        {
+        let model_was_explicitly_requested = job.scheduling_requirements.model.is_some();
+        if let Some(required_model) = job.model.as_deref().map(str::trim).filter(|value| {
+            !value.is_empty() && (!job.graph_execution_enabled || model_was_explicitly_requested)
+        }) {
             let model_matches = worker_health
                 .model_name
                 .as_deref()
@@ -1080,7 +1080,7 @@ impl ControlPlaneState {
         };
 
         if let Some(job) = self.jobs.get_mut(&job_id) {
-            if job.model.is_none() {
+            if !job.graph_execution_enabled && job.model.is_none() {
                 if let Some(selected_model) = claiming_node
                     .worker_health
                     .as_ref()
@@ -1110,7 +1110,11 @@ impl ControlPlaneState {
                 let effective_max_tokens =
                     graph_node_max_tokens(job, active_node_id, Some(&claiming_node));
                 let queue_wait_ms = elapsed_ms_between(&job.submitted_at, &claimed_at);
-                let model = job.model.clone();
+                let model = claiming_node
+                    .worker_health
+                    .as_ref()
+                    .and_then(|health| health.model_name.clone())
+                    .or_else(|| job.model.clone());
                 let runtime_mode = Some(job.runtime_mode.as_str().to_string());
                 if let Some(graph_node) = job
                     .graph
@@ -6568,6 +6572,63 @@ mod tests {
         assert!(running
             .iter()
             .any(|node| node.assigned_node_id.as_deref() == Some("node-2")));
+    }
+
+    #[test]
+    fn auto_graph_jobs_can_fan_out_across_m_series_and_cuda_models() {
+        let mut state = ready_state();
+        state.register(cuda_registration("node-cuda"));
+        let mut cuda_heartbeat = ready_heartbeat("node-cuda", "1");
+        cuda_heartbeat.backend = Backend::Cuda;
+        cuda_heartbeat.available_memory_mb = 32_688;
+        cuda_heartbeat.available_gpu_percent = 50;
+        cuda_heartbeat.worker_health.runtime_mode = "cuda".to_string();
+        cuda_heartbeat.worker_health.supported_runtime_modes = vec![RuntimeMode::Local];
+        cuda_heartbeat.worker_health.cuda_device_available = true;
+        cuda_heartbeat.worker_health.cuda_driver_available = true;
+        cuda_heartbeat.worker_health.cuda_device_name = Some("GeForce RTX test".to_string());
+        cuda_heartbeat.worker_health.cuda_memory_mb = Some(8_192);
+        cuda_heartbeat.worker_health.model_name = Some("Qwen/Qwen2.5-1.5B-Instruct".to_string());
+        cuda_heartbeat.worker_health.model_dir = "C:\\Users\\batal\\.opengpu\\models".to_string();
+        cuda_heartbeat.worker_health.model_path =
+            Some("C:\\Users\\batal\\.opengpu\\models\\qwen.gguf".to_string());
+        state.heartbeat(cuda_heartbeat, "1".to_string());
+
+        let mut request = classification_request(
+            "Compare Ethereum, Solana, and Polygon for decentralized apps. Cover architecture, performance, developer ecosystem, costs, risks, and recommendation.",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.preferred_backend = Backend::Auto;
+        request.model = None;
+        state.submit_job(request, "2".to_string());
+
+        let m_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("m-series comparison section claimed");
+        let cuda_claim = state
+            .claim_job("node-cuda", "3".to_string())
+            .job
+            .expect("cuda comparison section claimed");
+
+        assert_ne!(
+            m_claim.active_graph_node_id,
+            cuda_claim.active_graph_node_id
+        );
+
+        let job = state.jobs.get("job-1").expect("job");
+        assert_eq!(job.model, None);
+        let cuda_node = job
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.assigned_node_id.as_deref() == Some("node-cuda"))
+            .expect("cuda graph node");
+        assert_eq!(cuda_node.backend, Some(Backend::Cuda));
+        assert_eq!(
+            cuda_node.model.as_deref(),
+            Some("Qwen/Qwen2.5-1.5B-Instruct")
+        );
     }
 
     #[test]
