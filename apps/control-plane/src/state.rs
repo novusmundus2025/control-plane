@@ -4254,7 +4254,8 @@ pub fn evaluate_policy(
         ));
     }
 
-    if !worker_health.llama_cli_available {
+    let uses_mlx_runtime = runtime_mode.eq_ignore_ascii_case("mlx");
+    if !uses_mlx_runtime && !worker_health.llama_cli_available {
         reasons.push("llama-cli is unavailable".to_string());
     }
 
@@ -4265,10 +4266,8 @@ pub fn evaluate_policy(
         if !worker_health.cuda_device_available {
             reasons.push("CUDA device is unavailable".to_string());
         }
-    } else {
-        if !worker_health.blas_device_available {
-            reasons.push("BLAS device acceleration is unavailable".to_string());
-        }
+    } else if !uses_mlx_runtime && !worker_health.blas_device_available {
+        reasons.push("BLAS device acceleration is unavailable".to_string());
     }
 
     if reasons.is_empty() {
@@ -8214,6 +8213,21 @@ mod tests {
         let reason = reason.expect("policy reason");
         assert!(reason.contains("llama-cli is unavailable"));
         assert!(reason.contains("BLAS device acceleration is unavailable"));
+    }
+
+    #[test]
+    fn allows_healthy_mlx_node_without_llama_runtime() {
+        let mut health = healthy_worker_health("2");
+        health.runtime_mode = "mlx".to_string();
+        health.supported_runtime_modes = vec![RuntimeMode::Local];
+        health.llama_cli_available = false;
+        health.blas_device_available = false;
+
+        let (allowed, reason) =
+            evaluate_policy(AgentState::Ready, "AC Power", false, Some(90), &health);
+
+        assert!(allowed);
+        assert_eq!(reason, None);
     }
 
     #[test]
