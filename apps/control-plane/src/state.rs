@@ -589,6 +589,11 @@ impl ControlPlaneState {
         }
     }
 
+    fn worker_runtime_dependencies_ready(worker_health: &WorkerHealthReport) -> bool {
+        worker_health.runtime_mode.eq_ignore_ascii_case("mlx")
+            || worker_health.llama_cli_available
+    }
+
     fn compatible_ready_node_count_for_request(&self, request: &JobRequest) -> usize {
         self.nodes
             .values()
@@ -716,7 +721,7 @@ impl ControlPlaneState {
 
         if !worker_health.healthy
             || !worker_health.runtime_ready
-            || !worker_health.llama_cli_available
+            || !Self::worker_runtime_dependencies_ready(worker_health)
         {
             return false;
         }
@@ -756,7 +761,7 @@ impl ControlPlaneState {
 
         if !worker_health.healthy
             || !worker_health.runtime_ready
-            || !worker_health.llama_cli_available
+            || !Self::worker_runtime_dependencies_ready(worker_health)
         {
             return false;
         }
@@ -8228,6 +8233,39 @@ mod tests {
 
         assert!(allowed);
         assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn healthy_mlx_node_can_claim_local_job_without_llama_runtime() {
+        let mut state = ready_state();
+        let node = state.nodes.get_mut("node-1").expect("ready node");
+        let health = node.worker_health.as_mut().expect("worker health");
+        health.runtime_mode = "mlx".to_string();
+        health.supported_runtime_modes = vec![RuntimeMode::Local];
+        health.llama_cli_available = false;
+        health.blas_device_available = false;
+
+        state.submit_job(
+            JobRequest {
+                request_id: "mlx-job".to_string(),
+                prompt: "Summarize this request".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(128),
+                max_tokens_source: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        let claim = state.claim_job("node-1", "3".to_string());
+        assert_eq!(claim.job.map(|job| job.job_id).as_deref(), Some("mlx-job"));
     }
 
     #[test]
