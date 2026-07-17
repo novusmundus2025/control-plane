@@ -2430,7 +2430,7 @@ fn graph_node_execution_prompt(
         .join(", ");
 
     format!(
-        "Original user request:\n{}\n\nYou are completing exactly one section for a larger answer.\nAll requested section titles, in order: {}\nCurrent section title: {}\nSection type: {}\nSection goal: {}\n\nReturn only the user-facing content for the current section. Do not repeat these instructions, do not describe the plan, and do not continue the user's prompt. Do not write content for these other sections: {}. Stop before the next section begins. Use plain prose or compact bullets and keep the answer focused on the current section title.",
+        "Original user request:\n{}\n\nYou are completing exactly one section for a larger answer.\nAll requested section titles, in order: {}\nCurrent section title: {}\nSection type: {}\nSection goal: {}\n\nReturn only the user-facing body for the current section; the system adds the heading. Do not print or repeat any section heading. Do not repeat these instructions, describe the plan, or continue the user's prompt. Do not write content for these other sections: {}. Stop before the next section begins. Accuracy matters more than coverage: use only well-established facts you are confident are correct, never invent a person, date, event, or technical detail, and omit uncertain claims. Use complete sentences in plain prose or compact bullets.",
         job.prompt,
         all_section_titles,
         node.name,
@@ -2558,7 +2558,7 @@ fn graph_node_max_tokens(
                     512
                 }
             } else if requested > 1_024 {
-                512
+                768
             } else {
                 384
             }
@@ -2657,10 +2657,6 @@ fn complete_compact_reducer_fallback(
     true
 }
 
-fn reducer_section_text(output: &str) -> String {
-    reducer_section_text_with_limit(output, REDUCER_SECTION_CHARS_STANDARD)
-}
-
 fn reducer_section_text_with_limit(output: &str, max_section_chars: usize) -> String {
     let cleaned = clean_worker_output(output);
     truncate_chars(cleaned.trim(), max_section_chars)
@@ -2679,6 +2675,36 @@ fn clean_worker_output(output: &str) -> String {
         .filter(|line| !is_reducer_boilerplate_line(line))
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn clean_section_output(section_name: &str, output: &str) -> String {
+    let cleaned = clean_worker_output(output);
+    let mut body = cleaned.trim();
+
+    loop {
+        let candidate = body.trim_start_matches('#').trim_start();
+        let Some(remainder) = strip_ascii_case_prefix(candidate, section_name) else {
+            break;
+        };
+        body = remainder
+            .trim_start_matches(|character: char| character == ':' || character == '-')
+            .trim_start();
+    }
+
+    if let Some(next_heading) = body.find("\n## ") {
+        body = body[..next_heading].trim_end();
+    }
+
+    body.trim().to_string()
+}
+
+fn strip_ascii_case_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> {
+    let candidate = value.get(..prefix.len())?;
+    if candidate.eq_ignore_ascii_case(prefix) {
+        value.get(prefix.len()..)
+    } else {
+        None
+    }
 }
 
 fn clean_direct_job_output(job: &JobRecord, output: Option<String>) -> Option<String> {
@@ -3752,11 +3778,10 @@ fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
         if output.is_empty() {
             continue;
         }
-        parts.push(format!(
-            "## {}\n{}",
-            result.name,
-            reducer_section_text(output)
-        ));
+        let section = clean_section_output(&result.name, output);
+        if !section.is_empty() {
+            parts.push(format!("## {}\n\n{}", result.name, section));
+        }
     }
 
     if parts.is_empty() {
@@ -6069,7 +6094,11 @@ mod tests {
             .claim_job("node-1", "3".to_string())
             .job
             .expect("first section claim");
-        assert_eq!(first_claim.max_tokens, Some(512));
+        assert_eq!(first_claim.max_tokens, Some(768));
+        assert!(first_claim.prompt.contains("the system adds the heading"));
+        assert!(first_claim
+            .prompt
+            .contains("never invent a person, date, event, or technical detail"));
 
         state
             .complete_job(
@@ -6099,7 +6128,7 @@ mod tests {
                 .claim_job("node-1", (index + 5).to_string())
                 .job
                 .expect("section claim");
-            assert_eq!(claim.max_tokens, Some(512));
+            assert_eq!(claim.max_tokens, Some(768));
             state
                 .complete_job(
                     JobCompletion {
@@ -6901,6 +6930,16 @@ mod tests {
         );
 
         assert_eq!(output, "Bitcoin launched in 2009.");
+    }
+
+    #[test]
+    fn section_output_cleanup_removes_duplicate_title_and_leaked_next_section() {
+        let output = clean_section_output(
+            "Origins and founders",
+            "## Origins and founders Origins and founders: Bitcoin was introduced by Satoshi Nakamoto.\n\n## Early development\nThis belongs to another worker.",
+        );
+
+        assert_eq!(output, "Bitcoin was introduced by Satoshi Nakamoto.");
     }
 
     #[test]
