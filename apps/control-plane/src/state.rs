@@ -2697,7 +2697,13 @@ fn clean_direct_job_output(job: &JobRecord, output: Option<String>) -> Option<St
 
 fn is_reducer_boilerplate_line(line: &str) -> bool {
     let lower = line.to_ascii_lowercase();
-    lower.starts_with("do not ")
+    lower.starts_with("calling `python -m mlx_lm")
+        || lower.starts_with("expand on the major ")
+        || lower.starts_with("include details such as ")
+        || lower.starts_with("include information about ")
+        || lower.starts_with("provide a comprehensive overview ")
+        || lower.starts_with("use a clear and concise language")
+        || lower.starts_with("do not ")
         || lower.starts_with("don't ")
         || lower.starts_with("not return ")
         || lower.starts_with("return \"output")
@@ -6883,6 +6889,15 @@ mod tests {
         assert!(!claim.prompt.contains("llama.cpp mode=cuda"));
         assert!(!claim.prompt.contains("C:\\models\\demo.gguf"));
         assert!(claim.prompt.len() < 6_000);
+    }
+
+    #[test]
+    fn worker_output_cleanup_removes_mlx_warnings_and_instruction_echoes() {
+        let output = clean_worker_output(
+            "mlx-lm mode=mlx; response=Calling `python -m mlx_lm.generate...` directly is deprecated. Use `mlx_lm.generate...` instead.\nExpand on the major growth periods and milestones.\nBitcoin launched in 2009.",
+        );
+
+        assert_eq!(output, "Bitcoin launched in 2009.");
     }
 
     #[test]
