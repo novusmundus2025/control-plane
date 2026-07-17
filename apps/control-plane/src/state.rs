@@ -4308,6 +4308,7 @@ pub fn evaluate_policy(
         reasons.push("model name is missing".to_string());
     }
 
+    let mlx_runtime = worker_health.runtime_mode.eq_ignore_ascii_case("mlx");
     if worker_health
         .model_path
         .as_deref()
@@ -4315,8 +4316,10 @@ pub fn evaluate_policy(
         .trim()
         .is_empty()
     {
-        reasons.push("model path is missing".to_string());
-    } else {
+        if !mlx_runtime {
+            reasons.push("model path is missing".to_string());
+        }
+    } else if !mlx_runtime {
         let model_dir = worker_health.model_dir.trim();
         let model_path = worker_health.model_path.as_deref().unwrap_or("").trim();
         if !model_dir.is_empty() && !node_path_starts_with(model_path, model_dir) {
@@ -8453,6 +8456,8 @@ mod tests {
     fn allows_healthy_mlx_node_without_llama_runtime() {
         let mut health = healthy_worker_health("2");
         health.runtime_mode = "mlx".to_string();
+        health.model_name = Some("mlx-community/Qwen2.5-3B-Instruct-4bit".to_string());
+        health.model_path = None;
         health.supported_runtime_modes = vec![RuntimeMode::Local];
         health.llama_cli_available = false;
         health.blas_device_available = false;
@@ -8465,11 +8470,30 @@ mod tests {
     }
 
     #[test]
+    fn still_blocks_cuda_node_without_model_path() {
+        let mut health = healthy_worker_health("2");
+        health.runtime_mode = "cuda".to_string();
+        health.model_path = None;
+        health.cuda_device_available = true;
+        health.cuda_driver_available = true;
+
+        let (allowed, reason) =
+            evaluate_policy(AgentState::Ready, "AC Power", false, Some(90), &health);
+
+        assert!(!allowed);
+        assert!(reason
+            .expect("policy reason")
+            .contains("model path is missing"));
+    }
+
+    #[test]
     fn healthy_mlx_node_can_claim_local_job_without_llama_runtime() {
         let mut state = ready_state();
         let node = state.nodes.get_mut("node-1").expect("ready node");
         let health = node.worker_health.as_mut().expect("worker health");
         health.runtime_mode = "mlx".to_string();
+        health.model_name = Some("mlx-community/Qwen2.5-3B-Instruct-4bit".to_string());
+        health.model_path = None;
         health.supported_runtime_modes = vec![RuntimeMode::Local];
         health.llama_cli_available = false;
         health.blas_device_available = false;
