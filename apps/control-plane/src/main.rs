@@ -4511,6 +4511,21 @@ fn apply_admission_policy_update(
     Ok(serde_json::to_value(policy).expect("policy json"))
 }
 
+fn completion_event_type(
+    job_status: JobStatus,
+    graph_node_status: Option<JobGraphNodeStatus>,
+) -> &'static str {
+    match graph_node_status {
+        Some(JobGraphNodeStatus::Completed) if job_status == JobStatus::Completed => {
+            "job_completed"
+        }
+        Some(JobGraphNodeStatus::Completed) => "graph_node_completed",
+        Some(_) => "graph_node_rejected",
+        None if job_status == JobStatus::Completed => "job_completed",
+        None => "job_failed",
+    }
+}
+
 fn handle_connection(
     mut stream: TcpStream,
     state: Arc<Mutex<ControlPlaneState>>,
@@ -5283,20 +5298,18 @@ fn handle_connection(
                 let record = guard.complete_job(completion, now_unix_seconds());
                 if let Some(job) = record.as_ref() {
                     let completed_at = job.completed_at.clone().unwrap_or_else(now_unix_seconds);
-                    let event_type = if job.last_completed_graph_node_id.is_some()
-                        && !matches!(
-                            job.status,
-                            crate::contracts::JobStatus::Completed
-                                | crate::contracts::JobStatus::Failed
-                        ) {
-                        "graph_node_completed"
-                    } else if matches!(job.status, crate::contracts::JobStatus::Completed) {
-                        "job_completed"
-                    } else {
-                        "job_failed"
-                    };
+                    let completed_graph_node = job
+                        .last_completed_graph_node_id
+                        .as_deref()
+                        .and_then(|graph_node_id| {
+                            job.graph.nodes.iter().find(|node| node.id == graph_node_id)
+                        });
+                    let event_type = completion_event_type(
+                        job.status,
+                        completed_graph_node.map(|node| node.status),
+                    );
                     let event = guard.record_job_event(
-                        job.assigned_node_id.clone(),
+                        Some(completion_clone.node_id.clone()),
                         Some(job.job_id.clone()),
                         event_type,
                         serde_json::to_value(job).expect("json"),
@@ -5516,9 +5529,9 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_disabled_flag_enabled, control_plane_bind_addr_from_env, control_plane_home,
-        control_plane_operator_page, deploy_fingerprint_from_env, handle_connection,
-        job_async_payload, now_unix_seconds, operator_auth_mode_from_env,
+        auth_disabled_flag_enabled, completion_event_type, control_plane_bind_addr_from_env,
+        control_plane_home, control_plane_operator_page, deploy_fingerprint_from_env,
+        handle_connection, job_async_payload, now_unix_seconds, operator_auth_mode_from_env,
         operator_auth_startup_config_error, operator_auth_token_from_env,
         parse_conversation_messages_path, parse_conversation_path, parse_request,
         read_http_request, requires_operator_auth, status_snapshot_with_deploy_fingerprint,
@@ -5536,6 +5549,22 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
     use std::thread;
+
+    #[test]
+    fn completion_events_distinguish_accepted_and_rejected_graph_nodes() {
+        assert_eq!(
+            completion_event_type(JobStatus::Assigned, Some(JobGraphNodeStatus::Completed)),
+            "graph_node_completed"
+        );
+        assert_eq!(
+            completion_event_type(JobStatus::Queued, Some(JobGraphNodeStatus::Ready)),
+            "graph_node_rejected"
+        );
+        assert_eq!(
+            completion_event_type(JobStatus::Completed, Some(JobGraphNodeStatus::Completed)),
+            "job_completed"
+        );
+    }
 
     struct ChunkedReader {
         chunks: Vec<Vec<u8>>,
