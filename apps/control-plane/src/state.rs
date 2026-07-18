@@ -659,7 +659,6 @@ impl ControlPlaneState {
         if !worker_health.healthy
             || !worker_health.runtime_ready
             || !worker_health.llama_cli_available
-            || node.available_gpu_percent < 25
         {
             return 1;
         }
@@ -669,6 +668,31 @@ impl ControlPlaneState {
             runtime_mode.contains("persistent") || runtime_mode.contains("warm");
         if !warm_persistent_runtime {
             return 1;
+        }
+
+        if node.backend == Backend::Cuda {
+            let usable_vram_mb = worker_health
+                .cuda_memory_mb
+                .unwrap_or_default()
+                .saturating_mul(u32::from(node.contribution_percent))
+                .saturating_add(99)
+                / 100;
+            if usable_vram_mb <= 8_192 {
+                return 1;
+            }
+            let mut capacity = usize::from(worker_health.parallel_slots.max(1));
+            let heavy_job = job.scheduling_requirements.context_size == ContextSize::Large
+                || job.scheduling_requirements.task_type == RequestTaskType::Coding;
+            if heavy_job {
+                capacity = capacity.min(if usable_vram_mb >= 49_152 {
+                    3
+                } else if usable_vram_mb >= 24_576 {
+                    2
+                } else {
+                    1
+                });
+            }
+            return capacity.max(1);
         }
 
         let memory_mb = node.available_memory_mb;
@@ -4748,6 +4772,7 @@ mod tests {
             battery_percent: Some(90),
             runtime_ready: true,
             runtime_mode: "local".to_string(),
+            parallel_slots: 1,
             supported_runtime_modes: vec![RuntimeMode::Local, RuntimeMode::Interactive],
             streaming_supported: false,
             checked_at: checked_at.to_string(),
@@ -8068,6 +8093,7 @@ mod tests {
                     battery_percent: Some(90),
                     runtime_ready: true,
                     runtime_mode: "local".to_string(),
+                    parallel_slots: 1,
                     supported_runtime_modes: vec![RuntimeMode::Local],
                     streaming_supported: false,
                     checked_at: "2".to_string(),
@@ -8791,6 +8817,7 @@ mod tests {
                     battery_percent: Some(90),
                     runtime_ready: true,
                     runtime_mode: "local".to_string(),
+                    parallel_slots: 1,
                     supported_runtime_modes: vec![RuntimeMode::Local, RuntimeMode::Interactive],
                     streaming_supported: false,
                     checked_at: "2".to_string(),
@@ -8871,6 +8898,7 @@ mod tests {
                     battery_percent: None,
                     runtime_ready: true,
                     runtime_mode: "cuda".to_string(),
+                    parallel_slots: 1,
                     supported_runtime_modes: vec![RuntimeMode::Local],
                     streaming_supported: false,
                     checked_at: "2".to_string(),
@@ -9051,6 +9079,7 @@ mod tests {
                     battery_percent: Some(90),
                     runtime_ready: true,
                     runtime_mode: "batch".to_string(),
+                    parallel_slots: 1,
                     supported_runtime_modes: Vec::new(),
                     streaming_supported: false,
                     checked_at: "2".to_string(),
@@ -9123,6 +9152,7 @@ mod tests {
                     battery_percent: Some(90),
                     runtime_ready: true,
                     runtime_mode: "local".to_string(),
+                    parallel_slots: 1,
                     supported_runtime_modes: vec![RuntimeMode::Local, RuntimeMode::Interactive],
                     streaming_supported: false,
                     checked_at: "2".to_string(),
@@ -9159,11 +9189,70 @@ mod tests {
     }
 
     #[test]
+    fn cuda_parallel_capacity_uses_reported_slots_and_cap_applied_vram() {
+        let mut state = ready_state();
+        let node = state.nodes.get_mut("node-1").expect("node exists");
+        node.backend = Backend::Cuda;
+        node.contribution_percent = 80;
+        let health = node.worker_health.as_mut().expect("worker health");
+        health.cuda_device_available = true;
+        health.cuda_memory_mb = Some(32_768);
+        health.runtime_mode = "persistent-warm-cuda".to_string();
+        health.parallel_slots = 4;
+
+        let job = state.submit_job(
+            classification_request("Summarize the history of Warsaw."),
+            "3".to_string(),
+        );
+        let node = state.nodes.get("node-1").expect("node exists");
+        assert_eq!(
+            ControlPlaneState::node_parallel_capacity_for_job(node, &job),
+            4
+        );
+    }
+
+    #[test]
+    fn coding_parallelism_is_disabled_on_low_vram_and_capped_on_rtx_5090() {
+        let mut state = ready_state();
+        let node = state.nodes.get_mut("node-1").expect("node exists");
+        node.backend = Backend::Cuda;
+        node.contribution_percent = 80;
+        let health = node.worker_health.as_mut().expect("worker health");
+        health.cuda_device_available = true;
+        health.cuda_memory_mb = Some(4_096);
+        health.runtime_mode = "persistent-warm-cuda".to_string();
+        health.parallel_slots = 4;
+
+        let job = state.submit_job(
+            classification_request("Write a complete Rust program with tests."),
+            "3".to_string(),
+        );
+        let node = state.nodes.get("node-1").expect("node exists");
+        assert_eq!(
+            ControlPlaneState::node_parallel_capacity_for_job(node, &job),
+            1
+        );
+
+        let node = state.nodes.get_mut("node-1").expect("node exists");
+        node.worker_health
+            .as_mut()
+            .expect("worker health")
+            .cuda_memory_mb = Some(32_768);
+        assert_eq!(
+            ControlPlaneState::node_parallel_capacity_for_job(node, &job),
+            2
+        );
+    }
+
+    #[test]
     fn warm_high_capacity_busy_node_can_claim_another_job_slot() {
         let mut state = ready_state();
         let mut warm_health = healthy_worker_health("2");
         warm_health.model_name = Some("Qwen/Qwen2.5-1.5B-Instruct".to_string());
         warm_health.runtime_mode = "persistent-warm-cuda".to_string();
+        warm_health.cuda_device_available = true;
+        warm_health.cuda_memory_mb = Some(32_768);
+        warm_health.parallel_slots = 4;
         warm_health.streaming_supported = true;
 
         state.heartbeat(
