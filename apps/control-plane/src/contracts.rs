@@ -740,12 +740,18 @@ pub struct WorkerHealthReport {
     #[serde(default = "default_true")]
     pub runtime_ready: bool,
     pub runtime_mode: String,
+    #[serde(default = "default_parallel_slots")]
+    pub parallel_slots: u8,
     #[serde(default)]
     pub supported_runtime_modes: Vec<RuntimeMode>,
     #[serde(default)]
     pub streaming_supported: bool,
     pub checked_at: String,
     pub notes: Vec<String>,
+}
+
+fn default_parallel_slots() -> u8 {
+    1
 }
 
 fn default_true() -> bool {
@@ -1086,6 +1092,7 @@ mod tests {
             battery_percent: Some(90),
             runtime_ready: true,
             runtime_mode: "local".to_string(),
+            parallel_slots: 1,
             supported_runtime_modes: vec![RuntimeMode::Local, RuntimeMode::Interactive],
             streaming_supported: false,
             checked_at: "1".to_string(),

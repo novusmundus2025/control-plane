@@ -5610,6 +5610,7 @@ mod tests {
             battery_percent: Some(90),
             runtime_ready: true,
             runtime_mode: "local".to_string(),
+            parallel_slots: 1,
             supported_runtime_modes: vec![RuntimeMode::Local],
             streaming_supported: false,
             checked_at: checked_at.to_string(),
