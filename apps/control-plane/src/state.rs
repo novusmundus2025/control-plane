@@ -16,6 +16,7 @@ use std::path::PathBuf;
 
 const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_GRAPH_NODE_LEASE_SECONDS: u64 = 600;
+const CODING_GRAPH_NODE_LEASE_SECONDS: u64 = 1_800;
 const DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS: u64 = 600;
 const DEFAULT_NODE_HEARTBEAT_STALE_SECONDS: u64 = 60;
 const REDUCER_SECTION_CHARS_COMPACT: usize = 1_200;
@@ -1501,13 +1502,13 @@ impl ControlPlaneState {
         let Some(now) = parse_unix_seconds(now) else {
             return Vec::new();
         };
-        let lease_seconds = graph_node_lease_seconds();
         let mut changed_jobs = Vec::new();
 
         for job in self.jobs.values_mut() {
             if !job.graph_execution_enabled || !matches!(job.status, JobStatus::Assigned) {
                 continue;
             }
+            let lease_seconds = graph_node_lease_seconds_for(job.scheduling_requirements.task_type);
 
             let mut changed = false;
             for node in &mut job.graph.nodes {
@@ -1870,6 +1871,17 @@ fn graph_node_lease_seconds() -> u64 {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_GRAPH_NODE_LEASE_SECONDS)
+}
+
+fn minimum_graph_node_lease_seconds(task_type: RequestTaskType) -> u64 {
+    match task_type {
+        RequestTaskType::Coding => CODING_GRAPH_NODE_LEASE_SECONDS,
+        _ => DEFAULT_GRAPH_NODE_LEASE_SECONDS,
+    }
+}
+
+fn graph_node_lease_seconds_for(task_type: RequestTaskType) -> u64 {
+    graph_node_lease_seconds().max(minimum_graph_node_lease_seconds(task_type))
 }
 
 fn queued_job_timeout_seconds() -> u64 {
@@ -6597,6 +6609,55 @@ mod tests {
         assert!(retried_node.failed_node_ids.contains(&"node-1".to_string()));
         assert_eq!(retried_node.assigned_node_id.as_deref(), Some("node-2"));
         assert_eq!(retried_node.worker_id, None);
+    }
+
+    #[test]
+    fn coding_chunk_keeps_assignment_for_thirty_minutes() {
+        let mut state = ready_state();
+        let mut request = classification_request(
+            "Implement the API, update the frontend, and run the complete test suite.",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "2".to_string());
+
+        let first_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("first coding claim");
+        let graph_node_id = first_claim
+            .active_graph_node_id
+            .expect("active coding graph node");
+
+        state.run_maintenance("604");
+        let active_node = state
+            .jobs
+            .get("job-1")
+            .expect("job")
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == graph_node_id)
+            .expect("coding graph node");
+        assert_eq!(active_node.status, JobGraphNodeStatus::Running);
+        assert_eq!(active_node.assigned_node_id.as_deref(), Some("node-1"));
+
+        state.run_maintenance("1804");
+        let expired_node = state
+            .jobs
+            .get("job-1")
+            .expect("job")
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == graph_node_id)
+            .expect("expired coding graph node");
+        assert_eq!(expired_node.status, JobGraphNodeStatus::Ready);
+        assert!(expired_node.failed_node_ids.contains(&"node-1".to_string()));
+        assert!(expired_node
+            .error
+            .as_deref()
+            .expect("stale coding error")
+            .contains("stale assignment timed out after 1800s on node-1"));
     }
 
     #[test]
