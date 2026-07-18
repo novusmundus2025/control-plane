@@ -6922,7 +6922,7 @@ mod tests {
             .job
             .expect("claim graph chunk");
 
-        state.run_maintenance("604");
+        state.run_maintenance("1804");
 
         let html = control_plane_operator_page(
             &state,

@@ -190,6 +190,7 @@ Current defaults:
 node heartbeat stale timeout = 60s
 queued job no-worker timeout = 600s
 graph chunk lease timeout = 600s
+coding graph chunk lease minimum = 1800s
 graph node max attempts = 3
 ```
 
