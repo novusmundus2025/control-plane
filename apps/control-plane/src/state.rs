@@ -658,7 +658,7 @@ impl ControlPlaneState {
 
         if !worker_health.healthy
             || !worker_health.runtime_ready
-            || !worker_health.llama_cli_available
+            || (node.backend != Backend::M && !worker_health.llama_cli_available)
         {
             return 1;
         }
@@ -666,7 +666,7 @@ impl ControlPlaneState {
         let runtime_mode = worker_health.runtime_mode.to_ascii_lowercase();
         let warm_persistent_runtime =
             runtime_mode.contains("persistent") || runtime_mode.contains("warm");
-        if !warm_persistent_runtime {
+        if node.backend == Backend::Cuda && !warm_persistent_runtime {
             return 1;
         }
 
@@ -693,6 +693,31 @@ impl ControlPlaneState {
                 });
             }
             return capacity.max(1);
+        }
+
+        if node.backend == Backend::M {
+            let usable_memory_mb = node
+                .available_memory_mb
+                .saturating_mul(u32::from(node.contribution_percent))
+                .saturating_add(99)
+                / 100;
+            let mut capacity = usize::from(worker_health.parallel_slots.max(1));
+            let heavy_job = job.scheduling_requirements.context_size == ContextSize::Large
+                || job.scheduling_requirements.task_type == RequestTaskType::Coding;
+            if heavy_job {
+                capacity = capacity.min(if usable_memory_mb >= 65_536 {
+                    3
+                } else if usable_memory_mb >= 32_769 {
+                    2
+                } else {
+                    1
+                });
+            }
+            return capacity.max(1);
+        }
+
+        if !warm_persistent_runtime {
+            return 1;
         }
 
         let memory_mb = node.available_memory_mb;
@@ -9238,6 +9263,50 @@ mod tests {
             .as_mut()
             .expect("worker health")
             .cuda_memory_mb = Some(32_768);
+        assert_eq!(
+            ControlPlaneState::node_parallel_capacity_for_job(node, &job),
+            2
+        );
+    }
+
+    #[test]
+    fn mlx_parallel_capacity_uses_reported_unified_memory_slots() {
+        let mut state = ready_state();
+        let node = state.nodes.get_mut("node-1").expect("node exists");
+        node.backend = Backend::M;
+        node.available_memory_mb = 64_000;
+        node.contribution_percent = 80;
+        let health = node.worker_health.as_mut().expect("worker health");
+        health.runtime_mode = "mlx".to_string();
+        health.parallel_slots = 3;
+
+        let job = state.submit_job(
+            classification_request("Summarize the history of Warsaw."),
+            "3".to_string(),
+        );
+        let node = state.nodes.get("node-1").expect("node exists");
+        assert_eq!(
+            ControlPlaneState::node_parallel_capacity_for_job(node, &job),
+            3
+        );
+    }
+
+    #[test]
+    fn mlx_coding_parallelism_is_conservative() {
+        let mut state = ready_state();
+        let node = state.nodes.get_mut("node-1").expect("node exists");
+        node.backend = Backend::M;
+        node.available_memory_mb = 64_000;
+        node.contribution_percent = 80;
+        let health = node.worker_health.as_mut().expect("worker health");
+        health.runtime_mode = "mlx".to_string();
+        health.parallel_slots = 3;
+
+        let job = state.submit_job(
+            classification_request("Write a complete Rust program with tests."),
+            "3".to_string(),
+        );
+        let node = state.nodes.get("node-1").expect("node exists");
         assert_eq!(
             ControlPlaneState::node_parallel_capacity_for_job(node, &job),
             2
