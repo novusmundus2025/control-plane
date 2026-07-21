@@ -1,3 +1,5 @@
+![MundusX decentralized compute control-plane mesh banner](media/banner.png)
+
 # Operator Control Plane Repo
 
 This private repository contains the operator-owned control-plane surface:
