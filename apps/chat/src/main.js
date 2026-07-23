@@ -6808,6 +6808,22 @@ function looksLikeCompleteProgramRequest(lower) {
     "turbo c program",
   ]) || (
     containsAny(lower, [
+      "convert this code",
+      "convert the code",
+      "convert this program",
+      "convert the program",
+      "rewrite this code",
+      "rewrite the code",
+      "rewrite this program",
+      "rewrite the program",
+      "port this code",
+      "port the code",
+      "port this program",
+      "port the program",
+    ]) &&
+    /\b(?:to|in|into)\s+(?:node(?:\.?js)?|javascript|typescript|python|java|c\+\+|c#|rust|go|ruby|php|swift|kotlin)\b/.test(lower)
+  ) || (
+    containsAny(lower, [
       "write a program",
       "create a program",
       "make a program",

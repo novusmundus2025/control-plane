@@ -491,6 +491,31 @@ test("uses compact token budgets for direct chat prompts", async () => {
   assert.equal(calls[4].max_tokens, 1024);
 });
 
+test("uses a complete-code budget for short code conversion requests", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-code-conversion",
+      job: {
+        job_id: "job-code-conversion",
+        status: "queued",
+        execution_mode: "single",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  await submitChatJob(
+    { message: "Convert this code to Node.js" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].execution_mode, "single");
+  assert.equal(calls[0].max_tokens, 1536);
+});
+
 test("decomposes advanced nested calculus prompts", async () => {
   const calls = [];
   const fetchImpl = async (_url, init) => {
