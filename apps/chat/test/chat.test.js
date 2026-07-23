@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildHistoryContext,
+  buildRelevantHistoryContext,
   buildChatSystemPrompt,
   cleanChatOutput,
   configFromEnv,
@@ -3561,6 +3562,20 @@ test("buildHistoryContext formats turns chronologically with role labels", () =>
   assert.equal(context, "User: hello\nAssistant: hi there");
 });
 
+test("buildRelevantHistoryContext keeps only code and conversion instructions for follow-ups", () => {
+  const context = buildRelevantHistoryContext([
+    { role: "user", content: "Tell me a joke." },
+    { role: "assistant", content: "An unrelated answer." },
+    { role: "user", content: "Convert this Java program to Node.js." },
+    { role: "assistant", content: "```javascript\nconst value = 42;\n```" },
+    { role: "user", content: "What time is it?" },
+  ], true);
+
+  assert.match(context, /Convert this Java program to Node\.js/);
+  assert.match(context, /const value = 42/);
+  assert.doesNotMatch(context, /joke|unrelated|What time/);
+});
+
 test("submitChatJob persists the user turn when a conversationId is provided", async () => {
   const calls = [];
   const fetchImpl = async (url, init) => {
@@ -3647,6 +3662,44 @@ test("submitChatJob folds prior conversation history into the system prompt for 
 
   await submitChatJob(
     { message: "Tell me more.", conversationId: "conv-1" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+});
+
+test("submitChatJob gives compact code follow-ups a complete-code budget", async () => {
+  const fetchImpl = async (url, init) => {
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [] });
+    }
+    if (url.includes("/v1/conversations/conv-code/messages") && (!init || init.method !== "POST")) {
+      return jsonResponse({
+        conversation_id: "conv-code",
+        messages: [
+          { role: "user", content: "Tell me a joke." },
+          { role: "assistant", content: "Unrelated chat." },
+          { role: "user", content: "Write a complete Java program." },
+          { role: "assistant", content: "```java\nclass Main {}\n```" },
+        ],
+      });
+    }
+    if (url.includes("/v1/conversations/")) {
+      return jsonResponse({ id: 1 }, true, 201);
+    }
+    const body = JSON.parse(init.body);
+    assert.equal(body.execution_mode, "single");
+    assert.equal(body.max_tokens, 1536);
+    assert.match(body.system_prompt, /class Main/);
+    assert.doesNotMatch(body.system_prompt, /Tell me a joke|Unrelated chat/);
+    return jsonResponse({
+      job_id: "job-code-follow-up",
+      status: "queued",
+      job: { job_id: "job-code-follow-up", status: "queued" },
+    });
+  };
+
+  await submitChatJob(
+    { message: "Now convert it to Rust.", conversationId: "conv-code" },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     fetchImpl,
   );

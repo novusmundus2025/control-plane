@@ -3106,10 +3106,12 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   let systemPrompt = buildChatSystemPrompt(message, body?.voicePersona);
+  let codeTransformationFollowUp = false;
   if (conversationId) {
     try {
       const history = await fetchConversationHistory(conversationId, config, fetchImpl, 16);
-      const context = buildHistoryContext(history);
+      codeTransformationFollowUp = isCodeTransformationFollowUp(message, history);
+      const context = buildRelevantHistoryContext(history, codeTransformationFollowUp);
       if (context) {
         systemPrompt = `${systemPrompt}\n\nPrior conversation (most recent last):\n${context}`;
       }
@@ -3129,6 +3131,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     topP: body?.topP,
     capacityProfile,
     systemPrompt,
+    codeTransformationFollowUp,
   });
 
   const jobResponse = await controlPlaneFetch(
@@ -3211,7 +3214,11 @@ async function recordToolReward(config, fetchImpl, result, output) {
 
 function buildGenericJobBody(message, config, options = {}) {
   const model = String(options.model ?? config.modelOverride ?? "").trim();
-  const executionMode = chooseChatExecutionMode(message, options.executionMode);
+  const executionMode = chooseChatExecutionMode(
+    message,
+    options.executionMode,
+    options.codeTransformationFollowUp,
+  );
   const jobBody = {
     request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
     prompt: message,
@@ -3220,7 +3227,12 @@ function buildGenericJobBody(message, config, options = {}) {
     execution_mode: executionMode,
     stream: false,
     system_prompt: options.systemPrompt ?? buildChatSystemPrompt(message, options.voicePersona),
-    max_tokens: inferMaxTokens(message, options.maxTokens, options.capacityProfile ?? null),
+    max_tokens: inferMaxTokens(
+      message,
+      options.maxTokens,
+      options.capacityProfile ?? null,
+      options.codeTransformationFollowUp,
+    ),
     temperature: typeof options.temperature === "number" ? options.temperature : 0.2,
     top_p: typeof options.topP === "number" ? options.topP : 0.9,
   };
@@ -3230,10 +3242,13 @@ function buildGenericJobBody(message, config, options = {}) {
   return jobBody;
 }
 
-function chooseChatExecutionMode(message, requestedMode = "auto") {
+function chooseChatExecutionMode(message, requestedMode = "auto", codeTransformationFollowUp = false) {
   const normalized = normalizeExecutionMode(requestedMode ?? "auto");
   if (normalized !== "auto") {
     return normalized;
+  }
+  if (codeTransformationFollowUp) {
+    return "single";
   }
   const text = String(message ?? "").trim();
   const complexity = classifyChatRequestComplexity(text);
@@ -6580,7 +6595,7 @@ function normalizeExecutionMode(value) {
   return "auto";
 }
 
-function inferMaxTokens(message, explicitValue, capacityProfile = null) {
+function inferMaxTokens(message, explicitValue, capacityProfile = null, codeTransformationFollowUp = false) {
   const explicit = positiveInteger(explicitValue, 0);
   if (explicit > 0) {
     return explicit;
@@ -6588,6 +6603,9 @@ function inferMaxTokens(message, explicitValue, capacityProfile = null) {
 
   const lower = message.toLowerCase();
   const complexity = classifyChatRequestComplexity(message);
+  if (codeTransformationFollowUp) {
+    return adaptiveTokenBudget("codeSmall", 1536, capacityProfile);
+  }
   if (looksLikeCompleteProgramRequest(lower)) {
     if (looksLikeSmallCompleteProgramRequest(message)) {
       return adaptiveTokenBudget("codeSmall", 1536, capacityProfile);
@@ -7006,6 +7024,70 @@ export function buildHistoryContext(messages, maxChars = 3000, maxTurns = 8) {
     used += line.length;
   }
   return lines.join("\n");
+}
+
+export function buildRelevantHistoryContext(messages, codeTransformationFollowUp = false) {
+  if (!codeTransformationFollowUp) {
+    return buildHistoryContext(messages);
+  }
+
+  const history = Array.isArray(messages) ? messages : [];
+  const latestCodeIndex = findLastIndex(history, (entry) => looksLikeCodeContent(entry?.content));
+  const latestInstructionIndex = findLastIndex(
+    history,
+    (entry) => entry?.role === "user" && looksLikeCodeTransformationRequest(entry?.content),
+  );
+  const selectedIndexes = [...new Set([latestCodeIndex, latestInstructionIndex])]
+    .filter((index) => index >= 0)
+    .sort((left, right) => left - right);
+
+  return selectedIndexes
+    .map((index) => {
+      const entry = history[index];
+      const label = entry?.role === "assistant" ? "Assistant" : "User";
+      return `${label}: ${compactRelevantContent(entry?.content, 12_000)}`;
+    })
+    .join("\n");
+}
+
+function isCodeTransformationFollowUp(message, history) {
+  if (!looksLikeCodeTransformationRequest(message)) {
+    return false;
+  }
+  return Array.isArray(history) && history.some((entry) =>
+    looksLikeCodeContent(entry?.content) ||
+    looksLikeCompleteProgramRequest(String(entry?.content ?? "").toLowerCase())
+  );
+}
+
+function looksLikeCodeTransformationRequest(value) {
+  const lower = String(value ?? "").toLowerCase();
+  return /\b(?:convert|rewrite|port|translate)\b/.test(lower) &&
+    /\b(?:node(?:\.?js)?|javascript|typescript|python|java|c\+\+|c#|rust|golang|ruby|php|swift|kotlin)\b/.test(lower);
+}
+
+function looksLikeCodeContent(value) {
+  const text = String(value ?? "");
+  return /```[\s\S]*```/.test(text) ||
+    /\b(?:public\s+static\s+void|class\s+\w+|function\s+\w+|const\s+\w+\s*=|let\s+\w+\s*=|def\s+\w+\s*\(|fn\s+\w+\s*\()\b/.test(text);
+}
+
+function findLastIndex(values, predicate) {
+  for (let index = values.length - 1; index >= 0; index--) {
+    if (predicate(values[index])) {
+      return index;
+    }
+  }
+  return -1;
+}
+
+function compactRelevantContent(value, maxChars) {
+  const text = String(value ?? "").trim();
+  if (text.length <= maxChars) {
+    return text;
+  }
+  const half = Math.floor((maxChars - 35) / 2);
+  return `${text.slice(0, half)}\n[relevant code truncated]\n${text.slice(-half)}`;
 }
 
 function loadPersona(path, fallback) {
