@@ -2271,6 +2271,7 @@ fn render_admission_policy(state: &ControlPlaneState) -> String {
     let allow_auto = policy.allowed_backends.contains(&Backend::Auto);
     let allow_m = policy.allowed_backends.contains(&Backend::M);
     let allow_cuda = policy.allowed_backends.contains(&Backend::Cuda);
+    let allow_vllm = policy.allowed_backends.contains(&Backend::Vllm);
     let updated = policy
         .updated_at
         .as_deref()
@@ -2299,6 +2300,7 @@ fn render_admission_policy(state: &ControlPlaneState) -> String {
                   <label class="check"><input type="checkbox" name="allow_backend_auto" value="1"{allow_auto}> Auto</label>
                   <label class="check"><input type="checkbox" name="allow_backend_m" value="1"{allow_m}> Apple/Metal</label>
                   <label class="check"><input type="checkbox" name="allow_backend_cuda" value="1"{allow_cuda}> CUDA</label>
+                  <label class="check"><input type="checkbox" name="allow_backend_vllm" value="1"{allow_vllm}> vLLM</label>
                 </div>
                 <button class="button primary" type="submit">Apply Policy</button>
               </form>
@@ -2312,6 +2314,7 @@ fn render_admission_policy(state: &ControlPlaneState) -> String {
         allow_auto = checked_attr(allow_auto),
         allow_m = checked_attr(allow_m),
         allow_cuda = checked_attr(allow_cuda),
+        allow_vllm = checked_attr(allow_vllm),
         updated = escape_html(updated),
         updated_by = escape_html(updated_by),
     )
@@ -3739,6 +3742,9 @@ fn admission_policy_update_from_form(body: &str) -> AdmissionPolicyUpdate {
     if form_flag(body, "allow_backend_cuda") {
         allowed_backends.push(Backend::Cuda);
     }
+    if form_flag(body, "allow_backend_vllm") {
+        allowed_backends.push(Backend::Vllm);
+    }
 
     AdmissionPolicyUpdate {
         enabled: form_flag(body, "enabled"),
@@ -3887,7 +3893,7 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
             r#"<form class="toolbar" method="get" action="{action}">
               <input name="search" aria-label="Search" placeholder="Search node id, host, model, backend" value="{search}" />
               <select name="state" aria-label="Filter state"><option value="">All states</option><option value="online"{online}>Online</option><option value="ready"{ready}>Ready</option><option value="busy"{busy}>Busy</option><option value="paused"{paused}>Paused</option><option value="stopped"{stopped}>Stopped</option></select>
-              <select name="backend" aria-label="Filter backend"><option value="">All backends</option><option value="cuda"{cuda}>CUDA</option><option value="m"{m}>M-series</option><option value="auto"{auto}>Auto</option></select>
+              <select name="backend" aria-label="Filter backend"><option value="">All backends</option><option value="vllm"{vllm}>vLLM</option><option value="cuda"{cuda}>CUDA</option><option value="m"{m}>M-series</option><option value="auto"{auto}>Auto</option></select>
               <select name="trust" aria-label="Filter trust"><option value="">All trust</option><option value="trusted"{trusted}>Trusted</option><option value="untrusted"{untrusted}>Untrusted</option></select>
               <select name="policy" aria-label="Filter policy"><option value="">All policy</option><option value="allowed"{policy_allowed}>Allowed</option><option value="blocked"{policy_blocked}>Blocked</option></select>
               <input name="recorded_after" aria-label="Heartbeat after timestamp" placeholder="heartbeat after timestamp" value="{start}" />
@@ -3902,6 +3908,7 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
             paused = selected_attr(query, "state", "paused"),
             stopped = selected_attr(query, "state", "stopped"),
             cuda = selected_attr(query, "backend", "cuda"),
+            vllm = selected_attr(query, "backend", "vllm"),
             m = selected_attr(query, "backend", "m"),
             auto = selected_attr(query, "backend", "auto"),
             trusted = selected_attr(query, "trust", "trusted"),

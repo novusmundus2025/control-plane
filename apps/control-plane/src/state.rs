@@ -545,14 +545,20 @@ impl ControlPlaneState {
         node_backend: Backend,
         ready_m_exists: bool,
         ready_cuda_exists: bool,
+        ready_vllm_exists: bool,
     ) -> bool {
         match job.preferred_backend {
             Backend::Auto if job.graph_execution_enabled => {
-                matches!(node_backend, Backend::Auto | Backend::M | Backend::Cuda)
+                matches!(
+                    node_backend,
+                    Backend::Auto | Backend::M | Backend::Cuda | Backend::Vllm
+                )
             }
             Backend::Auto => {
                 if ready_m_exists {
                     node_backend == Backend::M
+                } else if ready_vllm_exists {
+                    node_backend == Backend::Vllm
                 } else if ready_cuda_exists {
                     node_backend == Backend::Cuda
                 } else {
@@ -569,6 +575,13 @@ impl ControlPlaneState {
             Backend::Cuda => {
                 if ready_cuda_exists {
                     node_backend == Backend::Cuda
+                } else {
+                    node_backend == Backend::Auto
+                }
+            }
+            Backend::Vllm => {
+                if ready_vllm_exists {
+                    node_backend == Backend::Vllm
                 } else {
                     node_backend == Backend::Auto
                 }
@@ -658,14 +671,16 @@ impl ControlPlaneState {
 
         if !worker_health.healthy
             || !worker_health.runtime_ready
-            || (node.backend != Backend::M && !worker_health.llama_cli_available)
+            || (!matches!(node.backend, Backend::M | Backend::Vllm)
+                && !worker_health.llama_cli_available)
         {
             return 1;
         }
 
         let runtime_mode = worker_health.runtime_mode.to_ascii_lowercase();
-        let warm_persistent_runtime =
-            runtime_mode.contains("persistent") || runtime_mode.contains("warm");
+        let warm_persistent_runtime = runtime_mode.contains("persistent")
+            || runtime_mode.contains("warm")
+            || node.backend == Backend::Vllm;
         if node.backend == Backend::Cuda && !warm_persistent_runtime {
             return 1;
         }
@@ -760,9 +775,13 @@ impl ControlPlaneState {
 
     fn node_backend_can_run_request(node_backend: Backend, preferred_backend: Backend) -> bool {
         match preferred_backend {
-            Backend::Auto => matches!(node_backend, Backend::Auto | Backend::M | Backend::Cuda),
+            Backend::Auto => matches!(
+                node_backend,
+                Backend::Auto | Backend::M | Backend::Cuda | Backend::Vllm
+            ),
             Backend::M => matches!(node_backend, Backend::Auto | Backend::M),
             Backend::Cuda => matches!(node_backend, Backend::Auto | Backend::Cuda),
+            Backend::Vllm => matches!(node_backend, Backend::Auto | Backend::Vllm),
         }
     }
 
@@ -858,7 +877,7 @@ impl ControlPlaneState {
         let requirements = &job.scheduling_requirements;
 
         match (requirements.task_type, node.backend) {
-            (RequestTaskType::Coding, Backend::Cuda) => {
+            (RequestTaskType::Coding, Backend::Cuda | Backend::Vllm) => {
                 score += 20;
                 reasons.push("task:coding prefers cuda throughput".to_string());
             }
@@ -873,6 +892,10 @@ impl ControlPlaneState {
             (_, Backend::Cuda) => {
                 score += 8;
                 reasons.push("CUDA node is eligible".to_string());
+            }
+            (_, Backend::Vllm) => {
+                score += 12;
+                reasons.push("vLLM node is eligible".to_string());
             }
             (_, Backend::Auto) => {
                 score += 2;
@@ -986,6 +1009,11 @@ impl ControlPlaneState {
                 && candidate.policy_allowed
                 && candidate.backend == Backend::Cuda
         });
+        let ready_vllm_exists = self.nodes.values().any(|candidate| {
+            Self::node_is_schedulable_state(candidate)
+                && candidate.policy_allowed
+                && candidate.backend == Backend::Vllm
+        });
 
         self.nodes
             .values()
@@ -1002,6 +1030,7 @@ impl ControlPlaneState {
                         node.backend,
                         ready_m_exists,
                         ready_cuda_exists,
+                        ready_vllm_exists,
                     )
                     && Self::node_can_run_job(node, job)
             })
@@ -1068,6 +1097,11 @@ impl ControlPlaneState {
                 && candidate.policy_allowed
                 && candidate.backend == Backend::Cuda
         });
+        let ready_vllm_exists = self.nodes.values().any(|candidate| {
+            Self::node_is_schedulable_state(candidate)
+                && candidate.policy_allowed
+                && candidate.backend == Backend::Vllm
+        });
         let selected = self
             .jobs
             .iter()
@@ -1092,6 +1126,7 @@ impl ControlPlaneState {
                         node_backend,
                         ready_m_exists,
                         ready_cuda_exists,
+                        ready_vllm_exists,
                     )
                     && Self::node_can_run_job(node, job)
                 {
@@ -1262,6 +1297,11 @@ impl ControlPlaneState {
                 && candidate.policy_allowed
                 && candidate.backend == Backend::Cuda
         });
+        let ready_vllm_exists = self.nodes.values().any(|candidate| {
+            Self::node_is_schedulable_state(candidate)
+                && candidate.policy_allowed
+                && candidate.backend == Backend::Vllm
+        });
 
         self.nodes
             .values()
@@ -1274,6 +1314,7 @@ impl ControlPlaneState {
                         node.backend,
                         ready_m_exists,
                         ready_cuda_exists,
+                        ready_vllm_exists,
                     )
                     && Self::node_can_run_job(node, job)
             })
@@ -2945,6 +2986,11 @@ fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> O
             && candidate.policy_allowed
             && candidate.backend == Backend::Cuda
     });
+    let ready_vllm_exists = state.nodes.values().any(|candidate| {
+        ControlPlaneState::node_is_schedulable_state(candidate)
+            && candidate.policy_allowed
+            && candidate.backend == Backend::Vllm
+    });
 
     state
         .nodes
@@ -2956,6 +3002,7 @@ fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> O
                     candidate.backend,
                     ready_m_exists,
                     ready_cuda_exists,
+                    ready_vllm_exists,
                 )
                 && ControlPlaneState::node_can_run_job(candidate, job)
                 && next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).is_some()
@@ -4559,6 +4606,8 @@ pub fn evaluate_policy(
     }
 
     let mlx_runtime = worker_health.runtime_mode.eq_ignore_ascii_case("mlx");
+    let vllm_runtime = worker_health.runtime_mode.eq_ignore_ascii_case("vllm");
+    let remote_model_runtime = mlx_runtime || vllm_runtime;
     if worker_health
         .model_path
         .as_deref()
@@ -4566,10 +4615,10 @@ pub fn evaluate_policy(
         .trim()
         .is_empty()
     {
-        if !mlx_runtime {
+        if !remote_model_runtime {
             reasons.push("model path is missing".to_string());
         }
-    } else if !mlx_runtime {
+    } else if !remote_model_runtime {
         let model_dir = worker_health.model_dir.trim();
         let model_path = worker_health.model_path.as_deref().unwrap_or("").trim();
         if !model_dir.is_empty() && !node_path_starts_with(model_path, model_dir) {
@@ -4586,6 +4635,7 @@ pub fn evaluate_policy(
             RuntimeMode::Local | RuntimeMode::Interactive | RuntimeMode::Mlx
         )
     });
+    let uses_vllm_runtime = runtime_mode.eq_ignore_ascii_case("vllm");
     if runtime_mode.is_empty() && !supports_local_execution {
         reasons.push("runtime mode is missing".to_string());
     } else if !supports_local_execution
@@ -4593,6 +4643,7 @@ pub fn evaluate_policy(
         && !runtime_mode.eq_ignore_ascii_case("interactive")
         && !runtime_mode.eq_ignore_ascii_case("mlx")
         && !runtime_mode.eq_ignore_ascii_case("cuda")
+        && !uses_vllm_runtime
         && !runtime_mode.eq_ignore_ascii_case("blas")
     {
         reasons.push(format!(
@@ -4601,11 +4652,11 @@ pub fn evaluate_policy(
     }
 
     let uses_mlx_runtime = runtime_mode.eq_ignore_ascii_case("mlx");
-    if !uses_mlx_runtime && !worker_health.llama_cli_available {
+    if !uses_mlx_runtime && !uses_vllm_runtime && !worker_health.llama_cli_available {
         reasons.push("llama-cli is unavailable".to_string());
     }
 
-    if runtime_mode.eq_ignore_ascii_case("cuda") {
+    if runtime_mode.eq_ignore_ascii_case("cuda") || uses_vllm_runtime {
         if !worker_health.cuda_driver_available {
             reasons.push("CUDA driver is unavailable".to_string());
         }
@@ -4625,7 +4676,7 @@ pub fn evaluate_policy(
 
 fn normalize_admission_backends(backends: Vec<Backend>) -> Vec<Backend> {
     let mut normalized = if backends.is_empty() {
-        vec![Backend::Auto, Backend::M, Backend::Cuda]
+        vec![Backend::Auto, Backend::M, Backend::Cuda, Backend::Vllm]
     } else {
         backends
     };
@@ -4672,7 +4723,7 @@ pub fn evaluate_admission_policy(
             ));
         }
 
-        if backend == Backend::Cuda && policy.min_cuda_vram_mb > 0 {
+        if matches!(backend, Backend::Cuda | Backend::Vllm) && policy.min_cuda_vram_mb > 0 {
             match worker_health.cuda_memory_mb {
                 Some(cuda_memory_mb) if cuda_memory_mb < policy.min_cuda_vram_mb => {
                     reasons.push(format!(
@@ -4780,6 +4831,19 @@ mod tests {
         }
     }
 
+    fn vllm_registration(node_id: &str) -> AgentRegistration {
+        AgentRegistration {
+            node_id: node_id.to_string(),
+            public_key_fingerprint: format!("fingerprint-{node_id}"),
+            public_key_hex: format!("hex-{node_id}"),
+            hostname: format!("host-{node_id}"),
+            identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
+            backend: Backend::Vllm,
+            contribution_percent: 65,
+            agent_version: "0.1.0".to_string(),
+        }
+    }
+
     fn healthy_worker_health(checked_at: &str) -> WorkerHealthReport {
         WorkerHealthReport {
             healthy: true,
@@ -4857,11 +4921,55 @@ mod tests {
         }
     }
 
+    fn ready_vllm_heartbeat(node_id: &str, updated_at: &str) -> Heartbeat {
+        let mut worker_health = healthy_worker_health(updated_at);
+        worker_health.model_name = Some("Qwen/Qwen2.5-32B-Instruct".to_string());
+        worker_health.model_path = None;
+        worker_health.llama_cli_available = false;
+        worker_health.blas_device_available = false;
+        worker_health.cuda_device_available = true;
+        worker_health.cuda_driver_available = true;
+        worker_health.cuda_device_name = Some("NVIDIA GB10".to_string());
+        worker_health.cuda_memory_mb = Some(121_000);
+        worker_health.runtime_mode = "vllm".to_string();
+        worker_health.parallel_slots = 4;
+
+        Heartbeat {
+            node_id: node_id.to_string(),
+            backend: Backend::Vllm,
+            agent_state: AgentState::Ready,
+            available_memory_mb: 121_000,
+            available_gpu_percent: 65,
+            updated_at: updated_at.to_string(),
+            contribution_percent: 65,
+            hostname: format!("host-{node_id}"),
+            identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
+            power_source: "AC Power".to_string(),
+            on_battery: false,
+            battery_percent: None,
+            policy_allowed: true,
+            policy_reason: None,
+            worker_health,
+        }
+    }
+
     fn ready_state() -> ControlPlaneState {
         let mut state = ControlPlaneState::default();
         state.register(m_series_registration("node-1"));
         state.heartbeat(ready_heartbeat("node-1", "1"), "1".to_string());
         state
+    }
+
+    #[test]
+    fn default_policy_admits_ready_vllm_node() {
+        let mut state = ControlPlaneState::default();
+        state.register(vllm_registration("node-vllm"));
+
+        let node =
+            state.heartbeat(ready_vllm_heartbeat("node-vllm", "1"), "1".to_string());
+
+        assert!(node.policy_allowed, "{:?}", node.policy_reason);
+        assert_eq!(node.backend, Backend::Vllm);
     }
 
     #[test]

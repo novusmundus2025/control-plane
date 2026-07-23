@@ -23,6 +23,7 @@ pub enum Backend {
     Auto,
     M,
     Cuda,
+    Vllm,
 }
 
 impl Backend {
@@ -31,6 +32,7 @@ impl Backend {
             Self::Auto => "auto",
             Self::M => "m",
             Self::Cuda => "cuda",
+            Self::Vllm => "vllm",
         }
     }
 }
@@ -981,7 +983,7 @@ impl Default for AdmissionPolicy {
             require_healthy_runtime: true,
             min_memory_mb: 0,
             min_cuda_vram_mb: 0,
-            allowed_backends: vec![Backend::Auto, Backend::M, Backend::Cuda],
+            allowed_backends: vec![Backend::Auto, Backend::M, Backend::Cuda, Backend::Vllm],
             updated_at: None,
             updated_by: None,
         }
@@ -1029,6 +1031,26 @@ pub struct ControlPlaneSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registration_accepts_vllm_backend() {
+        let registration: AgentRegistration = serde_json::from_value(serde_json::json!({
+            "node_id": "node-vllm",
+            "public_key_fingerprint": "fingerprint",
+            "public_key_hex": "hex",
+            "hostname": "gx10",
+            "identity_trust_path": "local-encrypted-fallback",
+            "backend": "vllm",
+            "contribution_percent": 65,
+            "agent_version": "0.1.0"
+        }))
+        .expect("vLLM registration");
+
+        assert_eq!(registration.backend, Backend::Vllm);
+        assert!(AdmissionPolicy::default()
+            .allowed_backends
+            .contains(&Backend::Vllm));
+    }
 
     #[test]
     fn job_request_defaults_runtime_contract_for_legacy_payloads() {
