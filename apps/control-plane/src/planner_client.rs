@@ -8,10 +8,17 @@ const PLANNER_TIMEOUT_MS_ENV: &str = "MUNDUSX_PLANNER_TIMEOUT_MS";
 const DEFAULT_TIMEOUT_MS: u64 = 1500;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-struct HttpUrl {
+struct PlannerUrl {
+    scheme: UrlScheme,
     host: String,
     port: u16,
     path: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum UrlScheme {
+    Http,
+    Https,
 }
 
 #[derive(Clone, Debug)]
@@ -94,8 +101,8 @@ pub fn planner_service_status_from_env() -> PlannerServiceStatus {
 }
 
 fn probe_http_url(url: &str, timeout: Duration) -> Result<(), String> {
-    let parsed = parse_http_url(url)?;
-    let mut stream = TcpStream::connect((parsed.host.as_str(), parsed.port))
+    let parsed = parse_planner_url(url)?;
+    let stream = TcpStream::connect((parsed.host.as_str(), parsed.port))
         .map_err(|error| format!("planner_connect_failed: {error}"))?;
     stream
         .set_read_timeout(Some(timeout))
@@ -108,24 +115,42 @@ fn probe_http_url(url: &str, timeout: Duration) -> Result<(), String> {
         "GET {} HTTP/1.1\r\nHost: {}\r\nConnection: close\r\n\r\n",
         parsed.path, parsed.host
     );
-    stream
-        .write_all(request.as_bytes())
-        .map_err(|error| format!("planner_write_failed: {error}"))?;
-
-    let mut buffer = [0_u8; 16];
-    let read = stream
-        .read(&mut buffer)
-        .map_err(|error| format!("planner_read_failed: {error}"))?;
+    let read = match parsed.scheme {
+        UrlScheme::Http => probe_stream(stream, request.as_bytes()),
+        UrlScheme::Https => {
+            let connector = native_tls::TlsConnector::new()
+                .map_err(|error| format!("planner_tls_setup_failed: {error}"))?;
+            let tls_stream = connector
+                .connect(parsed.host.as_str(), stream)
+                .map_err(|error| format!("planner_tls_connect_failed: {error}"))?;
+            probe_stream(tls_stream, request.as_bytes())
+        }
+    }?;
     if read == 0 {
         return Err("planner_empty_response".to_string());
     }
     Ok(())
 }
 
-fn parse_http_url(url: &str) -> Result<HttpUrl, String> {
-    let rest = url
-        .strip_prefix("http://")
-        .ok_or_else(|| "planner_url_must_use_http".to_string())?;
+fn probe_stream<S: Read + Write>(mut stream: S, request: &[u8]) -> Result<usize, String> {
+    stream
+        .write_all(request)
+        .map_err(|error| format!("planner_write_failed: {error}"))?;
+
+    let mut buffer = [0_u8; 16];
+    stream
+        .read(&mut buffer)
+        .map_err(|error| format!("planner_read_failed: {error}"))
+}
+
+fn parse_planner_url(url: &str) -> Result<PlannerUrl, String> {
+    let (scheme, rest, default_port) = if let Some(rest) = url.strip_prefix("http://") {
+        (UrlScheme::Http, rest, 80)
+    } else if let Some(rest) = url.strip_prefix("https://") {
+        (UrlScheme::Https, rest, 443)
+    } else {
+        return Err("planner_url_must_use_http_or_https".to_string());
+    };
     let (authority, path) = rest
         .split_once('/')
         .map(|(authority, path)| (authority, format!("/{path}")))
@@ -136,12 +161,17 @@ fn parse_http_url(url: &str) -> Result<HttpUrl, String> {
             .map_err(|_| "planner_url_invalid_port".to_string())?;
         (host.to_string(), parsed_port)
     } else {
-        (authority.to_string(), 80)
+        (authority.to_string(), default_port)
     };
     if host.trim().is_empty() {
         return Err("planner_url_missing_host".to_string());
     }
-    Ok(HttpUrl { host, port, path })
+    Ok(PlannerUrl {
+        scheme,
+        host,
+        port,
+        path,
+    })
 }
 
 #[cfg(test)]
@@ -191,14 +221,31 @@ mod tests {
 
     #[test]
     fn parses_http_url_with_default_path() {
-        let parsed = parse_http_url("http://127.0.0.1:8091").expect("parse url");
+        let parsed = parse_planner_url("http://127.0.0.1:8091").expect("parse url");
 
         assert_eq!(
             parsed,
-            HttpUrl {
+            PlannerUrl {
+                scheme: UrlScheme::Http,
                 host: "127.0.0.1".to_string(),
                 port: 8091,
                 path: "/".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn parses_https_url_with_default_port() {
+        let parsed =
+            parse_planner_url("https://planner.railway.internal/v1/plan").expect("parse url");
+
+        assert_eq!(
+            parsed,
+            PlannerUrl {
+                scheme: UrlScheme::Https,
+                host: "planner.railway.internal".to_string(),
+                port: 443,
+                path: "/v1/plan".to_string(),
             }
         );
     }
