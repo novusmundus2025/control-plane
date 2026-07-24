@@ -15,6 +15,14 @@ Apple Silicon job routing now uses an explicit runtime contract between submitte
 - The control plane only assigns a queued job when the node backend matches and the latest worker capability report explicitly supports that job's runtime requirements.
 - Chat completions are queued as `interactive` jobs and streaming chat requests still fail fast until node streaming support exists.
 
+## Planner Service Status
+
+The control plane can report whether an optional stateless planner service is configured and reachable. The Rust control plane remains the source of truth for job state, retries, scheduling, audit, and Supabase persistence.
+
+- Configure with `MUNDUSX_PLANNER_URL=http://127.0.0.1:8091/v1/plan`.
+- Tune the call timeout with `MUNDUSX_PLANNER_TIMEOUT_MS`; the default is `1500`.
+- Operators can inspect live planner integration at `GET /v1/planner/status`; the dashboard shows whether the planner is disabled, reachable, degraded, or using Rust fallback mode.
+
 ## Fallback Policy Contract
 
 Fallback is a policy decision recorded on each job, not an automatic cloud dispatch path. The first MVP provider class is `operator_approved_stronger_model`, which represents a manually approved stronger-model route.

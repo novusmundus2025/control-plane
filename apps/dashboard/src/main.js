@@ -247,6 +247,36 @@ function renderCounts(snapshot = {}) {
     .join("");
 }
 
+function plannerTone(planner = {}) {
+  if (!planner.enabled) return "amber";
+  if (planner.reachable && !planner.fallback_mode) return "green";
+  return "red";
+}
+
+function renderPlannerService(planner = {}) {
+  const tone = plannerTone(planner);
+  const status = planner.enabled
+    ? planner.reachable
+      ? String(planner.status ?? "ready")
+      : "degraded"
+    : "disabled";
+  const provider = String(planner.provider ?? (planner.enabled ? "unknown" : "rust"));
+  const latency = planner.latency_ms == null ? "n/a" : `${planner.latency_ms} ms`;
+  const mode = planner.fallback_mode ? "Rust fallback" : "external planner";
+  const error = planner.last_error
+    ? `<div class="meta">last error: ${escapeHtml(planner.last_error)}</div>`
+    : `<div class="meta">last error: none</div>`;
+
+  return `
+    <div class="card motion-lift">
+      <div class="card-label">Planner Service</div>
+      <div class="statusline">${badge(status, tone)} ${badge(mode, planner.fallback_mode ? "amber" : "green")}</div>
+      <div class="meta">provider: ${escapeHtml(provider)} • latency: ${escapeHtml(latency)}</div>
+      <div class="meta">configured: ${planner.url_configured ? "yes" : "no"}${planner.url ? ` • ${escapeHtml(planner.url)}` : ""}</div>
+      ${error}
+    </div>`;
+}
+
 function runtimeReadiness(node = {}) {
   const workerHealth = node.worker_health ?? null;
   if (!workerHealth) {
@@ -2339,8 +2369,9 @@ function renderInstallPage(installPath = "/install") {
 </html>`;
 }
 
-export function page({ health, status, events, credits, error }) {
+export function page({ health, status, events, credits, planner, error }) {
   const snapshot = status ?? health?.snapshot ?? {};
+  const plannerService = planner ?? status?.planner_service ?? health?.planner_service ?? {};
   const storageSource = health?.storage_source ?? snapshot.storage_source ?? "unknown";
   const supabase = health?.supabase ?? "unknown";
   const deployFingerprint = health?.deploy_fingerprint ?? null;
@@ -2860,19 +2891,32 @@ export function page({ health, status, events, credits, error }) {
               <div class="hero-metric"><strong>${formatCount(activeJobs)}</strong><span>active jobs</span></div>
               <div class="hero-metric"><strong>${formatCount(snapshot.job_events ?? 0)}</strong><span>events</span></div>
             </div>
-            <div class="links" style="margin-top: 14px;">
-              <a href="${escapeHtml(appUrl)}/docs" target="_blank" rel="noreferrer">docs</a>
-              <a href="${escapeHtml(appUrl)}/install" target="_blank" rel="noreferrer">install</a>
-              <a href="${escapeHtml(controlPlaneUrl)}" target="_blank" rel="noreferrer">control plane</a>
-              <a href="${escapeHtml(controlPlaneUrl)}/v1/status" target="_blank" rel="noreferrer">status json</a>
-              <a href="${escapeHtml(controlPlaneUrl)}/v1/job-events" target="_blank" rel="noreferrer">job events</a>
-              <a href="${escapeHtml(controlPlaneUrl)}/health" target="_blank" rel="noreferrer">health</a>
+            <div class="link-group" aria-label="Operator pages">
+              <div class="link-group-label">Operator pages</div>
+              <div class="links">
+                <a href="${escapeHtml(appUrl)}/docs" target="_blank" rel="noreferrer">docs</a>
+                <a href="${escapeHtml(appUrl)}/install" target="_blank" rel="noreferrer">install</a>
+                <a href="${escapeHtml(controlPlaneUrl)}" target="_blank" rel="noreferrer">control plane</a>
+              </div>
+            </div>
+            <div class="link-group link-diagnostics" aria-label="Developer diagnostics">
+              <div class="link-group-label">Developer diagnostics</div>
+              <div class="links">
+                <a href="${escapeHtml(controlPlaneUrl)}/v1/status" target="_blank" rel="noreferrer">status json</a>
+                <a href="${escapeHtml(controlPlaneUrl)}/v1/planner/status" target="_blank" rel="noreferrer">planner</a>
+                <a href="${escapeHtml(controlPlaneUrl)}/v1/job-events" target="_blank" rel="noreferrer">job events</a>
+                <a href="${escapeHtml(controlPlaneUrl)}/health" target="_blank" rel="noreferrer">health</a>
+              </div>
             </div>
           </div>
         </div>
 
         <div class="grid">
           ${renderCounts(snapshot)}
+        </div>
+
+        <div class="grid">
+          ${renderPlannerService(plannerService)}
         </div>
 
         ${error ? `<div class="error">${escapeHtml(error)}</div>` : ""}
@@ -3358,14 +3402,15 @@ function renderDocsReleases(basePath = "/docs") {
 }
 
 async function collectData() {
-  const [health, status, events, credits] = await Promise.all([
+  const [health, status, planner, events, credits] = await Promise.all([
     fetchJson("/health"),
     fetchJson("/v1/status"),
+    fetchJson("/v1/planner/status"),
     fetchJson("/v1/job-events"),
     fetchJson("/v1/credits"),
   ]);
 
-  return { health, status, events, credits, error: null };
+  return { health, status, planner, events, credits, error: null };
 }
 
 export function createAppServer() {
@@ -3521,6 +3566,7 @@ export function createAppServer() {
     data = {
       health: null,
       status: null,
+      planner: null,
       events: [],
       credits: null,
       error: error instanceof Error ? error.message : String(error),

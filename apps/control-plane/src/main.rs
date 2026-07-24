@@ -1,5 +1,6 @@
 mod contracts;
 mod migrations;
+mod planner_client;
 mod state;
 mod supabase;
 
@@ -13,6 +14,7 @@ use contracts::{
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::apply_migrations;
+use planner_client::planner_service_status_from_env;
 use serde::Serialize;
 use state::{load_state, save_state, ControlPlaneState};
 use std::collections::BTreeMap;
@@ -400,6 +402,11 @@ fn status_snapshot_with_deploy_fingerprint(
             deploy_fingerprint
                 .map(serde_json::Value::String)
                 .unwrap_or(serde_json::Value::Null),
+        );
+        fields.insert(
+            "planner_service".to_string(),
+            serde_json::to_value(planner_service_status_from_env())
+                .expect("planner service status json"),
         );
     }
     snapshot
@@ -4219,6 +4226,7 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
         (method, path),
         ("GET", "/")
             | ("GET", "/v1/status")
+            | ("GET", "/v1/planner/status")
             | ("GET", "/v1/nodes")
             | ("GET", "/v1/admission-policy")
             | ("POST", "/v1/admission-policy")
@@ -4723,6 +4731,7 @@ fn handle_connection(
                     "environment": environment,
                     "operator_auth_enforced": auth_mode.enforced(),
                     "operator_auth_mode": auth_mode.as_str(),
+                    "planner_service": planner_service_status_from_env(),
                     "snapshot": snapshot,
                 }),
             )
@@ -4742,6 +4751,11 @@ fn handle_connection(
                 status_snapshot_with_deploy_fingerprint(snapshot, deploy_fingerprint()),
             )
         }
+        ("GET", "/v1/planner/status") => json_response(
+            "200 OK",
+            serde_json::to_value(planner_service_status_from_env())
+                .expect("planner service status json"),
+        ),
         ("GET", "/v1/nodes") => {
             let guard = state.lock().expect("state lock");
             if wants_legacy_array(query) {
@@ -7324,6 +7338,11 @@ mod tests {
     #[test]
     fn protects_tool_reward_route() {
         assert!(requires_operator_auth("POST", "/v1/tool-rewards"));
+    }
+
+    #[test]
+    fn protects_planner_status_route() {
+        assert!(requires_operator_auth("GET", "/v1/planner/status"));
     }
 
     #[test]
