@@ -253,16 +253,52 @@ function plannerTone(planner = {}) {
   return "red";
 }
 
+function plannerStatusLabel(planner = {}) {
+  if (!planner.enabled) return "disabled";
+  if (planner.reachable) return String(planner.status ?? "ready");
+  return "degraded";
+}
+
+function plannerModeLabel(planner = {}) {
+  if (!planner.enabled) return "Rust fallback";
+  return planner.fallback_mode ? "Rust fallback" : "external planner";
+}
+
+function plannerLatencyLabel(planner = {}) {
+  return planner.latency_ms == null ? "n/a" : `${planner.latency_ms} ms`;
+}
+
+function renderPlannerCommandTile(planner = {}) {
+  const tone = plannerTone(planner);
+  const provider = String(planner.provider ?? (planner.enabled ? "unknown" : "rust"));
+  const configured = planner.url_configured ? "configured" : "not configured";
+
+  return `
+    <div class="planner-command-tile" data-tone="${tone}">
+      <div>
+        <div class="planner-command-kicker">Planner Service</div>
+        <div class="planner-command-state">${escapeHtml(plannerStatusLabel(planner))}</div>
+      </div>
+      <div class="planner-command-badges">
+        ${badge(plannerModeLabel(planner), planner.fallback_mode ? "amber" : "green")}
+      </div>
+      <div class="planner-command-meta">
+        <span>provider: ${escapeHtml(provider)}</span>
+        <span>latency: ${escapeHtml(plannerLatencyLabel(planner))}</span>
+        <span>${configured}</span>
+      </div>
+      <a class="planner-command-link" href="${escapeHtml(controlPlaneUrl)}/v1/planner/status" target="_blank" rel="noreferrer">
+        Open planner status
+      </a>
+    </div>`;
+}
+
 function renderPlannerService(planner = {}) {
   const tone = plannerTone(planner);
-  const status = planner.enabled
-    ? planner.reachable
-      ? String(planner.status ?? "ready")
-      : "degraded"
-    : "disabled";
+  const status = plannerStatusLabel(planner);
   const provider = String(planner.provider ?? (planner.enabled ? "unknown" : "rust"));
-  const latency = planner.latency_ms == null ? "n/a" : `${planner.latency_ms} ms`;
-  const mode = planner.fallback_mode ? "Rust fallback" : "external planner";
+  const latency = plannerLatencyLabel(planner);
+  const mode = plannerModeLabel(planner);
   const error = planner.last_error
     ? `<div class="meta">last error: ${escapeHtml(planner.last_error)}</div>`
     : `<div class="meta">last error: none</div>`;
@@ -2827,6 +2863,52 @@ export function page({ health, status, events, credits, planner, error }) {
         text-transform: uppercase;
         letter-spacing: 0.06em;
       }
+      .planner-command-tile {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 10px;
+        margin-top: 14px;
+        padding: 14px;
+        border: 1px solid var(--line);
+        border-left: 4px solid var(--amber);
+        border-radius: 8px;
+        background: rgba(0, 0, 0, 0.22);
+      }
+      .planner-command-tile[data-tone="green"] { border-left-color: var(--green); }
+      .planner-command-tile[data-tone="red"] { border-left-color: var(--red); }
+      .planner-command-kicker {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 800;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+      .planner-command-state {
+        margin-top: 4px;
+        color: var(--text);
+        font-size: 22px;
+        font-weight: 800;
+        text-transform: capitalize;
+      }
+      .planner-command-badges {
+        align-self: start;
+        white-space: nowrap;
+      }
+      .planner-command-meta {
+        display: grid;
+        gap: 4px;
+        grid-column: 1 / -1;
+        color: var(--muted);
+        font-size: 12px;
+      }
+      .planner-command-link {
+        grid-column: 1 / -1;
+        width: fit-content;
+        color: var(--blue);
+        font-size: 12px;
+        font-weight: 700;
+        text-decoration: none;
+      }
       @media (max-width: 1200px) {
         .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
         .m-series-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -2891,6 +2973,7 @@ export function page({ health, status, events, credits, planner, error }) {
               <div class="hero-metric"><strong>${formatCount(activeJobs)}</strong><span>active jobs</span></div>
               <div class="hero-metric"><strong>${formatCount(snapshot.job_events ?? 0)}</strong><span>events</span></div>
             </div>
+            ${renderPlannerCommandTile(plannerService)}
             <div class="link-group" aria-label="Operator pages">
               <div class="link-group-label">Operator pages</div>
               <div class="links">

@@ -332,6 +332,10 @@ test("renders the high-impact command deck shell with replacement logo and live 
   assert.match(html, /motion-glow/);
   assert.match(html, /prefers-reduced-motion:\s*reduce/);
   assert.match(html, /Live command summary/i);
+  assert.match(html, /planner-command-tile/);
+  assert.match(html, /Planner Service/);
+  assert.match(html, /Open planner status/);
+  assert.match(html, /provider: rust/);
   assert.match(html, /<strong>2<\/strong><span>nodes<\/span>/);
   assert.match(html, /<strong>5<\/strong><span>active jobs<\/span>/);
   assert.match(html, /<strong>9<\/strong><span>events<\/span>/);
