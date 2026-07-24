@@ -1,6 +1,6 @@
 use serde::Serialize;
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::time::{Duration, Instant};
 
 const PLANNER_URL_ENV: &str = "MUNDUSX_PLANNER_URL";
@@ -102,8 +102,7 @@ pub fn planner_service_status_from_env() -> PlannerServiceStatus {
 
 fn probe_http_url(url: &str, timeout: Duration) -> Result<(), String> {
     let parsed = parse_planner_url(url)?;
-    let stream = TcpStream::connect((parsed.host.as_str(), parsed.port))
-        .map_err(|error| format!("planner_connect_failed: {error}"))?;
+    let stream = connect_with_timeout(parsed.host.as_str(), parsed.port, timeout)?;
     stream
         .set_read_timeout(Some(timeout))
         .map_err(|error| format!("planner_read_timeout_setup_failed: {error}"))?;
@@ -130,6 +129,31 @@ fn probe_http_url(url: &str, timeout: Duration) -> Result<(), String> {
         return Err("planner_empty_response".to_string());
     }
     Ok(())
+}
+
+fn connect_with_timeout(host: &str, port: u16, timeout: Duration) -> Result<TcpStream, String> {
+    let addresses = (host, port)
+        .to_socket_addrs()
+        .map_err(|error| format!("planner_resolve_failed: {error}"))?
+        .collect::<Vec<_>>();
+    if addresses.is_empty() {
+        return Err("planner_resolve_failed: no_addresses".to_string());
+    }
+
+    let mut last_error = None;
+    for address in addresses {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(stream) => return Ok(stream),
+            Err(error) => last_error = Some(error),
+        }
+    }
+
+    Err(format!(
+        "planner_connect_failed: {}",
+        last_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "no_addresses".to_string())
+    ))
 }
 
 fn probe_stream<S: Read + Write>(mut stream: S, request: &[u8]) -> Result<usize, String> {
@@ -217,6 +241,31 @@ mod tests {
         assert_eq!(status.provider, "rust");
         assert!(status.fallback_mode);
         assert!(status.last_error.is_some());
+    }
+
+    #[test]
+    fn planner_status_reports_degraded_when_host_cannot_resolve() {
+        let _guard = env_lock().lock().expect("env lock");
+        std::env::set_var(
+            PLANNER_URL_ENV,
+            "https://planner.invalid.invalid:8091/v1/plan",
+        );
+        std::env::set_var(PLANNER_TIMEOUT_MS_ENV, "5");
+
+        let status = planner_service_status_from_env();
+
+        std::env::remove_var(PLANNER_URL_ENV);
+        std::env::remove_var(PLANNER_TIMEOUT_MS_ENV);
+
+        assert!(status.enabled);
+        assert!(!status.reachable);
+        assert_eq!(status.status, "degraded");
+        assert!(status.fallback_mode);
+        assert!(status
+            .last_error
+            .as_deref()
+            .unwrap_or_default()
+            .starts_with("planner_resolve_failed"));
     }
 
     #[test]
