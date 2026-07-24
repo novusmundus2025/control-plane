@@ -2624,6 +2624,30 @@ fn control_plane_home(
     };
     let supabase = sync_status.summary();
     let supabase_tone = sync_status.tone();
+    let planner_service = planner_service_status_from_env();
+    let planner_tone = if !planner_service.enabled {
+        "amber"
+    } else if planner_service.reachable && !planner_service.fallback_mode {
+        "green"
+    } else {
+        "red"
+    };
+    let planner_status = planner_service.status.as_str();
+    let planner_mode = if planner_service.fallback_mode {
+        "Rust fallback"
+    } else {
+        "External planner"
+    };
+    let planner_latency = planner_service
+        .latency_ms
+        .map(|latency| format!("{latency} ms"))
+        .unwrap_or_else(|| "n/a".to_string());
+    let planner_provider = planner_service.provider.as_str();
+    let planner_configured = if planner_service.url_configured {
+        "configured"
+    } else {
+        "not configured"
+    };
     let deploy_fingerprint = deploy_fingerprint();
     let deploy_badge = deploy_fingerprint
         .as_deref()
@@ -2916,7 +2940,7 @@ fn control_plane_home(
       }}
       .secondary-metrics {{
         display: grid;
-        grid-template-columns: repeat(6, minmax(0, 1fr));
+        grid-template-columns: repeat(7, minmax(0, 1fr));
         gap: 18px;
         margin-top: 18px;
       }}
@@ -2953,6 +2977,22 @@ fn control_plane_home(
         display: flex;
         align-items: center;
         gap: 16px;
+      }}
+      .planner-status-card {{
+        border-color: rgba(237, 183, 63, 0.42);
+        background:
+          radial-gradient(circle at 86% 80%, rgba(237, 183, 63, 0.14), transparent 38%),
+          linear-gradient(180deg, rgba(8, 23, 41, 0.92), rgba(3, 10, 19, 0.92));
+      }}
+      .planner-status-card[data-tone="green"] {{
+        border-color: rgba(57, 217, 138, 0.4);
+      }}
+      .planner-status-card[data-tone="red"] {{
+        border-color: rgba(255, 92, 99, 0.4);
+      }}
+      .planner-status-card .card-value {{
+        font-size: 24px;
+        text-transform: capitalize;
       }}
       .metric-icon {{
         width: 58px;
@@ -3488,6 +3528,7 @@ fn control_plane_home(
           <span class="pill pill-{healthy_tone}">healthy</span>
           <span class="pill pill-{storage_tone}">storage: {storage_source}</span>
           <span class="pill pill-{supabase_tone}">supabase: {supabase}</span>
+          <span class="pill pill-{planner_tone}">planner: {planner_status}</span>
           {deploy_badge}
         </div>
 
@@ -3505,6 +3546,7 @@ fn control_plane_home(
           <a class="card compact metric-link" href="/jobs?status=completed"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-5"/></svg><div><div class="card-label">Completed jobs</div><div class="card-value">{completed}</div></div></a>
           <a class="card compact metric-link" href="/jobs?status=failed"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><div><div class="card-label">Failed jobs</div><div class="card-value">{failed}</div></div></a>
           <a class="card compact metric-link" href="/registry?policy=blocked"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v8"/><path d="M9 12h6"/></svg><div><div class="card-label">Policy blocked</div><div class="card-value">{policy_blocked}</div></div></a>
+          <a class="card compact metric-link planner-status-card" data-tone="{planner_tone}" href="/v1/planner/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 4 7v10l8 4 8-4V7l-8-4Z"/><path d="M12 8v8"/><path d="M8 12h8"/></svg><div><div class="card-label">Planner Service</div><div class="card-value">{planner_status}</div><div class="delta">{planner_mode} - {planner_provider} - {planner_latency} - {planner_configured}</div></div></a>
         </section>
 
         <section class="work-grid">
@@ -3550,7 +3592,13 @@ fn control_plane_home(
 </html>"##,
         storage_source = escape_html(storage_source.as_str()),
         logo_path = CONTROL_PLANE_LOGO_PATH,
-        deploy_badge = deploy_badge
+        deploy_badge = deploy_badge,
+        planner_tone = planner_tone,
+        planner_status = escape_html(planner_status),
+        planner_mode = escape_html(planner_mode),
+        planner_provider = escape_html(planner_provider),
+        planner_latency = escape_html(&planner_latency),
+        planner_configured = planner_configured,
     )
 }
 
@@ -5979,6 +6027,9 @@ mod tests {
         assert!(html.contains("Status API"));
         assert!(html.contains("Network Topology"));
         assert!(html.contains("Credits Overview"));
+        assert!(html.contains("Planner Service"));
+        assert!(html.contains("planner:"));
+        assert!(html.contains(r#"href="/v1/planner/status""#));
         assert!(html.contains(r#"href="/nodes""#));
         assert!(html.contains(r#"href="/jobs""#));
         assert!(html.contains(r#"href="/credits""#));
