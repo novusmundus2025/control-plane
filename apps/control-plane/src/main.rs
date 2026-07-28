@@ -265,10 +265,17 @@ fn job_status_path(job_id: &str) -> String {
 }
 
 fn job_async_payload(record: &JobRecord) -> serde_json::Value {
+    let degradation = job_degradation_payload(record);
+    let mut job = serde_json::to_value(record).expect("job json");
+    if let (Some(degradation), serde_json::Value::Object(fields)) = (degradation.clone(), &mut job)
+    {
+        fields.insert("degradation".to_string(), degradation);
+    }
     serde_json::json!({
         "job_id": record.job_id,
         "request_id": record.request_id,
         "status": record.status,
+        "degradation": degradation,
         "status_url": job_status_path(&record.job_id),
         "polling": {
             "method": "GET",
@@ -276,8 +283,66 @@ fn job_async_payload(record: &JobRecord) -> serde_json::Value {
             "recommended_interval_seconds": 2,
             "default_timeout_seconds": 300
         },
-        "job": record,
+        "job": job,
     })
+}
+
+fn job_degradation_payload(record: &JobRecord) -> Option<serde_json::Value> {
+    let failed_code = record.error.as_deref().and_then(|error| {
+        if error.starts_with("NO_CREDIBLE_REDUCER") {
+            Some(("reducer", "NO_CREDIBLE_REDUCER"))
+        } else if error.starts_with("NO_CREDIBLE_SYNTHESIZER") {
+            Some(("synthesizer", "NO_CREDIBLE_SYNTHESIZER"))
+        } else {
+            None
+        }
+    });
+    let waiting = record.status == JobStatus::Queued
+        && record
+            .scheduler_decision
+            .as_ref()
+            .map(|decision| decision.node_id.trim().is_empty())
+            .unwrap_or(true);
+    let active_node_id = record.active_graph_node_id.as_deref().or_else(|| {
+        record
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.status == JobGraphNodeStatus::Ready)
+            .map(|node| node.id.as_str())
+    });
+    let waiting_role = if waiting {
+        state::graph_node_required_role(&record.graph, active_node_id).and_then(|role| match role {
+            contracts::NodeRole::Reducer => Some(("reducer", "NO_CREDIBLE_REDUCER")),
+            contracts::NodeRole::Synthesizer => Some(("synthesizer", "NO_CREDIBLE_SYNTHESIZER")),
+            _ => None,
+        })
+    } else {
+        None
+    };
+    let (stage, code) = waiting_role.or(failed_code)?;
+    let completed_outputs = record
+        .graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == JobGraphNodeStatus::Completed && node.output.is_some())
+        .count();
+    let is_waiting = waiting_role.is_some();
+    let message = if is_waiting {
+        format!("Expert work is preserved. Waiting for a qualified {stage} before continuing.")
+    } else {
+        format!(
+            "No qualified {stage} became available in time. Completed work was preserved for retry."
+        )
+    };
+    Some(serde_json::json!({
+        "status": if is_waiting { "waiting" } else { "degraded" },
+        "code": code,
+        "stage": stage,
+        "message": message,
+        "retryable": true,
+        "completed_outputs_preserved": completed_outputs,
+    }))
 }
 
 fn chat_messages_to_prompt(messages: &[contracts::ChatMessage]) -> (Option<String>, String) {
@@ -5682,6 +5747,7 @@ mod tests {
             parallel_slots: 1,
             supported_runtime_modes: vec![RuntimeMode::Local],
             streaming_supported: false,
+            capabilities: Default::default(),
             checked_at: checked_at.to_string(),
             notes: vec!["local runtime ready".to_string()],
         }
@@ -7544,5 +7610,59 @@ mod tests {
         assert_eq!(payload["job"]["status"], "queued");
         assert_eq!(payload["job"]["output"], serde_json::Value::Null);
         assert_eq!(payload["job"]["error"], serde_json::Value::Null);
+    }
+
+    #[test]
+    fn async_job_payload_exposes_credible_synthesizer_wait() {
+        let mut state = ControlPlaneState::default();
+        let mut record = state.submit_job(
+            JobRequest {
+                request_id: "job-degraded".to_string(),
+                prompt: "Give me a detailed history of Mercedes-Benz.".to_string(),
+                preferred_backend: Backend::Auto,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Decompose,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: None,
+                max_tokens_source: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "123".to_string(),
+        );
+        let final_node_id = record.graph.final_node_id.clone().expect("final node id");
+        for node in &mut record.graph.nodes {
+            if node.id == final_node_id {
+                node.status = JobGraphNodeStatus::Ready;
+            } else {
+                node.status = JobGraphNodeStatus::Completed;
+                node.output = Some(format!("{} completed", node.name));
+            }
+        }
+        record.active_graph_node_id = Some(final_node_id);
+        record.scheduler_decision = Some(crate::contracts::SchedulerDecision {
+            node_id: String::new(),
+            score: 0,
+            reasons: vec![
+                "waiting_for_role:synthesizer; no credible synthesizer is currently available"
+                    .to_string(),
+            ],
+        });
+
+        let payload = job_async_payload(&record);
+
+        assert_eq!(
+            payload["job"]["degradation"]["code"],
+            "NO_CREDIBLE_SYNTHESIZER"
+        );
+        assert_eq!(payload["job"]["degradation"]["status"], "waiting");
+        assert_eq!(
+            payload["job"]["degradation"]["completed_outputs_preserved"],
+            record.graph.nodes.len() - 1
+        );
+        assert_eq!(payload["degradation"], payload["job"]["degradation"]);
     }
 }

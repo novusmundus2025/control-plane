@@ -5,9 +5,9 @@ use crate::contracts::{
     JobClaimResponse, JobCompletion, JobEventRecord, JobExecutionMode, JobGraph, JobGraphNode,
     JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest, JobResultRecord,
     JobResultVerificationStatus, JobSchedulingRequirements, JobStatus, NodePolicyOverride,
-    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeTrustRecord, PlannedJob,
-    PrivacyLevel, RequestClassification, RequestComplexity, RequestTaskType, RuntimeMode,
-    SchedulerDecision, ToolRewardRequest, WorkerHealthReport,
+    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeRole, NodeTrustRecord,
+    PlannedJob, PrivacyLevel, RequestClassification, RequestComplexity, RequestTaskType,
+    RuntimeMode, SchedulerDecision, ToolRewardRequest, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -18,12 +18,14 @@ const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_GRAPH_NODE_LEASE_SECONDS: u64 = 600;
 const CODING_GRAPH_NODE_LEASE_SECONDS: u64 = 1_800;
 const DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS: u64 = 600;
+const DEFAULT_CRITICAL_ROLE_WAIT_SECONDS: u64 = 60;
 const DEFAULT_NODE_HEARTBEAT_STALE_SECONDS: u64 = 60;
 const REDUCER_SECTION_CHARS_COMPACT: usize = 1_200;
 const REDUCER_SECTION_CHARS_STANDARD: usize = 4_000;
 const REDUCER_SECTION_CHARS_STRONG: usize = 6_000;
 const GRAPH_NODE_LEASE_SECONDS_ENV: &str = "MUNDUSX_GRAPH_NODE_LEASE_SECONDS";
 const QUEUED_JOB_TIMEOUT_SECONDS_ENV: &str = "MUNDUSX_QUEUED_JOB_TIMEOUT_SECONDS";
+const CRITICAL_ROLE_WAIT_SECONDS_ENV: &str = "MUNDUSX_CRITICAL_ROLE_WAIT_SECONDS";
 const NODE_HEARTBEAT_STALE_SECONDS_ENV: &str = "MUNDUSX_NODE_HEARTBEAT_STALE_SECONDS";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -868,6 +870,30 @@ impl ControlPlaneState {
         true
     }
 
+    fn node_can_run_graph_step(
+        node: &NodeRecord,
+        graph: &JobGraph,
+        graph_node_id: Option<&str>,
+    ) -> bool {
+        let Some(required_role) = graph_node_required_role(graph, graph_node_id) else {
+            return true;
+        };
+        let Some(worker_health) = node.worker_health.as_ref() else {
+            return false;
+        };
+        let roles = &worker_health.capabilities.roles;
+        match required_role {
+            NodeRole::ChunkAnalysis => {
+                roles.contains(&NodeRole::ChunkAnalysis) || roles.contains(&NodeRole::Batch)
+            }
+            // Reduction and final synthesis are credibility gates. An agent
+            // without the first-class role must wait for a qualified node.
+            NodeRole::Reducer => roles.contains(&NodeRole::Reducer),
+            NodeRole::Synthesizer => roles.contains(&NodeRole::Synthesizer),
+            role => roles.contains(&role),
+        }
+    }
+
     fn scheduler_score(
         &self,
         node: &NodeRecord,
@@ -1027,6 +1053,11 @@ impl ControlPlaneState {
                 };
                 self.node_has_available_slot_for_job(node, job)
                     && (!job.graph_execution_enabled || active_graph_node_id.is_some())
+                    && Self::node_can_run_graph_step(
+                        node,
+                        &job.graph,
+                        active_graph_node_id.as_deref(),
+                    )
                     && Self::node_backend_matches(
                         job,
                         node.backend,
@@ -1049,15 +1080,30 @@ impl ControlPlaneState {
                     .cmp(&right.score)
                     .then_with(|| right.node_id.cmp(&left.node_id))
             })
-            .unwrap_or_else(|| SchedulerDecision {
-                node_id: String::new(),
-                score: 0,
-                reasons: vec![format!(
-                    "queued: no compatible node slot available for backend {:?}, runtime {:?}, model {}",
-                    job.preferred_backend,
-                    job.runtime_mode,
-                    job.model.as_deref().unwrap_or("any")
-                )],
+            .unwrap_or_else(|| {
+                let role_reason = next_ready_graph_node_id(&job.graph)
+                    .and_then(|node_id| {
+                        graph_node_required_role(&job.graph, Some(node_id.as_str()))
+                    })
+                    .map(|role| {
+                        format!(
+                            "waiting_for_role:{}; no credible {} is currently available",
+                            role.as_str(),
+                            role.as_str()
+                        )
+                    });
+                SchedulerDecision {
+                    node_id: String::new(),
+                    score: 0,
+                    reasons: vec![role_reason.unwrap_or_else(|| {
+                        format!(
+                            "queued: no compatible node slot available for backend {:?}, runtime {:?}, model {}",
+                            job.preferred_backend,
+                            job.runtime_mode,
+                            job.model.as_deref().unwrap_or("any")
+                        )
+                    })],
+                }
             })
     }
 
@@ -1123,6 +1169,11 @@ impl ControlPlaneState {
                 if self.job_can_be_claimed(job)
                     && self.node_has_available_slot_for_job(node, job)
                     && (!job.graph_execution_enabled || active_graph_node_id.is_some())
+                    && Self::node_can_run_graph_step(
+                        node,
+                        &job.graph,
+                        active_graph_node_id.as_deref(),
+                    )
                     && Self::node_backend_matches(
                         job,
                         node_backend,
@@ -1311,6 +1362,7 @@ impl ControlPlaneState {
                 self.node_has_available_slot_for_job(node, job)
                     && next_ready_graph_node_id_for_node(&job.graph, &node.node_id).as_deref()
                         == Some(active_graph_node_id)
+                    && Self::node_can_run_graph_step(node, &job.graph, Some(active_graph_node_id))
                     && Self::node_backend_matches(
                         job,
                         node.backend,
@@ -1481,7 +1533,7 @@ impl ControlPlaneState {
         let mut changed_jobs = Vec::new();
 
         for job in self.jobs.values_mut() {
-            if job.status != JobStatus::Queued || job.assigned_at.is_some() {
+            if job.status != JobStatus::Queued {
                 continue;
             }
 
@@ -1494,7 +1546,26 @@ impl ControlPlaneState {
                 continue;
             }
 
-            let Some(submitted_at) = parse_unix_seconds(&job.submitted_at) else {
+            let required_role = if job.graph_execution_enabled {
+                next_ready_graph_node_id(&job.graph).and_then(|node_id| {
+                    graph_node_required_role(&job.graph, Some(node_id.as_str()))
+                })
+            } else {
+                None
+            };
+            let critical_role = required_role
+                .filter(|role| matches!(role, NodeRole::Reducer | NodeRole::Synthesizer));
+            let timeout_seconds = if critical_role.is_some() {
+                critical_role_wait_seconds()
+            } else {
+                timeout_seconds
+            };
+            let wait_started_at = if critical_role.is_some() {
+                job.graph.updated_at.as_str()
+            } else {
+                job.submitted_at.as_str()
+            };
+            let Some(submitted_at) = parse_unix_seconds(wait_started_at) else {
                 continue;
             };
             if now_seconds.saturating_sub(submitted_at) < timeout_seconds {
@@ -1507,9 +1578,16 @@ impl ControlPlaneState {
                 .and_then(|decision| decision.reasons.first())
                 .cloned()
                 .unwrap_or_else(|| "no compatible node slot available".to_string());
-            let error = format!(
-                "queued job expired after {timeout_seconds}s without an eligible worker; {scheduler_reason}"
-            );
+            let error = if let Some(role) = critical_role {
+                format!(
+                    "NO_CREDIBLE_{}: completed outputs were preserved after waiting {timeout_seconds}s; {scheduler_reason}",
+                    role.as_str().to_ascii_uppercase()
+                )
+            } else {
+                format!(
+                    "queued job expired after {timeout_seconds}s without an eligible worker; {scheduler_reason}"
+                )
+            };
 
             job.status = JobStatus::Failed;
             job.completed_at = Some(now.to_string());
@@ -1982,6 +2060,14 @@ fn queued_job_timeout_seconds() -> u64 {
         .and_then(|value| value.parse::<u64>().ok())
         .filter(|value| *value > 0)
         .unwrap_or(DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS)
+}
+
+fn critical_role_wait_seconds() -> u64 {
+    std::env::var(CRITICAL_ROLE_WAIT_SECONDS_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_CRITICAL_ROLE_WAIT_SECONDS)
 }
 
 fn node_heartbeat_stale_seconds() -> u64 {
@@ -2525,6 +2611,12 @@ fn complete_graph_execution_job(
         } else {
             JobStatus::Queued
         };
+        if job.status == JobStatus::Queued {
+            job.assigned_node_id = None;
+            job.assigned_at = None;
+            job.worker_id = None;
+            job.backend = None;
+        }
         job.completed_at = None;
     }
     job.active_graph_node_id = next_ready_graph_node_id(&job.graph);
@@ -2977,6 +3069,36 @@ fn graph_node_is_merge(graph: &JobGraph, graph_node_id: Option<&str>) -> bool {
     })
 }
 
+pub(crate) fn graph_node_required_role(
+    graph: &JobGraph,
+    graph_node_id: Option<&str>,
+) -> Option<NodeRole> {
+    let graph_node_id = graph_node_id?;
+    let node = graph.nodes.iter().find(|node| node.id == graph_node_id)?;
+    let id = node.id.to_ascii_lowercase();
+    let name = node.name.to_ascii_lowercase();
+    let responsibility = node.responsibility.to_ascii_lowercase();
+
+    if responsibility.contains("synth")
+        || id.contains("synth")
+        || name.contains("synth")
+        || graph.final_node_id.as_deref() == Some(graph_node_id)
+        || responsibility == "merge"
+    {
+        Some(NodeRole::Synthesizer)
+    } else if responsibility.contains("reduc") || id.contains("reduc") || name.contains("reduc") {
+        Some(NodeRole::Reducer)
+    } else if responsibility.contains("chunk")
+        || id.contains("chunk")
+        || name.contains("chunk")
+        || responsibility == "section"
+    {
+        Some(NodeRole::ChunkAnalysis)
+    } else {
+        None
+    }
+}
+
 fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> Option<String> {
     let ready_m_exists = state.nodes.values().any(|candidate| {
         ControlPlaneState::node_is_schedulable_state(candidate)
@@ -2999,6 +3121,11 @@ fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> O
         .values()
         .filter(|candidate| {
             state.node_has_available_slot_for_job(candidate, job)
+                && ControlPlaneState::node_can_run_graph_step(
+                    candidate,
+                    &job.graph,
+                    next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).as_deref(),
+                )
                 && ControlPlaneState::node_backend_matches(
                     job,
                     candidate.backend,
@@ -4866,6 +4993,16 @@ mod tests {
             parallel_slots: 1,
             supported_runtime_modes: vec![RuntimeMode::Local, RuntimeMode::Interactive],
             streaming_supported: false,
+            capabilities: crate::contracts::NodeCapabilityProfile {
+                roles: vec![
+                    NodeRole::Chat,
+                    NodeRole::Batch,
+                    NodeRole::ChunkAnalysis,
+                    NodeRole::Reducer,
+                    NodeRole::Synthesizer,
+                ],
+                ..Default::default()
+            },
             checked_at: checked_at.to_string(),
             notes: vec!["m-series ready".to_string()],
         }
@@ -4899,6 +5036,8 @@ mod tests {
         worker_health.cuda_device_name = Some("GeForce GTX 1650".to_string());
         worker_health.runtime_mode = "cuda".to_string();
         worker_health.supported_runtime_modes = vec![RuntimeMode::Local];
+        worker_health.capabilities.roles =
+            vec![NodeRole::Chat, NodeRole::Batch, NodeRole::ChunkAnalysis];
         worker_health.notes = vec![
             "CUDA low-VRAM profile selected for 4096 MB; advertise modest workloads only"
                 .to_string(),
@@ -5573,7 +5712,7 @@ mod tests {
             .error
             .as_deref()
             .unwrap_or_default()
-            .contains("no compatible node slot"));
+            .contains("waiting_for_role:chunk_analysis"));
         assert!(job
             .graph
             .nodes
@@ -7490,7 +7629,7 @@ mod tests {
     }
 
     #[test]
-    fn compact_node_completes_reducer_with_section_fallback_when_no_strong_node_is_available() {
+    fn low_vram_node_waits_for_credible_synthesizer_then_preserves_sections() {
         let noisy_output = format!(
             "llama.cpp mode=cuda; response={}",
             "Nokia factual section. ".repeat(200)
@@ -7530,32 +7669,43 @@ mod tests {
 
         assert!(state.claim_job("node-weak", "7".to_string()).job.is_none());
 
-        let completed = state.jobs.get("job-1").expect("job exists");
-        assert_eq!(completed.status, JobStatus::Completed);
-        assert_eq!(completed.active_graph_node_id, None);
+        let waiting = state.jobs.get("job-1").expect("job exists");
+        assert_eq!(waiting.status, JobStatus::Queued);
         assert_eq!(
-            completed.last_completed_graph_node_id.as_deref(),
+            waiting.active_graph_node_id.as_deref(),
             Some("job.final_merge")
         );
-        assert_eq!(
-            completed.worker_id.as_deref(),
-            Some("control-plane-fallback")
-        );
-        assert!(completed
-            .output
+        assert!(waiting
+            .scheduler_decision
+            .as_ref()
+            .and_then(|decision| decision.reasons.first())
+            .expect("waiting reason")
+            .contains("waiting_for_role:synthesizer"));
+
+        let changed = state.run_maintenance("66");
+        assert_eq!(changed.len(), 1);
+        let degraded = state.jobs.get("job-1").expect("job exists");
+        assert_eq!(degraded.status, JobStatus::Failed);
+        assert!(degraded
+            .error
             .as_deref()
-            .expect("fallback output")
-            .contains("Nokia factual section."));
-        assert!(completed.graph.merge_error.is_none());
+            .expect("degradation error")
+            .starts_with("NO_CREDIBLE_SYNTHESIZER"));
         assert_eq!(
-            completed.scheduler_decision.as_ref().map(|decision| {
-                decision
-                    .reasons
-                    .iter()
-                    .any(|reason| reason.contains("deterministic section fallback"))
-            }),
-            Some(true)
+            degraded
+                .graph
+                .nodes
+                .iter()
+                .filter(|node| node.status == JobGraphNodeStatus::Completed)
+                .count(),
+            4
         );
+        assert!(degraded
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.status == JobGraphNodeStatus::Completed)
+            .all(|node| node.output.is_some()));
     }
 
     #[test]
@@ -8244,6 +8394,7 @@ mod tests {
                     parallel_slots: 1,
                     supported_runtime_modes: vec![RuntimeMode::Local],
                     streaming_supported: false,
+                    capabilities: Default::default(),
                     checked_at: "2".to_string(),
                     notes: vec![],
                 },
@@ -8968,6 +9119,7 @@ mod tests {
                     parallel_slots: 1,
                     supported_runtime_modes: vec![RuntimeMode::Local, RuntimeMode::Interactive],
                     streaming_supported: false,
+                    capabilities: Default::default(),
                     checked_at: "2".to_string(),
                     notes: vec![],
                 },
@@ -9049,6 +9201,7 @@ mod tests {
                     parallel_slots: 1,
                     supported_runtime_modes: vec![RuntimeMode::Local],
                     streaming_supported: false,
+                    capabilities: Default::default(),
                     checked_at: "2".to_string(),
                     notes: vec![],
                 },
@@ -9230,6 +9383,7 @@ mod tests {
                     parallel_slots: 1,
                     supported_runtime_modes: Vec::new(),
                     streaming_supported: false,
+                    capabilities: Default::default(),
                     checked_at: "2".to_string(),
                     notes: vec![],
                 },
@@ -9303,6 +9457,7 @@ mod tests {
                     parallel_slots: 1,
                     supported_runtime_modes: vec![RuntimeMode::Local, RuntimeMode::Interactive],
                     streaming_supported: false,
+                    capabilities: Default::default(),
                     checked_at: "2".to_string(),
                     notes: vec![],
                 },

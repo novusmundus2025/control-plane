@@ -22,6 +22,8 @@ The control plane can report whether an optional stateless planner service is co
 - Configure with `MUNDUSX_PLANNER_URL=http://127.0.0.1:8091/v1/plan`.
 - Tune the call timeout with `MUNDUSX_PLANNER_TIMEOUT_MS`; the default is `1500`.
 - Operators can inspect live planner integration at `GET /v1/planner/status`; the dashboard shows whether the planner is disabled, reachable, degraded, or using Rust fallback mode.
+- Reducer and synthesizer stages require the corresponding first-class capability advertised by the node agent. `MUNDUSX_CRITICAL_ROLE_WAIT_SECONDS` controls the bounded wait before the job fails in a retryable degraded state; the default is 60 seconds.
+- `GET /v1/jobs/{job_id}` includes a structured `degradation` object while a critical role is unavailable and after its bounded wait expires. Completed graph outputs remain attached to the job.
 
 ## Fallback Policy Contract
 
