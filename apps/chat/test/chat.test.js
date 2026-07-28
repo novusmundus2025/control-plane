@@ -2847,6 +2847,55 @@ test("polls chat job progress and final cleaned output", async () => {
   assert.equal(result.progress.nodes[1].output, "");
 });
 
+test("reports a plain-text upstream failure without leaking a JSON parse error", async () => {
+  await assert.rejects(
+    () =>
+      pollChatJob(
+        "job-upstream-error",
+        configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+        async () => ({
+          ok: false,
+          status: 502,
+          text: async () => "upstream error",
+        }),
+      ),
+    /MundusX upstream returned a non-JSON response: upstream error/,
+  );
+});
+
+test("exposes a qualified reducer wait as a friendly degradation state", async () => {
+  const result = await pollChatJob(
+    "job-waiting-reducer",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () =>
+      jsonResponse({
+        job: {
+          job_id: "job-waiting-reducer",
+          status: "queued",
+          graph_execution_enabled: true,
+          active_graph_node_id: "reduce",
+          degradation: {
+            status: "waiting",
+            code: "NO_CREDIBLE_REDUCER",
+            stage: "reducer",
+            message: "Expert work is preserved. Waiting for a qualified reducer before continuing.",
+            retryable: true,
+          },
+          graph: {
+            nodes: [
+              { id: "chunk-1", name: "Origins", status: "completed", output: "Notes." },
+              { id: "reduce", name: "Reduce partial results", responsibility: "reduce", status: "ready" },
+            ],
+          },
+        },
+      }),
+  );
+
+  assert.equal(result.status, "queued");
+  assert.equal(result.degradation.code, "NO_CREDIBLE_REDUCER");
+  assert.match(result.progress.processing, /Waiting for a qualified reducer/);
+});
+
 test("promotes completed section outputs when final synthesis is thin", async () => {
   const result = await pollChatJob(
     "job-product-plan",

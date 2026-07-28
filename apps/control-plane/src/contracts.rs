@@ -1249,6 +1249,10 @@ mod tests {
             "runtime_mode": "mlx",
             "supported_runtime_modes": ["local", "mlx"],
             "streaming_supported": false,
+            "capabilities": {
+                "roles": ["chat", "chunk_analysis", "reducer", "synthesizer"],
+                "max_parallel_jobs": 2
+            },
             "checked_at": "1",
             "notes": []
         }))
@@ -1258,6 +1262,15 @@ mod tests {
         assert_eq!(
             report.supported_runtime_modes,
             vec![RuntimeMode::Local, RuntimeMode::Mlx]
+        );
+        assert_eq!(
+            report.capabilities.roles,
+            vec![
+                NodeRole::Chat,
+                NodeRole::ChunkAnalysis,
+                NodeRole::Reducer,
+                NodeRole::Synthesizer
+            ]
         );
     }
 }

@@ -1873,7 +1873,7 @@ export function page(config = configFromEnv()) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona(), toolMode: webSearchEnabled, conversationId }),
         });
-        const submitted = await created.json();
+        const submitted = await readApiPayload(created, "chat request failed");
         if (!created.ok) {
           throw new Error(submitted.error || "chat request failed");
         }
@@ -1889,7 +1889,7 @@ export function page(config = configFromEnv()) {
           const polled = await fetch(
             "/api/chat/jobs/" + encodeURIComponent(submitted.job_id) + "?" + pollParams.toString(),
           );
-          payload = await polled.json();
+          payload = await readApiPayload(polled, "chat poll failed");
           if (!polled.ok) {
             throw new Error(payload.error || "chat poll failed");
           }
@@ -1913,6 +1913,21 @@ export function page(config = configFromEnv()) {
         promptEl.focus();
       }
     });
+
+    async function readApiPayload(response, fallbackMessage) {
+      const text = await response.text();
+      if (!text.trim()) return {};
+      try {
+        return JSON.parse(text);
+      } catch {
+        const upstreamMessage = text.trim().slice(0, 240);
+        throw new Error(
+          response.ok
+            ? fallbackMessage
+            : upstreamMessage || fallbackMessage,
+        );
+      }
+    }
 
     function appendRetryAction(body, message) {
       const text = String(message ?? "").trim();
@@ -6087,7 +6102,8 @@ function formatChatJob(jobId, job, fallbackModel, options = {}) {
     output_cleaned: job.status === "completed" && output !== String(job.output ?? ""),
     quality_flags: qualityFlags,
     needs_repair: qualityFlags.some((flag) => flag.severity === "repair"),
-    error: rejectFlag?.message ?? job.error ?? null,
+    error: rejectFlag?.message ?? job.degradation?.message ?? job.error ?? null,
+    degradation: job.degradation ?? null,
     model: job.model ?? fallbackModel,
     assigned_node_id: job.assigned_node_id ?? null,
     execution_mode: job.execution_mode ?? "single",
@@ -6179,7 +6195,7 @@ function summarizeChatProgress(job) {
       running: runningNodes.length,
       failed,
       waiting,
-      processing: activeNode?.name ?? null,
+      processing: job.degradation?.message ?? activeNode?.name ?? null,
       merging,
       final_synthesis: Boolean(finalNodeId),
       strategy: job.plan?.strategy ?? graph.strategy ?? "graph",
@@ -7119,7 +7135,20 @@ async function controlPlaneFetch(fetchImpl, config, path, init = {}) {
   };
   const response = await fetchImpl(`${config.controlPlaneUrl}${path}`, { ...init, headers });
   const text = await response.text();
-  const payload = text ? JSON.parse(text) : {};
+  let payload = {};
+  if (text.trim()) {
+    try {
+      payload = JSON.parse(text);
+    } catch {
+      const upstreamMessage = text.trim().slice(0, 240);
+      throw httpError(
+        response.ok ? 502 : response.status,
+        upstreamMessage
+          ? `MundusX upstream returned a non-JSON response: ${upstreamMessage}`
+          : "MundusX upstream returned an invalid response",
+      );
+    }
+  }
   if (!response.ok) {
     throw httpError(response.status, payload.error || `control plane returned ${response.status}`);
   }
