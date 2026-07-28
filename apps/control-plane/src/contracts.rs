@@ -257,6 +257,8 @@ pub struct JobSchedulingRequirements {
     pub stream: bool,
     pub model: Option<String>,
     pub language: Option<String>,
+    #[serde(default)]
+    pub preferred_roles: Vec<NodeRole>,
     pub constraints: Vec<String>,
 }
 
@@ -271,6 +273,7 @@ impl Default for JobSchedulingRequirements {
             stream: false,
             model: None,
             language: None,
+            preferred_roles: Vec::new(),
             constraints: Vec::new(),
         }
     }
@@ -762,25 +765,6 @@ fn default_true() -> bool {
     true
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-pub struct ModelCapability {
-    pub name: String,
-    #[serde(default)]
-    pub path: Option<String>,
-    #[serde(default)]
-    pub format: Option<String>,
-    #[serde(default)]
-    pub quantization: Option<String>,
-    #[serde(default)]
-    pub size_bytes: Option<u64>,
-    #[serde(default)]
-    pub estimated_vram_mb: Option<u64>,
-    #[serde(default)]
-    pub compatibility: Option<String>,
-    #[serde(default)]
-    pub compatibility_reason: Option<String>,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum NodeRole {
@@ -809,6 +793,25 @@ impl NodeRole {
             Self::Batch => "batch",
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+pub struct ModelCapability {
+    pub name: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub context_tokens: Option<u32>,
+    #[serde(default)]
+    pub quantization: Option<String>,
+    #[serde(default)]
+    pub estimated_vram_mb: Option<u32>,
+    #[serde(default)]
+    pub supports_vision: bool,
+    #[serde(default)]
+    pub supports_embeddings: bool,
+    #[serde(default)]
+    pub supports_tools: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

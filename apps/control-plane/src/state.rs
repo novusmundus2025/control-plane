@@ -388,11 +388,38 @@ impl ControlPlaneState {
     pub fn submit_job(&mut self, request: JobRequest, submitted_at: String) -> JobRecord {
         let job_id = request.request_id.clone();
         let classification = classify_job_request(&request);
-        let scheduling_requirements = scheduling_requirements_for(&request, &classification);
-        let fallback_decision = fallback_decision_for(&scheduling_requirements);
+        let mut scheduling_requirements = scheduling_requirements_for(&request, &classification);
         let compatible_ready_nodes = self.compatible_ready_node_count_for_request(&request);
         let mut plan =
             plan_job_request_for_submission(&request, &classification, compatible_ready_nodes);
+        if request.execution_mode != JobExecutionMode::Single {
+            match crate::planner_client::plan_from_env(
+                &request,
+                &classification,
+                &scheduling_requirements,
+            ) {
+                Ok(Some(external)) if !external.plan.jobs.is_empty() => {
+                    scheduling_requirements = external.requirements;
+                    scheduling_requirements
+                        .constraints
+                        .push(format!("planner_provider:{}", external.provider));
+                    scheduling_requirements
+                        .constraints
+                        .push(format!("planner_status:{}", external.status));
+                    if let Some(reason) = external.degraded_reason {
+                        scheduling_requirements
+                            .constraints
+                            .push(format!("planner_degraded:{reason}"));
+                    }
+                    plan = external.plan;
+                }
+                Ok(_) => {}
+                Err(error) => scheduling_requirements
+                    .constraints
+                    .push(format!("planner_fallback:{error}")),
+            }
+        }
+        let fallback_decision = fallback_decision_for(&scheduling_requirements);
         if request.execution_mode == JobExecutionMode::Single
             && plan.strategy == "complete_code_generation"
         {
@@ -870,28 +897,36 @@ impl ControlPlaneState {
         true
     }
 
-    fn node_can_run_graph_step(
-        node: &NodeRecord,
-        graph: &JobGraph,
-        graph_node_id: Option<&str>,
-    ) -> bool {
-        let Some(required_role) = graph_node_required_role(graph, graph_node_id) else {
-            return true;
-        };
-        let Some(worker_health) = node.worker_health.as_ref() else {
-            return false;
-        };
+    fn graph_node_role(job: &JobRecord, active_graph_node_id: Option<&str>) -> Option<NodeRole> {
+        graph_node_required_role(&job.graph, active_graph_node_id)
+    }
+
+    fn capability_has_role(worker_health: &WorkerHealthReport, required: NodeRole) -> bool {
         let roles = &worker_health.capabilities.roles;
-        match required_role {
+        match required {
             NodeRole::ChunkAnalysis => {
-                roles.contains(&NodeRole::ChunkAnalysis) || roles.contains(&NodeRole::Batch)
+                roles.is_empty()
+                    || roles.contains(&NodeRole::ChunkAnalysis)
+                    || roles.contains(&NodeRole::Batch)
             }
-            // Reduction and final synthesis are credibility gates. An agent
-            // without the first-class role must wait for a qualified node.
             NodeRole::Reducer => roles.contains(&NodeRole::Reducer),
             NodeRole::Synthesizer => roles.contains(&NodeRole::Synthesizer),
-            role => roles.contains(&role),
+            role => roles.is_empty() || roles.contains(&role),
         }
+    }
+
+    fn node_can_run_graph_role(
+        node: &NodeRecord,
+        job: &JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) -> bool {
+        let Some(required) = Self::graph_node_role(job, active_graph_node_id) else {
+            return true;
+        };
+        node.worker_health
+            .as_ref()
+            .map(|health| Self::capability_has_role(health, required))
+            .unwrap_or(false)
     }
 
     fn scheduler_score(
@@ -963,6 +998,12 @@ impl ControlPlaneState {
         }
 
         if let Some(worker_health) = node.worker_health.as_ref() {
+            if let Some(required_role) = Self::graph_node_role(job, active_graph_node_id) {
+                if Self::capability_has_role(worker_health, required_role) {
+                    score += 12;
+                    reasons.push(format!("graph_role:{}", required_role.as_str()));
+                }
+            }
             if requirements
                 .model
                 .as_deref()
@@ -1053,11 +1094,6 @@ impl ControlPlaneState {
                 };
                 self.node_has_available_slot_for_job(node, job)
                     && (!job.graph_execution_enabled || active_graph_node_id.is_some())
-                    && Self::node_can_run_graph_step(
-                        node,
-                        &job.graph,
-                        active_graph_node_id.as_deref(),
-                    )
                     && Self::node_backend_matches(
                         job,
                         node.backend,
@@ -1066,6 +1102,11 @@ impl ControlPlaneState {
                         ready_vllm_exists,
                     )
                     && Self::node_can_run_job(node, job)
+                    && Self::node_can_run_graph_role(
+                        node,
+                        job,
+                        active_graph_node_id.as_deref(),
+                    )
             })
             .map(|node| {
                 let active_graph_node_id = if job.graph_execution_enabled {
@@ -1169,11 +1210,6 @@ impl ControlPlaneState {
                 if self.job_can_be_claimed(job)
                     && self.node_has_available_slot_for_job(node, job)
                     && (!job.graph_execution_enabled || active_graph_node_id.is_some())
-                    && Self::node_can_run_graph_step(
-                        node,
-                        &job.graph,
-                        active_graph_node_id.as_deref(),
-                    )
                     && Self::node_backend_matches(
                         job,
                         node_backend,
@@ -1182,6 +1218,7 @@ impl ControlPlaneState {
                         ready_vllm_exists,
                     )
                     && Self::node_can_run_job(node, job)
+                    && Self::node_can_run_graph_role(node, job, active_graph_node_id.as_deref())
                 {
                     let mut decision =
                         self.scheduler_score(node, job, active_graph_node_id.as_deref());
@@ -1362,7 +1399,6 @@ impl ControlPlaneState {
                 self.node_has_available_slot_for_job(node, job)
                     && next_ready_graph_node_id_for_node(&job.graph, &node.node_id).as_deref()
                         == Some(active_graph_node_id)
-                    && Self::node_can_run_graph_step(node, &job.graph, Some(active_graph_node_id))
                     && Self::node_backend_matches(
                         job,
                         node.backend,
@@ -1371,6 +1407,7 @@ impl ControlPlaneState {
                         ready_vllm_exists,
                     )
                     && Self::node_can_run_job(node, job)
+                    && Self::node_can_run_graph_role(node, job, Some(active_graph_node_id))
             })
             .map(|node| {
                 let mut decision = self.scheduler_score(node, job, Some(active_graph_node_id));
@@ -2674,7 +2711,7 @@ fn graph_node_execution_prompt(
         return job.prompt.clone();
     };
 
-    if node.responsibility == "merge" {
+    if graph_node_is_merge(&job.graph, Some(active_node_id)) {
         let max_section_chars = assigned_node
             .map(reducer_section_char_limit)
             .unwrap_or(REDUCER_SECTION_CHARS_STANDARD);
@@ -3063,9 +3100,13 @@ fn graph_node_is_merge(graph: &JobGraph, graph_node_id: Option<&str>) -> bool {
         return false;
     };
     graph.nodes.iter().any(|node| {
-        node.id == graph_node_id
-            && (node.responsibility == "merge"
-                || graph.final_node_id.as_deref() == Some(graph_node_id))
+        if node.id != graph_node_id {
+            return false;
+        }
+        let hint =
+            format!("{} {} {}", node.id, node.name, node.responsibility).to_ascii_lowercase();
+        contains_any(&hint, &["merge", "reduce", "synth"])
+            || graph.final_node_id.as_deref() == Some(graph_node_id)
     })
 }
 
@@ -3121,11 +3162,6 @@ fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> O
         .values()
         .filter(|candidate| {
             state.node_has_available_slot_for_job(candidate, job)
-                && ControlPlaneState::node_can_run_graph_step(
-                    candidate,
-                    &job.graph,
-                    next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).as_deref(),
-                )
                 && ControlPlaneState::node_backend_matches(
                     job,
                     candidate.backend,
@@ -3134,6 +3170,11 @@ fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> O
                     ready_vllm_exists,
                 )
                 && ControlPlaneState::node_can_run_job(candidate, job)
+                && ControlPlaneState::node_can_run_graph_role(
+                    candidate,
+                    job,
+                    next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).as_deref(),
+                )
                 && next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).is_some()
         })
         .map(|candidate| {
@@ -3943,7 +3984,12 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
         final_node_id: plan
             .jobs
             .iter()
-            .find(|job| job.responsibility == "merge")
+            .rev()
+            .find(|job| {
+                let hint =
+                    format!("{} {} {}", job.id, job.name, job.responsibility).to_ascii_lowercase();
+                contains_any(&hint, &["merge", "synth"])
+            })
             .map(|job| job.id.clone()),
         results: Vec::new(),
         final_output: None,
@@ -4587,6 +4633,11 @@ pub fn scheduling_requirements_for(
         stream: request.stream,
         model: request.model.clone(),
         language,
+        preferred_roles: match classification.task_type {
+            RequestTaskType::Chat => vec![NodeRole::Chat],
+            RequestTaskType::Coding => vec![NodeRole::Coding],
+            RequestTaskType::Document | RequestTaskType::Inference => vec![NodeRole::Batch],
+        },
         constraints: classification.execution_constraints.clone(),
     }
 }
@@ -9974,5 +10025,24 @@ mod tests {
         assert!(!node.policy_allowed);
         let reason = node.policy_reason.as_deref().expect("policy reason");
         assert!(reason.contains("runtime capability report is not ready"));
+    }
+
+    #[test]
+    fn explicit_roles_support_chunk_fallback_but_keep_synthesis_strict() {
+        let mut health = healthy_worker_health("1");
+        health.capabilities.roles = vec![NodeRole::Batch, NodeRole::Reducer];
+
+        assert!(ControlPlaneState::capability_has_role(
+            &health,
+            NodeRole::ChunkAnalysis
+        ));
+        assert!(!ControlPlaneState::capability_has_role(
+            &health,
+            NodeRole::Synthesizer
+        ));
+        assert!(!ControlPlaneState::capability_has_role(
+            &health,
+            NodeRole::Vision
+        ));
     }
 }
