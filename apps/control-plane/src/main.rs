@@ -2542,9 +2542,9 @@ fn control_plane_operator_page(
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title} - EHDA</title>
     <style>
-      :root {{ color-scheme: dark; --bg:#020711; --surface:#06101d; --line:rgba(73,159,255,.22); --line-strong:rgba(45,164,255,.48); --text:#f6fbff; --muted:#9baac0; --blue:#33a8ff; }}
+      :root {{ color-scheme: dark; --bg:#050607; --surface:#0b0d10; --line:rgba(148,163,184,.2); --line-strong:rgba(96,165,250,.48); --text:#f6f7f9; --muted:#9ca3af; --blue:#60a5fa; }}
       * {{ box-sizing: border-box; }}
-      body {{ margin:0; min-height:100vh; background:linear-gradient(135deg,#020711,#050b16 52%,#01040b); color:var(--text); font-family:Inter,"Segoe UI",sans-serif; }}
+      body {{ margin:0; min-height:100vh; background:linear-gradient(135deg,#030405 0%,#0b0d10 52%,#020203 100%); color:var(--text); font-family:Inter,"Segoe UI",sans-serif; }}
       a {{ color:inherit; text-decoration:none; }}
       a:focus-visible {{ outline:0; box-shadow:0 0 0 3px rgba(37,215,255,.2); }}
       .motion-lift {{ transition:transform .18s ease,border-color .12s ease,background .12s ease,box-shadow .18s ease,color .12s ease; will-change:transform; }}
@@ -2552,7 +2552,7 @@ fn control_plane_operator_page(
       .motion-glow {{ transition:transform .18s ease,filter .18s ease,box-shadow .18s ease; will-change:transform; }}
       .motion-glow:hover,.motion-glow:focus-visible {{ transform:scale(1.04); filter:drop-shadow(0 0 22px rgba(37,215,255,.52)); }}
       .shell {{ display:grid; grid-template-columns:250px minmax(0,1fr); min-height:100vh; }}
-      .sidebar {{ position:sticky; top:0; height:100vh; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(2,9,18,.96),rgba(2,8,16,.9)); padding:26px 16px 18px; display:flex; flex-direction:column; gap:22px; }}
+      .sidebar {{ position:sticky; top:0; height:100vh; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(5,6,7,.98),rgba(10,11,13,.95)); padding:26px 16px 18px; display:flex; flex-direction:column; gap:22px; }}
       .brand {{ display:flex; align-items:center; gap:12px; font-family:Georgia,"Times New Roman",serif; font-size:22px; color:#fff; border-radius:8px; }}
       .brand-mark {{ width:54px; height:54px; border-radius:50%; object-fit:contain; filter:drop-shadow(0 0 16px rgba(70,174,255,.34)); }}
       .brand-copy {{ display:grid; gap:2px; }}
@@ -2575,7 +2575,7 @@ fn control_plane_operator_page(
       .toolbar .button {{ width:100%; }}
       .panel .button {{ margin-top:10px; margin-right:8px; }}
       .topbar .button {{ margin-left:auto; }}
-      input,select {{ width:100%; min-height:42px; border:1px solid var(--line); border-radius:8px; background:#030b14; color:var(--text); padding:0 12px; font:inherit; }}
+      input,select {{ width:100%; min-height:42px; border:1px solid var(--line); border-radius:8px; background:#090a0c; color:var(--text); padding:0 12px; font:inherit; }}
       input[type="checkbox"] {{ width:auto; min-height:auto; accent-color:var(--blue); }}
       .policy-form {{ display:grid; gap:14px; margin-top:14px; }}
       .policy-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }}
@@ -2585,9 +2585,9 @@ fn control_plane_operator_page(
       .grid {{ display:grid; gap:14px; margin-bottom:18px; }}
       .grid.four {{ grid-template-columns:repeat(4,minmax(0,1fr)); }}
       .grid.two {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
-      .metric,.panel {{ border:1px solid var(--line); background:linear-gradient(180deg,rgba(8,23,41,.92),rgba(3,10,19,.92)); border-radius:8px; padding:18px; }}
+      .metric,.panel {{ border:1px solid var(--line); background:linear-gradient(180deg,rgba(17,19,22,.96),rgba(8,9,11,.96)); border-radius:8px; padding:18px; }}
       .metric-link {{ display:block; transition:border-color .12s ease,background .12s ease,transform .18s ease; }}
-      .metric-link:hover,.metric-link:focus-visible {{ border-color:var(--line-strong); background:linear-gradient(180deg,rgba(12,35,61,.94),rgba(4,14,26,.94)); transform:translateY(-1px); outline:none; }}
+      .metric-link:hover,.metric-link:focus-visible {{ border-color:var(--line-strong); background:linear-gradient(180deg,rgba(23,26,30,.98),rgba(10,11,13,.98)); transform:translateY(-1px); outline:none; }}
       .metric span {{ color:var(--muted); display:block; font-size:13px; text-transform:uppercase; }}
       .metric strong {{ display:block; margin-top:7px; font-size:28px; }}
       .table {{ display:grid; overflow-x:auto; }}
@@ -2618,12 +2618,12 @@ fn control_plane_operator_page(
       .pager .button[aria-disabled="true"] {{ opacity:.45; pointer-events:none; }}
       .sidebar-bottom {{ margin-top:auto; display:grid; gap:16px; min-width:0; }}
       .sidebar-vehicle {{ width:100%; height:92px; object-fit:contain; object-position:center bottom; filter:drop-shadow(0 12px 16px rgba(0,0,0,.7)); }}
-      .side-card {{ min-width:0; max-width:100%; border:1px solid var(--line); border-radius:8px; background:rgba(6,18,32,.78); padding:16px; overflow:hidden; }}
+      .side-card {{ min-width:0; max-width:100%; border:1px solid var(--line); border-radius:8px; background:rgba(14,16,19,.9); padding:16px; overflow:hidden; }}
       .status-dot {{ width:9px; height:9px; border-radius:50%; background:#25d7ff; box-shadow:0 0 16px rgba(37,215,255,.7); }}
       .operator {{ display:flex; align-items:center; gap:12px; }}
       .operator > div:last-child {{ min-width:0; }}
       .operator .meta {{ overflow-wrap:anywhere; word-break:break-word; line-height:1.35; }}
-      .avatar {{ width:42px; height:42px; flex:0 0 42px; border-radius:12px; background:linear-gradient(135deg,#14539e,#071f3c); display:grid; place-items:center; font-weight:700; }}
+      .avatar {{ width:42px; height:42px; flex:0 0 42px; border-radius:12px; background:linear-gradient(135deg,#30343a,#111317); display:grid; place-items:center; font-weight:700; }}
       .foot {{ color:var(--muted); font-size:12px; margin-top:22px; overflow-wrap:anywhere; }}
       @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two,.node-profile-grid,.profile-sections,.profile-kv {{ grid-template-columns:1fr; }} .profile-head {{ flex-direction:column; }} .pager {{ align-items:stretch; flex-direction:column; }} .pager-actions {{ display:grid; grid-template-columns:1fr 1fr; }} main {{ padding:22px; }} }}
       @media (prefers-reduced-motion: reduce) {{ *,*::before,*::after {{ animation-duration:.01ms!important; animation-iteration-count:1!important; scroll-behavior:auto!important; transition-duration:.01ms!important; }} .motion-lift:hover,.motion-lift:focus-visible,.motion-glow:hover,.motion-glow:focus-visible {{ transform:none; }} }}
@@ -2771,11 +2771,11 @@ fn control_plane_home(
     <style>
       :root {{
         color-scheme: dark;
-        --bg: #020711;
-        --surface: rgba(4, 13, 24, 0.92);
-        --surface-2: rgba(8, 22, 39, 0.86);
-        --panel: rgba(3, 10, 20, 0.86);
-        --line: rgba(73, 159, 255, 0.22);
+        --bg: #050607;
+        --surface: rgba(13, 15, 18, 0.96);
+        --surface-2: rgba(18, 20, 24, 0.92);
+        --panel: rgba(9, 10, 12, 0.94);
+        --line: rgba(148, 163, 184, 0.2);
         --line-strong: rgba(45, 164, 255, 0.48);
         --text: #f6fbff;
         --muted: #9baac0;
@@ -2795,9 +2795,9 @@ fn control_plane_home(
         margin: 0;
         min-height: 100vh;
         background:
-          radial-gradient(circle at 48% 32%, rgba(0, 136, 255, 0.18), transparent 28%),
-          radial-gradient(circle at 78% 10%, rgba(40, 216, 255, 0.11), transparent 24%),
-          linear-gradient(135deg, #020711 0%, #050b16 52%, #01040b 100%);
+          radial-gradient(circle at 48% 32%, rgba(255, 255, 255, 0.045), transparent 30%),
+          radial-gradient(circle at 78% 10%, rgba(96, 165, 250, 0.04), transparent 25%),
+          linear-gradient(135deg, #020203 0%, #0c0e11 52%, #030304 100%);
         color: var(--text);
         font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
       }}
@@ -2847,7 +2847,7 @@ fn control_plane_home(
         top: 0;
         height: 100vh;
         border-right: 1px solid var(--line);
-        background: linear-gradient(180deg, rgba(2, 9, 18, 0.96), rgba(2, 8, 16, 0.9));
+        background: linear-gradient(180deg, rgba(4, 5, 6, 0.99), rgba(11, 12, 14, 0.96));
         padding: 26px 16px 18px;
         display: flex;
         flex-direction: column;
@@ -2937,7 +2937,7 @@ fn control_plane_home(
         max-width: 100%;
         border: 1px solid var(--line);
         border-radius: 8px;
-        background: rgba(6, 18, 32, 0.78);
+        background: rgba(14, 16, 19, 0.92);
         padding: 16px;
         overflow: hidden;
       }}
@@ -2966,7 +2966,7 @@ fn control_plane_home(
         height: 42px;
         flex: 0 0 42px;
         border-radius: 12px;
-        background: linear-gradient(135deg, #14539e, #071f3c);
+        background: linear-gradient(135deg, #34383f, #121418);
         display: grid;
         place-items: center;
         font-weight: 700;
@@ -3014,7 +3014,7 @@ fn control_plane_home(
       .refresh-button {{
         border: 1px solid var(--line);
         border-radius: 8px;
-        background: rgba(4, 12, 23, 0.72);
+        background: rgba(14, 16, 19, 0.9);
         color: var(--text);
         min-height: 42px;
         display: inline-flex;
@@ -3072,8 +3072,8 @@ fn control_plane_home(
       .card {{
         border: 1px solid var(--line);
         background:
-          radial-gradient(circle at 86% 80%, rgba(0, 128, 255, 0.16), transparent 38%),
-          linear-gradient(180deg, rgba(8, 23, 41, 0.92), rgba(3, 10, 19, 0.92));
+          radial-gradient(circle at 86% 80%, rgba(96, 165, 250, 0.055), transparent 38%),
+          linear-gradient(180deg, rgba(19, 21, 25, 0.97), rgba(8, 9, 11, 0.98));
         border-radius: 8px;
         padding: 22px;
         position: relative;
@@ -3107,7 +3107,7 @@ fn control_plane_home(
         border-color: rgba(237, 183, 63, 0.42);
         background:
           radial-gradient(circle at 86% 80%, rgba(237, 183, 63, 0.14), transparent 38%),
-          linear-gradient(180deg, rgba(8, 23, 41, 0.92), rgba(3, 10, 19, 0.92));
+          linear-gradient(180deg, rgba(19, 21, 25, 0.97), rgba(8, 9, 11, 0.98));
       }}
       .planner-status-card[data-tone="green"] {{
         border-color: rgba(57, 217, 138, 0.4);
@@ -3247,7 +3247,7 @@ fn control_plane_home(
       }}
       .section {{
         border: 1px solid var(--line);
-        background: linear-gradient(180deg, rgba(5, 14, 25, 0.9), rgba(2, 9, 17, 0.92));
+        background: linear-gradient(180deg, rgba(18, 20, 23, 0.96), rgba(7, 8, 10, 0.98));
         border-radius: 8px;
         overflow: hidden;
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
@@ -3335,14 +3335,14 @@ fn control_plane_home(
       .topology-center::before {{
         inset: 0;
         z-index: 2;
-        background: linear-gradient(145deg, rgba(126, 220, 255, 0.98), rgba(44, 147, 255, 0.76) 42%, rgba(128, 86, 255, 0.72));
-        filter: drop-shadow(0 0 16px rgba(45, 174, 255, 0.54));
+        background: linear-gradient(145deg, rgba(226, 232, 240, 0.9), rgba(100, 116, 139, 0.64) 48%, rgba(30, 33, 38, 0.92));
+        filter: drop-shadow(0 0 16px rgba(148, 163, 184, 0.24));
       }}
       .topology-center::after {{
         inset: 2px;
         z-index: 3;
-        background: radial-gradient(circle at 50% 45%, rgba(50, 161, 255, 0.42), rgba(5, 20, 36, 0.98) 66%);
-        box-shadow: inset 0 0 24px rgba(51, 168, 255, 0.28);
+        background: radial-gradient(circle at 50% 45%, rgba(71, 77, 87, 0.42), rgba(7, 8, 10, 0.99) 66%);
+        box-shadow: inset 0 0 24px rgba(148, 163, 184, 0.12);
       }}
       .topology-center:hover {{
         transform: translate(-50%, -50%) scale(1.03);
