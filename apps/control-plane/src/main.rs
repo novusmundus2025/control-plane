@@ -53,8 +53,10 @@ const OPERATOR_TOKEN_ENV: &str = "MUNDUSX_OPERATOR_TOKEN";
 const LEGACY_OPERATOR_TOKEN_ENV: &str = "OPENGPU_OPERATOR_TOKEN";
 const AUTH_DISABLED_ENV: &str = "MUNDUSX_AUTH_DISABLED";
 const CONTROL_PLANE_ENVIRONMENT_ENV: &str = "MUNDUSX_ENVIRONMENT";
-const CONTROL_PLANE_LOGO_PATH: &str = "/assets/mundusx-logo.png";
-const CONTROL_PLANE_LOGO_PNG: &[u8] = include_bytes!("../assets/mundusx-logo.png");
+const CONTROL_PLANE_LOGO_PATH: &str = "/assets/ehda-emblem.png";
+const CONTROL_PLANE_LOGO_PNG: &[u8] = include_bytes!("../assets/ehda-emblem.png");
+const CONTROL_PLANE_VEHICLE_PATH: &str = "/assets/ehda-vehicle.png";
+const CONTROL_PLANE_VEHICLE_PNG: &[u8] = include_bytes!("../assets/ehda-vehicle.png");
 const DEFAULT_PAGE_SIZE: usize = 25;
 const MAX_PAGE_SIZE: usize = 100;
 const FILTER_QUERY_KEYS: &[&str] = &[
@@ -2538,7 +2540,7 @@ fn control_plane_operator_page(
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>{title} - MundusX</title>
+    <title>{title} - EHDA</title>
     <style>
       :root {{ color-scheme: dark; --bg:#020711; --surface:#06101d; --line:rgba(73,159,255,.22); --line-strong:rgba(45,164,255,.48); --text:#f6fbff; --muted:#9baac0; --blue:#33a8ff; }}
       * {{ box-sizing: border-box; }}
@@ -2553,6 +2555,9 @@ fn control_plane_operator_page(
       .sidebar {{ position:sticky; top:0; height:100vh; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(2,9,18,.96),rgba(2,8,16,.9)); padding:26px 16px 18px; display:flex; flex-direction:column; gap:22px; }}
       .brand {{ display:flex; align-items:center; gap:12px; font-family:Georgia,"Times New Roman",serif; font-size:22px; color:#fff; border-radius:8px; }}
       .brand-mark {{ width:54px; height:54px; border-radius:50%; object-fit:contain; filter:drop-shadow(0 0 16px rgba(70,174,255,.34)); }}
+      .brand-copy {{ display:grid; gap:2px; }}
+      .brand-copy strong {{ letter-spacing:.16em; }}
+      .brand-copy small {{ color:var(--muted); font:10px Inter,"Segoe UI",sans-serif; letter-spacing:.12em; text-transform:uppercase; }}
       .nav {{ display:grid; gap:8px; }}
       .nav-item {{ min-height:54px; display:flex; align-items:center; gap:14px; border:1px solid transparent; border-radius:7px; padding:0 13px; color:#b9c5d6; }}
       .nav-item:hover,.nav-item:focus-visible {{ color:#ecf8ff; background:rgba(51,168,255,.1); outline:none; }}
@@ -2612,6 +2617,7 @@ fn control_plane_operator_page(
       .pager-actions {{ display:flex; gap:10px; }}
       .pager .button[aria-disabled="true"] {{ opacity:.45; pointer-events:none; }}
       .sidebar-bottom {{ margin-top:auto; display:grid; gap:16px; min-width:0; }}
+      .sidebar-vehicle {{ width:100%; height:92px; object-fit:contain; object-position:center bottom; filter:drop-shadow(0 12px 16px rgba(0,0,0,.7)); }}
       .side-card {{ min-width:0; max-width:100%; border:1px solid var(--line); border-radius:8px; background:rgba(6,18,32,.78); padding:16px; overflow:hidden; }}
       .status-dot {{ width:9px; height:9px; border-radius:50%; background:#25d7ff; box-shadow:0 0 16px rgba(37,215,255,.7); }}
       .operator {{ display:flex; align-items:center; gap:12px; }}
@@ -2626,18 +2632,19 @@ fn control_plane_operator_page(
   <body>
     <div class="shell">
       <aside class="sidebar" aria-label="Control plane navigation">
-        <a class="brand motion-glow" href="/" aria-label="Control plane home"><img class="brand-mark" alt="Control plane logo" src="{logo_path}" /> <span>Control Plane</span></a>
+        <a class="brand motion-glow" href="/" aria-label="EHDA control plane home"><img class="brand-mark" alt="Mercedes-Benz emblem" src="{logo_path}" /><span class="brand-copy"><strong>EHDA</strong><small>Control Plane</small></span></a>
         <nav class="nav"><a class="nav-item motion-lift" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6"/></svg>Overview</a>{nav}</nav>
         <div class="sidebar-bottom">
           <div class="side-card">
-            <div style="display:flex;align-items:center;gap:12px;"><span class="status-dot"></span><span>Control Plane Status</span></div>
+            <div style="display:flex;align-items:center;gap:12px;"><span class="status-dot"></span><span>EHDA Control Plane</span></div>
             <div style="color:#54b9ff;margin-top:10px;">Healthy</div>
           </div>
+          <img class="sidebar-vehicle" src="{vehicle_path}" alt="Mercedes-Benz vehicle" />
           <div class="side-card operator">
-            <div class="avatar">NX</div>
-            <div><strong>Operator</strong><div class="meta">operator@control-plane.local</div></div>
+            <div class="avatar">EH</div>
+            <div><strong>Operator</strong><div class="meta">operator@ehda.local</div></div>
           </div>
-          <div class="foot">Control Plane<br/>v1.0.0</div>
+          <div class="foot">EHDA Control Plane<br/>v1.0.0</div>
         </div>
       </aside>
       <main>
@@ -2649,6 +2656,7 @@ fn control_plane_operator_page(
 </html>"#,
         title = page.title(),
         logo_path = CONTROL_PLANE_LOGO_PATH,
+        vehicle_path = CONTROL_PLANE_VEHICLE_PATH,
         nav = nav,
         body = body
     )
@@ -2759,7 +2767,7 @@ fn control_plane_home(
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Control Plane</title>
+    <title>EHDA Control Plane</title>
     <style>
       :root {{
         color-scheme: dark;
@@ -2866,6 +2874,20 @@ fn control_plane_home(
         object-fit: contain;
         filter: drop-shadow(0 0 16px rgba(70, 174, 255, 0.34));
       }}
+      .brand-copy {{
+        display: grid;
+        gap: 4px;
+        text-align: center;
+      }}
+      .brand-copy strong {{
+        font-size: 17px;
+        letter-spacing: 0.22em;
+      }}
+      .brand-copy small {{
+        color: var(--muted);
+        font: 10px Inter, "Segoe UI", sans-serif;
+        letter-spacing: 0.15em;
+      }}
       .nav {{
         display: grid;
         gap: 8px;
@@ -2902,6 +2924,13 @@ fn control_plane_home(
         display: grid;
         gap: 16px;
         min-width: 0;
+      }}
+      .sidebar-vehicle {{
+        width: 100%;
+        height: 108px;
+        object-fit: contain;
+        object-position: center bottom;
+        filter: drop-shadow(0 13px 18px rgba(0, 0, 0, 0.72));
       }}
       .side-card {{
         min-width: 0;
@@ -3681,7 +3710,7 @@ fn control_plane_home(
   <body>
     <div class="app-shell">
       <aside class="sidebar" aria-label="Control plane navigation">
-        <a class="brand motion-glow" href="/" aria-label="Control plane home"><img class="brand-mark" alt="Control plane logo" src="{logo_path}" /> <span>Control Plane</span></a>
+        <a class="brand motion-glow" href="/" aria-label="EHDA control plane home"><img class="brand-mark" alt="Mercedes-Benz emblem" src="{logo_path}" /><span class="brand-copy"><strong>EHDA</strong><small>Control Plane</small></span></a>
         <nav class="nav">
           <a class="nav-item motion-lift active" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>Overview</a>
           <a class="nav-item motion-lift" href="/nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>Nodes</a>
@@ -3693,15 +3722,16 @@ fn control_plane_home(
         </nav>
         <div class="sidebar-bottom">
           <div class="side-card">
-            <div style="display:flex;align-items:center;gap:12px;"><span class="status-dot"></span><span>Control Plane Status</span></div>
+            <div style="display:flex;align-items:center;gap:12px;"><span class="status-dot"></span><span>EHDA Control Plane</span></div>
             <div style="color:var(--green);margin-top:10px;">Healthy</div>
             <div class="meta" style="margin-top:8px;">All systems operational</div>
           </div>
+          <img class="sidebar-vehicle" src="{vehicle_path}" alt="Mercedes-Benz vehicle" />
           <div class="side-card operator">
-            <div class="avatar">NX</div>
-            <div><strong>Operator</strong><div class="meta">operator@control-plane.local</div></div>
+            <div class="avatar">EH</div>
+            <div><strong>Operator</strong><div class="meta">operator@ehda.local</div></div>
           </div>
-          <div class="foot">Control Plane<br/>v1.0.0</div>
+          <div class="foot">EHDA Control Plane<br/>v1.0.0</div>
         </div>
       </aside>
 
@@ -3709,7 +3739,7 @@ fn control_plane_home(
         <header class="topbar">
           <div>
             <div class="title-line">
-              <h1>Control Plane</h1>
+              <h1>EHDA Control Plane</h1>
               <svg class="shield-mini" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v8"/><path d="M9 12h6"/></svg>
             </div>
             <div class="sub">Real-time overview of your compute network, security posture, jobs, storage, and audit trail.</div>
@@ -3811,6 +3841,7 @@ fn control_plane_home(
 </html>"##,
         storage_label = escape_html(storage_label),
         logo_path = CONTROL_PLANE_LOGO_PATH,
+        vehicle_path = CONTROL_PLANE_VEHICLE_PATH,
         recent_logs = recent_logs,
         deploy_badge = deploy_badge,
         planner_tone = planner_tone,
@@ -4832,6 +4863,10 @@ fn handle_connection(
         let _ = stream.write_all(&png_response("200 OK", CONTROL_PLANE_LOGO_PNG));
         return;
     }
+    if request.method == "GET" && clean_path == CONTROL_PLANE_VEHICLE_PATH {
+        let _ = stream.write_all(&png_response("200 OK", CONTROL_PLANE_VEHICLE_PNG));
+        return;
+    }
 
     if let Err(error) = authorize_device_request(
         &request.method,
@@ -5826,7 +5861,8 @@ mod tests {
         read_http_request, requires_operator_auth, status_snapshot_with_deploy_fingerprint,
         trust_grade, trust_grade_badge, HttpRequestReadError, OperatorAuthMode, OperatorPage,
         StorageSource, SupabaseSyncStatus, AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV,
-        CONTROL_PLANE_LOGO_PATH, LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
+        CONTROL_PLANE_LOGO_PATH, CONTROL_PLANE_VEHICLE_PATH, LEGACY_OPERATOR_TOKEN_ENV,
+        MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
     use crate::contracts::{
         AgentRegistration, AgentState, Backend, Heartbeat, JobCompletion, JobExecutionMode,
@@ -6242,9 +6278,12 @@ mod tests {
             &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
         );
 
-        assert!(html.contains("Control Plane"));
-        assert!(html.contains("Control plane logo"));
+        assert!(html.contains("EHDA Control Plane"));
+        assert!(html.contains("Mercedes-Benz emblem"));
         assert!(html.contains(CONTROL_PLANE_LOGO_PATH));
+        assert!(html.contains(CONTROL_PLANE_VEHICLE_PATH));
+        assert!(html.contains("Mercedes-Benz vehicle"));
+        assert!(html.contains("operator@ehda.local"));
         assert!(html.contains("Status API"));
         assert!(html.contains("Network Topology"));
         assert!(html.contains("Planner Overview"));
@@ -6938,7 +6977,7 @@ mod tests {
         assert!(html.contains("min-height:54px"));
         assert!(html.contains("sidebar-bottom"));
         assert!(html.contains("overflow-wrap:anywhere"));
-        assert!(html.contains("Control Plane<br/>v1.0.0"));
+        assert!(html.contains("EHDA Control Plane<br/>v1.0.0"));
         assert!(html.contains(r#"value="node-new""#));
         assert!(html.contains(r#"name="state""#));
         assert!(html.contains(r#"value="online" selected"#));
