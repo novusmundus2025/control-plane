@@ -200,16 +200,6 @@ impl SupabaseSyncStatus {
             format!("enabled ({})", self.restore_source)
         }
     }
-
-    fn tone(&self) -> &'static str {
-        if !self.enabled {
-            "red"
-        } else if self.degraded {
-            "amber"
-        } else {
-            "green"
-        }
-    }
 }
 
 fn now_unix_seconds() -> String {
@@ -2664,6 +2654,42 @@ fn control_plane_operator_page(
     )
 }
 
+fn render_recent_logs(state: &ControlPlaneState) -> String {
+    let rows = state
+        .job_events
+        .iter()
+        .rev()
+        .take(4)
+        .map(|event| {
+            let label = event.event_type.replace('_', " ");
+            let context = event
+                .job_id
+                .as_deref()
+                .or(event.node_id.as_deref())
+                .map(|value| {
+                    format!(
+                        r#"<span class="log-context">{}</span>"#,
+                        escape_html(value)
+                    )
+                })
+                .unwrap_or_default();
+            format!(
+                r#"<li><span class="log-dot"></span><time>{}</time><span class="log-level">INFO</span><span class="log-message">{}{}</span></li>"#,
+                escape_html(&event.created_at),
+                escape_html(&label),
+                context
+            )
+        })
+        .collect::<Vec<_>>();
+
+    if rows.is_empty() {
+        r#"<li class="log-empty"><span class="log-dot"></span><span class="log-message">No operational events recorded yet.</span></li>"#
+            .to_string()
+    } else {
+        rows.join("")
+    }
+}
+
 fn control_plane_home(
     state: &ControlPlaneState,
     storage_source: StorageSource,
@@ -2682,13 +2708,12 @@ fn control_plane_home(
     let completed = snapshot["completed_job_count"].as_u64().unwrap_or(0);
     let failed = snapshot["failed_job_count"].as_u64().unwrap_or(0);
     let healthy_tone = "green";
-    let storage_tone = if storage_source.as_str() == "supabase" {
-        "green"
-    } else {
-        "amber"
+    let (storage_label, storage_tone) = match storage_source {
+        StorageSource::Supabase => ("supabase", "green"),
+        StorageSource::LocalJsonFallback => ("json fallback", "amber"),
+        StorageSource::LocalJsonOnly => ("json", "blue"),
     };
     let supabase = sync_status.summary();
-    let supabase_tone = sync_status.tone();
     let planner_service = planner_service_status_from_env();
     let planner_tone = if !planner_service.enabled {
         "amber"
@@ -2726,6 +2751,7 @@ fn control_plane_home(
             r#"<span class="pill pill-amber">deploy: unavailable</span>"#.to_string()
         });
     let topology_slots = render_topology_slots(state);
+    let recent_logs = render_recent_logs(state);
 
     format!(
         r##"<!doctype html>
@@ -2821,16 +2847,21 @@ fn control_plane_home(
       }}
       .brand {{
         display: flex;
+        flex-direction: column;
         align-items: center;
-        gap: 12px;
+        justify-content: center;
+        gap: 10px;
+        min-height: 112px;
         font-family: Georgia, "Times New Roman", serif;
-        font-size: 22px;
+        font-size: 13px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
         color: #fff;
         border-radius: 8px;
       }}
       .brand-mark {{
-        width: 54px;
-        height: 54px;
+        width: 82px;
+        height: 82px;
         border-radius: 50%;
         object-fit: contain;
         filter: drop-shadow(0 0 16px rgba(70, 174, 255, 0.34));
@@ -3005,7 +3036,7 @@ fn control_plane_home(
       }}
       .secondary-metrics {{
         display: grid;
-        grid-template-columns: repeat(7, minmax(0, 1fr));
+        grid-template-columns: repeat(6, minmax(0, 1fr));
         gap: 18px;
         margin-top: 18px;
       }}
@@ -3098,6 +3129,92 @@ fn control_plane_home(
         grid-template-columns: minmax(0, 1.7fr) minmax(360px, 1fr);
         gap: 18px;
         margin-top: 18px;
+      }}
+      .work-column {{
+        display: grid;
+        gap: 18px;
+        align-content: start;
+        min-width: 0;
+      }}
+      .planner-health {{
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        color: var(--green);
+        font-size: 16px;
+        margin: 10px 0 22px;
+      }}
+      .planner-grid {{
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 18px;
+        padding-top: 18px;
+        border-top: 1px solid rgba(73, 159, 255, 0.14);
+      }}
+      .planner-grid > div + div {{
+        border-left: 1px solid rgba(73, 159, 255, 0.14);
+        padding-left: 18px;
+      }}
+      .planner-value {{
+        margin-top: 7px;
+        font-size: 17px;
+      }}
+      .planner-value.good {{ color: var(--green); }}
+      .credit-periods {{
+        display: grid;
+        gap: 0;
+        margin-top: 16px;
+      }}
+      .credit-periods div {{
+        display: flex;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 16px 0;
+        border-top: 1px solid rgba(73, 159, 255, 0.12);
+      }}
+      .recent-logs {{
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: grid;
+        gap: 10px;
+        font-family: "SFMono-Regular", Consolas, monospace;
+        font-size: 12px;
+      }}
+      .recent-logs li {{
+        display: grid;
+        grid-template-columns: 8px minmax(78px, auto) auto minmax(0, 1fr);
+        align-items: center;
+        gap: 10px;
+        min-width: 0;
+      }}
+      .log-dot {{
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+        background: var(--blue);
+        box-shadow: 0 0 10px rgba(51, 168, 255, 0.7);
+      }}
+      .recent-logs time {{ color: #a9b8ca; }}
+      .log-level {{
+        border-radius: 5px;
+        padding: 2px 6px;
+        background: rgba(57, 217, 138, 0.11);
+        color: var(--green);
+      }}
+      .log-message {{
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        color: #cbd6e4;
+      }}
+      .log-context {{
+        margin-left: 8px;
+        color: var(--muted);
+      }}
+      .log-empty {{
+        grid-template-columns: 8px minmax(0, 1fr) !important;
       }}
       .section {{
         border: 1px solid var(--line);
@@ -3489,6 +3606,10 @@ fn control_plane_home(
         .sidebar {{
           position: relative;
           height: auto;
+          width: 100%;
+          min-width: 0;
+          max-width: 100vw;
+          overflow: hidden;
           border-right: 0;
           border-bottom: 1px solid var(--line);
         }}
@@ -3501,13 +3622,22 @@ fn control_plane_home(
         .table .row {{ grid-template-columns: 1.1fr 0.9fr 0.7fr 0.7fr 1fr 1fr 0.7fr; }}
       }}
       @media (max-width: 820px) {{
+        .sidebar {{ padding: 14px; gap: 12px; }}
+        .brand {{ min-height: 68px; flex-direction: row; justify-content: flex-start; font-size: 11px; }}
+        .brand-mark {{ width: 54px; height: 54px; }}
         .main {{ padding: 22px 14px; }}
         .topbar,
         .actions {{ flex-direction: column; align-items: stretch; }}
-        .nav {{ grid-template-columns: 1fr 1fr; }}
+        .nav {{ width: 100%; min-width: 0; display: flex; overflow-x: auto; gap: 8px; padding-bottom: 5px; scrollbar-width: none; }}
+        .nav::-webkit-scrollbar {{ display: none; }}
+        .nav-item {{ flex: 0 0 auto; min-height: 46px; white-space: nowrap; }}
         .primary-metrics,
         .secondary-metrics,
-        .credits-layout {{ grid-template-columns: 1fr; }}
+        .credits-layout,
+        .planner-grid {{ grid-template-columns: 1fr; }}
+        .planner-grid > div + div {{ border-left: 0; padding-left: 0; padding-top: 14px; border-top: 1px solid rgba(73, 159, 255, 0.14); }}
+        .recent-logs li {{ grid-template-columns: 8px auto minmax(0, 1fr); }}
+        .recent-logs time {{ display: none; }}
         h1 {{ font-size: 30px; }}
         .topology {{ height: 470px; }}
         .orbit {{ inset: 112px 20px 82px; }}
@@ -3557,13 +3687,15 @@ fn control_plane_home(
           <a class="nav-item motion-lift" href="/nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>Nodes</a>
           <a class="nav-item motion-lift" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>Jobs</a>
           <a class="nav-item motion-lift" href="/credits"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>Credits</a>
+          <a class="nav-item motion-lift" href="/v1/planner/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M12 7v5M5 16v-4h14v4"/></svg>Planner Status <span class="live-dot" aria-hidden="true"></span></a>
           <a class="nav-item motion-lift" href="/registry"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>Registry</a>
           <a class="nav-item motion-lift" href="/settings"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>Settings</a>
         </nav>
         <div class="sidebar-bottom">
           <div class="side-card">
             <div style="display:flex;align-items:center;gap:12px;"><span class="status-dot"></span><span>Control Plane Status</span></div>
-            <div style="color:#54b9ff;margin-top:10px;">Healthy</div>
+            <div style="color:var(--green);margin-top:10px;">Healthy</div>
+            <div class="meta" style="margin-top:8px;">All systems operational</div>
           </div>
           <div class="side-card operator">
             <div class="avatar">NX</div>
@@ -3591,9 +3723,7 @@ fn control_plane_home(
 
         <div class="statusline">
           <span class="pill pill-{healthy_tone}">healthy</span>
-          <span class="pill pill-{storage_tone}">storage: {storage_source}</span>
-          <span class="pill pill-{supabase_tone}">supabase: {supabase}</span>
-          <span class="pill pill-{planner_tone}">planner: {planner_status}</span>
+          <span class="pill pill-{storage_tone}">storage: {storage_label}</span>
           {deploy_badge}
         </div>
 
@@ -3611,41 +3741,65 @@ fn control_plane_home(
           <a class="card compact metric-link" href="/jobs?status=completed"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="9"/><path d="m9 12 2 2 4-5"/></svg><div><div class="card-label">Completed jobs</div><div class="card-value">{completed}</div></div></a>
           <a class="card compact metric-link" href="/jobs?status=failed"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 10 18H2L12 3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg><div><div class="card-label">Failed jobs</div><div class="card-value">{failed}</div></div></a>
           <a class="card compact metric-link" href="/registry?policy=blocked"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="M12 8v8"/><path d="M9 12h6"/></svg><div><div class="card-label">Policy blocked</div><div class="card-value">{policy_blocked}</div></div></a>
-          <a class="card compact metric-link planner-status-card" data-tone="{planner_tone}" href="/v1/planner/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 3 4 7v10l8 4 8-4V7l-8-4Z"/><path d="M12 8v8"/><path d="M8 12h8"/></svg><div><div class="card-label">Planner Service</div><div class="card-value">{planner_status}</div><div class="delta">{planner_mode} - {planner_provider} - {planner_latency} - {planner_configured}</div></div></a>
         </section>
 
         <section class="work-grid">
-          <div class="section">
-            <div class="section-head">
-              <div class="section-title-row"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="16" r="2.5"/><circle cx="19" cy="16" r="2.5"/><path d="M10 7 6.5 14"/><path d="m14 7 3.5 7"/><path d="M7.5 16h9"/></svg><div><h2 class="section-title">Network Topology</h2><div class="meta">Live view of compute network</div></div></div>
-              <div class="legend"><span><i class="legend-dot"></i>Online</span><span><i class="legend-dot trusted"></i>Trusted</span><span><i class="legend-dot paused"></i>Paused</span><span><i class="legend-dot offline"></i>Offline</span></div>
-            </div>
-            <div class="section-body">
-              <div class="topology">
-                <div class="orbit"></div><div class="grid-ring"></div>
-                <div class="radial"></div><div class="radial r2"></div><div class="radial r3"></div><div class="radial r4"></div><div class="radial r5"></div><div class="radial r6"></div><div class="radial r7"></div><div class="radial r8"></div>
-                <div class="topology-center motion-glow"><span class="logo-signal s1" aria-hidden="true"></span><span class="logo-signal s2" aria-hidden="true"></span><span class="logo-signal s3" aria-hidden="true"></span><img class="center-logo" alt="Compute topology logo" src="{logo_path}" /></div>
-                {topology_slots}
+          <div class="work-column">
+            <div class="section">
+              <div class="section-head">
+                <div class="section-title-row"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2.5"/><circle cx="5" cy="16" r="2.5"/><circle cx="19" cy="16" r="2.5"/><path d="M10 7 6.5 14"/><path d="m14 7 3.5 7"/><path d="M7.5 16h9"/></svg><div><h2 class="section-title">Network Topology</h2><div class="meta">Live view of compute network</div></div></div>
+                <div class="legend"><span><i class="legend-dot"></i>Online</span><span><i class="legend-dot trusted"></i>Trusted</span><span><i class="legend-dot paused"></i>Paused</span><span><i class="legend-dot offline"></i>Offline</span></div>
               </div>
-              <div class="panel-footer">{nodes} nodes registered</div>
+              <div class="section-body">
+                <div class="topology">
+                  <div class="orbit"></div><div class="grid-ring"></div>
+                  <div class="radial"></div><div class="radial r2"></div><div class="radial r3"></div><div class="radial r4"></div><div class="radial r5"></div><div class="radial r6"></div><div class="radial r7"></div><div class="radial r8"></div>
+                  <div class="topology-center motion-glow"><span class="logo-signal s1" aria-hidden="true"></span><span class="logo-signal s2" aria-hidden="true"></span><span class="logo-signal s3" aria-hidden="true"></span><img class="center-logo" alt="Compute topology logo" src="{logo_path}" /></div>
+                  {topology_slots}
+                </div>
+                <div class="panel-footer">{nodes} nodes registered</div>
+              </div>
+            </div>
+            <div class="section">
+              <div class="section-head">
+                <h2 class="section-title">Recent Logs</h2>
+                <a class="api-link" href="/v1/job-events?page=1&page_size=25">View all</a>
+              </div>
+              <div class="section-body">
+                <ul class="recent-logs">{recent_logs}</ul>
+              </div>
             </div>
           </div>
 
-          <div class="section">
-            <div class="section-head">
-              <div class="section-title-row"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg><h2 class="section-title">Credits Overview</h2></div>
-              <span class="endpoint-button" style="min-height:34px;">7D</span>
+          <div class="work-column">
+            <div class="section planner-status-card" data-tone="{planner_tone}">
+              <div class="section-head">
+                <div class="section-title-row"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="5" r="2"/><circle cx="5" cy="18" r="2"/><circle cx="19" cy="18" r="2"/><path d="M12 7v5M5 16v-4h14v4"/></svg><h2 class="section-title">Planner Status</h2></div>
+              </div>
+              <div class="section-body">
+                <div class="meta">Service Status</div>
+                <div class="planner-health"><span class="live-dot"></span>{planner_status}</div>
+                <div class="planner-grid">
+                  <div><div class="meta">Provider</div><div class="planner-value">{planner_provider}</div><div class="meta">{planner_mode} · {planner_configured}</div></div>
+                  <div><div class="meta">Latency</div><div class="planner-value good">{planner_latency}</div></div>
+                </div>
+              </div>
             </div>
-            <div class="section-body">
-              <div class="credits-layout">
-                <div><div class="meta">Total Credits</div><div class="credit-total">{credits_total:.2}</div></div>
-                <svg viewBox="0 0 180 82" fill="none"><path d="M0 56 C12 14 20 78 35 42 S51 70 64 18 S82 64 96 36 S118 46 130 22 S155 35 180 18" stroke="#248fff" stroke-width="2"/></svg>
+
+            <div class="section">
+              <div class="section-head">
+                <h2 class="section-title">Planner Overview</h2>
+                <span class="endpoint-button" style="min-height:34px;">7D</span>
               </div>
-              <p class="meta" style="font-size:15px;line-height:1.7;">Credits are accrued through the append-only ledger and exposed at <code>/v1/credits</code>.</p>
-              <div class="info-box">
-                <div style="display:flex;gap:12px;align-items:flex-start;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg><div>Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.<br/>Current startup storage source: <code>{storage_source}</code><br/>Supabase sync is <code>{supabase}</code></div></div>
+              <div class="section-body">
+                <div class="credits-layout">
+                  <div><div class="meta">Total Credits</div><div class="credit-total">{credits_total:.2}</div></div>
+                  <svg viewBox="0 0 180 82" fill="none"><path d="M0 56 C12 14 20 78 35 42 S51 70 64 18 S82 64 96 36 S118 46 130 22 S155 35 180 18" stroke="#248fff" stroke-width="2"/></svg>
+                </div>
+                <div class="credit-periods"><div><span>Today</span><strong>{credits_total:.2}</strong></div><div><span>This Week</span><strong>{credits_total:.2}</strong></div><div><span>This Month</span><strong>{credits_total:.2}</strong></div></div>
+                <div class="info-box">Storage mode: <code>{storage_label}</code><br/>Supabase synchronization: <code>{supabase}</code></div>
+                <div class="api-strip links" aria-label="Developer APIs"><span class="meta">Developer APIs</span><a class="api-link" href="/health">health json</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes?page=1&page_size=25">nodes json</a><a class="api-link" href="/v1/jobs?page=1&page_size=25">jobs json</a></div>
               </div>
-              <div class="api-strip links" aria-label="Developer APIs"><span class="meta">Developer APIs</span><a class="api-link" href="/health">health json</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes?page=1&page_size=25">nodes json</a><a class="api-link" href="/v1/jobs?page=1&page_size=25">jobs json</a><a class="api-link" href="/v1/credits?page=1&page_size=25">credits json</a></div>
             </div>
           </div>
         </section>
@@ -3655,8 +3809,9 @@ fn control_plane_home(
     </div>
   </body>
 </html>"##,
-        storage_source = escape_html(storage_source.as_str()),
+        storage_label = escape_html(storage_label),
         logo_path = CONTROL_PLANE_LOGO_PATH,
+        recent_logs = recent_logs,
         deploy_badge = deploy_badge,
         planner_tone = planner_tone,
         planner_status = escape_html(planner_status),
@@ -6092,9 +6247,10 @@ mod tests {
         assert!(html.contains(CONTROL_PLANE_LOGO_PATH));
         assert!(html.contains("Status API"));
         assert!(html.contains("Network Topology"));
-        assert!(html.contains("Credits Overview"));
-        assert!(html.contains("Planner Service"));
-        assert!(html.contains("planner:"));
+        assert!(html.contains("Planner Overview"));
+        assert!(html.contains("Planner Status"));
+        assert!(html.contains("Recent Logs"));
+        assert!(html.contains("storage: json fallback"));
         assert!(html.contains(r#"href="/v1/planner/status""#));
         assert!(html.contains(r#"href="/nodes""#));
         assert!(html.contains(r#"href="/jobs""#));
@@ -6128,6 +6284,25 @@ mod tests {
         assert!(!html.contains("Node Details"));
         assert!(!html.contains("Signed registry snapshot"));
         assert!(!html.contains("Control Plane</div></div></div>"));
+    }
+
+    #[test]
+    fn home_page_labels_supabase_and_json_storage_modes() {
+        let state = ControlPlaneState::default();
+        let supabase_html = control_plane_home(
+            &state,
+            StorageSource::Supabase,
+            &SupabaseSyncStatus::enabled(StorageSource::Supabase),
+        );
+        let json_html = control_plane_home(
+            &state,
+            StorageSource::LocalJsonOnly,
+            &SupabaseSyncStatus::disabled(StorageSource::LocalJsonOnly),
+        );
+
+        assert!(supabase_html.contains("storage: supabase"));
+        assert!(json_html.contains("storage: json"));
+        assert!(json_html.contains("Supabase synchronization: <code>disabled"));
     }
 
     #[test]
