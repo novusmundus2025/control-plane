@@ -2509,6 +2509,7 @@ fn complete_graph_execution_job(
     completed_at: String,
     compact_reducer_node: bool,
 ) -> JobRecord {
+    let automatic_budget = !job_has_explicit_max_tokens(job);
     let active_node_id = graph_node_assigned_to_node(&job.graph, &completion.node_id);
     let compact_final_reducer_fallback_output =
         if completion.status == JobStatus::Failed && compact_reducer_node {
@@ -2537,7 +2538,36 @@ fn complete_graph_execution_job(
                             .as_deref()
                             .map(|output| clean_section_output(&graph_node.name, output).is_empty())
                             .unwrap_or(true);
-                    if unusable_section_output {
+                    let stage_hint = format!(
+                        "{} {} {}",
+                        graph_node.id, graph_node.name, graph_node.responsibility
+                    )
+                    .to_ascii_lowercase();
+                    let is_final_synthesis = job.graph.final_node_id.as_deref()
+                        == Some(active_node_id)
+                        && (stage_hint.contains("synth")
+                            || stage_hint.contains("merge")
+                            || stage_hint.contains("final"));
+                    let truncated_synthesis = automatic_budget
+                        && is_final_synthesis
+                        && completion
+                            .output
+                            .as_deref()
+                            .zip(graph_node.effective_max_tokens)
+                            .map(|(output, budget)| output_appears_token_limited(output, budget))
+                            .unwrap_or(false)
+                        && graph_node.attempt_count < graph_node.max_attempts;
+                    if truncated_synthesis {
+                        let previous_budget = graph_node.effective_max_tokens.unwrap_or(1_024);
+                        graph_node.recommended_max_tokens =
+                            Some(previous_budget.saturating_mul(2).min(8_192));
+                        graph_node.status = JobGraphNodeStatus::Ready;
+                        graph_node.output = None;
+                        graph_node.error = Some(format!(
+                            "automatic retry: synthesis output reached its {} token budget and appears incomplete",
+                            previous_budget
+                        ));
+                    } else if unusable_section_output {
                         if !graph_node
                             .failed_node_ids
                             .iter()
@@ -2619,10 +2649,26 @@ fn complete_graph_execution_job(
         Some(completion.node_id.as_str()),
         completion.latency_ms,
     );
+    let completion_was_requeued = active_node_id
+        .as_deref()
+        .and_then(|node_id| job.graph.nodes.iter().find(|node| node.id == node_id))
+        .map(|node| {
+            node.status == JobGraphNodeStatus::Ready
+                && node
+                    .error
+                    .as_deref()
+                    .map(|error| error.starts_with("automatic retry:"))
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
 
     job.worker_id = Some(completion.worker_id);
     job.backend = Some(completion.backend);
-    job.output = completion.output;
+    job.output = if completion_was_requeued {
+        job.graph.final_output.clone()
+    } else {
+        completion.output
+    };
     job.error = if job.graph.status == JobGraphStatus::Failed {
         completion.error.or_else(|| job.graph.merge_error.clone())
     } else {
@@ -2660,6 +2706,19 @@ fn complete_graph_execution_job(
 
     job.graph.updated_at = completed_at;
     job.clone()
+}
+
+fn output_appears_token_limited(output: &str, effective_max_tokens: u32) -> bool {
+    let trimmed = output.trim();
+    if trimmed.is_empty() || effective_max_tokens < 64 {
+        return false;
+    }
+    let estimated_tokens = estimate_tokens_from_chars(trimmed.chars().count()) as u32;
+    let near_budget =
+        estimated_tokens.saturating_mul(100) >= effective_max_tokens.saturating_mul(80);
+    let structurally_complete =
+        trimmed.ends_with(['.', '!', '?', ':', ';', '"', '\'', ')', ']', '}', '>', '`']);
+    near_budget && !structurally_complete
 }
 
 fn graph_node_assigned_to_node(graph: &JobGraph, node_id: &str) -> Option<String> {
@@ -2781,6 +2840,13 @@ fn job_uses_auto_max_tokens(job: &JobRecord) -> bool {
         .unwrap_or(false)
 }
 
+fn job_has_explicit_max_tokens(job: &JobRecord) -> bool {
+    job.max_tokens_source
+        .as_deref()
+        .map(|source| source.eq_ignore_ascii_case("explicit"))
+        .unwrap_or(false)
+}
+
 fn model_generation_ceiling(model_name: Option<&str>) -> u32 {
     let Some(model_name) = model_name.map(str::to_ascii_lowercase) else {
         return 4_096;
@@ -2882,10 +2948,40 @@ fn graph_node_max_tokens(
         return requested.max(384);
     };
 
-    let stage_budget = match job.plan.strategy.as_str() {
+    let stage_hint =
+        format!("{} {} {}", node.id, node.name, node.responsibility).to_ascii_lowercase();
+    let is_synthesis = stage_hint.contains("synth")
+        || stage_hint.contains("final answer")
+        || stage_hint.contains("final merge");
+    let is_reduction = !is_synthesis
+        && (stage_hint.contains("reduc") || node.responsibility.eq_ignore_ascii_case("merge"));
+    let dependency_tokens = node
+        .depends_on
+        .iter()
+        .filter_map(|dependency_id| {
+            job.graph
+                .nodes
+                .iter()
+                .find(|candidate| candidate.id == *dependency_id)
+        })
+        .filter(|dependency| dependency.status == JobGraphNodeStatus::Completed)
+        .map(|dependency| {
+            dependency.estimated_output_tokens.unwrap_or_else(|| {
+                dependency
+                    .output
+                    .as_deref()
+                    .map(|output| estimate_tokens_from_chars(output.chars().count()))
+                    .unwrap_or(0)
+            }) as u32
+        })
+        .sum::<u32>();
+
+    let strategy_budget = match job.plan.strategy.as_str() {
         "single_job" => requested.max(512),
         "sectioned_research" | "deployment_procedure" => {
-            if node.responsibility == "merge" {
+            if is_synthesis {
+                requested.max(2_048)
+            } else if is_reduction {
                 requested.max(1_536)
             } else if requested > 1_024 {
                 768
@@ -2909,7 +3005,8 @@ fn graph_node_max_tokens(
             _ => 768,
         },
         _ => match node.responsibility.as_str() {
-            "merge" => 768,
+            "synthesize" => requested.max(2_048),
+            "reduce" | "merge" => requested.max(1_024),
             "analysis" | "scope" => 256,
             "backend" | "frontend" | "implementation" => 768,
             "tests" | "documentation" | "security" | "validation" => 512,
@@ -2917,9 +3014,30 @@ fn graph_node_max_tokens(
         },
     };
 
-    if requested > 0 && !job_uses_auto_max_tokens(job) {
-        requested.min(stage_budget)
-    } else if job_uses_auto_max_tokens(job) {
+    let volume_budget = if is_synthesis {
+        requested
+            .max(dependency_tokens.saturating_mul(3).saturating_div(2))
+            .clamp(1_024, 4_096)
+    } else if is_reduction {
+        dependency_tokens
+            .saturating_mul(2)
+            .saturating_div(3)
+            .clamp(768, 3_072)
+    } else {
+        0
+    };
+    let stage_budget = strategy_budget
+        .max(node.recommended_max_tokens.unwrap_or(0))
+        .max(node.minimum_max_tokens.unwrap_or(0))
+        .max(volume_budget);
+    let adaptive_critical_stage =
+        (is_synthesis || is_reduction) && !job_has_explicit_max_tokens(job);
+
+    if requested > 0 && !job_uses_auto_max_tokens(job) && !adaptive_critical_stage {
+        requested
+            .min(stage_budget)
+            .max(node.minimum_max_tokens.unwrap_or(1).min(requested))
+    } else if job_uses_auto_max_tokens(job) || adaptive_critical_stage {
         let baseline = requested.max(stage_budget);
         scale_auto_generation_budget(baseline, node_generation_ceiling(claiming_node))
     } else {
@@ -3549,6 +3667,8 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
                 reason:
                     "Request is low or medium complexity without separate responsibility areas."
                         .to_string(),
+                recommended_max_tokens: None,
+                minimum_max_tokens: None,
             }],
         };
     }
@@ -3740,6 +3860,8 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
                         .to_string(),
                 reason: "Documentation summary prompts do not need scope, implementation, test, or reducer dependencies."
                     .to_string(),
+                recommended_max_tokens: None,
+                minimum_max_tokens: None,
             }],
         };
     }
@@ -3878,6 +4000,8 @@ fn single_execution_plan(
                 classification.output_format
             ),
             reason: reason.to_string(),
+            recommended_max_tokens: None,
+            minimum_max_tokens: None,
         }],
     }
 }
@@ -3912,6 +4036,8 @@ fn plan_job_request_for_submission(
                 reason:
                     "Auto mode avoided sectioned decomposition because it would run sequentially on the current available node slot set."
                         .to_string(),
+                recommended_max_tokens: None,
+                minimum_max_tokens: None,
             }],
         };
     }
@@ -3958,6 +4084,8 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
                 responsibility: job.responsibility.clone(),
                 depends_on: job.depends_on.clone(),
                 required_output: job.required_output.clone(),
+                recommended_max_tokens: job.recommended_max_tokens,
+                minimum_max_tokens: job.minimum_max_tokens,
                 status: JobGraphNodeStatus::Waiting,
                 blocked_by: job.depends_on.clone(),
                 assigned_node_id: None,
@@ -4371,6 +4499,8 @@ fn push_planned_job(
         depends_on,
         required_output: required_output.to_string(),
         reason: reason.to_string(),
+        recommended_max_tokens: None,
+        minimum_max_tokens: None,
     });
 }
 
@@ -5274,6 +5404,8 @@ mod tests {
             responsibility: "section".to_string(),
             depends_on: Vec::new(),
             required_output: "historical scheduler telemetry".to_string(),
+            recommended_max_tokens: None,
+            minimum_max_tokens: None,
             status,
             blocked_by: Vec::new(),
             assigned_node_id: Some(node_id.to_string()),
@@ -5864,6 +5996,52 @@ mod tests {
         let claimed_job = claim.job.expect("claimed job");
 
         assert_eq!(claimed_job.max_tokens, Some(512));
+    }
+
+    #[test]
+    fn synthesis_budget_uses_planner_hint_and_completed_dependency_volume() {
+        let mut state = ready_state();
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.max_tokens = Some(512);
+        request.max_tokens_source = None;
+        let mut job = state.submit_job(request, "2".to_string());
+        let final_node_id = job.graph.final_node_id.clone().expect("final node");
+
+        for node in &mut job.graph.nodes {
+            if node.id == final_node_id {
+                node.responsibility = "synthesize".to_string();
+                node.recommended_max_tokens = Some(3_072);
+                node.minimum_max_tokens = Some(1_024);
+            } else {
+                node.status = JobGraphNodeStatus::Completed;
+                node.output = Some("evidence ".repeat(500));
+                node.estimated_output_tokens = Some(1_000);
+            }
+        }
+
+        let claiming_node = state.nodes.get("node-1").expect("ready node");
+        let budget = graph_node_max_tokens(&job, &final_node_id, Some(claiming_node));
+
+        assert!(budget >= 3_072);
+        assert!(budget <= node_generation_ceiling(Some(claiming_node)));
+    }
+
+    #[test]
+    fn detects_only_near_budget_incomplete_synthesis_outputs() {
+        assert!(output_appears_token_limited(
+            &format!("Detailed history {}", "continued ".repeat(220)),
+            384,
+        ));
+        assert!(!output_appears_token_limited(
+            &format!("Detailed history {}.", "complete ".repeat(220)),
+            384,
+        ));
+        assert!(!output_appears_token_limited(
+            "Short but complete enough",
+            2_048
+        ));
     }
 
     #[test]
@@ -6770,7 +6948,7 @@ mod tests {
             reducer_claim.active_graph_node_id.as_deref(),
             Some("job.final_synthesis")
         );
-        assert_eq!(reducer_claim.max_tokens, Some(2_048));
+        assert_eq!(reducer_claim.max_tokens, Some(4_096));
         assert!(reducer_claim.prompt.contains("expansion output"));
     }
 
