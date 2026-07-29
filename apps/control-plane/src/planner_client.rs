@@ -70,6 +70,8 @@ struct PlanStepWire {
     depends_on: Option<Vec<String>>,
     required_output: Option<String>,
     reason: Option<String>,
+    recommended_max_tokens: Option<u32>,
+    minimum_max_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -288,6 +290,8 @@ fn response_to_plan(
                 reason: step
                     .reason
                     .unwrap_or_else(|| "Planner service selected this step.".to_string()),
+                recommended_max_tokens: step.recommended_max_tokens,
+                minimum_max_tokens: step.minimum_max_tokens,
             })
         })
         .collect::<Vec<_>>();

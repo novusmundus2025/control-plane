@@ -366,6 +366,10 @@ pub struct PlannedJob {
     pub depends_on: Vec<String>,
     pub required_output: String,
     pub reason: String,
+    #[serde(default)]
+    pub recommended_max_tokens: Option<u32>,
+    #[serde(default)]
+    pub minimum_max_tokens: Option<u32>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -433,6 +437,10 @@ pub struct JobGraphNode {
     pub responsibility: String,
     pub depends_on: Vec<String>,
     pub required_output: String,
+    #[serde(default)]
+    pub recommended_max_tokens: Option<u32>,
+    #[serde(default)]
+    pub minimum_max_tokens: Option<u32>,
     pub status: JobGraphNodeStatus,
     pub blocked_by: Vec<String>,
     #[serde(default)]
