@@ -3756,6 +3756,14 @@ fn control_plane_home(
         background: radial-gradient(circle at 50% 45%, rgba(78, 143, 255, 0.13), rgba(255, 255, 255, 0.98) 68%);
         box-shadow: inset 0 0 24px rgba(18, 109, 255, 0.12);
       }}
+      html[data-theme="light"] .topology-center::before {{
+        background: linear-gradient(145deg, rgba(91, 160, 255, 0.72), rgba(83, 126, 255, 0.48) 45%, rgba(127, 80, 255, 0.52));
+        filter: drop-shadow(0 5px 12px rgba(46, 103, 190, 0.14));
+      }}
+      html[data-theme="light"] .logo-signal {{
+        background: linear-gradient(145deg, rgba(90, 154, 255, 0.12), rgba(122, 91, 255, 0.06));
+        box-shadow: 0 0 0 1px rgba(91, 143, 214, 0.15);
+      }}
       html[data-theme="light"] .topo-node {{
         color: #1f2937;
       }}
@@ -3765,6 +3773,25 @@ fn control_plane_home(
       html[data-theme="light"] .node-hex {{
         color: #516079;
         box-shadow: 0 4px 12px rgba(16, 24, 40, 0.06);
+      }}
+      html[data-theme="light"] .topo-node.offline {{
+        color: #1f2937;
+        opacity: 1;
+      }}
+      html[data-theme="light"] .topo-node.offline .node-hex {{
+        background: linear-gradient(135deg, #d9e0e9, #edf1f6);
+        color: #52627a;
+        box-shadow: 0 4px 12px rgba(16, 24, 40, 0.045);
+        opacity: 1;
+      }}
+      html[data-theme="light"] .topo-node.offline .node-hex::before {{
+        background: #ffffff;
+      }}
+      html[data-theme="light"] .topo-node.offline .topo-label {{
+        color: #1f2937;
+      }}
+      html[data-theme="light"] .topo-node.offline .topo-id {{
+        color: #59677a;
       }}
       html[data-theme="light"] .info-box,
       html[data-theme="light"] .api-strip,
@@ -6635,6 +6662,10 @@ mod tests {
         assert!(html.contains("prefers-color-scheme: light"));
         assert!(html.contains("Switch to light theme"));
         assert!(html.contains("Switch to dark theme"));
+        assert!(html.contains(r#"html[data-theme="light"] .topo-node.offline .node-hex"#));
+        assert!(html.contains(r#"html[data-theme="light"] .topo-node.offline .node-hex::before"#));
+        assert!(html.contains("background: #ffffff"));
+        assert!(html.contains("opacity: 1"));
         assert!(html.contains(r#"class="card metric-link" href="/nodes?state=online""#));
         assert!(html.contains(r#"class="card metric-link" href="/jobs?status=queued""#));
         assert!(html.contains(r#"class="card metric-link" href="/credits""#));
