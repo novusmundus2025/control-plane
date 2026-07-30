@@ -2780,18 +2780,18 @@ fn control_plane_operator_page(
   <body>
     <div class="shell">
       <aside class="sidebar" aria-label="Control plane navigation">
-        <a class="brand motion-glow" href="/" aria-label="Control plane home"><img class="brand-mark" alt="Control plane logo" src="{logo_path}" /> <span>Control Plane</span></a>
+        <a class="brand motion-glow" href="/" aria-label="EHDA control plane home"><img class="brand-mark" alt="Control plane logo" src="{logo_path}" /> <span>EHDA</span></a>
         <nav class="nav"><a class="nav-item motion-lift" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6"/></svg>Overview</a>{nav}</nav>
         <div class="sidebar-bottom">
           <div class="side-card">
             <div style="display:flex;align-items:center;gap:12px;"><span class="status-dot"></span><span>Control Plane Status</span></div>
-            <div style="color:#54b9ff;margin-top:10px;">Healthy</div>
+            <div style="color:#39d98a;margin-top:10px;">⌄ &nbsp;Healthy</div>
           </div>
           <div class="side-card operator">
             <div class="avatar">NX</div>
-            <div><strong>Operator</strong><div class="meta">operator@control-plane.local</div></div>
+            <div><strong>Operator</strong><div class="meta">operator@ehda.local</div><div class="meta">Control Plane Local</div></div>
           </div>
-          <div class="foot">Control Plane<br/>v1.0.0</div>
+          <div class="foot" style="display:flex;justify-content:space-between;border-top:1px solid rgba(116,139,164,.14);padding-top:18px;"><span>© 2026 EHDA</span><span>v1.0.0</span></div>
         </div>
       </aside>
       <main>
@@ -2881,17 +2881,17 @@ fn control_plane_home(
     <style>
       :root {{
         color-scheme: dark;
-        --bg: #020711;
-        --surface: rgba(4, 13, 24, 0.92);
-        --surface-2: rgba(8, 22, 39, 0.86);
-        --panel: rgba(3, 10, 20, 0.86);
-        --line: rgba(73, 159, 255, 0.22);
-        --line-strong: rgba(45, 164, 255, 0.48);
-        --text: #f6fbff;
-        --muted: #9baac0;
-        --blue: #33a8ff;
-        --cyan: #25d7ff;
-        --purple: #9b6cff;
+        --bg: #070d14;
+        --surface: rgba(14, 21, 29, 0.96);
+        --surface-2: rgba(17, 25, 35, 0.92);
+        --panel: rgba(10, 17, 24, 0.96);
+        --line: rgba(116, 139, 164, 0.22);
+        --line-strong: rgba(64, 148, 255, 0.56);
+        --text: #f2f6fb;
+        --muted: #a5b0c0;
+        --blue: #4094ff;
+        --cyan: #4094ff;
+        --purple: #704cff;
         --green: #39d98a;
         --orange: #f18f3b;
         --amber: #edb73f;
@@ -2905,9 +2905,8 @@ fn control_plane_home(
         margin: 0;
         min-height: 100vh;
         background:
-          radial-gradient(circle at 48% 32%, rgba(0, 136, 255, 0.18), transparent 28%),
-          radial-gradient(circle at 78% 10%, rgba(40, 216, 255, 0.11), transparent 24%),
-          linear-gradient(135deg, #020711 0%, #050b16 52%, #01040b 100%);
+          radial-gradient(circle at 72% 0%, rgba(31, 89, 142, 0.08), transparent 31%),
+          linear-gradient(135deg, #071019 0%, #070c12 60%, #050a10 100%);
         color: var(--text);
         font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
       }}
@@ -2949,16 +2948,16 @@ fn control_plane_home(
       }}
       .app-shell {{
         display: grid;
-        grid-template-columns: 250px minmax(0, 1fr);
+        grid-template-columns: 212px minmax(0, 1fr);
         min-height: 100vh;
       }}
       .sidebar {{
         position: sticky;
         top: 0;
         height: 100vh;
-        border-right: 1px solid var(--line);
-        background: linear-gradient(180deg, rgba(2, 9, 18, 0.96), rgba(2, 8, 16, 0.9));
-        padding: 26px 16px 18px;
+        border-right: 1px solid #26303b;
+        background: linear-gradient(180deg, rgba(10, 17, 25, 0.98), rgba(9, 16, 24, 0.93));
+        padding: 28px 18px 18px;
         display: flex;
         flex-direction: column;
         gap: 22px;
@@ -2967,15 +2966,16 @@ fn control_plane_home(
         display: flex;
         align-items: center;
         gap: 12px;
-        font-family: Georgia, "Times New Roman", serif;
-        font-size: 22px;
+        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+        font-size: 26px;
+        font-weight: 750;
         color: #fff;
         border-radius: 8px;
       }}
       .brand-mark {{
-        width: 54px;
-        height: 54px;
-        border-radius: 50%;
+        width: 38px;
+        height: 38px;
+        border-radius: 0;
         object-fit: contain;
         filter: drop-shadow(0 0 16px rgba(70, 174, 255, 0.34));
       }}
@@ -2987,8 +2987,8 @@ fn control_plane_home(
         display: flex;
         align-items: center;
         gap: 14px;
-        min-height: 54px;
-        padding: 0 13px;
+        min-height: 46px;
+        padding: 0 12px;
         border: 1px solid transparent;
         border-radius: 7px;
         color: #b9c5d6;
@@ -2999,10 +2999,10 @@ fn control_plane_home(
         background: rgba(51, 168, 255, 0.1);
       }}
       .nav-item.active {{
-        color: #55bdff;
-        border-color: rgba(35, 161, 255, 0.7);
-        background: linear-gradient(90deg, rgba(0, 106, 255, 0.26), rgba(0, 165, 255, 0.08));
-        box-shadow: 0 0 24px rgba(0, 128, 255, 0.25), inset 0 0 22px rgba(0, 136, 255, 0.1);
+        color: #55a0ff;
+        border-color: #2f77bd;
+        background: linear-gradient(90deg, rgba(35, 108, 190, 0.28), rgba(27, 56, 91, 0.35));
+        box-shadow: none;
       }}
       .icon {{
         width: 22px;
@@ -3056,7 +3056,7 @@ fn control_plane_home(
         font-weight: 700;
       }}
       .main {{
-        padding: 30px 28px 34px;
+        padding: 27px 28px 56px;
         min-width: 0;
       }}
       .topbar {{
@@ -3068,7 +3068,7 @@ fn control_plane_home(
       }}
       h1 {{
         margin: 0;
-        font-size: 34px;
+        font-size: 31px;
         line-height: 1.1;
         letter-spacing: 0;
       }}
@@ -3130,10 +3130,10 @@ fn control_plane_home(
         align-items: center;
         min-height: 34px;
         padding: 0 16px;
-        border-radius: 999px;
+        border-radius: 9px;
         font-size: 13px;
         letter-spacing: 0.03em;
-        text-transform: uppercase;
+        text-transform: none;
         border: 1px solid transparent;
       }}
       .pill-green {{ background: rgba(57, 217, 138, 0.08); color: var(--green); border-color: rgba(57, 217, 138, 0.34); }}
@@ -3145,21 +3145,20 @@ fn control_plane_home(
       .primary-metrics {{
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 18px;
+        gap: 14px;
       }}
       .secondary-metrics {{
         display: grid;
         grid-template-columns: repeat(7, minmax(0, 1fr));
-        gap: 18px;
-        margin-top: 18px;
+        gap: 13px;
+        margin-top: 14px;
       }}
       .card {{
         border: 1px solid var(--line);
         background:
-          radial-gradient(circle at 86% 80%, rgba(0, 128, 255, 0.16), transparent 38%),
-          linear-gradient(180deg, rgba(8, 23, 41, 0.92), rgba(3, 10, 19, 0.92));
+          linear-gradient(145deg, rgba(19, 28, 38, 0.96), rgba(12, 19, 27, 0.95));
         border-radius: 8px;
-        padding: 22px;
+        padding: 18px;
         position: relative;
         min-height: 112px;
         overflow: hidden;
@@ -3181,7 +3180,7 @@ fn control_plane_home(
         outline-offset: 3px;
       }}
       .card.compact {{
-        min-height: 88px;
+        min-height: 104px;
         padding: 18px;
         display: flex;
         align-items: center;
@@ -3204,24 +3203,24 @@ fn control_plane_home(
         text-transform: capitalize;
       }}
       .metric-icon {{
-        width: 58px;
-        height: 58px;
+        width: 52px;
+        height: 52px;
         border-radius: 50%;
         display: grid;
         place-items: center;
-        background: radial-gradient(circle, rgba(0, 115, 255, 0.34), rgba(0, 58, 117, 0.24));
-        color: var(--cyan);
+        background: #172231;
+        color: var(--blue);
         flex: 0 0 auto;
       }}
       .card-label {{
         color: #d8e2ef;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        font-size: 13px;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 12px;
       }}
       .card-value {{
         margin-top: 6px;
-        font-size: 31px;
+        font-size: 27px;
         line-height: 1.1;
       }}
       .delta {{
@@ -3239,13 +3238,13 @@ fn control_plane_home(
       }}
       .work-grid {{
         display: grid;
-        grid-template-columns: minmax(0, 1.7fr) minmax(360px, 1fr);
-        gap: 18px;
-        margin-top: 18px;
+        grid-template-columns: minmax(0, 1.9fr) minmax(340px, 1fr);
+        gap: 16px;
+        margin-top: 16px;
       }}
       .section {{
         border: 1px solid var(--line);
-        background: linear-gradient(180deg, rgba(5, 14, 25, 0.9), rgba(2, 9, 17, 0.92));
+        background: linear-gradient(145deg, rgba(15, 23, 32, 0.96), rgba(10, 17, 24, 0.96));
         border-radius: 8px;
         overflow: hidden;
         box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
@@ -3277,7 +3276,7 @@ fn control_plane_home(
       }}
       .topology {{
         position: relative;
-        height: 420px;
+        height: 350px;
         border-bottom: 1px solid rgba(73, 159, 255, 0.12);
         overflow: hidden;
       }}
