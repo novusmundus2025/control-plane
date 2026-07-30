@@ -2878,6 +2878,17 @@ fn control_plane_home(
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Control Plane</title>
+    <script>
+      (() => {{
+        try {{
+          const saved = localStorage.getItem("ehda-theme");
+          const preferred = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          document.documentElement.dataset.theme = saved === "light" || saved === "dark" ? saved : preferred;
+        }} catch (_) {{
+          document.documentElement.dataset.theme = "dark";
+        }}
+      }})();
+    </script>
     <style>
       :root {{
         color-scheme: dark;
@@ -3111,6 +3122,15 @@ fn control_plane_home(
         justify-content: center;
         padding: 0;
       }}
+      .theme-button {{
+        width: 44px;
+        justify-content: center;
+        padding: 0;
+        cursor: pointer;
+      }}
+      .theme-button .sun-icon {{ display: none; }}
+      html[data-theme="light"] .theme-button .sun-icon {{ display: block; }}
+      html[data-theme="light"] .theme-button .moon-icon {{ display: none; }}
       .live-dot {{
         display: inline-block;
         width: 8px;
@@ -3627,6 +3647,137 @@ fn control_plane_home(
         margin-top: 22px;
         overflow-wrap: anywhere;
       }}
+      html[data-theme="light"] {{
+        color-scheme: light;
+        --bg: #f7f9fc;
+        --surface: rgba(255, 255, 255, 0.98);
+        --surface-2: rgba(248, 250, 253, 0.98);
+        --panel: rgba(255, 255, 255, 0.98);
+        --line: rgba(117, 134, 155, 0.2);
+        --line-strong: rgba(28, 111, 255, 0.5);
+        --text: #111827;
+        --muted: #687386;
+        --blue: #126dff;
+        --cyan: #126dff;
+      }}
+      html[data-theme="light"] body {{
+        background:
+          radial-gradient(circle at 72% 0%, rgba(32, 108, 255, 0.035), transparent 32%),
+          linear-gradient(135deg, #ffffff 0%, #fafbfe 58%, #f4f7fb 100%);
+        color: var(--text);
+      }}
+      body,
+      .sidebar,
+      .card,
+      .section,
+      .side-card,
+      .endpoint-button,
+      .refresh-button,
+      .theme-button {{
+        transition: background var(--motion-medium), color var(--motion-medium), border-color var(--motion-medium), box-shadow var(--motion-medium);
+      }}
+      html[data-theme="light"] .sidebar {{
+        border-right-color: #dfe5ec;
+        background: rgba(255, 255, 255, 0.92);
+      }}
+      html[data-theme="light"] .brand,
+      html[data-theme="light"] h1,
+      html[data-theme="light"] .section-title,
+      html[data-theme="light"] .card-value {{
+        color: #111827;
+      }}
+      html[data-theme="light"] .nav-item {{
+        color: #344054;
+      }}
+      html[data-theme="light"] .nav-item:hover,
+      html[data-theme="light"] .nav-item:focus-visible {{
+        color: #075fd8;
+        background: rgba(18, 109, 255, 0.06);
+      }}
+      html[data-theme="light"] .nav-item.active {{
+        color: #075fd8;
+        border-color: rgba(18, 109, 255, 0.24);
+        background: linear-gradient(90deg, rgba(18, 109, 255, 0.1), rgba(18, 109, 255, 0.035));
+      }}
+      html[data-theme="light"] .sub,
+      html[data-theme="light"] .actions,
+      html[data-theme="light"] .meta,
+      html[data-theme="light"] .delta,
+      html[data-theme="light"] .foot {{
+        color: #687386;
+      }}
+      html[data-theme="light"] .side-card,
+      html[data-theme="light"] .endpoint-button,
+      html[data-theme="light"] .refresh-button,
+      html[data-theme="light"] .theme-button {{
+        background: rgba(255, 255, 255, 0.94);
+        border-color: #dfe5ec;
+        color: #111827;
+        box-shadow: 0 3px 12px rgba(16, 24, 40, 0.04);
+      }}
+      html[data-theme="light"] .card {{
+        border-color: #e2e7ed;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 6px 20px rgba(16, 24, 40, 0.055);
+      }}
+      html[data-theme="light"] .card:hover,
+      html[data-theme="light"] .card:focus-within {{
+        border-color: rgba(18, 109, 255, 0.34);
+        box-shadow: 0 12px 28px rgba(16, 24, 40, 0.08);
+      }}
+      html[data-theme="light"] .metric-icon {{
+        background: #f2f6fc;
+      }}
+      html[data-theme="light"] .card-label {{
+        color: #253044;
+      }}
+      html[data-theme="light"] .planner-status-card {{
+        border-color: rgba(25, 182, 112, 0.55);
+        background: rgba(255, 255, 255, 0.98);
+      }}
+      html[data-theme="light"] .section {{
+        border-color: #dfe5ec;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 8px 24px rgba(16, 24, 40, 0.055);
+      }}
+      html[data-theme="light"] .topology {{
+        border-bottom-color: #e7ebf0;
+      }}
+      html[data-theme="light"] .orbit {{
+        border-color: rgba(18, 109, 255, 0.28);
+      }}
+      html[data-theme="light"] .grid-ring {{
+        border-color: rgba(101, 119, 145, 0.14);
+      }}
+      html[data-theme="light"] .radial {{
+        background: linear-gradient(90deg, rgba(18, 109, 255, 0.42), transparent);
+      }}
+      html[data-theme="light"] .topology-center::after {{
+        background: radial-gradient(circle at 50% 45%, rgba(78, 143, 255, 0.13), rgba(255, 255, 255, 0.98) 68%);
+        box-shadow: inset 0 0 24px rgba(18, 109, 255, 0.12);
+      }}
+      html[data-theme="light"] .topo-node {{
+        color: #1f2937;
+      }}
+      html[data-theme="light"] .node-hex::before {{
+        background: rgba(255, 255, 255, 0.97);
+      }}
+      html[data-theme="light"] .node-hex {{
+        color: #516079;
+        box-shadow: 0 4px 12px rgba(16, 24, 40, 0.06);
+      }}
+      html[data-theme="light"] .info-box,
+      html[data-theme="light"] .api-strip,
+      html[data-theme="light"] .panel-footer {{
+        border-color: #dfe5ec;
+        background: rgba(255, 255, 255, 0.86);
+        color: #344054;
+      }}
+      html[data-theme="light"] code {{
+        background: #eef4ff;
+        border-color: #e2ecff;
+        color: #075fd8;
+      }}
       @media (max-width: 1200px) {{
         .app-shell {{ grid-template-columns: 1fr; }}
         .sidebar {{
@@ -3728,6 +3879,7 @@ fn control_plane_home(
           <div class="actions">
             <a class="endpoint-button motion-lift" href="/v1/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-3 3 3 3"/><path d="m16 9 3 3-3 3"/><path d="m14 5-4 14"/></svg>Status API</a>
             <span>Last updated <span class="live-dot" aria-hidden="true"></span> Just now</span>
+            <button class="endpoint-button theme-button motion-lift" id="theme-toggle" type="button" aria-label="Switch to light theme" title="Switch theme"><svg class="icon moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"/></svg><svg class="icon sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
             <a class="refresh-button motion-lift" href="/" aria-label="Refresh"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h-4"/><path d="M6 22v-4h4"/></svg></a>
           </div>
         </header>
@@ -3796,6 +3948,24 @@ fn control_plane_home(
         <div class="foot">Deploy fingerprint is exposed on <code>/health</code> and <code>/v1/status</code> for post-merge verification.</div>
       </main>
     </div>
+    <script>
+      (() => {{
+        const button = document.getElementById("theme-toggle");
+        if (!button) return;
+        const sync = () => {{
+          const light = document.documentElement.dataset.theme === "light";
+          button.setAttribute("aria-label", light ? "Switch to dark theme" : "Switch to light theme");
+          button.setAttribute("title", light ? "Switch to dark theme" : "Switch to light theme");
+        }};
+        button.addEventListener("click", () => {{
+          const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+          document.documentElement.dataset.theme = next;
+          try {{ localStorage.setItem("ehda-theme", next); }} catch (_) {{}}
+          sync();
+        }});
+        sync();
+      }})();
+    </script>
   </body>
 </html>"##,
         storage_source = escape_html(storage_source.as_str()),
@@ -6459,6 +6629,12 @@ mod tests {
         assert!(html.contains("color-scheme: dark"));
         assert!(html.contains("motion-lift"));
         assert!(html.contains("motion-glow"));
+        assert!(html.contains(r#"id="theme-toggle""#));
+        assert!(html.contains(r#"data-theme="light""#));
+        assert!(html.contains("ehda-theme"));
+        assert!(html.contains("prefers-color-scheme: light"));
+        assert!(html.contains("Switch to light theme"));
+        assert!(html.contains("Switch to dark theme"));
         assert!(html.contains(r#"class="card metric-link" href="/nodes?state=online""#));
         assert!(html.contains(r#"class="card metric-link" href="/jobs?status=queued""#));
         assert!(html.contains(r#"class="card metric-link" href="/credits""#));
