@@ -210,7 +210,7 @@ test("composes chat system prompts from selected markdown skills", () => {
   assert.match(prompt, /\[formatter\]/);
   assert.match(prompt, /\[code\]/);
   assert.match(prompt, /\[chunk-planner\]/);
-  assert.match(prompt, /\[verifier\]/);
+  assert.doesNotMatch(prompt, /\[verifier\]/);
   assert.doesNotMatch(prompt, /# Router Skill/);
   assert.doesNotMatch(prompt, /# Formatter Skill/);
   assert.doesNotMatch(prompt, /# Atlas Persona Skill/);
@@ -230,11 +230,11 @@ test("selects focused markdown skills by request type", () => {
   );
   assert.deepEqual(
     selectChatSkills("Differentiate y = cosh(arcsin(x^2 ln x))").map((skill) => skill.name),
-    ["router.md", "formatter.md", "math.md", "chunk-planner.md", "verifier.md"],
+    ["router.md", "formatter.md", "math.md", "chunk-planner.md"],
   );
   assert.deepEqual(
     selectChatSkills("What is the weather in Berlin today?").map((skill) => skill.name),
-    ["router.md", "formatter.md", "weather.md", "facts.md", "verifier.md"],
+    ["router.md", "formatter.md", "weather.md", "facts.md"],
   );
   assert.deepEqual(
     selectChatSkills("Translate to German Hi how are you").map((skill) => skill.name),
@@ -1797,7 +1797,7 @@ test("falls back to deterministic compound tools when planner misses obvious dir
   assert.doesNotMatch(result.output, /generated unrelated questions/i);
 });
 
-test("rejects fallback answers that drift into invented question lists", async () => {
+test("allows fallback answers without verifier rejection", async () => {
   const prompt = "Tell me something interesting about math and explain why learning is useful?";
   const fetchImpl = async (url, init = {}) => {
     if (url === "https://uat.mundusx.ai/v1/jobs") {
@@ -1836,13 +1836,12 @@ test("rejects fallback answers that drift into invented question lists", async (
     fetchImpl,
   );
 
-  assert.equal(result.status, "failed");
-  assert.equal(result.output, "");
-  assert.match(result.error, /generated unrelated questions/i);
-  assert.ok(result.quality_flags.some((flag) => flag.code === "question_drift"));
+  assert.equal(result.status, "completed");
+  assert.match(result.output, /sum of the first 100 odd numbers/);
+  assert.deepEqual(result.quality_flags, []);
 });
 
-test("rejects drifting fallback answers when async polling completes later", async () => {
+test("allows asynchronously completed answers without verifier rejection", async () => {
   const prompt = "Tell me something interesting about math and explain why learning is useful?";
   const fetchImpl = async (url, init = {}) => {
     if (url === "https://uat.mundusx.ai/v1/jobs" && init.method === "POST") {
@@ -1896,10 +1895,9 @@ test("rejects drifting fallback answers when async polling completes later", asy
     fetchImpl,
   );
 
-  assert.equal(polled.status, "failed");
-  assert.equal(polled.output, "");
-  assert.match(polled.error, /generated unrelated questions/i);
-  assert.ok(polled.quality_flags.some((flag) => flag.code === "question_drift"));
+  assert.equal(polled.status, "completed");
+  assert.match(polled.output, /sum of the first 100 odd numbers/);
+  assert.deepEqual(polled.quality_flags, []);
 });
 
 test("answers compound weather and name prompts without polluting the weather location", async () => {
@@ -3878,7 +3876,7 @@ test("pollChatJob persists the assistant turn exactly once on completion", async
   assert.equal(body.jobId, "job-1");
 });
 
-test("pollChatJob exposes quality flags for suspicious cleaned output", async () => {
+test("pollChatJob keeps deterministic cleanup while verifier is disabled", async () => {
   const fetchImpl = async (url) => {
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-quality");
     return jsonResponse({
@@ -3899,15 +3897,12 @@ test("pollChatJob exposes quality flags for suspicious cleaned output", async ()
   );
 
   assert.equal(result.status, "completed");
-  assert.equal(result.needs_repair, true);
+  assert.equal(result.needs_repair, false);
   assert.match(result.output, /explanation instead of source code/i);
-  assert.deepEqual(
-    result.quality_flags.map((flag) => flag.code),
-    ["sanitized_output", "worker_or_role_leak", "instruction_leak", "repeated_text", "code_missing"],
-  );
+  assert.deepEqual(result.quality_flags, []);
 });
 
-test("pollChatJob rejects answers that only restate the user intent", async () => {
+test("pollChatJob does not reject restated intent while verifier is disabled", async () => {
   const prompt = "How can we begin creating a conversation with context on, and with compacting context as well?";
   const fetchImpl = async (url) => {
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-restated-intent");
@@ -3929,10 +3924,9 @@ test("pollChatJob rejects answers that only restate the user intent", async () =
     { message: prompt },
   );
 
-  assert.equal(result.status, "failed");
-  assert.equal(result.output, "");
-  assert.match(result.error, /restated the request/i);
-  assert.ok(result.quality_flags.some((flag) => flag.code === "prompt_restatement"));
+  assert.equal(result.status, "completed");
+  assert.match(result.output, /conversation that has context/i);
+  assert.deepEqual(result.quality_flags, []);
 });
 
 test("pollChatJob allows self-evaluation answers that reuse prompt terms", async () => {

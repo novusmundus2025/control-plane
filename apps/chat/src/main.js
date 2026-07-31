@@ -20,6 +20,9 @@ const DEFAULT_WEB_SEARCH_TTL_SECONDS = 1800;
 const DEFAULT_WEB_SEARCH_DAILY_BUDGET = 0;
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
+// Temporarily disabled by product decision. Keep the implementation available so it can
+// be restored without rebuilding the output-cleaning and redaction pipeline.
+const CHAT_VERIFIER_ENABLED = false;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LOGO_PATH = resolve(MODULE_DIR, "../public/mundusx-logo.png");
 const MARIE_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/marie-persona.md");
@@ -6091,7 +6094,7 @@ function formatChatJob(jobId, job, fallbackModel, options = {}) {
   const sourceOutput = String(job.output ?? "");
   const rawOutput = job.status === "completed" ? cleanChatOutput(sourceOutput) : "";
   const output = job.status === "completed" ? promoteSectionOutputWhenFinalIsThin(rawOutput, progress) : "";
-  const qualityFlags = job.status === "completed"
+  const qualityFlags = CHAT_VERIFIER_ENABLED && job.status === "completed"
     ? detectChatQualityFlags(sourceOutput, rawOutput, output, options.prompt)
     : [];
   const rejectFlag = qualityFlags.find((flag) => flag.severity === "reject");
@@ -6972,12 +6975,12 @@ export function selectChatSkills(message = "") {
   if (complexity.requiresDecomposition || looksLikeCompleteProgramRequest(lower) || complexity.size === "long") {
     skills.push({ name: "chunk-planner.md", content: CHAT_SKILLS.chunkPlanner });
   }
-  if (
+  if (CHAT_VERIFIER_ENABLED && (
     looksLikeCompleteProgramRequest(lower) ||
     looksLikeMathRequest(lower) ||
     needsGrounding(text) ||
     extractFactualSummaryTopic(text)
-  ) {
+  )) {
     skills.push({ name: "verifier.md", content: CHAT_SKILLS.verifier });
   }
 
