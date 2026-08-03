@@ -230,6 +230,92 @@ pub enum ContextSize {
     Large,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoutingMode {
+    Eco,
+    Normal,
+    Max,
+}
+impl Default for RoutingMode {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+impl RoutingMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Eco => "eco",
+            Self::Normal => "normal",
+            Self::Max => "max",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapacityClass {
+    Micro,
+    Standard,
+    Performance,
+    Heavy,
+    Synthesis,
+    Server,
+}
+
+impl Default for CapacityClass {
+    fn default() -> Self {
+        Self::Micro
+    }
+}
+impl CapacityClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Micro => "micro",
+            Self::Standard => "standard",
+            Self::Performance => "performance",
+            Self::Heavy => "heavy",
+            Self::Synthesis => "synthesis",
+            Self::Server => "server",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+pub struct StepWorkloadRequirements {
+    #[serde(default)]
+    pub minimum_capacity_class: CapacityClass,
+    #[serde(default)]
+    pub recommended_capacity_class: CapacityClass,
+    #[serde(default)]
+    pub context_budget_tokens: u32,
+    #[serde(default)]
+    pub expected_artifact_count: u32,
+    #[serde(default)]
+    pub expected_artifact_bytes: u64,
+    #[serde(default)]
+    pub model_quality_floor: String,
+    #[serde(default)]
+    pub required_tools: Vec<String>,
+    #[serde(default)]
+    pub requires_repository: bool,
+    #[serde(default)]
+    pub requires_compile: bool,
+    #[serde(default)]
+    pub requires_tests: bool,
+    #[serde(default)]
+    pub validation_level: String,
+    #[serde(default = "default_step_parallelism")]
+    pub allowed_parallelism: u32,
+    #[serde(default)]
+    pub reducer_credibility: String,
+    #[serde(default)]
+    pub synthesizer_credibility: String,
+}
+fn default_step_parallelism() -> u32 {
+    1
+}
+
 impl Default for ContextSize {
     fn default() -> Self {
         Self::Small
@@ -370,6 +456,8 @@ pub struct PlannedJob {
     pub recommended_max_tokens: Option<u32>,
     #[serde(default)]
     pub minimum_max_tokens: Option<u32>,
+    #[serde(default)]
+    pub workload: StepWorkloadRequirements,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -530,6 +618,8 @@ pub struct JobGraphNode {
     pub recommended_max_tokens: Option<u32>,
     #[serde(default)]
     pub minimum_max_tokens: Option<u32>,
+    #[serde(default)]
+    pub workload: StepWorkloadRequirements,
     pub status: JobGraphNodeStatus,
     pub blocked_by: Vec<String>,
     #[serde(default)]
@@ -694,6 +784,8 @@ pub struct JobRequest {
     pub prompt: String,
     pub preferred_backend: Backend,
     #[serde(default)]
+    pub routing_mode: RoutingMode,
+    #[serde(default)]
     pub runtime_mode: RuntimeMode,
     #[serde(default)]
     pub execution_mode: JobExecutionMode,
@@ -767,6 +859,8 @@ pub struct JobRecord {
     pub request_id: String,
     pub prompt: String,
     pub preferred_backend: Backend,
+    #[serde(default)]
+    pub routing_mode: RoutingMode,
     #[serde(default)]
     pub runtime_mode: RuntimeMode,
     #[serde(default)]
@@ -922,7 +1016,17 @@ pub struct ModelCapability {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeCapabilityProfile {
     #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
     pub models: Vec<ModelCapability>,
+    #[serde(default)]
+    pub physical_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub usable_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub available_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub capacity_class: String,
     #[serde(default)]
     pub max_context_tokens: Option<u32>,
     #[serde(default)]
@@ -943,12 +1047,19 @@ pub struct NodeCapabilityProfile {
     pub roles: Vec<NodeRole>,
     #[serde(default)]
     pub skill_tags: Vec<String>,
+    #[serde(default)]
+    pub supported_tools: Vec<String>,
 }
 
 impl Default for NodeCapabilityProfile {
     fn default() -> Self {
         Self {
+            schema_version: 0,
             models: Vec::new(),
+            physical_memory_mb: None,
+            usable_memory_mb: None,
+            available_memory_mb: None,
+            capacity_class: String::new(),
             max_context_tokens: None,
             total_vram_mb: None,
             available_vram_mb: None,
@@ -959,6 +1070,7 @@ impl Default for NodeCapabilityProfile {
             current_load_percent: None,
             roles: Vec::new(),
             skill_tags: Vec::new(),
+            supported_tools: Vec::new(),
         }
     }
 }
