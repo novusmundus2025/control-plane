@@ -1,14 +1,15 @@
 use crate::contracts::{
     is_trusted_identity_path, AdmissionPolicy, AdmissionPolicyUpdate, AgentRegistration,
-    AgentState, ArtifactBatch, ArtifactConflict, Backend, ContextSize, ControlPlaneSnapshot,
-    CreditsLedgerRecord, ExpectedOutputFormat, FallbackDecision, FallbackDecisionStatus,
-    FallbackPolicy, Heartbeat, JobClaimResponse, JobCompletion, JobEventRecord, JobExecutionMode,
-    JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest,
-    JobResultRecord, JobResultVerificationStatus, JobSchedulingRequirements, JobStatus,
-    NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeRole,
-    NodeTrustRecord, PlannedJob, PrivacyLevel, RequestClassification, RequestComplexity,
-    RequestTaskType, ResultArtifact, ResultArtifactKind, RuntimeMode, SchedulerDecision,
-    SynthesisManifest, SynthesisStatus, ToolRewardRequest, WorkerHealthReport,
+    AgentState, ArtifactBatch, ArtifactConflict, Backend, CapacityClass, ContextSize,
+    ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, FallbackDecision,
+    FallbackDecisionStatus, FallbackPolicy, Heartbeat, JobClaimResponse, JobCompletion,
+    JobEventRecord, JobExecutionMode, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus,
+    JobPlan, JobRecord, JobRequest, JobResultRecord, JobResultVerificationStatus,
+    JobSchedulingRequirements, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
+    NodePolicyOverrideTarget, NodeRecord, NodeRole, NodeTrustRecord, PlannedJob, PrivacyLevel,
+    RequestClassification, RequestComplexity, RequestTaskType, ResultArtifact, ResultArtifactKind,
+    RoutingMode, RuntimeMode, SchedulerDecision, StepWorkloadRequirements, SynthesisManifest,
+    SynthesisStatus, ToolRewardRequest, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -441,6 +442,7 @@ impl ControlPlaneState {
             request_id: request.request_id,
             prompt: request.prompt,
             preferred_backend: request.preferred_backend,
+            routing_mode: request.routing_mode,
             runtime_mode: request.runtime_mode,
             execution_mode: request.execution_mode,
             stream: request.stream,
@@ -905,6 +907,58 @@ impl ControlPlaneState {
         graph_node_required_role(&job.graph, active_graph_node_id)
     }
 
+    fn capacity_class_for(node: &NodeRecord) -> CapacityClass {
+        let Some(health) = node.worker_health.as_ref() else {
+            return CapacityClass::Micro;
+        };
+        match health
+            .capabilities
+            .capacity_class
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "server" => return CapacityClass::Server,
+            "synthesis" => return CapacityClass::Synthesis,
+            "heavy" => return CapacityClass::Heavy,
+            "performance" => return CapacityClass::Performance,
+            "standard" => return CapacityClass::Standard,
+            "micro" => return CapacityClass::Micro,
+            _ => {}
+        }
+        let memory = health
+            .capabilities
+            .usable_memory_mb
+            .or(health.capabilities.available_memory_mb)
+            .unwrap_or(node.available_memory_mb);
+        let vram = health.capabilities.available_vram_mb.unwrap_or(0);
+        if node.backend == Backend::Vllm {
+            CapacityClass::Server
+        } else if memory >= 65_536 || vram >= 49_152 {
+            CapacityClass::Synthesis
+        } else if memory >= 32_768 || vram >= 24_576 {
+            CapacityClass::Heavy
+        } else if memory >= 16_384 || vram >= 12_288 {
+            CapacityClass::Performance
+        } else if memory >= 8_192 || vram >= 6_144 {
+            CapacityClass::Standard
+        } else {
+            CapacityClass::Micro
+        }
+    }
+
+    fn graph_workload<'a>(
+        job: &'a JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) -> Option<&'a StepWorkloadRequirements> {
+        let id = active_graph_node_id?;
+        job.graph
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .map(|node| &node.workload)
+    }
+
     fn capability_has_role(worker_health: &WorkerHealthReport, required: NodeRole) -> bool {
         let roles = &worker_health.capabilities.roles;
         match required {
@@ -924,6 +978,31 @@ impl ControlPlaneState {
         job: &JobRecord,
         active_graph_node_id: Option<&str>,
     ) -> bool {
+        if let Some(workload) = Self::graph_workload(job, active_graph_node_id) {
+            if Self::capacity_class_for(node) < workload.minimum_capacity_class {
+                return false;
+            }
+            if let Some(health) = node.worker_health.as_ref() {
+                if health.capabilities.schema_version >= 2 {
+                    if workload
+                        .required_tools
+                        .iter()
+                        .any(|tool| !health.capabilities.supported_tools.contains(tool))
+                    {
+                        return false;
+                    }
+                    if workload.requires_repository
+                        && !health
+                            .capabilities
+                            .supported_tools
+                            .iter()
+                            .any(|tool| tool == "repository")
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
         let Some(required) = Self::graph_node_role(job, active_graph_node_id) else {
             return true;
         };
@@ -942,6 +1021,31 @@ impl ControlPlaneState {
         let mut score = 0;
         let mut reasons = Vec::new();
         let requirements = &job.scheduling_requirements;
+        let capacity = Self::capacity_class_for(node);
+        reasons.push(format!("capacity_class:{}", capacity.as_str()));
+        reasons.push(format!("routing_mode:{}", job.routing_mode.as_str()));
+        let weight = match capacity {
+            CapacityClass::Micro => 1,
+            CapacityClass::Standard => 2,
+            CapacityClass::Performance => 3,
+            CapacityClass::Heavy => 4,
+            CapacityClass::Synthesis => 5,
+            CapacityClass::Server => 6,
+        };
+        match job.routing_mode {
+            RoutingMode::Eco => {
+                score -= weight * 8;
+                reasons.push("eco prefers smallest capable node".to_string());
+            }
+            RoutingMode::Normal => {
+                score += weight * 2;
+                reasons.push("normal balances capacity and fit".to_string());
+            }
+            RoutingMode::Max => {
+                score += weight * 12;
+                reasons.push("max prefers strongest eligible node".to_string());
+            }
+        }
 
         match (requirements.task_type, node.backend) {
             (RequestTaskType::Coding, Backend::Cuda | Backend::Vllm) => {
@@ -3700,6 +3804,7 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
                         .to_string(),
                 recommended_max_tokens: None,
                 minimum_max_tokens: None,
+                workload: StepWorkloadRequirements::default(),
             }],
         };
     }
@@ -3893,6 +3998,7 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
                     .to_string(),
                 recommended_max_tokens: None,
                 minimum_max_tokens: None,
+            workload: StepWorkloadRequirements::default(),
             }],
         };
     }
@@ -4033,6 +4139,7 @@ fn single_execution_plan(
             reason: reason.to_string(),
             recommended_max_tokens: None,
             minimum_max_tokens: None,
+            workload: StepWorkloadRequirements::default(),
         }],
     }
 }
@@ -4069,6 +4176,7 @@ fn plan_job_request_for_submission(
                         .to_string(),
                 recommended_max_tokens: None,
                 minimum_max_tokens: None,
+            workload: StepWorkloadRequirements::default(),
             }],
         };
     }
@@ -4117,6 +4225,7 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
                 required_output: job.required_output.clone(),
                 recommended_max_tokens: job.recommended_max_tokens,
                 minimum_max_tokens: job.minimum_max_tokens,
+                workload: job.workload.clone(),
                 status: JobGraphNodeStatus::Waiting,
                 blocked_by: job.depends_on.clone(),
                 assigned_node_id: None,
@@ -4818,6 +4927,7 @@ fn push_planned_job(
         reason: reason.to_string(),
         recommended_max_tokens: None,
         minimum_max_tokens: None,
+        workload: StepWorkloadRequirements::default(),
     });
 }
 
@@ -5723,6 +5833,7 @@ mod tests {
             required_output: "historical scheduler telemetry".to_string(),
             recommended_max_tokens: None,
             minimum_max_tokens: None,
+            workload: StepWorkloadRequirements::default(),
             status,
             blocked_by: Vec::new(),
             assigned_node_id: Some(node_id.to_string()),
@@ -5758,6 +5869,7 @@ mod tests {
             request_id: job_id.to_string(),
             prompt: "historical telemetry job".to_string(),
             preferred_backend: Backend::Auto,
+            routing_mode: RoutingMode::Normal,
             runtime_mode: RuntimeMode::Local,
             stream: false,
             model: Some("demo".to_string()),
@@ -5832,6 +5944,7 @@ mod tests {
             request_id: "job-1".to_string(),
             prompt: prompt.to_string(),
             preferred_backend: Backend::Auto,
+            routing_mode: RoutingMode::Normal,
             runtime_mode: RuntimeMode::Local,
             execution_mode: JobExecutionMode::Single,
             stream: false,
@@ -6173,6 +6286,7 @@ mod tests {
                 prompt: "Give me a detailed history of apple from its origins to today."
                     .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -6230,6 +6344,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -6464,6 +6579,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Interactive,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8752,6 +8868,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8831,6 +8948,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8873,6 +8991,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8954,6 +9073,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9020,6 +9140,7 @@ mod tests {
                 request_id: "job-2".to_string(),
                 prompt: "hello again".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9086,6 +9207,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "Draft a concise report.".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9133,6 +9255,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "Answer in one word: 4+3?".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9187,6 +9310,7 @@ mod tests {
                 prompt: "Give me a detailed history of Honda from its origins to today."
                     .to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9245,6 +9369,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "Draft a concise public history note.".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9535,6 +9660,7 @@ mod tests {
                 request_id: "job-low-score".to_string(),
                 prompt: "Estimate this public sequence: 2, 4, 8.".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9553,6 +9679,7 @@ mod tests {
                 request_id: "job-high-score".to_string(),
                 prompt: "Draft a markdown operator report for this internal rollout.".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9592,6 +9719,7 @@ mod tests {
                     request_id: request_id.to_string(),
                     prompt: "hello world".to_string(),
                     preferred_backend: Backend::M,
+                    routing_mode: RoutingMode::Normal,
                     runtime_mode: RuntimeMode::Local,
                     execution_mode: JobExecutionMode::Single,
                     stream: false,
@@ -9844,6 +9972,7 @@ mod tests {
                 request_id: "mlx-job".to_string(),
                 prompt: "Summarize this request".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10017,6 +10146,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10177,6 +10307,7 @@ mod tests {
                     request_id: request_id.to_string(),
                     prompt: "short answer".to_string(),
                     preferred_backend: Backend::Auto,
+                    routing_mode: RoutingMode::Normal,
                     runtime_mode: RuntimeMode::Local,
                     execution_mode: JobExecutionMode::Single,
                     stream: false,
@@ -10244,6 +10375,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10338,6 +10470,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10424,6 +10557,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10458,6 +10592,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Interactive,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10488,6 +10623,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Interactive,
                 execution_mode: JobExecutionMode::Single,
                 stream: true,

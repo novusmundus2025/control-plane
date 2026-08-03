@@ -11,7 +11,7 @@ use contracts::{
     ChatCompletionMundusX, ChatCompletionRequest, ChatCompletionResponse, ChatMessagesResponse,
     CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord,
     JobRequest, JobStatus, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
-    OperatorNodePolicyOverrideUpdate, RuntimeMode, ToolRewardRequest,
+    OperatorNodePolicyOverrideUpdate, RoutingMode, RuntimeMode, ToolRewardRequest,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::apply_migrations;
@@ -6016,6 +6016,7 @@ fn handle_connection(
                         request_id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
                         prompt,
                         preferred_backend: crate::contracts::Backend::Auto,
+                        routing_mode: RoutingMode::Normal,
                         runtime_mode: RuntimeMode::Local,
                         execution_mode: JobExecutionMode::Single,
                         stream: false,
@@ -6367,7 +6368,7 @@ mod tests {
     };
     use crate::contracts::{
         AgentRegistration, AgentState, Backend, Heartbeat, JobCompletion, JobExecutionMode,
-        JobGraphNodeStatus, JobRequest, JobStatus, RuntimeMode, WorkerHealthReport,
+        JobGraphNodeStatus, JobRequest, JobStatus, RoutingMode, RuntimeMode, WorkerHealthReport,
     };
     use crate::state::ControlPlaneState;
     use ed25519_dalek::{Signer, SigningKey};
@@ -6759,6 +6760,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "Summarize operator state".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -6879,6 +6881,7 @@ mod tests {
                 request_id: "job-completed".to_string(),
                 prompt: "Summarize BMW history".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -7146,6 +7149,7 @@ mod tests {
                 request_id: "job-single".to_string(),
                 prompt: "Summarize Tesla history".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -7231,6 +7235,7 @@ mod tests {
                 request_id: "job-advisory-direct-detail".to_string(),
                 prompt: "Introduce yourself please".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Auto,
                 stream: false,
@@ -7291,6 +7296,7 @@ mod tests {
                 request_id: "job-queued".to_string(),
                 prompt: "Summarize scheduler state".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -7327,6 +7333,7 @@ mod tests {
                 request_id: "job-node-fit".to_string(),
                 prompt: "Summarize scheduler assignment".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -7371,6 +7378,7 @@ mod tests {
                     "Give me a complete Turbo C program to handle enrollment of students save in binary file."
                         .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7533,6 +7541,7 @@ mod tests {
                 request_id: "job-completed".to_string(),
                 prompt: "Summarize Tesla history".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -7603,6 +7612,7 @@ mod tests {
                 request_id: "job-advisory-direct".to_string(),
                 prompt: "Introduce yourself please".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Auto,
                 stream: false,
@@ -7666,6 +7676,7 @@ mod tests {
                 prompt: "Design and implement a backend API plus frontend dashboard and add tests."
                     .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7730,6 +7741,7 @@ mod tests {
                 request_id: "job-mixed-graph".to_string(),
                 prompt: "Write a detailed history split into independent sections.".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7792,6 +7804,7 @@ mod tests {
                 prompt: "Design and implement a backend API plus frontend dashboard and add tests."
                     .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7837,6 +7850,7 @@ mod tests {
                 prompt: "Design and implement a backend API plus frontend dashboard and add tests."
                     .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7930,6 +7944,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8430,6 +8445,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "summarize this".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8467,6 +8483,7 @@ mod tests {
                 request_id: "job-degraded".to_string(),
                 prompt: "Give me a detailed history of Mercedes-Benz.".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
