@@ -506,6 +506,12 @@ pub enum JobGraphNodeStatus {
     Failed,
 }
 
+impl Default for JobGraphNodeStatus {
+    fn default() -> Self {
+        Self::Waiting
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobResultVerificationStatus {
@@ -677,6 +683,7 @@ pub struct JobGraphNode {
     pub minimum_max_tokens: Option<u32>,
     #[serde(default)]
     pub workload: StepWorkloadRequirements,
+    #[serde(default)]
     pub status: JobGraphNodeStatus,
     pub blocked_by: Vec<String>,
     #[serde(default)]
@@ -726,6 +733,7 @@ pub struct JobResultRecord {
     pub node_id: String,
     pub name: String,
     pub responsibility: String,
+    #[serde(default)]
     pub status: JobGraphNodeStatus,
     pub output: Option<String>,
     pub error: Option<String>,
@@ -1565,5 +1573,31 @@ mod tests {
             serde_json::from_value(serde_json::json!({})).expect("legacy graph metadata");
         assert_eq!(graph.status, JobGraphStatus::Created);
         assert_eq!(graph.synthesis_status, SynthesisStatus::Collecting);
+
+        let node: JobGraphNode = serde_json::from_value(serde_json::json!({
+            "id": "legacy-node",
+            "name": "Legacy node",
+            "responsibility": "chat",
+            "depends_on": [],
+            "required_output": "text",
+            "blocked_by": [],
+            "output": null,
+            "error": null
+        }))
+        .expect("legacy graph node");
+        assert_eq!(node.status, JobGraphNodeStatus::Waiting);
+
+        let result: JobResultRecord = serde_json::from_value(serde_json::json!({
+            "node_id": "legacy-node",
+            "name": "Legacy node",
+            "responsibility": "chat",
+            "output": null,
+            "error": null,
+            "source_worker_id": null,
+            "source_node_id": null,
+            "latency_ms": null
+        }))
+        .expect("legacy graph result");
+        assert_eq!(result.status, JobGraphNodeStatus::Waiting);
     }
 }
