@@ -509,7 +509,36 @@ pub enum JobGraphNodeStatus {
 pub enum JobResultVerificationStatus {
     Accepted,
     Rejected,
+    Repairable,
+    Unverifiable,
     FallbackNeeded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationEvidenceKind {
+    PathSafety,
+    PatchStructure,
+    StructuredDataSyntax,
+    OutputPresence,
+    WorkerClaim,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationEvidenceProvenance {
+    ControlPlane,
+    WorkerReported,
+    IndependentValidator,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArtifactValidationEvidence {
+    pub version: u32,
+    pub kind: ValidationEvidenceKind,
+    pub passed: bool,
+    pub provenance: ValidationEvidenceProvenance,
+    pub summary: String,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -564,6 +593,8 @@ pub struct ResultArtifact {
     pub source_worker_id: Option<String>,
     #[serde(default)]
     pub source_node_id: Option<String>,
+    #[serde(default)]
+    pub validation_evidence: Vec<ArtifactValidationEvidence>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -582,6 +613,26 @@ pub struct ArtifactConflict {
     pub reason: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArtifactRepairPlan {
+    pub repair_id: String,
+    pub artifact_ids: Vec<String>,
+    pub target_paths: Vec<String>,
+    pub reason: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OrchestrationTimelineEvent {
+    pub sequence: u32,
+    pub stage: String,
+    pub status: String,
+    #[serde(default)]
+    pub graph_node_id: Option<String>,
+    pub summary: String,
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 pub struct SynthesisManifest {
     pub version: u32,
@@ -591,6 +642,10 @@ pub struct SynthesisManifest {
     pub batches: Vec<ArtifactBatch>,
     #[serde(default)]
     pub conflicts: Vec<ArtifactConflict>,
+    #[serde(default)]
+    pub repair_plans: Vec<ArtifactRepairPlan>,
+    #[serde(default)]
+    pub timeline: Vec<OrchestrationTimelineEvent>,
     #[serde(default)]
     pub warnings: Vec<String>,
     #[serde(default)]

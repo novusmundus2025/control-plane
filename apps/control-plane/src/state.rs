@@ -1,15 +1,16 @@
 use crate::contracts::{
     is_trusted_identity_path, AdmissionPolicy, AdmissionPolicyUpdate, AgentRegistration,
-    AgentState, ArtifactBatch, ArtifactConflict, Backend, CapacityClass, ContextSize,
-    ControlPlaneSnapshot, CreditsLedgerRecord, ExpectedOutputFormat, FallbackDecision,
-    FallbackDecisionStatus, FallbackPolicy, Heartbeat, JobClaimResponse, JobCompletion,
-    JobEventRecord, JobExecutionMode, JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus,
-    JobPlan, JobRecord, JobRequest, JobResultRecord, JobResultVerificationStatus,
-    JobSchedulingRequirements, JobStatus, NodePolicyOverride, NodePolicyOverrideInput,
-    NodePolicyOverrideTarget, NodeRecord, NodeRole, NodeTrustRecord, PlannedJob, PrivacyLevel,
-    RequestClassification, RequestComplexity, RequestTaskType, ResultArtifact, ResultArtifactKind,
-    RoutingMode, RuntimeMode, SchedulerDecision, StepWorkloadRequirements, SynthesisManifest,
-    SynthesisStatus, ToolRewardRequest, WorkerHealthReport,
+    AgentState, ArtifactBatch, ArtifactConflict, ArtifactRepairPlan, ArtifactValidationEvidence,
+    Backend, CapacityClass, ContextSize, ControlPlaneSnapshot, CreditsLedgerRecord,
+    ExpectedOutputFormat, FallbackDecision, FallbackDecisionStatus, FallbackPolicy, Heartbeat,
+    JobClaimResponse, JobCompletion, JobEventRecord, JobExecutionMode, JobGraph, JobGraphNode,
+    JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest, JobResultRecord,
+    JobResultVerificationStatus, JobSchedulingRequirements, JobStatus, NodePolicyOverride,
+    NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeRole, NodeTrustRecord,
+    OrchestrationTimelineEvent, PlannedJob, PrivacyLevel, RequestClassification, RequestComplexity,
+    RequestTaskType, ResultArtifact, ResultArtifactKind, RoutingMode, RuntimeMode,
+    SchedulerDecision, StepWorkloadRequirements, SynthesisManifest, SynthesisStatus,
+    ToolRewardRequest, ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -4521,6 +4522,22 @@ fn extract_result_artifacts(
             let path = artifact_path(kind, &content);
             let media_type = artifact_media_type(kind, &language).to_string();
             let checksum_sha256 = sha256_hex(content.as_bytes());
+            let validation_evidence = validate_artifact(kind, path.as_deref(), &content);
+            let structurally_valid = validation_evidence.iter().all(|item| item.passed);
+            let artifact_status = if verification_status == JobResultVerificationStatus::Accepted
+                && structurally_valid
+            {
+                JobResultVerificationStatus::Accepted
+            } else if !structurally_valid {
+                JobResultVerificationStatus::Repairable
+            } else {
+                verification_status
+            };
+            let artifact_reason = if structurally_valid {
+                verification_reason.map(str::to_string)
+            } else {
+                Some("artifact failed control-plane structural validation".to_string())
+            };
             ResultArtifact {
                 artifact_id: format!("{}-{:04}-{}", node.id, index + 1, &checksum_sha256[..12]),
                 result_node_id: node.id.clone(),
@@ -4533,13 +4550,64 @@ fn extract_result_artifacts(
                 content,
                 checksum_sha256,
                 base_checksum_sha256: None,
-                verification_status,
-                verification_reason: verification_reason.map(str::to_string),
+                verification_status: artifact_status,
+                verification_reason: artifact_reason,
                 source_worker_id: node.worker_id.clone(),
                 source_node_id: node.assigned_node_id.clone(),
+                validation_evidence,
             }
         })
         .collect()
+}
+
+fn validation_evidence(
+    kind: ValidationEvidenceKind,
+    passed: bool,
+    summary: &str,
+) -> ArtifactValidationEvidence {
+    ArtifactValidationEvidence {
+        version: 1,
+        kind,
+        passed,
+        provenance: ValidationEvidenceProvenance::ControlPlane,
+        summary: summary.to_string(),
+    }
+}
+
+fn validate_artifact(
+    kind: ResultArtifactKind,
+    path: Option<&str>,
+    content: &str,
+) -> Vec<ArtifactValidationEvidence> {
+    let mut evidence = vec![validation_evidence(
+        ValidationEvidenceKind::OutputPresence,
+        !content.trim().is_empty(),
+        "artifact output is non-empty",
+    )];
+    match kind {
+        ResultArtifactKind::Patch => {
+            evidence.push(validation_evidence(
+                ValidationEvidenceKind::PathSafety,
+                path.is_some_and(safe_artifact_path),
+                "patch target is a safe workspace-relative path",
+            ));
+            let has_old_header = content.lines().any(|line| line.starts_with("--- "));
+            let has_new_header = content.lines().any(|line| line.starts_with("+++ "));
+            let has_hunk = content.lines().any(|line| line.starts_with("@@"));
+            evidence.push(validation_evidence(
+                ValidationEvidenceKind::PatchStructure,
+                has_old_header && has_new_header && has_hunk,
+                "patch contains old/new file headers and at least one hunk",
+            ));
+        }
+        ResultArtifactKind::StructuredData => evidence.push(validation_evidence(
+            ValidationEvidenceKind::StructuredDataSyntax,
+            serde_json::from_str::<serde_json::Value>(content).is_ok(),
+            "structured data parses as JSON",
+        )),
+        _ => {}
+    }
+    evidence
 }
 
 fn fenced_output_blocks(output: &str) -> Vec<(String, String)> {
@@ -4622,13 +4690,24 @@ fn safe_artifact_path(path: &str) -> bool {
 }
 
 fn build_synthesis_manifest(graph: &JobGraph) -> SynthesisManifest {
-    let artifacts = graph
+    let mut artifacts = graph
         .results
         .iter()
-        .filter(|result| result.verification_status == JobResultVerificationStatus::Accepted)
         .flat_map(|result| result.artifacts.clone())
+        .filter(|artifact| artifact.verification_status == JobResultVerificationStatus::Accepted)
         .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| {
+        left.path
+            .as_deref()
+            .unwrap_or("")
+            .cmp(right.path.as_deref().unwrap_or(""))
+            .then(left.checksum_sha256.cmp(&right.checksum_sha256))
+            .then(left.artifact_id.cmp(&right.artifact_id))
+    });
+    artifacts.dedup_by(|left, right| left.checksum_sha256 == right.checksum_sha256);
     let conflicts = artifact_conflicts(&artifacts);
+    let repair_plans = artifact_repair_plans(graph, &conflicts);
+    let timeline = orchestration_timeline(graph, &repair_plans);
     let batches = artifact_batches(&graph.graph_id, &artifacts);
     let omitted_dependency_ids = graph
         .nodes
@@ -4668,12 +4747,112 @@ fn build_synthesis_manifest(graph: &JobGraph) -> SynthesisManifest {
         artifacts,
         batches,
         conflicts,
+        repair_plans,
+        timeline,
         warnings,
         omitted_dependency_ids,
         final_text: graph.final_output.clone(),
         complete,
         checksum_sha256: sha256_hex(checksum_input.as_bytes()),
     }
+}
+
+fn artifact_repair_plans(
+    graph: &JobGraph,
+    conflicts: &[ArtifactConflict],
+) -> Vec<ArtifactRepairPlan> {
+    let mut plans = conflicts
+        .iter()
+        .enumerate()
+        .map(|(index, conflict)| ArtifactRepairPlan {
+            repair_id: format!("repair-{}-conflict-{:04}", graph.graph_id, index + 1),
+            artifact_ids: conflict.artifact_ids.clone(),
+            target_paths: vec![conflict.path.clone()],
+            reason: conflict.reason.clone(),
+            attempt: 0,
+            max_attempts: DEFAULT_GRAPH_NODE_MAX_ATTEMPTS,
+        })
+        .collect::<Vec<_>>();
+    for result in &graph.results {
+        let rejected = result
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.verification_status != JobResultVerificationStatus::Accepted
+            })
+            .collect::<Vec<_>>();
+        if rejected.is_empty() {
+            continue;
+        }
+        plans.push(ArtifactRepairPlan {
+            repair_id: format!("repair-{}-{}", graph.graph_id, result.node_id),
+            artifact_ids: rejected
+                .iter()
+                .map(|item| item.artifact_id.clone())
+                .collect(),
+            target_paths: rejected
+                .iter()
+                .filter_map(|item| item.path.clone())
+                .collect(),
+            reason: rejected
+                .iter()
+                .filter_map(|item| item.verification_reason.clone())
+                .next()
+                .unwrap_or_else(|| "artifact validation was rejected or unverifiable".to_string()),
+            attempt: result
+                .source_node_id
+                .as_deref()
+                .and_then(|_| graph.nodes.iter().find(|node| node.id == result.node_id))
+                .map(|node| node.attempt_count)
+                .unwrap_or_default(),
+            max_attempts: graph
+                .nodes
+                .iter()
+                .find(|node| node.id == result.node_id)
+                .map(|node| node.max_attempts)
+                .unwrap_or(DEFAULT_GRAPH_NODE_MAX_ATTEMPTS),
+        });
+    }
+    plans.sort_by(|left, right| left.repair_id.cmp(&right.repair_id));
+    plans
+}
+
+fn orchestration_timeline(
+    graph: &JobGraph,
+    repairs: &[ArtifactRepairPlan],
+) -> Vec<OrchestrationTimelineEvent> {
+    let mut events = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| OrchestrationTimelineEvent {
+            sequence: index as u32,
+            stage: node.responsibility.clone(),
+            status: format!("{:?}", node.status).to_ascii_lowercase(),
+            graph_node_id: Some(node.id.clone()),
+            summary: format!(
+                "{}; capacity={:?}; assigned={}",
+                node.name,
+                node.workload.minimum_capacity_class,
+                node.assigned_node_id.as_deref().unwrap_or("unassigned")
+            ),
+        })
+        .collect::<Vec<_>>();
+    for repair in repairs {
+        events.push(OrchestrationTimelineEvent {
+            sequence: events.len() as u32,
+            stage: "repair".to_string(),
+            status: if repair.attempt >= repair.max_attempts {
+                "exhausted".to_string()
+            } else {
+                "planned".to_string()
+            },
+            graph_node_id: None,
+            summary: format!("{}: {}", repair.repair_id, repair.reason),
+        });
+    }
+    events.truncate(256);
+    events
 }
 
 fn artifact_batches(graph_id: &str, artifacts: &[ResultArtifact]) -> Vec<ArtifactBatch> {
@@ -4905,6 +5084,8 @@ fn verification_status_label(status: JobResultVerificationStatus) -> &'static st
     match status {
         JobResultVerificationStatus::Accepted => "accepted",
         JobResultVerificationStatus::Rejected => "rejected",
+        JobResultVerificationStatus::Repairable => "repairable",
+        JobResultVerificationStatus::Unverifiable => "unverifiable",
         JobResultVerificationStatus::FallbackNeeded => "fallback_needed",
     }
 }
@@ -10698,5 +10879,65 @@ mod tests {
             ResultArtifactKind::Command
         );
         assert!(!safe_artifact_path("../secret"));
+    }
+
+    #[test]
+    fn artifact_validation_rejects_unsafe_patches_and_invalid_json() {
+        let unsafe_patch = "--- a/secret\n+++ b/../secret\n@@ -1 +1 @@\n-old\n+new";
+        let patch_evidence = validate_artifact(ResultArtifactKind::Patch, None, unsafe_patch);
+        assert!(patch_evidence
+            .iter()
+            .any(|item| { item.kind == ValidationEvidenceKind::PathSafety && !item.passed }));
+
+        let json_evidence = validate_artifact(ResultArtifactKind::StructuredData, None, "{nope}");
+        assert!(json_evidence.iter().any(|item| {
+            item.kind == ValidationEvidenceKind::StructuredDataSyntax && !item.passed
+        }));
+    }
+
+    #[test]
+    fn deterministic_conflicts_create_bounded_repair_plans_and_timeline_events() {
+        let artifact = |id: &str, checksum: &str| ResultArtifact {
+            artifact_id: id.to_string(),
+            result_node_id: "node-a".to_string(),
+            sequence: 0,
+            kind: ResultArtifactKind::Patch,
+            path: Some("src/lib.rs".to_string()),
+            language: Some("diff".to_string()),
+            media_type: "text/x-diff".to_string(),
+            content: checksum.to_string(),
+            byte_size: checksum.len(),
+            checksum_sha256: checksum.to_string(),
+            base_checksum_sha256: None,
+            verification_status: JobResultVerificationStatus::Accepted,
+            verification_reason: None,
+            source_worker_id: Some("worker-a".to_string()),
+            source_node_id: Some("machine-a".to_string()),
+            validation_evidence: Vec::new(),
+        };
+        let conflicts = artifact_conflicts(&[artifact("a", "111"), artifact("b", "222")]);
+        assert_eq!(conflicts.len(), 1);
+
+        let graph = JobGraph {
+            graph_id: "graph-1".to_string(),
+            request_id: "request-1".to_string(),
+            plan_id: "plan-1".to_string(),
+            status: JobGraphStatus::InProgress,
+            nodes: Vec::new(),
+            results: Vec::new(),
+            final_output: None,
+            merge_error: None,
+            synthesis_status: SynthesisStatus::Collecting,
+            final_manifest: None,
+            final_node_id: None,
+            created_at: "1".to_string(),
+            updated_at: "1".to_string(),
+        };
+        let repairs = artifact_repair_plans(&graph, &conflicts);
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].max_attempts, DEFAULT_GRAPH_NODE_MAX_ATTEMPTS);
+        let timeline = orchestration_timeline(&graph, &repairs);
+        assert_eq!(timeline[0].stage, "repair");
+        assert_eq!(timeline[0].status, "planned");
     }
 }
