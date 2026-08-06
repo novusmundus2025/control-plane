@@ -7491,7 +7491,8 @@ mod tests {
         assert!(html.contains("min-height:54px"));
         assert!(html.contains("sidebar-bottom"));
         assert!(html.contains("overflow-wrap:anywhere"));
-        assert!(html.contains("Control Plane<br/>v1.0.0"));
+        assert!(html.contains("© 2026 EHDA"));
+        assert!(html.contains("v1.0.0"));
         assert!(html.contains(r#"value="node-new""#));
         assert!(html.contains(r#"name="state""#));
         assert!(html.contains(r#"value="online" selected"#));
