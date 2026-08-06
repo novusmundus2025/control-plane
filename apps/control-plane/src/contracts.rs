@@ -763,6 +763,7 @@ pub struct JobResultRecord {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JobGraph {
     pub graph_id: String,
     pub request_id: String,
@@ -1559,5 +1560,10 @@ mod tests {
         assert_eq!(classification.context_size, ContextSize::Small);
         assert_eq!(scheduling.task_type, RequestTaskType::Inference);
         assert_eq!(scheduling.runtime_mode, RuntimeMode::Local);
+
+        let graph: JobGraph =
+            serde_json::from_value(serde_json::json!({})).expect("legacy graph metadata");
+        assert_eq!(graph.status, JobGraphStatus::Created);
+        assert_eq!(graph.synthesis_status, SynthesisStatus::Collecting);
     }
 }
