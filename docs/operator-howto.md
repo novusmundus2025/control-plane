@@ -172,8 +172,8 @@ Pass criteria:
 Before declaring UAT ready, verify the deployed control plane rather than only local state:
 
 ```powershell
-curl.exe https://api.mundusx.ai/health
-curl.exe https://api.mundusx.ai/v1/status -H "Authorization: Bearer <MUNDUSX_OPERATOR_TOKEN>"
+curl.exe https://uat.mundusx.ai/health
+curl.exe https://uat.mundusx.ai/v1/status -H "Authorization: Bearer <MUNDUSX_OPERATOR_TOKEN>"
 ```
 
 Confirm:
@@ -181,7 +181,11 @@ Confirm:
 - Railway deploys from `uat`.
 - `/health` returns 200.
 - `/health` or `/v1/status` reports the expected deploy fingerprint for the current `uat` commit.
-- `storage_source` is `supabase` for shared UAT.
+- `storage_source` is `postgres` for shared UAT after the managed Postgres migration.
+- `storage_source=local-json-fallback`, `supabase_sync.degraded=true`, or an unconfigured
+  runtime pool is a failed shared-UAT storage check, even when `/health` returns 200.
+- `database.runtime_pool.configured=true` confirms application traffic is using the
+  PgBouncer path; migrations and admin work continue to use the direct URL.
 - Operator auth is enforced unless the environment is deliberately in a local/UAT smoke window.
 
 ## 6. Active Follow-Up Issues

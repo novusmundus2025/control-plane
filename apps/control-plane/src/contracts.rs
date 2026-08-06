@@ -323,6 +323,7 @@ impl Default for ContextSize {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct RequestClassification {
     pub task_type: RequestTaskType,
     pub complexity: RequestComplexity,
@@ -334,6 +335,7 @@ pub struct RequestClassification {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JobSchedulingRequirements {
     pub task_type: RequestTaskType,
     pub context_size: ContextSize,
@@ -1544,5 +1546,18 @@ mod tests {
                 NodeRole::Synthesizer
             ]
         );
+    }
+
+    #[test]
+    fn legacy_empty_job_metadata_uses_safe_defaults() {
+        let classification: RequestClassification =
+            serde_json::from_value(serde_json::json!({})).expect("legacy classification");
+        let scheduling: JobSchedulingRequirements =
+            serde_json::from_value(serde_json::json!({})).expect("legacy scheduling metadata");
+
+        assert_eq!(classification.task_type, RequestTaskType::Inference);
+        assert_eq!(classification.context_size, ContextSize::Small);
+        assert_eq!(scheduling.task_type, RequestTaskType::Inference);
+        assert_eq!(scheduling.runtime_mode, RuntimeMode::Local);
     }
 }
