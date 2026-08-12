@@ -3096,7 +3096,22 @@ fn complete_graph_execution_job(
         }
         job.completed_at = None;
     }
-    job.active_graph_node_id = next_ready_graph_node_id(&job.graph);
+    if job.status == JobStatus::Assigned {
+        if let Some(running_node) = job
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.status == JobGraphNodeStatus::Running)
+        {
+            job.active_graph_node_id = Some(running_node.id.clone());
+            job.assigned_node_id = running_node.assigned_node_id.clone();
+            job.assigned_at = running_node.assigned_at.clone();
+            job.worker_id = running_node.worker_id.clone();
+            job.backend = running_node.backend;
+        }
+    } else {
+        job.active_graph_node_id = next_ready_graph_node_id(&job.graph);
+    }
 
     job.graph.updated_at = completed_at;
     job.clone()
@@ -8463,6 +8478,11 @@ mod tests {
             )
             .expect("first completion");
         assert_eq!(first_completed.status, JobStatus::Assigned);
+        assert_eq!(
+            first_completed.active_graph_node_id.as_deref(),
+            Some(second_graph_node)
+        );
+        assert_eq!(first_completed.assigned_node_id.as_deref(), Some("node-2"));
 
         let second_completed = state
             .complete_job(
