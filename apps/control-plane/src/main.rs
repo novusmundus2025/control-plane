@@ -1,6 +1,7 @@
 mod contracts;
 mod migrations;
 mod planner_client;
+mod postgres_store;
 mod state;
 mod supabase;
 
@@ -10,11 +11,12 @@ use contracts::{
     ChatCompletionMundusX, ChatCompletionRequest, ChatCompletionResponse, ChatMessagesResponse,
     CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord,
     JobRequest, JobStatus, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
-    OperatorNodePolicyOverrideUpdate, RuntimeMode, ToolRewardRequest,
+    OperatorNodePolicyOverrideUpdate, RoutingMode, RuntimeMode, ToolRewardRequest,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::apply_migrations;
 use planner_client::planner_service_status_from_env;
+use postgres_store::PostgresStore;
 use serde::Serialize;
 use state::{load_state, save_state, ControlPlaneState};
 use std::collections::BTreeMap;
@@ -37,6 +39,7 @@ use state::state_path;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum StorageSource {
+    Postgres,
     Supabase,
     LocalJsonFallback,
     LocalJsonOnly,
@@ -53,6 +56,12 @@ const OPERATOR_TOKEN_ENV: &str = "MUNDUSX_OPERATOR_TOKEN";
 const LEGACY_OPERATOR_TOKEN_ENV: &str = "OPENGPU_OPERATOR_TOKEN";
 const AUTH_DISABLED_ENV: &str = "MUNDUSX_AUTH_DISABLED";
 const CONTROL_PLANE_ENVIRONMENT_ENV: &str = "MUNDUSX_ENVIRONMENT";
+const DATABASE_DIRECT_URL_ENV: &str = "MUNDUSX_DATABASE_URL";
+const DATABASE_POOL_URL_ENV: &str = "MUNDUSX_DATABASE_POOL_URL";
+const DATABASE_POOL_MODE_ENV: &str = "MUNDUSX_DATABASE_POOL_MODE";
+const DATABASE_TLS_MODE_ENV: &str = "MUNDUSX_DATABASE_TLS_MODE";
+const LEGACY_DATABASE_URL_ENV: &str = "DATABASE_URL";
+const LEGACY_SUPABASE_ENABLED_ENV: &str = "MUNDUSX_ENABLE_LEGACY_SUPABASE";
 const CONTROL_PLANE_LOGO_PATH: &str = "/assets/ehda-emblem.png";
 const CONTROL_PLANE_LOGO_PNG: &[u8] = include_bytes!("../assets/ehda-emblem.png");
 const CONTROL_PLANE_VEHICLE_PATH: &str = "/assets/ehda-vehicle.png";
@@ -146,11 +155,162 @@ impl OperatorAuthMode {
 impl StorageSource {
     fn as_str(self) -> &'static str {
         match self {
+            Self::Postgres => "postgres",
             Self::Supabase => "supabase",
             Self::LocalJsonFallback => "local-json-fallback",
             Self::LocalJsonOnly => "local-json-only",
         }
     }
+}
+
+#[derive(Clone, Debug)]
+enum DatabaseMirror {
+    Postgres(PostgresStore),
+    Supabase(SupabaseMirror),
+}
+
+impl DatabaseMirror {
+    fn from_env() -> Option<Self> {
+        let postgres = PostgresStore::from_env(
+            std::env::var(DATABASE_POOL_URL_ENV).ok().as_deref(),
+            std::env::var(DATABASE_DIRECT_URL_ENV).ok().as_deref(),
+        )
+        .map(Self::Postgres);
+        postgres.or_else(|| {
+            legacy_supabase_enabled_from_value(
+                std::env::var(LEGACY_SUPABASE_ENABLED_ENV).ok().as_deref(),
+            )
+            .then(|| SupabaseMirror::from_env().map(Self::Supabase))
+            .flatten()
+        })
+    }
+
+    fn storage_source(&self) -> StorageSource {
+        match self {
+            Self::Postgres(_) => StorageSource::Postgres,
+            Self::Supabase(_) => StorageSource::Supabase,
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        self.storage_source().as_str()
+    }
+
+    fn restore_state(&self) -> Result<ControlPlaneState, String> {
+        match self {
+            Self::Postgres(store) => store.restore_state(),
+            Self::Supabase(store) => store.restore_state(),
+        }
+    }
+
+    fn record_registration(&self, registration: &AgentRegistration) -> Result<(), String> {
+        match self {
+            Self::Postgres(store) => store.record_registration(registration),
+            Self::Supabase(store) => store.record_registration(registration),
+        }
+    }
+
+    fn record_node_snapshot(&self, node: &NodeRecord) -> Result<(), String> {
+        match self {
+            Self::Postgres(store) => store.record_node_snapshot(node),
+            Self::Supabase(store) => store.record_node_snapshot(node),
+        }
+    }
+
+    fn record_heartbeat(&self, heartbeat: &Heartbeat, node: &NodeRecord) -> Result<(), String> {
+        match self {
+            Self::Postgres(store) => store.record_heartbeat(heartbeat, node),
+            Self::Supabase(store) => store.record_heartbeat(heartbeat, node),
+        }
+    }
+
+    fn record_job(&self, job: &JobRecord) -> Result<(), String> {
+        match self {
+            Self::Postgres(store) => store.record_job(job),
+            Self::Supabase(store) => store.record_job(job),
+        }
+    }
+
+    fn record_job_completion(
+        &self,
+        completion: &JobCompletion,
+        job: &JobRecord,
+    ) -> Result<(), String> {
+        match self {
+            Self::Postgres(store) => store.record_job_completion(completion, job),
+            Self::Supabase(store) => store.record_job_completion(completion, job),
+        }
+    }
+
+    fn record_credit_award(&self, entry: &CreditsLedgerRecord) -> Result<(), String> {
+        match self {
+            Self::Postgres(store) => store.record_credit_award(entry),
+            Self::Supabase(store) => store.record_credit_award(entry),
+        }
+    }
+
+    fn record_job_event(&self, event: &contracts::JobEventRecord) -> Result<(), String> {
+        match self {
+            Self::Postgres(store) => store.record_job_event(event),
+            Self::Supabase(store) => store.record_job_event(event),
+        }
+    }
+
+    fn append_chat_message(
+        &self,
+        conversation_id: &str,
+        payload: &AppendChatMessageRequest,
+    ) -> Result<contracts::ChatMessageRecord, String> {
+        match self {
+            Self::Postgres(store) => store.append_chat_message(conversation_id, payload),
+            Self::Supabase(store) => store.append_chat_message(conversation_id, payload),
+        }
+    }
+
+    fn fetch_chat_messages(
+        &self,
+        conversation_id: &str,
+        limit: u32,
+    ) -> Result<Vec<contracts::ChatMessageRecord>, String> {
+        match self {
+            Self::Postgres(store) => store.fetch_chat_messages(conversation_id, limit),
+            Self::Supabase(store) => store.fetch_chat_messages(conversation_id, limit),
+        }
+    }
+
+    fn delete_chat_conversation(&self, conversation_id: &str) -> Result<bool, String> {
+        match self {
+            Self::Postgres(store) => store.delete_chat_conversation(conversation_id),
+            Self::Supabase(store) => store.delete_chat_conversation(conversation_id),
+        }
+    }
+}
+
+fn legacy_supabase_enabled_from_value(value: Option<&str>) -> bool {
+    value.is_some_and(|value| {
+        matches!(
+            value.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        )
+    })
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct DatabaseEndpointStatus {
+    env_var: String,
+    configured: bool,
+    status: String,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+struct DatabaseHealthStatus {
+    storage_source: String,
+    runtime_pool: DatabaseEndpointStatus,
+    admin_direct: DatabaseEndpointStatus,
+    pool_mode: String,
+    tls_mode: String,
+    legacy_database_url_present: bool,
+    notes: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -256,6 +416,16 @@ fn job_status_path(job_id: &str) -> String {
     format!("/v1/jobs/{job_id}")
 }
 
+fn job_artifacts_path(job_id: &str) -> String {
+    format!("/v1/jobs/{job_id}/artifacts")
+}
+
+fn parse_job_artifacts_path(path: &str) -> Option<&str> {
+    path.strip_prefix("/v1/jobs/")?
+        .strip_suffix("/artifacts")
+        .filter(|job_id| !job_id.is_empty() && !job_id.contains('/'))
+}
+
 fn job_async_payload(record: &JobRecord) -> serde_json::Value {
     let degradation = job_degradation_payload(record);
     let mut job = serde_json::to_value(record).expect("job json");
@@ -269,6 +439,13 @@ fn job_async_payload(record: &JobRecord) -> serde_json::Value {
         "status": record.status,
         "degradation": degradation,
         "status_url": job_status_path(&record.job_id),
+        "artifacts_url": job_artifacts_path(&record.job_id),
+        "synthesis": {
+            "status": record.graph.synthesis_status,
+            "complete": record.graph.final_manifest.as_ref().is_some_and(|manifest| manifest.complete),
+            "artifact_count": record.graph.final_manifest.as_ref().map_or(0, |manifest| manifest.artifacts.len()),
+            "checksum_sha256": record.graph.final_manifest.as_ref().map(|manifest| manifest.checksum_sha256.clone()),
+        },
         "polling": {
             "method": "GET",
             "url": job_status_path(&record.job_id),
@@ -371,6 +548,44 @@ fn chat_messages_to_prompt(messages: &[contracts::ChatMessage]) -> (Option<Strin
     };
 
     (system_prompt, prompt)
+}
+
+const SPEAKAI_SYSTEM_PROMPT: &str = r#"You are SpeakAI, a conversation-learning response generator.
+Analyze the user's utterance and return only one valid JSON object. Do not use Markdown or add commentary.
+The object must contain speechAct, topic, summary, and exactly three replies. Add questionType only when speechAct is question. Each reply must contain strategy, purpose, text, and meaning.
+Choose exactly one speechAct and use its three strategy/purpose pairs in this order:
+opinion: supportive/AGREE, continue/EXPLORE, alternative/DISAGREE_POLITELY
+question: direct/ANSWER, continue/ANSWER_AND_EXPLORE, boundary/DECLINE_POLITELY
+observation: acknowledge/ACKNOWLEDGE, continue/EXPLORE, alternative/OFFER_ALTERNATIVE
+request: accept/ACCEPT, clarify/CLARIFY, boundary/DECLINE_POLITELY
+invitation: accept/ACCEPT, clarify/ASK_DETAILS, boundary/DECLINE_POLITELY
+suggestion: supportive/SUPPORT, continue/EXPLORE, alternative/SUGGEST_ALTERNATIVE
+greeting: direct/RETURN_GREETING, continue/START_CONVERSATION, warm/WARM_VARIATION
+thanks: direct/ACCEPT_THANKS, warm/RESPOND_WARMLY, continue/CONTINUE
+apology: accept/ACCEPT_APOLOGY, reassure/REASSURE, continue/DISCUSS_FURTHER
+compliment: accept/ACCEPT_COMPLIMENT, reciprocal/RECIPROCATE, modest/RESPOND_MODESTLY
+emotion: empathetic/EMPATHIZE, continue/EXPLORE, supportive/OFFER_SUPPORT
+information: acknowledge/ACKNOWLEDGE, continue/ASK_FOLLOW_UP, related/ADD_RELATED_POINT
+The text fields must be distinct, grammatical replies in the language of the user's utterance. The meaning fields must be natural English translations. Do not repeat words or leave any field empty."#;
+
+fn apply_chat_mode(
+    mode: Option<&str>,
+    system_prompt: Option<String>,
+    max_tokens: Option<u32>,
+) -> Result<(Option<String>, Option<u32>), String> {
+    let Some(mode) = mode.map(str::trim).filter(|value| !value.is_empty()) else {
+        return Ok((system_prompt, max_tokens));
+    };
+    if !mode.eq_ignore_ascii_case("speakai") {
+        return Err(format!("unsupported chat completion mode `{mode}`"));
+    }
+    let system_prompt = match system_prompt {
+        Some(existing) if !existing.trim().is_empty() => Some(format!(
+            "{SPEAKAI_SYSTEM_PROMPT}\n\nAdditional context:\n{existing}"
+        )),
+        _ => Some(SPEAKAI_SYSTEM_PROMPT.to_string()),
+    };
+    Ok((system_prompt, Some(max_tokens.unwrap_or(512))))
 }
 
 fn now_unix_seconds_u64() -> u64 {
@@ -798,6 +1013,67 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
             policy_label,
             policy_reason,
             escape_html(&node.updated_at)
+        ));
+    }
+
+    html.push_str("</div>");
+    html
+}
+
+fn render_registry_records(nodes: Vec<NodeRecord>) -> String {
+    if nodes.is_empty() {
+        return r#"<div class="empty">No identities have registered yet.</div>"#.to_string();
+    }
+
+    let mut html = String::from(
+        r#"<div class="table registry-table">
+        <div class="thead">
+          <div>Identity</div>
+          <div>Fingerprint</div>
+          <div>Trust path</div>
+          <div>Reputation</div>
+          <div>Policy decision</div>
+          <div>Last activity</div>
+        </div>"#,
+    );
+
+    for node in nodes {
+        let (trust_bg, trust_fg, trust_label) = trust_badge(&node.identity_trust_path);
+        let (grade_bg, grade_fg, grade_label) = trust_grade_badge(
+            node.trust.score,
+            node.trust.completed_jobs,
+            node.trust.failed_jobs,
+        );
+        let (policy_bg, policy_fg, policy_label) = policy_badge(node.policy_allowed);
+        let policy_reason = node
+            .policy_reason
+            .as_deref()
+            .filter(|reason| !reason.trim().is_empty())
+            .unwrap_or("No policy restriction reported");
+
+        html.push_str(&format!(
+            r#"<div class="row">
+              <div><a class="inline-link" href="/nodes/{path_id}"><strong>{node_id}</strong></a><div class="meta">{hostname}</div></div>
+              <div><code>{fingerprint}</code><div class="meta">signed device identity</div></div>
+              <div><span class="pill" style="background:{trust_bg};color:{trust_fg};">{trust_label}</span><div class="meta">{trust_path}</div></div>
+              <div><span class="pill" style="background:{grade_bg};color:{grade_fg};">grade {grade} &middot; {score}/100</span><div class="meta">{grade_label} &middot; accepted {accepted} &middot; rejected {rejected}</div></div>
+              <div><span class="pill" style="background:{policy_bg};color:{policy_fg};">{policy_label}</span><div class="meta">{policy_reason}</div></div>
+              <div>{updated_at}<div class="meta">reported state {reported_state}</div></div>
+            </div>"#,
+            path_id = escape_path_segment(&node.node_id),
+            node_id = escape_html(&node.node_id),
+            hostname = escape_html(&node.hostname),
+            fingerprint = escape_html(&node.public_key_fingerprint),
+            trust_label = escape_html(trust_label),
+            trust_path = escape_html(&node.identity_trust_path),
+            grade = trust_grade(node.trust.score),
+            score = node.trust.score,
+            grade_label = escape_html(grade_label),
+            accepted = node.trust.accepted_results,
+            rejected = node.trust.rejected_results,
+            policy_reason = escape_html(policy_reason),
+            updated_at = escape_html(&node.updated_at),
+            reported_state = escape_html(&node.reported_state.to_string()),
         ));
     }
 
@@ -2346,6 +2622,18 @@ fn render_admission_policy(state: &ControlPlaneState) -> String {
         .as_deref()
         .filter(|value| !value.trim().is_empty())
         .unwrap_or("system");
+    let model_rows = contracts::OFFICIAL_MODELS
+        .iter()
+        .enumerate()
+        .map(|(index, (name, label))| {
+            format!(
+                r#"<label class="check"><input type="checkbox" name="allow_model_{index}" value="1"{checked}> <strong>{label}</strong><span class="meta">{name}</span></label>"#,
+                checked = checked_attr(policy.allowed_models.iter().any(|allowed| allowed == name)),
+                label = escape_html(label),
+                name = escape_html(name),
+            )
+        })
+        .collect::<String>();
 
     format!(
         r#"<section class="panel">
@@ -2355,6 +2643,7 @@ fn render_admission_policy(state: &ControlPlaneState) -> String {
                 <label class="check"><input type="checkbox" name="enabled" value="1"{enabled_checked}> Enforce admission rules</label>
                 <label class="check"><input type="checkbox" name="require_healthy_runtime" value="1"{runtime_checked}> Require healthy runtime</label>
                 <label class="check"><input type="checkbox" name="require_trusted_identity" value="1"{trusted_checked}> Require trusted identity</label>
+                <label class="check"><input type="checkbox" name="enforce_model_policy" value="1"{model_policy_checked}> Enforce model admission (unknown models become Under investigation)</label>
                 <div class="policy-grid">
                   <label><span>Minimum system RAM (MB)</span><input type="number" name="min_memory_mb" min="0" step="512" value="{min_memory_mb}"></label>
                   <label><span>Minimum CUDA VRAM (MB)</span><input type="number" name="min_cuda_vram_mb" min="0" step="512" value="{min_cuda_vram_mb}"></label>
@@ -2366,6 +2655,11 @@ fn render_admission_policy(state: &ControlPlaneState) -> String {
                   <label class="check"><input type="checkbox" name="allow_backend_cuda" value="1"{allow_cuda}> CUDA</label>
                   <label class="check"><input type="checkbox" name="allow_backend_vllm" value="1"{allow_vllm}> vLLM</label>
                 </div>
+                <div class="policy-models">
+                  <h3>Model market admission</h3>
+                  <p class="meta">Checked models are allowed. Unchecked catalog models are denied. Models outside this curated catalog are Under investigation and cannot take jobs.</p>
+                  <div class="policy-grid">{model_rows}</div>
+                </div>
                 <button class="button primary" type="submit">Apply Policy</button>
               </form>
               <p class="meta">Last update: {updated} by {updated_by}</p>
@@ -2373,12 +2667,14 @@ fn render_admission_policy(state: &ControlPlaneState) -> String {
         enabled_checked = checked_attr(policy.enabled),
         runtime_checked = checked_attr(policy.require_healthy_runtime),
         trusted_checked = checked_attr(policy.require_trusted_identity),
+        model_policy_checked = checked_attr(policy.enforce_model_policy),
         min_memory_mb = policy.min_memory_mb,
         min_cuda_vram_mb = policy.min_cuda_vram_mb,
         allow_auto = checked_attr(allow_auto),
         allow_m = checked_attr(allow_m),
         allow_cuda = checked_attr(allow_cuda),
         allow_vllm = checked_attr(allow_vllm),
+        model_rows = model_rows,
         updated = escape_html(updated),
         updated_by = escape_html(updated_by),
     )
@@ -2393,6 +2689,7 @@ fn control_plane_operator_page(
 ) -> String {
     let snapshot = state.snapshot(storage_source.as_str());
     let nodes = snapshot["online_count"].as_u64().unwrap_or(0);
+    let registered = state.nodes.len();
     let trusted = snapshot["trusted_count"].as_u64().unwrap_or(0);
     let paused = snapshot["paused_count"].as_u64().unwrap_or(0);
     let policy_blocked = snapshot["policy_blocked_count"].as_u64().unwrap_or(0);
@@ -2415,6 +2712,15 @@ fn control_plane_operator_page(
     let (paged_nodes, nodes_pagination) = paged_node_records(filtered_nodes, query);
     let filtered_nodes_html = render_node_records(paged_nodes);
     let nodes_pagination_html = render_pagination_controls("/nodes", query, &nodes_pagination);
+    let registry_nodes = filter_json_items(
+        state.nodes.values().cloned().collect::<Vec<_>>(),
+        query,
+        "nodes",
+    );
+    let (paged_registry_nodes, registry_pagination) = paged_node_records(registry_nodes, query);
+    let registry_nodes_html = render_registry_records(paged_registry_nodes);
+    let registry_pagination_html =
+        render_pagination_controls("/registry", query, &registry_pagination);
     let mut filtered_jobs = state.jobs.values().cloned().collect::<Vec<_>>();
     filtered_jobs.reverse();
     let filtered_jobs = filter_json_items(filtered_jobs, query, "jobs");
@@ -2491,7 +2797,7 @@ fn control_plane_operator_page(
         OperatorPage::Registry => format!(
             r#"{filters}
             <section class="grid four">
-              <a class="metric metric-link" href="/registry"><span>Registered</span><strong>{nodes}</strong></a>
+              <a class="metric metric-link" href="/registry"><span>Registered</span><strong>{registered}</strong></a>
               <a class="metric metric-link" href="/registry?trust=trusted"><span>Trusted</span><strong>{trusted}</strong></a>
               <a class="metric metric-link" href="/registry?policy=blocked"><span>Policy blocked</span><strong>{policy_blocked}</strong></a>
               <div class="metric"><span>Storage</span><strong>{storage_value}</strong></div>
@@ -2499,10 +2805,13 @@ fn control_plane_operator_page(
             <section class="panel">
               <h2>Registry & Trust</h2>
               <p class="meta">Signed registry snapshots, identity trust paths, and policy decisions should be reviewed here. Raw node data remains available for contract checks.</p>
-              <a class="button" href="/v1/status">Status JSON</a>
+              {registry_nodes_html}
+              {registry_pagination_html}
             </section>"#,
             filters = control_filter_form(page, query, &nodes_api_href),
-            storage_value = escape_html(storage_source.as_str())
+            storage_value = escape_html(storage_source.as_str()),
+            registry_nodes_html = registry_nodes_html,
+            registry_pagination_html = registry_pagination_html
         ),
         OperatorPage::Settings => format!(
             r#"{filters}
@@ -2541,6 +2850,17 @@ fn control_plane_operator_page(
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title} - EHDA</title>
+    <script>
+      (() => {{
+        try {{
+          const saved = localStorage.getItem("ehda-theme");
+          const preferred = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          document.documentElement.dataset.theme = saved === "light" || saved === "dark" ? saved : preferred;
+        }} catch (_) {{
+          document.documentElement.dataset.theme = "dark";
+        }}
+      }})();
+    </script>
     <style>
       :root {{ color-scheme: dark; --bg:#050607; --surface:#0b0d10; --line:rgba(148,163,184,.2); --line-strong:rgba(96,165,250,.48); --text:#f6f7f9; --muted:#9ca3af; --blue:#60a5fa; }}
       * {{ box-sizing: border-box; }}
@@ -2592,6 +2912,7 @@ fn control_plane_operator_page(
       .metric strong {{ display:block; margin-top:7px; font-size:28px; }}
       .table {{ display:grid; overflow-x:auto; }}
       .thead,.row {{ display:grid; grid-template-columns:minmax(210px,1.15fr) minmax(130px,.7fr) minmax(170px,.95fr) minmax(90px,.45fr) minmax(90px,.45fr) minmax(340px,1.8fr) minmax(130px,.7fr) minmax(110px,.55fr); gap:14px; min-width:1280px; padding:14px 0; border-bottom:1px solid var(--line); }}
+      .registry-table .thead,.registry-table .row {{ grid-template-columns:minmax(180px,1fr) minmax(240px,1.35fr) minmax(180px,1fr) minmax(220px,1.2fr) minmax(220px,1.2fr) minmax(150px,.8fr); min-width:1190px; }}
       .jobs-table .thead,.jobs-table .row {{ grid-template-columns:minmax(190px,1fr) minmax(260px,1.45fr) minmax(110px,.55fr) minmax(160px,.85fr) minmax(160px,.85fr) minmax(180px,.9fr) minmax(260px,1.35fr); min-width:1320px; }}
       .thead {{ color:var(--muted); text-transform:uppercase; font-size:12px; }}
       .row > div {{ min-width:0; overflow-wrap:anywhere; }}
@@ -2625,6 +2946,78 @@ fn control_plane_operator_page(
       .operator .meta {{ overflow-wrap:anywhere; word-break:break-word; line-height:1.35; }}
       .avatar {{ width:42px; height:42px; flex:0 0 42px; border-radius:12px; background:linear-gradient(135deg,#30343a,#111317); display:grid; place-items:center; font-weight:700; }}
       .foot {{ color:var(--muted); font-size:12px; margin-top:22px; overflow-wrap:anywhere; }}
+      html[data-theme="light"] {{
+        color-scheme: light;
+        --bg:#f7f9fc;
+        --surface:#ffffff;
+        --line:rgba(117,134,155,.22);
+        --line-strong:rgba(18,109,255,.48);
+        --text:#111827;
+        --muted:#687386;
+        --blue:#126dff;
+      }}
+      html[data-theme="light"] body {{
+        background:radial-gradient(circle at 72% 0%,rgba(32,108,255,.035),transparent 32%),linear-gradient(135deg,#ffffff 0%,#fafbfe 58%,#f4f7fb 100%);
+      }}
+      html[data-theme="light"] .sidebar {{
+        border-right-color:#dfe5ec;
+        background:rgba(255,255,255,.94);
+      }}
+      html[data-theme="light"] .brand,
+      html[data-theme="light"] h1,
+      html[data-theme="light"] h2 {{
+        color:#111827;
+      }}
+      html[data-theme="light"] .nav-item {{ color:#344054; }}
+      html[data-theme="light"] .nav-item:hover,
+      html[data-theme="light"] .nav-item:focus-visible {{
+        color:#075fd8;
+        background:rgba(18,109,255,.06);
+      }}
+      html[data-theme="light"] .nav-item.active {{
+        color:#075fd8;
+        border-color:rgba(18,109,255,.24);
+        background:linear-gradient(90deg,rgba(18,109,255,.1),rgba(18,109,255,.035));
+        box-shadow:none;
+      }}
+      html[data-theme="light"] .metric,
+      html[data-theme="light"] .panel,
+      html[data-theme="light"] .node-profile-card,
+      html[data-theme="light"] .side-card {{
+        border-color:#dfe5ec;
+        background:rgba(255,255,255,.96);
+        box-shadow:0 6px 20px rgba(16,24,40,.055);
+      }}
+      html[data-theme="light"] .metric-link:hover,
+      html[data-theme="light"] .metric-link:focus-visible {{
+        border-color:rgba(18,109,255,.34);
+        background:#ffffff;
+        box-shadow:0 12px 28px rgba(16,24,40,.08);
+      }}
+      html[data-theme="light"] .button {{
+        border-color:#dfe5ec;
+        background:rgba(255,255,255,.94);
+        color:#111827;
+      }}
+      html[data-theme="light"] .button.primary {{
+        border-color:rgba(18,109,255,.42);
+        background:rgba(18,109,255,.1);
+        color:#075fd8;
+      }}
+      html[data-theme="light"] input,
+      html[data-theme="light"] select {{
+        border-color:#dfe5ec;
+        background:#ffffff;
+        color:#111827;
+      }}
+      html[data-theme="light"] .check {{ color:#344054; }}
+      html[data-theme="light"] .inline-link {{ color:#075fd8; }}
+      html[data-theme="light"] .inline-link:hover,
+      html[data-theme="light"] .inline-link:focus-visible {{ color:#064da8; }}
+      html[data-theme="light"] .avatar {{
+        background:linear-gradient(135deg,#dbeafe,#eef4ff);
+        color:#075fd8;
+      }}
       @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two,.node-profile-grid,.profile-sections,.profile-kv {{ grid-template-columns:1fr; }} .profile-head {{ flex-direction:column; }} .pager {{ align-items:stretch; flex-direction:column; }} .pager-actions {{ display:grid; grid-template-columns:1fr 1fr; }} main {{ padding:22px; }} }}
       @media (prefers-reduced-motion: reduce) {{ *,*::before,*::after {{ animation-duration:.01ms!important; animation-iteration-count:1!important; scroll-behavior:auto!important; transition-duration:.01ms!important; }} .motion-lift:hover,.motion-lift:focus-visible,.motion-glow:hover,.motion-glow:focus-visible {{ transform:none; }} }}
     </style>
@@ -2717,6 +3110,7 @@ fn control_plane_home(
     let failed = snapshot["failed_job_count"].as_u64().unwrap_or(0);
     let healthy_tone = "green";
     let (storage_label, storage_tone) = match storage_source {
+        StorageSource::Postgres => ("postgres", "green"),
         StorageSource::Supabase => ("supabase", "green"),
         StorageSource::LocalJsonFallback => ("json fallback", "amber"),
         StorageSource::LocalJsonOnly => ("json", "blue"),
@@ -2768,6 +3162,17 @@ fn control_plane_home(
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EHDA Control Plane</title>
+    <script>
+      (() => {{
+        try {{
+          const saved = localStorage.getItem("ehda-theme");
+          const preferred = window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark";
+          document.documentElement.dataset.theme = saved === "light" || saved === "dark" ? saved : preferred;
+        }} catch (_) {{
+          document.documentElement.dataset.theme = "dark";
+        }}
+      }})();
+    </script>
     <style>
       :root {{
         color-scheme: dark;
@@ -2839,7 +3244,7 @@ fn control_plane_home(
       }}
       .app-shell {{
         display: grid;
-        grid-template-columns: 250px minmax(0, 1fr);
+        grid-template-columns: 212px minmax(0, 1fr);
         min-height: 100vh;
       }}
       .sidebar {{
@@ -2896,8 +3301,8 @@ fn control_plane_home(
         display: flex;
         align-items: center;
         gap: 14px;
-        min-height: 54px;
-        padding: 0 13px;
+        min-height: 46px;
+        padding: 0 12px;
         border: 1px solid transparent;
         border-radius: 7px;
         color: #b9c5d6;
@@ -2908,10 +3313,10 @@ fn control_plane_home(
         background: rgba(51, 168, 255, 0.1);
       }}
       .nav-item.active {{
-        color: #55bdff;
-        border-color: rgba(35, 161, 255, 0.7);
-        background: linear-gradient(90deg, rgba(0, 106, 255, 0.26), rgba(0, 165, 255, 0.08));
-        box-shadow: 0 0 24px rgba(0, 128, 255, 0.25), inset 0 0 22px rgba(0, 136, 255, 0.1);
+        color: #55a0ff;
+        border-color: #2f77bd;
+        background: linear-gradient(90deg, rgba(35, 108, 190, 0.28), rgba(27, 56, 91, 0.35));
+        box-shadow: none;
       }}
       .icon {{
         width: 22px;
@@ -2972,7 +3377,7 @@ fn control_plane_home(
         font-weight: 700;
       }}
       .main {{
-        padding: 30px 28px 34px;
+        padding: 27px 28px 56px;
         min-width: 0;
       }}
       .topbar {{
@@ -2984,7 +3389,7 @@ fn control_plane_home(
       }}
       h1 {{
         margin: 0;
-        font-size: 34px;
+        font-size: 31px;
         line-height: 1.1;
         letter-spacing: 0;
       }}
@@ -3027,6 +3432,15 @@ fn control_plane_home(
         justify-content: center;
         padding: 0;
       }}
+      .theme-button {{
+        width: 44px;
+        justify-content: center;
+        padding: 0;
+        cursor: pointer;
+      }}
+      .theme-button .sun-icon {{ display: none; }}
+      html[data-theme="light"] .theme-button .sun-icon {{ display: block; }}
+      html[data-theme="light"] .theme-button .moon-icon {{ display: none; }}
       .live-dot {{
         display: inline-block;
         width: 8px;
@@ -3046,10 +3460,10 @@ fn control_plane_home(
         align-items: center;
         min-height: 34px;
         padding: 0 16px;
-        border-radius: 999px;
+        border-radius: 9px;
         font-size: 13px;
         letter-spacing: 0.03em;
-        text-transform: uppercase;
+        text-transform: none;
         border: 1px solid transparent;
       }}
       .pill-green {{ background: rgba(57, 217, 138, 0.08); color: var(--green); border-color: rgba(57, 217, 138, 0.34); }}
@@ -3061,7 +3475,7 @@ fn control_plane_home(
       .primary-metrics {{
         display: grid;
         grid-template-columns: repeat(4, minmax(0, 1fr));
-        gap: 18px;
+        gap: 14px;
       }}
       .secondary-metrics {{
         display: grid;
@@ -3075,7 +3489,7 @@ fn control_plane_home(
           radial-gradient(circle at 86% 80%, rgba(96, 165, 250, 0.055), transparent 38%),
           linear-gradient(180deg, rgba(19, 21, 25, 0.97), rgba(8, 9, 11, 0.98));
         border-radius: 8px;
-        padding: 22px;
+        padding: 18px;
         position: relative;
         min-height: 112px;
         overflow: hidden;
@@ -3097,7 +3511,7 @@ fn control_plane_home(
         outline-offset: 3px;
       }}
       .card.compact {{
-        min-height: 88px;
+        min-height: 104px;
         padding: 18px;
         display: flex;
         align-items: center;
@@ -3120,24 +3534,24 @@ fn control_plane_home(
         text-transform: capitalize;
       }}
       .metric-icon {{
-        width: 58px;
-        height: 58px;
+        width: 52px;
+        height: 52px;
         border-radius: 50%;
         display: grid;
         place-items: center;
-        background: radial-gradient(circle, rgba(0, 115, 255, 0.34), rgba(0, 58, 117, 0.24));
-        color: var(--cyan);
+        background: #172231;
+        color: var(--blue);
         flex: 0 0 auto;
       }}
       .card-label {{
         color: #d8e2ef;
-        text-transform: uppercase;
-        letter-spacing: 0.04em;
-        font-size: 13px;
+        text-transform: none;
+        letter-spacing: 0;
+        font-size: 12px;
       }}
       .card-value {{
         margin-top: 6px;
-        font-size: 31px;
+        font-size: 27px;
         line-height: 1.1;
       }}
       .delta {{
@@ -3155,9 +3569,9 @@ fn control_plane_home(
       }}
       .work-grid {{
         display: grid;
-        grid-template-columns: minmax(0, 1.7fr) minmax(360px, 1fr);
-        gap: 18px;
-        margin-top: 18px;
+        grid-template-columns: minmax(0, 1.9fr) minmax(340px, 1fr);
+        gap: 16px;
+        margin-top: 16px;
       }}
       .work-column {{
         display: grid;
@@ -3279,7 +3693,7 @@ fn control_plane_home(
       }}
       .topology {{
         position: relative;
-        height: 420px;
+        height: 350px;
         border-bottom: 1px solid rgba(73, 159, 255, 0.12);
         overflow: hidden;
       }}
@@ -3630,6 +4044,164 @@ fn control_plane_home(
         margin-top: 22px;
         overflow-wrap: anywhere;
       }}
+      html[data-theme="light"] {{
+        color-scheme: light;
+        --bg: #f7f9fc;
+        --surface: rgba(255, 255, 255, 0.98);
+        --surface-2: rgba(248, 250, 253, 0.98);
+        --panel: rgba(255, 255, 255, 0.98);
+        --line: rgba(117, 134, 155, 0.2);
+        --line-strong: rgba(28, 111, 255, 0.5);
+        --text: #111827;
+        --muted: #687386;
+        --blue: #126dff;
+        --cyan: #126dff;
+      }}
+      html[data-theme="light"] body {{
+        background:
+          radial-gradient(circle at 72% 0%, rgba(32, 108, 255, 0.035), transparent 32%),
+          linear-gradient(135deg, #ffffff 0%, #fafbfe 58%, #f4f7fb 100%);
+        color: var(--text);
+      }}
+      body,
+      .sidebar,
+      .card,
+      .section,
+      .side-card,
+      .endpoint-button,
+      .refresh-button,
+      .theme-button {{
+        transition: background var(--motion-medium), color var(--motion-medium), border-color var(--motion-medium), box-shadow var(--motion-medium);
+      }}
+      html[data-theme="light"] .sidebar {{
+        border-right-color: #dfe5ec;
+        background: rgba(255, 255, 255, 0.92);
+      }}
+      html[data-theme="light"] .brand,
+      html[data-theme="light"] h1,
+      html[data-theme="light"] .section-title,
+      html[data-theme="light"] .card-value {{
+        color: #111827;
+      }}
+      html[data-theme="light"] .nav-item {{
+        color: #344054;
+      }}
+      html[data-theme="light"] .nav-item:hover,
+      html[data-theme="light"] .nav-item:focus-visible {{
+        color: #075fd8;
+        background: rgba(18, 109, 255, 0.06);
+      }}
+      html[data-theme="light"] .nav-item.active {{
+        color: #075fd8;
+        border-color: rgba(18, 109, 255, 0.24);
+        background: linear-gradient(90deg, rgba(18, 109, 255, 0.1), rgba(18, 109, 255, 0.035));
+      }}
+      html[data-theme="light"] .sub,
+      html[data-theme="light"] .actions,
+      html[data-theme="light"] .meta,
+      html[data-theme="light"] .delta,
+      html[data-theme="light"] .foot {{
+        color: #687386;
+      }}
+      html[data-theme="light"] .side-card,
+      html[data-theme="light"] .endpoint-button,
+      html[data-theme="light"] .refresh-button,
+      html[data-theme="light"] .theme-button {{
+        background: rgba(255, 255, 255, 0.94);
+        border-color: #dfe5ec;
+        color: #111827;
+        box-shadow: 0 3px 12px rgba(16, 24, 40, 0.04);
+      }}
+      html[data-theme="light"] .card {{
+        border-color: #e2e7ed;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 6px 20px rgba(16, 24, 40, 0.055);
+      }}
+      html[data-theme="light"] .card:hover,
+      html[data-theme="light"] .card:focus-within {{
+        border-color: rgba(18, 109, 255, 0.34);
+        box-shadow: 0 12px 28px rgba(16, 24, 40, 0.08);
+      }}
+      html[data-theme="light"] .metric-icon {{
+        background: #f2f6fc;
+      }}
+      html[data-theme="light"] .card-label {{
+        color: #253044;
+      }}
+      html[data-theme="light"] .planner-status-card {{
+        border-color: rgba(25, 182, 112, 0.55);
+        background: rgba(255, 255, 255, 0.98);
+      }}
+      html[data-theme="light"] .section {{
+        border-color: #dfe5ec;
+        background: rgba(255, 255, 255, 0.96);
+        box-shadow: 0 8px 24px rgba(16, 24, 40, 0.055);
+      }}
+      html[data-theme="light"] .topology {{
+        border-bottom-color: #e7ebf0;
+      }}
+      html[data-theme="light"] .orbit {{
+        border-color: rgba(18, 109, 255, 0.28);
+      }}
+      html[data-theme="light"] .grid-ring {{
+        border-color: rgba(101, 119, 145, 0.14);
+      }}
+      html[data-theme="light"] .radial {{
+        background: linear-gradient(90deg, rgba(18, 109, 255, 0.42), transparent);
+      }}
+      html[data-theme="light"] .topology-center::after {{
+        background: radial-gradient(circle at 50% 45%, rgba(78, 143, 255, 0.13), rgba(255, 255, 255, 0.98) 68%);
+        box-shadow: inset 0 0 24px rgba(18, 109, 255, 0.12);
+      }}
+      html[data-theme="light"] .topology-center::before {{
+        background: linear-gradient(145deg, rgba(91, 160, 255, 0.72), rgba(83, 126, 255, 0.48) 45%, rgba(127, 80, 255, 0.52));
+        filter: drop-shadow(0 5px 12px rgba(46, 103, 190, 0.14));
+      }}
+      html[data-theme="light"] .logo-signal {{
+        background: linear-gradient(145deg, rgba(90, 154, 255, 0.12), rgba(122, 91, 255, 0.06));
+        box-shadow: 0 0 0 1px rgba(91, 143, 214, 0.15);
+      }}
+      html[data-theme="light"] .topo-node {{
+        color: #1f2937;
+      }}
+      html[data-theme="light"] .node-hex::before {{
+        background: rgba(255, 255, 255, 0.97);
+      }}
+      html[data-theme="light"] .node-hex {{
+        color: #516079;
+        box-shadow: 0 4px 12px rgba(16, 24, 40, 0.06);
+      }}
+      html[data-theme="light"] .topo-node.offline {{
+        color: #1f2937;
+        opacity: 1;
+      }}
+      html[data-theme="light"] .topo-node.offline .node-hex {{
+        background: linear-gradient(135deg, #d9e0e9, #edf1f6);
+        color: #52627a;
+        box-shadow: 0 4px 12px rgba(16, 24, 40, 0.045);
+        opacity: 1;
+      }}
+      html[data-theme="light"] .topo-node.offline .node-hex::before {{
+        background: #ffffff;
+      }}
+      html[data-theme="light"] .topo-node.offline .topo-label {{
+        color: #1f2937;
+      }}
+      html[data-theme="light"] .topo-node.offline .topo-id {{
+        color: #59677a;
+      }}
+      html[data-theme="light"] .info-box,
+      html[data-theme="light"] .api-strip,
+      html[data-theme="light"] .panel-footer {{
+        border-color: #dfe5ec;
+        background: rgba(255, 255, 255, 0.86);
+        color: #344054;
+      }}
+      html[data-theme="light"] code {{
+        background: #eef4ff;
+        border-color: #e2ecff;
+        color: #075fd8;
+      }}
       @media (max-width: 1200px) {{
         .app-shell {{ grid-template-columns: 1fr; }}
         .sidebar {{
@@ -3747,6 +4319,7 @@ fn control_plane_home(
           <div class="actions">
             <a class="endpoint-button motion-lift" href="/v1/status"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-3 3 3 3"/><path d="m16 9 3 3-3 3"/><path d="m14 5-4 14"/></svg>Status API</a>
             <span>Last updated <span class="live-dot" aria-hidden="true"></span> Just now</span>
+            <button class="endpoint-button theme-button motion-lift" id="theme-toggle" type="button" aria-label="Switch to light theme" title="Switch theme"><svg class="icon moon-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12.8A8.5 8.5 0 1 1 11.2 3 6.7 6.7 0 0 0 21 12.8Z"/></svg><svg class="icon sun-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg></button>
             <a class="refresh-button motion-lift" href="/" aria-label="Refresh"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M21 12a9 9 0 0 1-15.5 6.2"/><path d="M3 12A9 9 0 0 1 18.5 5.8"/><path d="M18 2v4h-4"/><path d="M6 22v-4h4"/></svg></a>
           </div>
         </header>
@@ -3837,6 +4410,24 @@ fn control_plane_home(
         <div class="foot">Deploy fingerprint is exposed on <code>/health</code> and <code>/v1/status</code> for post-merge verification.</div>
       </main>
     </div>
+    <script>
+      (() => {{
+        const button = document.getElementById("theme-toggle");
+        if (!button) return;
+        const sync = () => {{
+          const light = document.documentElement.dataset.theme === "light";
+          button.setAttribute("aria-label", light ? "Switch to dark theme" : "Switch to light theme");
+          button.setAttribute("title", light ? "Switch to dark theme" : "Switch to light theme");
+        }};
+        button.addEventListener("click", () => {{
+          const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+          document.documentElement.dataset.theme = next;
+          try {{ localStorage.setItem("ehda-theme", next); }} catch (_) {{}}
+          sync();
+        }});
+        sync();
+      }})();
+    </script>
   </body>
 </html>"##,
         storage_label = escape_html(storage_label),
@@ -4051,14 +4642,22 @@ fn admission_policy_update_from_form(body: &str) -> AdmissionPolicyUpdate {
     if form_flag(body, "allow_backend_vllm") {
         allowed_backends.push(Backend::Vllm);
     }
+    let allowed_models = contracts::OFFICIAL_MODELS
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| form_flag(body, &format!("allow_model_{index}")))
+        .map(|(_, (name, _))| (*name).to_string())
+        .collect();
 
     AdmissionPolicyUpdate {
         enabled: form_flag(body, "enabled"),
         require_trusted_identity: form_flag(body, "require_trusted_identity"),
         require_healthy_runtime: form_flag(body, "require_healthy_runtime"),
+        enforce_model_policy: form_flag(body, "enforce_model_policy"),
         min_memory_mb: form_u32(body, "min_memory_mb"),
         min_cuda_vram_mb: form_u32(body, "min_cuda_vram_mb"),
         allowed_backends,
+        allowed_models,
         actor: Some("operator".to_string()),
     }
 }
@@ -4754,6 +5353,176 @@ fn legacy_operator_token_warning() -> Option<String> {
     }
 }
 
+fn configured_env_value(value: Option<&str>) -> bool {
+    value.map(str::trim).is_some_and(|value| !value.is_empty())
+}
+
+fn database_health_from_env(storage_source: StorageSource) -> DatabaseHealthStatus {
+    database_health_from_values(
+        storage_source,
+        std::env::var(DATABASE_DIRECT_URL_ENV).ok().as_deref(),
+        std::env::var(DATABASE_POOL_URL_ENV).ok().as_deref(),
+        std::env::var(DATABASE_POOL_MODE_ENV).ok().as_deref(),
+        std::env::var(DATABASE_TLS_MODE_ENV).ok().as_deref(),
+        std::env::var(LEGACY_DATABASE_URL_ENV).ok().as_deref(),
+    )
+}
+
+fn database_health_from_values(
+    storage_source: StorageSource,
+    direct_url: Option<&str>,
+    pool_url: Option<&str>,
+    pool_mode: Option<&str>,
+    tls_mode: Option<&str>,
+    legacy_database_url: Option<&str>,
+) -> DatabaseHealthStatus {
+    let direct_configured = configured_env_value(direct_url);
+    let pool_configured = configured_env_value(pool_url);
+    let legacy_configured = configured_env_value(legacy_database_url);
+    let mut notes = Vec::new();
+
+    if legacy_configured && !direct_configured {
+        notes.push(format!(
+            "{LEGACY_DATABASE_URL_ENV} is present as a legacy direct database URL; prefer {DATABASE_DIRECT_URL_ENV} for managed database mode"
+        ));
+    }
+    if !pool_configured {
+        notes.push(format!(
+            "{DATABASE_POOL_URL_ENV} is not configured; managed Postgres runtime traffic is not using PgBouncer yet"
+        ));
+    }
+    if matches!(storage_source, StorageSource::Supabase) {
+        notes.push("runtime storage is still using the legacy Supabase mirror path".to_string());
+    }
+
+    let admin_direct = if direct_configured {
+        DatabaseEndpointStatus {
+            env_var: DATABASE_DIRECT_URL_ENV.to_string(),
+            configured: true,
+            status: "configured".to_string(),
+        }
+    } else if legacy_configured {
+        DatabaseEndpointStatus {
+            env_var: LEGACY_DATABASE_URL_ENV.to_string(),
+            configured: true,
+            status: "legacy-configured".to_string(),
+        }
+    } else {
+        DatabaseEndpointStatus {
+            env_var: DATABASE_DIRECT_URL_ENV.to_string(),
+            configured: false,
+            status: "unconfigured".to_string(),
+        }
+    };
+
+    let runtime_pool = if pool_configured {
+        DatabaseEndpointStatus {
+            env_var: DATABASE_POOL_URL_ENV.to_string(),
+            configured: true,
+            status: "configured".to_string(),
+        }
+    } else if matches!(storage_source, StorageSource::Supabase) {
+        DatabaseEndpointStatus {
+            env_var: DATABASE_POOL_URL_ENV.to_string(),
+            configured: false,
+            status: "legacy-supabase-runtime".to_string(),
+        }
+    } else {
+        DatabaseEndpointStatus {
+            env_var: DATABASE_POOL_URL_ENV.to_string(),
+            configured: false,
+            status: "unconfigured".to_string(),
+        }
+    };
+
+    DatabaseHealthStatus {
+        storage_source: storage_source.as_str().to_string(),
+        runtime_pool,
+        admin_direct,
+        pool_mode: pool_mode
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("transaction")
+            .to_ascii_lowercase(),
+        tls_mode: tls_mode
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or("require")
+            .to_ascii_lowercase(),
+        legacy_database_url_present: legacy_configured,
+        notes,
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct MigrationDatabaseUrl {
+    env_var: &'static str,
+    url: String,
+    legacy: bool,
+}
+
+fn migration_database_url_from_env() -> Result<Option<MigrationDatabaseUrl>, String> {
+    migration_database_url_from_values(
+        std::env::var(DATABASE_DIRECT_URL_ENV).ok().as_deref(),
+        std::env::var(DATABASE_POOL_URL_ENV).ok().as_deref(),
+        std::env::var(LEGACY_DATABASE_URL_ENV).ok().as_deref(),
+    )
+}
+
+fn migration_database_url_from_values(
+    direct_url: Option<&str>,
+    pool_url: Option<&str>,
+    legacy_database_url: Option<&str>,
+) -> Result<Option<MigrationDatabaseUrl>, String> {
+    let direct_url = trimmed_env(direct_url);
+    let pool_url = trimmed_env(pool_url);
+    let legacy_database_url = trimmed_env(legacy_database_url);
+
+    let selected = if let Some(url) = direct_url {
+        Some(MigrationDatabaseUrl {
+            env_var: DATABASE_DIRECT_URL_ENV,
+            url,
+            legacy: false,
+        })
+    } else {
+        legacy_database_url.map(|url| MigrationDatabaseUrl {
+            env_var: LEGACY_DATABASE_URL_ENV,
+            url,
+            legacy: true,
+        })
+    };
+
+    let Some(selected) = selected else {
+        return Ok(None);
+    };
+
+    if pool_url
+        .as_deref()
+        .is_some_and(|pool_url| pool_url == selected.url)
+    {
+        return Err(format!(
+            "{} must be a direct PostgreSQL URL for migrations and must not equal {}",
+            selected.env_var, DATABASE_POOL_URL_ENV
+        ));
+    }
+
+    if selected.url.to_ascii_lowercase().contains("pgbouncer") {
+        return Err(format!(
+            "{} appears to point at PgBouncer; migrations must use {} direct PostgreSQL",
+            selected.env_var, DATABASE_DIRECT_URL_ENV
+        ));
+    }
+
+    Ok(Some(selected))
+}
+
+fn trimmed_env(value: Option<&str>) -> Option<String> {
+    value
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
 fn authorize_operator_request(
     method: &str,
     route_path: &str,
@@ -4801,7 +5570,7 @@ fn note_supabase_failure(sync_status: &Arc<Mutex<SupabaseSyncStatus>>, error: St
 fn apply_admission_policy_update(
     state: &Arc<Mutex<ControlPlaneState>>,
     sync_status: &Arc<Mutex<SupabaseSyncStatus>>,
-    supabase: Option<&SupabaseMirror>,
+    supabase: Option<&DatabaseMirror>,
     update: AdmissionPolicyUpdate,
 ) -> Result<serde_json::Value, String> {
     let mut guard = state.lock().expect("state lock");
@@ -4844,7 +5613,7 @@ fn handle_connection(
     mut stream: TcpStream,
     state: Arc<Mutex<ControlPlaneState>>,
     sync_status: Arc<Mutex<SupabaseSyncStatus>>,
-    supabase: Option<&SupabaseMirror>,
+    supabase: Option<&DatabaseMirror>,
     storage_source: StorageSource,
 ) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(10)));
@@ -5023,6 +5792,7 @@ fn handle_connection(
             let environment = control_plane_environment_from_env(
                 std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
             );
+            let database = database_health_from_env(storage_source);
             json_response(
                 "200 OK",
                 serde_json::json!({
@@ -5030,6 +5800,7 @@ fn handle_connection(
                     "storage_source": storage_source.as_str(),
                     "supabase": sync_snapshot.summary(),
                     "supabase_sync": sync_snapshot,
+                    "database": database,
                     "deploy_fingerprint": deploy_fingerprint,
                     "environment": environment,
                     "operator_auth_enforced": auth_mode.enforced(),
@@ -5049,10 +5820,16 @@ fn handle_connection(
             } else {
                 compact_status_snapshot(snapshot)
             };
-            json_response(
-                "200 OK",
-                status_snapshot_with_deploy_fingerprint(snapshot, deploy_fingerprint()),
-            )
+            let mut snapshot =
+                status_snapshot_with_deploy_fingerprint(snapshot, deploy_fingerprint());
+            if let serde_json::Value::Object(fields) = &mut snapshot {
+                fields.insert(
+                    "database".to_string(),
+                    serde_json::to_value(database_health_from_env(storage_source))
+                        .expect("database health json"),
+                );
+            }
+            json_response("200 OK", snapshot)
         }
         ("GET", "/v1/planner/status") => json_response(
             "200 OK",
@@ -5169,6 +5946,50 @@ fn handle_connection(
                 json_response("200 OK", serde_json::to_value(claim).expect("json"))
             } else {
                 text_response("400 Bad Request", "missing node_id")
+            }
+        }
+        ("GET", path) if parse_job_artifacts_path(path).is_some() => {
+            let job_id = parse_job_artifacts_path(path).expect("matched artifact path");
+            let record = state.lock().expect("state lock").jobs.get(job_id).cloned();
+            match record {
+                Some(record) => {
+                    let cursor = query_usize(query, "cursor").unwrap_or(0);
+                    let limit = query_usize(query, "limit").unwrap_or(20).clamp(1, 100);
+                    let manifest = record.graph.final_manifest.unwrap_or_default();
+                    let artifacts = manifest
+                        .artifacts
+                        .iter()
+                        .skip(cursor)
+                        .take(limit)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let consumed = cursor.saturating_add(artifacts.len());
+                    let next_cursor = (consumed < manifest.artifacts.len()).then_some(consumed);
+                    json_response(
+                        "200 OK",
+                        serde_json::json!({
+                            "job_id": record.job_id,
+                            "manifest_id": manifest.manifest_id,
+                            "version": manifest.version,
+                            "status": manifest.status,
+                            "complete": manifest.complete,
+                            "final_text": manifest.final_text,
+                            "artifacts": artifacts,
+                            "batches": manifest.batches,
+                            "conflicts": manifest.conflicts,
+                            "warnings": manifest.warnings,
+                            "omitted_dependency_ids": manifest.omitted_dependency_ids,
+                            "checksum_sha256": manifest.checksum_sha256,
+                            "cursor": cursor,
+                            "next_cursor": next_cursor,
+                            "total": manifest.artifacts.len(),
+                        }),
+                    )
+                }
+                None => json_response(
+                    "404 Not Found",
+                    serde_json::json!({ "error": "job not found" }),
+                ),
             }
         }
         ("GET", path) if path.starts_with("/v1/jobs/") => {
@@ -5540,19 +6361,45 @@ fn handle_connection(
                     }
 
                     let (system_prompt, prompt) = chat_messages_to_prompt(&request_body.messages);
+                    let (system_prompt, max_tokens) = match apply_chat_mode(
+                        request_body.mode.as_deref(),
+                        system_prompt,
+                        request_body.max_tokens,
+                    ) {
+                        Ok(values) => values,
+                        Err(error) => {
+                            if let Err(write_error) = stream.write_all(
+                                json_response(
+                                    "400 Bad Request",
+                                    serde_json::json!({ "error": error }),
+                                )
+                                .as_bytes(),
+                            ) {
+                                eprintln!("failed to write response: {write_error}");
+                            }
+                            return;
+                        }
+                    };
                     let job_request = JobRequest {
                         request_id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
                         prompt,
                         preferred_backend: crate::contracts::Backend::Auto,
+                        routing_mode: RoutingMode::Normal,
                         runtime_mode: RuntimeMode::Local,
                         execution_mode: JobExecutionMode::Single,
                         stream: false,
-                        model: Some(request_body.model.clone()),
+                        model: request_body.model.clone(),
                         system_prompt,
-                        max_tokens: request_body.max_tokens,
+                        max_tokens,
                         max_tokens_source: Some(
                             if request_body.max_tokens.is_some() {
                                 "explicit"
+                            } else if request_body
+                                .mode
+                                .as_deref()
+                                .is_some_and(|mode| mode.eq_ignore_ascii_case("speakai"))
+                            {
+                                "mode_default"
                             } else {
                                 "auto"
                             }
@@ -5590,7 +6437,7 @@ fn handle_connection(
                         id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
                         object: "chat.completion".to_string(),
                         created: now_unix_seconds_u64(),
-                        model: request_body.model,
+                        model: request_body.model.unwrap_or_else(|| "auto".to_string()),
                         choices: vec![ChatCompletionChoice {
                             index: 0,
                             message: ChatCompletionChoiceMessage {
@@ -5711,9 +6558,15 @@ fn main() {
     load_local_env();
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(|arg| arg.as_str()) == Some("migrate") {
-        match std::env::var("DATABASE_URL") {
-            Ok(database_url) => match apply_migrations(&database_url) {
+        match migration_database_url_from_env() {
+            Ok(Some(database_url)) => match apply_migrations(&database_url.url) {
                 Ok(applied) => {
+                    if database_url.legacy {
+                        eprintln!(
+                            "migrations: using legacy {}; prefer {} for managed database mode",
+                            LEGACY_DATABASE_URL_ENV, DATABASE_DIRECT_URL_ENV
+                        );
+                    }
                     if applied.is_empty() {
                         println!("no migrations to apply");
                     } else {
@@ -5732,53 +6585,75 @@ fn main() {
                     std::process::exit(1);
                 }
             },
-            Err(_) => {
-                eprintln!("DATABASE_URL is required for migrate");
+            Ok(None) => {
+                eprintln!(
+                    "{} is required for migrate; legacy {} is accepted during migration",
+                    DATABASE_DIRECT_URL_ENV, LEGACY_DATABASE_URL_ENV
+                );
+                std::process::exit(1);
+            }
+            Err(error) => {
+                eprintln!("migration config invalid: {error}");
                 std::process::exit(1);
             }
         }
         return;
     }
 
-    if let Ok(database_url) = std::env::var("DATABASE_URL") {
-        thread::spawn(move || match apply_migrations(&database_url) {
-            Ok(applied) => {
-                if applied.is_empty() {
-                    println!("migrations: no pending migrations");
-                } else {
-                    for migration in &applied {
-                        println!(
-                            "applied {}_{} ({})",
-                            migration.version,
-                            migration.name,
-                            migration.path.display()
+    match migration_database_url_from_env() {
+        Ok(Some(database_url)) => {
+            thread::spawn(move || match apply_migrations(&database_url.url) {
+                Ok(applied) => {
+                    if database_url.legacy {
+                        eprintln!(
+                            "migrations: using legacy {}; prefer {} for managed database mode",
+                            LEGACY_DATABASE_URL_ENV, DATABASE_DIRECT_URL_ENV
                         );
                     }
-                    println!("migrations: {} applied in background", applied.len());
+                    if applied.is_empty() {
+                        println!("migrations: no pending migrations");
+                    } else {
+                        for migration in &applied {
+                            println!(
+                                "applied {}_{} ({})",
+                                migration.version,
+                                migration.name,
+                                migration.path.display()
+                            );
+                        }
+                        println!("migrations: {} applied in background", applied.len());
+                    }
                 }
-            }
-            Err(error) => {
-                eprintln!("background migration failed; continuing with existing schema: {error}");
-            }
-        });
-        println!("migrations: background startup check queued");
+                Err(error) => {
+                    eprintln!(
+                        "background migration failed; continuing with existing schema: {error}"
+                    );
+                }
+            });
+            println!("migrations: background startup check queued");
+        }
+        Ok(None) => {}
+        Err(error) => {
+            eprintln!("background migration skipped; migration config invalid: {error}");
+        }
     }
 
-    let supabase = SupabaseMirror::from_env();
+    let supabase = DatabaseMirror::from_env();
     let bind_addr = control_plane_bind_addr().expect("resolve bind address");
     let listener = TcpListener::bind(&bind_addr).expect("bind control plane");
     let (restored_state, storage_source, sync_status) = match supabase.as_ref() {
         Some(db) => match db.restore_state() {
             Ok(state) => {
-                println!("restore: supabase");
+                println!("restore: {}", db.label());
+                let storage_source = db.storage_source();
                 (
                     state,
-                    StorageSource::Supabase,
-                    SupabaseSyncStatus::enabled(StorageSource::Supabase),
+                    storage_source,
+                    SupabaseSyncStatus::enabled(storage_source),
                 )
             }
             Err(error) => {
-                eprintln!("supabase restore skipped: {error}");
+                eprintln!("database restore skipped: {error}");
                 let mut status = SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback);
                 status.note_failure(format!("restore failed: {error}"));
                 (
@@ -5802,7 +6677,7 @@ fn main() {
 
     println!("control plane listening on http://{bind_addr}");
     println!(
-        "supabase: {}",
+        "database sync: {}",
         sync_status.lock().expect("sync status lock").summary()
     );
     println!("storage_source: {}", storage_source.as_str());
@@ -5853,20 +6728,24 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::{
-        auth_disabled_flag_enabled, completion_event_type, control_plane_bind_addr_from_env,
-        control_plane_home, control_plane_operator_page, deploy_fingerprint_from_env,
-        handle_connection, job_async_payload, now_unix_seconds, operator_auth_mode_from_env,
+        admission_policy_update_from_form, apply_chat_mode, auth_disabled_flag_enabled,
+        completion_event_type, control_plane_bind_addr_from_env, control_plane_home,
+        control_plane_operator_page, database_health_from_values, deploy_fingerprint_from_env,
+        handle_connection, job_async_payload, legacy_supabase_enabled_from_value,
+        migration_database_url_from_values, now_unix_seconds, operator_auth_mode_from_env,
         operator_auth_startup_config_error, operator_auth_token_from_env,
         parse_conversation_messages_path, parse_conversation_path, parse_request,
         read_http_request, requires_operator_auth, status_snapshot_with_deploy_fingerprint,
         trust_grade, trust_grade_badge, HttpRequestReadError, OperatorAuthMode, OperatorPage,
         StorageSource, SupabaseSyncStatus, AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV,
-        CONTROL_PLANE_LOGO_PATH, CONTROL_PLANE_VEHICLE_PATH, LEGACY_OPERATOR_TOKEN_ENV,
-        MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
+        CONTROL_PLANE_LOGO_PATH, CONTROL_PLANE_VEHICLE_PATH, DATABASE_DIRECT_URL_ENV,
+        DATABASE_POOL_URL_ENV, LEGACY_DATABASE_URL_ENV, LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES,
+        OPERATOR_TOKEN_ENV,
     };
+
     use crate::contracts::{
         AgentRegistration, AgentState, Backend, Heartbeat, JobCompletion, JobExecutionMode,
-        JobGraphNodeStatus, JobRequest, JobStatus, RuntimeMode, WorkerHealthReport,
+        JobGraphNodeStatus, JobRequest, JobStatus, RoutingMode, RuntimeMode, WorkerHealthReport,
     };
     use crate::state::ControlPlaneState;
     use ed25519_dalek::{Signer, SigningKey};
@@ -5874,6 +6753,16 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
     use std::thread;
+
+    #[test]
+    fn legacy_supabase_requires_an_explicit_rollback_switch() {
+        assert!(!legacy_supabase_enabled_from_value(None));
+        assert!(!legacy_supabase_enabled_from_value(Some("false")));
+        assert!(!legacy_supabase_enabled_from_value(Some("disabled")));
+        assert!(legacy_supabase_enabled_from_value(Some("true")));
+        assert!(legacy_supabase_enabled_from_value(Some(" YES ")));
+        assert!(legacy_supabase_enabled_from_value(Some("1")));
+    }
 
     #[test]
     fn completion_events_distinguish_accepted_and_rejected_graph_nodes() {
@@ -6068,7 +6957,6 @@ mod tests {
         });
 
         let body = serde_json::json!({
-            "model": "Qwen/Qwen2.5-0.5B-Instruct",
             "messages": [
                 {
                     "role": "user",
@@ -6097,11 +6985,33 @@ mod tests {
         let guard = state.lock().expect("state lock");
         let job = guard.jobs.values().next().expect("queued chat job");
         assert_eq!(job.runtime_mode, RuntimeMode::Local);
+        assert_eq!(job.model, None);
         assert_eq!(job.scheduling_requirements.runtime_mode, RuntimeMode::Local);
         assert_eq!(
             job.prompt,
             "user: Who is the current Philippines president?"
         );
+    }
+
+    #[test]
+    fn speakai_mode_adds_adaptive_schema_and_safe_token_budget() {
+        let (system_prompt, max_tokens) = apply_chat_mode(
+            Some("speakai"),
+            Some("The learner is at A2 level.".to_string()),
+            None,
+        )
+        .expect("supported mode");
+        let prompt = system_prompt.expect("SpeakAI system prompt");
+        assert!(prompt.contains("return only one valid JSON object"));
+        assert!(prompt.contains("question: direct/ANSWER"));
+        assert!(prompt.contains("The learner is at A2 level."));
+        assert_eq!(max_tokens, Some(512));
+    }
+
+    #[test]
+    fn unknown_chat_mode_is_rejected() {
+        let error = apply_chat_mode(Some("unknown"), None, None).expect_err("unsupported mode");
+        assert!(error.contains("unsupported chat completion mode"));
     }
 
     #[test]
@@ -6258,6 +7168,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "Summarize operator state".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -6303,6 +7214,16 @@ mod tests {
         assert!(html.contains("color-scheme: dark"));
         assert!(html.contains("motion-lift"));
         assert!(html.contains("motion-glow"));
+        assert!(html.contains(r#"id="theme-toggle""#));
+        assert!(html.contains(r#"data-theme="light""#));
+        assert!(html.contains("ehda-theme"));
+        assert!(html.contains("prefers-color-scheme: light"));
+        assert!(html.contains("Switch to light theme"));
+        assert!(html.contains("Switch to dark theme"));
+        assert!(html.contains(r#"html[data-theme="light"] .topo-node.offline .node-hex"#));
+        assert!(html.contains(r#"html[data-theme="light"] .topo-node.offline .node-hex::before"#));
+        assert!(html.contains("background: #ffffff"));
+        assert!(html.contains("opacity: 1"));
         assert!(html.contains(r#"class="card metric-link" href="/nodes?state=online""#));
         assert!(html.contains(r#"class="card metric-link" href="/jobs?status=queued""#));
         assert!(html.contains(r#"class="card metric-link" href="/credits""#));
@@ -6373,6 +7294,7 @@ mod tests {
                 request_id: "job-completed".to_string(),
                 prompt: "Summarize BMW history".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -6640,6 +7562,7 @@ mod tests {
                 request_id: "job-single".to_string(),
                 prompt: "Summarize Tesla history".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -6725,6 +7648,7 @@ mod tests {
                 request_id: "job-advisory-direct-detail".to_string(),
                 prompt: "Introduce yourself please".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Auto,
                 stream: false,
@@ -6785,6 +7709,7 @@ mod tests {
                 request_id: "job-queued".to_string(),
                 prompt: "Summarize scheduler state".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -6821,6 +7746,7 @@ mod tests {
                 request_id: "job-node-fit".to_string(),
                 prompt: "Summarize scheduler assignment".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -6865,6 +7791,7 @@ mod tests {
                     "Give me a complete Turbo C program to handle enrollment of students save in binary file."
                         .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -6991,6 +7918,76 @@ mod tests {
     }
 
     #[test]
+    fn registry_page_renders_registered_identity_and_trust_evidence() {
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "node-registry", "REGISTRY-HOST", "42");
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Registry,
+            None,
+        );
+
+        assert!(html.contains("Registry &amp; Trust") || html.contains("Registry & Trust"));
+        assert!(html.contains("node-registry"));
+        assert!(html.contains("REGISTRY-HOST"));
+        assert!(html.contains("fingerprint-node-registry"));
+        assert!(html.contains("local-encrypted-fallback"));
+        assert!(html.contains("allowed"));
+        assert!(html.contains("42"));
+        assert!(html.contains("Identity"));
+        assert!(html.contains("Fingerprint"));
+        assert!(html.contains("Trust path"));
+        assert!(html.contains("Reputation"));
+        assert!(html.contains("Policy decision"));
+        assert!(html.contains("Last activity"));
+        assert!(html.contains("signed device identity"));
+        assert!(!html.contains("Power</div>"));
+    }
+
+    #[test]
+    fn registry_page_explains_when_no_identities_are_registered() {
+        let state = ControlPlaneState::default();
+
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Registry,
+            None,
+        );
+
+        assert!(html.contains("No identities have registered yet."));
+    }
+
+    #[test]
+    fn operator_settings_lists_curated_models_and_parses_admission_choices() {
+        let state = ControlPlaneState::default();
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Settings,
+            None,
+        );
+
+        assert!(html.contains("Model market admission"));
+        assert!(html.contains("Under investigation"));
+        assert!(html.contains("Qwen/Qwen2.5-0.5B-Instruct"));
+
+        let update = admission_policy_update_from_form(
+            "enabled=1&enforce_model_policy=1&allow_backend_m=1&allow_model_1=1",
+        );
+        assert!(update.enforce_model_policy);
+        assert_eq!(
+            update.allowed_models,
+            vec!["Qwen/Qwen2.5-0.5B-Instruct".to_string()]
+        );
+    }
+
+    #[test]
     fn nodes_page_fleet_browser_is_paginated() {
         let mut state = ControlPlaneState::default();
         for index in 1..=30 {
@@ -7027,6 +8024,7 @@ mod tests {
                 request_id: "job-completed".to_string(),
                 prompt: "Summarize Tesla history".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -7097,6 +8095,7 @@ mod tests {
                 request_id: "job-advisory-direct".to_string(),
                 prompt: "Introduce yourself please".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Auto,
                 stream: false,
@@ -7160,6 +8159,7 @@ mod tests {
                 prompt: "Design and implement a backend API plus frontend dashboard and add tests."
                     .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7224,6 +8224,7 @@ mod tests {
                 request_id: "job-mixed-graph".to_string(),
                 prompt: "Write a detailed history split into independent sections.".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7286,6 +8287,7 @@ mod tests {
                 prompt: "Design and implement a backend API plus frontend dashboard and add tests."
                     .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7331,6 +8333,7 @@ mod tests {
                 prompt: "Design and implement a backend API plus frontend dashboard and add tests."
                     .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7424,6 +8427,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -7619,6 +8623,133 @@ mod tests {
     }
 
     #[test]
+    fn database_health_reports_managed_postgres_configuration() {
+        let health = database_health_from_values(
+            StorageSource::Postgres,
+            Some("postgresql://admin@db.example/mundusx"),
+            Some("postgresql://app@pool.example/mundusx"),
+            Some("transaction"),
+            Some("verify-full"),
+            None,
+        );
+
+        assert_eq!(health.storage_source, "postgres");
+        assert!(health.runtime_pool.configured);
+        assert_eq!(health.runtime_pool.env_var, DATABASE_POOL_URL_ENV);
+        assert_eq!(health.runtime_pool.status, "configured");
+        assert!(health.admin_direct.configured);
+        assert_eq!(health.admin_direct.env_var, DATABASE_DIRECT_URL_ENV);
+        assert_eq!(health.admin_direct.status, "configured");
+        assert_eq!(health.pool_mode, "transaction");
+        assert_eq!(health.tls_mode, "verify-full");
+        assert!(!health.legacy_database_url_present);
+        assert!(health.notes.is_empty());
+    }
+
+    #[test]
+    fn database_health_reports_legacy_direct_database_url() {
+        let health = database_health_from_values(
+            StorageSource::LocalJsonOnly,
+            None,
+            None,
+            None,
+            None,
+            Some("postgresql://legacy@example/postgres"),
+        );
+
+        assert_eq!(health.admin_direct.env_var, LEGACY_DATABASE_URL_ENV);
+        assert!(health.admin_direct.configured);
+        assert_eq!(health.admin_direct.status, "legacy-configured");
+        assert!(!health.runtime_pool.configured);
+        assert_eq!(health.runtime_pool.status, "unconfigured");
+        assert_eq!(health.pool_mode, "transaction");
+        assert_eq!(health.tls_mode, "require");
+        assert!(health.legacy_database_url_present);
+        assert!(health
+            .notes
+            .iter()
+            .any(|note| note.contains(LEGACY_DATABASE_URL_ENV)));
+    }
+
+    #[test]
+    fn database_health_reports_supabase_runtime_without_pool() {
+        let health =
+            database_health_from_values(StorageSource::Supabase, None, None, None, None, None);
+
+        assert_eq!(health.storage_source, "supabase");
+        assert_eq!(health.runtime_pool.status, "legacy-supabase-runtime");
+        assert!(!health.runtime_pool.configured);
+        assert!(health
+            .notes
+            .iter()
+            .any(|note| note.contains("legacy Supabase mirror path")));
+    }
+
+    #[test]
+    fn migration_database_url_prefers_direct_managed_url() {
+        let selected = migration_database_url_from_values(
+            Some(" postgresql://admin@db.example/mundusx "),
+            Some("postgresql://app@pool.example/mundusx"),
+            Some("postgresql://legacy@example/postgres"),
+        )
+        .expect("migration url")
+        .expect("configured url");
+
+        assert_eq!(selected.env_var, DATABASE_DIRECT_URL_ENV);
+        assert_eq!(selected.url, "postgresql://admin@db.example/mundusx");
+        assert!(!selected.legacy);
+    }
+
+    #[test]
+    fn migration_database_url_falls_back_to_legacy_database_url() {
+        let selected = migration_database_url_from_values(
+            None,
+            Some("postgresql://app@pool.example/mundusx"),
+            Some(" postgresql://legacy@example/postgres "),
+        )
+        .expect("migration url")
+        .expect("configured url");
+
+        assert_eq!(selected.env_var, LEGACY_DATABASE_URL_ENV);
+        assert_eq!(selected.url, "postgresql://legacy@example/postgres");
+        assert!(selected.legacy);
+    }
+
+    #[test]
+    fn migration_database_url_rejects_pooled_runtime_url() {
+        let error = migration_database_url_from_values(
+            Some("postgresql://app@pool.example/mundusx"),
+            Some("postgresql://app@pool.example/mundusx"),
+            None,
+        )
+        .expect_err("pooled URL should be rejected");
+
+        assert!(error.contains(DATABASE_DIRECT_URL_ENV));
+        assert!(error.contains(DATABASE_POOL_URL_ENV));
+    }
+
+    #[test]
+    fn migration_database_url_rejects_detectable_pgbouncer_url() {
+        let error = migration_database_url_from_values(
+            Some("postgresql://migration@pgbouncer.example/mundusx"),
+            None,
+            None,
+        )
+        .expect_err("PgBouncer URL should be rejected");
+
+        assert!(error.contains("PgBouncer"));
+        assert!(error.contains(DATABASE_DIRECT_URL_ENV));
+    }
+
+    #[test]
+    fn migration_database_url_reports_missing_configuration() {
+        let selected =
+            migration_database_url_from_values(Some(" "), Some(" "), None).expect("migration url");
+
+        assert!(selected.is_none());
+    }
+
+    #[test]
     fn operator_auth_mode_reports_missing_token_disable() {
         let mode = operator_auth_mode_from_env(None, None, None);
 
@@ -7797,6 +8928,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "summarize this".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -7834,6 +8966,7 @@ mod tests {
                 request_id: "job-degraded".to_string(),
                 prompt: "Give me a detailed history of Mercedes-Benz.".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -7878,5 +9011,18 @@ mod tests {
             record.graph.nodes.len() - 1
         );
         assert_eq!(payload["degradation"], payload["job"]["degradation"]);
+    }
+
+    #[test]
+    fn parses_only_well_formed_job_artifact_paths() {
+        assert_eq!(
+            crate::parse_job_artifacts_path("/v1/jobs/job-1/artifacts"),
+            Some("job-1")
+        );
+        assert_eq!(crate::parse_job_artifacts_path("/v1/jobs//artifacts"), None);
+        assert_eq!(
+            crate::parse_job_artifacts_path("/v1/jobs/job-1/extra/artifacts"),
+            None
+        );
     }
 }

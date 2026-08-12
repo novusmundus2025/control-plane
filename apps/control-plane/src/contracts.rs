@@ -230,6 +230,92 @@ pub enum ContextSize {
     Large,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RoutingMode {
+    Eco,
+    Normal,
+    Max,
+}
+impl Default for RoutingMode {
+    fn default() -> Self {
+        Self::Normal
+    }
+}
+impl RoutingMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Eco => "eco",
+            Self::Normal => "normal",
+            Self::Max => "max",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CapacityClass {
+    Micro,
+    Standard,
+    Performance,
+    Heavy,
+    Synthesis,
+    Server,
+}
+
+impl Default for CapacityClass {
+    fn default() -> Self {
+        Self::Micro
+    }
+}
+impl CapacityClass {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Micro => "micro",
+            Self::Standard => "standard",
+            Self::Performance => "performance",
+            Self::Heavy => "heavy",
+            Self::Synthesis => "synthesis",
+            Self::Server => "server",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+pub struct StepWorkloadRequirements {
+    #[serde(default)]
+    pub minimum_capacity_class: CapacityClass,
+    #[serde(default)]
+    pub recommended_capacity_class: CapacityClass,
+    #[serde(default)]
+    pub context_budget_tokens: u32,
+    #[serde(default)]
+    pub expected_artifact_count: u32,
+    #[serde(default)]
+    pub expected_artifact_bytes: u64,
+    #[serde(default)]
+    pub model_quality_floor: String,
+    #[serde(default)]
+    pub required_tools: Vec<String>,
+    #[serde(default)]
+    pub requires_repository: bool,
+    #[serde(default)]
+    pub requires_compile: bool,
+    #[serde(default)]
+    pub requires_tests: bool,
+    #[serde(default)]
+    pub validation_level: String,
+    #[serde(default = "default_step_parallelism")]
+    pub allowed_parallelism: u32,
+    #[serde(default)]
+    pub reducer_credibility: String,
+    #[serde(default)]
+    pub synthesizer_credibility: String,
+}
+fn default_step_parallelism() -> u32 {
+    1
+}
+
 impl Default for ContextSize {
     fn default() -> Self {
         Self::Small
@@ -237,6 +323,7 @@ impl Default for ContextSize {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
 pub struct RequestClassification {
     pub task_type: RequestTaskType,
     pub complexity: RequestComplexity,
@@ -248,6 +335,7 @@ pub struct RequestClassification {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JobSchedulingRequirements {
     pub task_type: RequestTaskType,
     pub context_size: ContextSize,
@@ -370,6 +458,8 @@ pub struct PlannedJob {
     pub recommended_max_tokens: Option<u32>,
     #[serde(default)]
     pub minimum_max_tokens: Option<u32>,
+    #[serde(default)]
+    pub workload: StepWorkloadRequirements,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -416,12 +506,162 @@ pub enum JobGraphNodeStatus {
     Failed,
 }
 
+impl Default for JobGraphNodeStatus {
+    fn default() -> Self {
+        Self::Waiting
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JobResultVerificationStatus {
     Accepted,
     Rejected,
+    Repairable,
+    Unverifiable,
     FallbackNeeded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationEvidenceKind {
+    PathSafety,
+    PatchStructure,
+    StructuredDataSyntax,
+    OutputPresence,
+    WorkerClaim,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationEvidenceProvenance {
+    ControlPlane,
+    WorkerReported,
+    IndependentValidator,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArtifactValidationEvidence {
+    pub version: u32,
+    pub kind: ValidationEvidenceKind,
+    pub passed: bool,
+    pub provenance: ValidationEvidenceProvenance,
+    pub summary: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResultArtifactKind {
+    Text,
+    Code,
+    Patch,
+    Command,
+    TestReport,
+    StructuredData,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SynthesisStatus {
+    Collecting,
+    Reducing,
+    Synthesizing,
+    Validating,
+    CompletedPartial,
+    Completed,
+    Failed,
+}
+
+impl Default for SynthesisStatus {
+    fn default() -> Self {
+        Self::Collecting
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ResultArtifact {
+    pub artifact_id: String,
+    pub result_node_id: String,
+    pub sequence: u32,
+    pub kind: ResultArtifactKind,
+    #[serde(default)]
+    pub path: Option<String>,
+    #[serde(default)]
+    pub language: Option<String>,
+    pub media_type: String,
+    pub content: String,
+    pub byte_size: usize,
+    pub checksum_sha256: String,
+    #[serde(default)]
+    pub base_checksum_sha256: Option<String>,
+    pub verification_status: JobResultVerificationStatus,
+    #[serde(default)]
+    pub verification_reason: Option<String>,
+    #[serde(default)]
+    pub source_worker_id: Option<String>,
+    #[serde(default)]
+    pub source_node_id: Option<String>,
+    #[serde(default)]
+    pub validation_evidence: Vec<ArtifactValidationEvidence>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArtifactBatch {
+    pub batch_id: String,
+    pub sequence: u32,
+    pub artifact_ids: Vec<String>,
+    pub byte_size: usize,
+    pub complete: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArtifactConflict {
+    pub path: String,
+    pub artifact_ids: Vec<String>,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct ArtifactRepairPlan {
+    pub repair_id: String,
+    pub artifact_ids: Vec<String>,
+    pub target_paths: Vec<String>,
+    pub reason: String,
+    pub attempt: u32,
+    pub max_attempts: u32,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct OrchestrationTimelineEvent {
+    pub sequence: u32,
+    pub stage: String,
+    pub status: String,
+    #[serde(default)]
+    pub graph_node_id: Option<String>,
+    pub summary: String,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+pub struct SynthesisManifest {
+    pub version: u32,
+    pub manifest_id: String,
+    pub status: SynthesisStatus,
+    pub artifacts: Vec<ResultArtifact>,
+    pub batches: Vec<ArtifactBatch>,
+    #[serde(default)]
+    pub conflicts: Vec<ArtifactConflict>,
+    #[serde(default)]
+    pub repair_plans: Vec<ArtifactRepairPlan>,
+    #[serde(default)]
+    pub timeline: Vec<OrchestrationTimelineEvent>,
+    #[serde(default)]
+    pub warnings: Vec<String>,
+    #[serde(default)]
+    pub omitted_dependency_ids: Vec<String>,
+    #[serde(default)]
+    pub final_text: Option<String>,
+    pub complete: bool,
+    pub checksum_sha256: String,
 }
 
 impl Default for JobResultVerificationStatus {
@@ -441,6 +681,9 @@ pub struct JobGraphNode {
     pub recommended_max_tokens: Option<u32>,
     #[serde(default)]
     pub minimum_max_tokens: Option<u32>,
+    #[serde(default)]
+    pub workload: StepWorkloadRequirements,
+    #[serde(default)]
     pub status: JobGraphNodeStatus,
     pub blocked_by: Vec<String>,
     #[serde(default)]
@@ -490,6 +733,7 @@ pub struct JobResultRecord {
     pub node_id: String,
     pub name: String,
     pub responsibility: String,
+    #[serde(default)]
     pub status: JobGraphNodeStatus,
     pub output: Option<String>,
     pub error: Option<String>,
@@ -522,9 +766,12 @@ pub struct JobResultRecord {
     pub verification_status: JobResultVerificationStatus,
     #[serde(default)]
     pub verification_reason: Option<String>,
+    #[serde(default)]
+    pub artifacts: Vec<ResultArtifact>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct JobGraph {
     pub graph_id: String,
     pub request_id: String,
@@ -537,6 +784,10 @@ pub struct JobGraph {
     pub final_output: Option<String>,
     #[serde(default)]
     pub merge_error: Option<String>,
+    #[serde(default)]
+    pub synthesis_status: SynthesisStatus,
+    #[serde(default)]
+    pub final_manifest: Option<SynthesisManifest>,
     pub final_node_id: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -553,6 +804,8 @@ impl Default for JobGraph {
             results: Vec::new(),
             final_output: None,
             merge_error: None,
+            synthesis_status: SynthesisStatus::Collecting,
+            final_manifest: None,
             final_node_id: None,
             created_at: String::new(),
             updated_at: String::new(),
@@ -597,6 +850,8 @@ pub struct JobRequest {
     pub prompt: String,
     pub preferred_backend: Backend,
     #[serde(default)]
+    pub routing_mode: RoutingMode,
+    #[serde(default)]
     pub runtime_mode: RuntimeMode,
     #[serde(default)]
     pub execution_mode: JobExecutionMode,
@@ -620,8 +875,11 @@ pub struct ChatMessage {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatCompletionRequest {
-    pub model: String,
+    #[serde(default)]
+    pub model: Option<String>,
     pub messages: Vec<ChatMessage>,
+    #[serde(default)]
+    pub mode: Option<String>,
     #[serde(default)]
     pub temperature: Option<f32>,
     #[serde(default)]
@@ -670,6 +928,8 @@ pub struct JobRecord {
     pub request_id: String,
     pub prompt: String,
     pub preferred_backend: Backend,
+    #[serde(default)]
+    pub routing_mode: RoutingMode,
     #[serde(default)]
     pub runtime_mode: RuntimeMode,
     #[serde(default)]
@@ -825,7 +1085,17 @@ pub struct ModelCapability {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct NodeCapabilityProfile {
     #[serde(default)]
+    pub schema_version: u32,
+    #[serde(default)]
     pub models: Vec<ModelCapability>,
+    #[serde(default)]
+    pub physical_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub usable_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub available_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub capacity_class: String,
     #[serde(default)]
     pub max_context_tokens: Option<u32>,
     #[serde(default)]
@@ -846,12 +1116,19 @@ pub struct NodeCapabilityProfile {
     pub roles: Vec<NodeRole>,
     #[serde(default)]
     pub skill_tags: Vec<String>,
+    #[serde(default)]
+    pub supported_tools: Vec<String>,
 }
 
 impl Default for NodeCapabilityProfile {
     fn default() -> Self {
         Self {
+            schema_version: 0,
             models: Vec::new(),
+            physical_memory_mb: None,
+            usable_memory_mb: None,
+            available_memory_mb: None,
+            capacity_class: String::new(),
             max_context_tokens: None,
             total_vram_mb: None,
             available_vram_mb: None,
@@ -862,6 +1139,7 @@ impl Default for NodeCapabilityProfile {
             current_load_percent: None,
             roles: Vec::new(),
             skill_tags: Vec::new(),
+            supported_tools: Vec::new(),
         }
     }
 }
@@ -1081,6 +1359,10 @@ pub struct AdmissionPolicy {
     pub min_memory_mb: u32,
     pub min_cuda_vram_mb: u32,
     pub allowed_backends: Vec<Backend>,
+    #[serde(default)]
+    pub enforce_model_policy: bool,
+    #[serde(default = "official_model_names")]
+    pub allowed_models: Vec<String>,
     pub updated_at: Option<String>,
     pub updated_by: Option<String>,
 }
@@ -1094,6 +1376,8 @@ impl Default for AdmissionPolicy {
             min_memory_mb: 0,
             min_cuda_vram_mb: 0,
             allowed_backends: vec![Backend::Auto, Backend::M, Backend::Cuda, Backend::Vllm],
+            enforce_model_policy: false,
+            allowed_models: official_model_names(),
             updated_at: None,
             updated_by: None,
         }
@@ -1114,7 +1398,31 @@ pub struct AdmissionPolicyUpdate {
     pub min_cuda_vram_mb: u32,
     #[serde(default)]
     pub allowed_backends: Vec<Backend>,
+    #[serde(default)]
+    pub enforce_model_policy: bool,
+    #[serde(default = "official_model_names")]
+    pub allowed_models: Vec<String>,
     pub actor: Option<String>,
+}
+
+pub const OFFICIAL_MODELS: &[(&str, &str)] = &[
+    ("HuggingFaceTB/SmolLM2-135M-Instruct", "SmolLM2 135M"),
+    ("Qwen/Qwen2.5-0.5B-Instruct", "Qwen 2.5 0.5B"),
+    ("Qwen/Qwen2.5-1.5B-Instruct", "Qwen 2.5 1.5B"),
+    ("mlx-community/Qwen2.5-3B-Instruct-4bit", "Qwen 2.5 3B MLX"),
+    ("mlx-community/Qwen2.5-7B-Instruct-4bit", "Qwen 2.5 7B MLX"),
+    ("Qwen/Qwen2.5-7B-Instruct-AWQ", "Qwen 2.5 7B AWQ"),
+    ("Qwen/Qwen2.5-14B-Instruct-AWQ", "Qwen 2.5 14B AWQ"),
+    ("Qwen/Qwen2.5-32B-Instruct-AWQ", "Qwen 2.5 32B AWQ"),
+    ("Qwen/Qwen2.5-72B-Instruct-AWQ", "Qwen 2.5 72B AWQ"),
+    ("Qwen/Qwen3-Coder-30B-A3B-Instruct", "Qwen3 Coder 30B-A3B"),
+];
+
+pub fn official_model_names() -> Vec<String> {
+    OFFICIAL_MODELS
+        .iter()
+        .map(|(name, _)| (*name).to_string())
+        .collect()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -1280,5 +1588,49 @@ mod tests {
                 NodeRole::Synthesizer
             ]
         );
+    }
+
+    #[test]
+    fn legacy_empty_job_metadata_uses_safe_defaults() {
+        let classification: RequestClassification =
+            serde_json::from_value(serde_json::json!({})).expect("legacy classification");
+        let scheduling: JobSchedulingRequirements =
+            serde_json::from_value(serde_json::json!({})).expect("legacy scheduling metadata");
+
+        assert_eq!(classification.task_type, RequestTaskType::Inference);
+        assert_eq!(classification.context_size, ContextSize::Small);
+        assert_eq!(scheduling.task_type, RequestTaskType::Inference);
+        assert_eq!(scheduling.runtime_mode, RuntimeMode::Local);
+
+        let graph: JobGraph =
+            serde_json::from_value(serde_json::json!({})).expect("legacy graph metadata");
+        assert_eq!(graph.status, JobGraphStatus::Created);
+        assert_eq!(graph.synthesis_status, SynthesisStatus::Collecting);
+
+        let node: JobGraphNode = serde_json::from_value(serde_json::json!({
+            "id": "legacy-node",
+            "name": "Legacy node",
+            "responsibility": "chat",
+            "depends_on": [],
+            "required_output": "text",
+            "blocked_by": [],
+            "output": null,
+            "error": null
+        }))
+        .expect("legacy graph node");
+        assert_eq!(node.status, JobGraphNodeStatus::Waiting);
+
+        let result: JobResultRecord = serde_json::from_value(serde_json::json!({
+            "node_id": "legacy-node",
+            "name": "Legacy node",
+            "responsibility": "chat",
+            "output": null,
+            "error": null,
+            "source_worker_id": null,
+            "source_node_id": null,
+            "latency_ms": null
+        }))
+        .expect("legacy graph result");
+        assert_eq!(result.status, JobGraphNodeStatus::Waiting);
     }
 }

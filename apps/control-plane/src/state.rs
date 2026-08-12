@@ -1,15 +1,19 @@
 use crate::contracts::{
     is_trusted_identity_path, AdmissionPolicy, AdmissionPolicyUpdate, AgentRegistration,
-    AgentState, Backend, ContextSize, ControlPlaneSnapshot, CreditsLedgerRecord,
+    AgentState, ArtifactBatch, ArtifactConflict, ArtifactRepairPlan, ArtifactValidationEvidence,
+    Backend, CapacityClass, ContextSize, ControlPlaneSnapshot, CreditsLedgerRecord,
     ExpectedOutputFormat, FallbackDecision, FallbackDecisionStatus, FallbackPolicy, Heartbeat,
     JobClaimResponse, JobCompletion, JobEventRecord, JobExecutionMode, JobGraph, JobGraphNode,
     JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest, JobResultRecord,
     JobResultVerificationStatus, JobSchedulingRequirements, JobStatus, NodePolicyOverride,
     NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeRole, NodeTrustRecord,
-    PlannedJob, PrivacyLevel, RequestClassification, RequestComplexity, RequestTaskType,
-    RuntimeMode, SchedulerDecision, ToolRewardRequest, WorkerHealthReport,
+    OrchestrationTimelineEvent, PlannedJob, PrivacyLevel, RequestClassification, RequestComplexity,
+    RequestTaskType, ResultArtifact, ResultArtifactKind, RoutingMode, RuntimeMode,
+    SchedulerDecision, StepWorkloadRequirements, SynthesisManifest, SynthesisStatus,
+    ToolRewardRequest, ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
@@ -23,6 +27,8 @@ const DEFAULT_NODE_HEARTBEAT_STALE_SECONDS: u64 = 60;
 const REDUCER_SECTION_CHARS_COMPACT: usize = 1_200;
 const REDUCER_SECTION_CHARS_STANDARD: usize = 4_000;
 const REDUCER_SECTION_CHARS_STRONG: usize = 6_000;
+const ARTIFACT_BATCH_MAX_BYTES: usize = 64 * 1024;
+const ARTIFACT_BATCH_MAX_ITEMS: usize = 20;
 const GRAPH_NODE_LEASE_SECONDS_ENV: &str = "MUNDUSX_GRAPH_NODE_LEASE_SECONDS";
 const QUEUED_JOB_TIMEOUT_SECONDS_ENV: &str = "MUNDUSX_QUEUED_JOB_TIMEOUT_SECONDS";
 const CRITICAL_ROLE_WAIT_SECONDS_ENV: &str = "MUNDUSX_CRITICAL_ROLE_WAIT_SECONDS";
@@ -437,6 +443,7 @@ impl ControlPlaneState {
             request_id: request.request_id,
             prompt: request.prompt,
             preferred_backend: request.preferred_backend,
+            routing_mode: request.routing_mode,
             runtime_mode: request.runtime_mode,
             execution_mode: request.execution_mode,
             stream: request.stream,
@@ -533,6 +540,8 @@ impl ControlPlaneState {
             min_memory_mb: update.min_memory_mb,
             min_cuda_vram_mb: update.min_cuda_vram_mb,
             allowed_backends: normalize_admission_backends(update.allowed_backends),
+            enforce_model_policy: update.enforce_model_policy,
+            allowed_models: update.allowed_models,
             updated_at: Some(updated_at),
             updated_by: update
                 .actor
@@ -635,10 +644,18 @@ impl ControlPlaneState {
         }
     }
 
+    /// True for runtimes that serve models from their own endpoint rather than
+    /// from a MundusX-managed `llama-cli` process: MLX, vLLM, and a contributed
+    /// cluster the contributor already runs.
+    fn serves_models_remotely(worker_health: &WorkerHealthReport) -> bool {
+        let runtime_mode = worker_health.runtime_mode.trim();
+        runtime_mode.eq_ignore_ascii_case("mlx")
+            || runtime_mode.eq_ignore_ascii_case("vllm")
+            || runtime_mode.eq_ignore_ascii_case("contributed-cluster")
+    }
+
     fn worker_runtime_dependencies_ready(worker_health: &WorkerHealthReport) -> bool {
-        worker_health.runtime_mode.eq_ignore_ascii_case("mlx")
-            || worker_health.runtime_mode.eq_ignore_ascii_case("vllm")
-            || worker_health.llama_cli_available
+        Self::serves_models_remotely(worker_health) || worker_health.llama_cli_available
     }
 
     fn compatible_ready_node_count_for_request(&self, request: &JobRequest) -> usize {
@@ -703,6 +720,7 @@ impl ControlPlaneState {
         if !worker_health.healthy
             || !worker_health.runtime_ready
             || (!matches!(node.backend, Backend::M | Backend::Vllm)
+                && !Self::serves_models_remotely(worker_health)
                 && !worker_health.llama_cli_available)
         {
             return 1;
@@ -711,6 +729,7 @@ impl ControlPlaneState {
         let runtime_mode = worker_health.runtime_mode.to_ascii_lowercase();
         let warm_persistent_runtime = runtime_mode.contains("persistent")
             || runtime_mode.contains("warm")
+            || runtime_mode == "contributed-cluster"
             || node.backend == Backend::Vllm;
         if node.backend == Backend::Cuda && !warm_persistent_runtime {
             return 1;
@@ -901,6 +920,58 @@ impl ControlPlaneState {
         graph_node_required_role(&job.graph, active_graph_node_id)
     }
 
+    fn capacity_class_for(node: &NodeRecord) -> CapacityClass {
+        let Some(health) = node.worker_health.as_ref() else {
+            return CapacityClass::Micro;
+        };
+        match health
+            .capabilities
+            .capacity_class
+            .trim()
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "server" => return CapacityClass::Server,
+            "synthesis" => return CapacityClass::Synthesis,
+            "heavy" => return CapacityClass::Heavy,
+            "performance" => return CapacityClass::Performance,
+            "standard" => return CapacityClass::Standard,
+            "micro" => return CapacityClass::Micro,
+            _ => {}
+        }
+        let memory = health
+            .capabilities
+            .usable_memory_mb
+            .or(health.capabilities.available_memory_mb)
+            .unwrap_or(node.available_memory_mb);
+        let vram = health.capabilities.available_vram_mb.unwrap_or(0);
+        if node.backend == Backend::Vllm {
+            CapacityClass::Server
+        } else if memory >= 65_536 || vram >= 49_152 {
+            CapacityClass::Synthesis
+        } else if memory >= 32_768 || vram >= 24_576 {
+            CapacityClass::Heavy
+        } else if memory >= 16_384 || vram >= 12_288 {
+            CapacityClass::Performance
+        } else if memory >= 8_192 || vram >= 6_144 {
+            CapacityClass::Standard
+        } else {
+            CapacityClass::Micro
+        }
+    }
+
+    fn graph_workload<'a>(
+        job: &'a JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) -> Option<&'a StepWorkloadRequirements> {
+        let id = active_graph_node_id?;
+        job.graph
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .map(|node| &node.workload)
+    }
+
     fn capability_has_role(worker_health: &WorkerHealthReport, required: NodeRole) -> bool {
         let roles = &worker_health.capabilities.roles;
         match required {
@@ -920,6 +991,31 @@ impl ControlPlaneState {
         job: &JobRecord,
         active_graph_node_id: Option<&str>,
     ) -> bool {
+        if let Some(workload) = Self::graph_workload(job, active_graph_node_id) {
+            if Self::capacity_class_for(node) < workload.minimum_capacity_class {
+                return false;
+            }
+            if let Some(health) = node.worker_health.as_ref() {
+                if health.capabilities.schema_version >= 2 {
+                    if workload
+                        .required_tools
+                        .iter()
+                        .any(|tool| !health.capabilities.supported_tools.contains(tool))
+                    {
+                        return false;
+                    }
+                    if workload.requires_repository
+                        && !health
+                            .capabilities
+                            .supported_tools
+                            .iter()
+                            .any(|tool| tool == "repository")
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
         let Some(required) = Self::graph_node_role(job, active_graph_node_id) else {
             return true;
         };
@@ -938,6 +1034,31 @@ impl ControlPlaneState {
         let mut score = 0;
         let mut reasons = Vec::new();
         let requirements = &job.scheduling_requirements;
+        let capacity = Self::capacity_class_for(node);
+        reasons.push(format!("capacity_class:{}", capacity.as_str()));
+        reasons.push(format!("routing_mode:{}", job.routing_mode.as_str()));
+        let weight = match capacity {
+            CapacityClass::Micro => 1,
+            CapacityClass::Standard => 2,
+            CapacityClass::Performance => 3,
+            CapacityClass::Heavy => 4,
+            CapacityClass::Synthesis => 5,
+            CapacityClass::Server => 6,
+        };
+        match job.routing_mode {
+            RoutingMode::Eco => {
+                score -= weight * 8;
+                reasons.push("eco prefers smallest capable node".to_string());
+            }
+            RoutingMode::Normal => {
+                score += weight * 2;
+                reasons.push("normal balances capacity and fit".to_string());
+            }
+            RoutingMode::Max => {
+                score += weight * 12;
+                reasons.push("max prefers strongest eligible node".to_string());
+            }
+        }
 
         match (requirements.task_type, node.backend) {
             (RequestTaskType::Coding, Backend::Cuda | Backend::Vllm) => {
@@ -1500,9 +1621,25 @@ impl ControlPlaneState {
 
     pub fn complete_job(
         &mut self,
-        completion: JobCompletion,
+        mut completion: JobCompletion,
         completed_at: String,
     ) -> Option<JobRecord> {
+        if let Some(job) = self.jobs.get(&completion.job_id) {
+            if completion.status == JobStatus::Completed && is_speakai_job(job) {
+                match completion
+                    .output
+                    .as_deref()
+                    .ok_or_else(|| "SpeakAI completion did not include output".to_string())
+                    .and_then(validate_speakai_output)
+                {
+                    Ok(validated) => completion.output = Some(validated),
+                    Err(error) => {
+                        completion.status = JobStatus::Failed;
+                        completion.error = Some(error);
+                    }
+                }
+            }
+        }
         let compact_reducer_node = self
             .nodes
             .get(&completion.node_id)
@@ -1917,6 +2054,168 @@ impl ControlPlaneState {
         self.reevaluate_queued_jobs();
         record
     }
+}
+
+fn is_speakai_job(job: &JobRecord) -> bool {
+    job.system_prompt
+        .as_deref()
+        .is_some_and(|prompt| prompt.starts_with("You are SpeakAI,"))
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct SpeakAiOutput {
+    speech_act: String,
+    question_type: Option<String>,
+    topic: String,
+    summary: String,
+    replies: Vec<SpeakAiReply>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpeakAiReply {
+    strategy: String,
+    purpose: String,
+    text: String,
+    meaning: String,
+}
+
+fn speakai_reply_contract(speech_act: &str) -> Option<[(&'static str, &'static str); 3]> {
+    Some(match speech_act {
+        "opinion" => [
+            ("supportive", "AGREE"),
+            ("continue", "EXPLORE"),
+            ("alternative", "DISAGREE_POLITELY"),
+        ],
+        "question" => [
+            ("direct", "ANSWER"),
+            ("continue", "ANSWER_AND_EXPLORE"),
+            ("boundary", "DECLINE_POLITELY"),
+        ],
+        "observation" => [
+            ("acknowledge", "ACKNOWLEDGE"),
+            ("continue", "EXPLORE"),
+            ("alternative", "OFFER_ALTERNATIVE"),
+        ],
+        "request" => [
+            ("accept", "ACCEPT"),
+            ("clarify", "CLARIFY"),
+            ("boundary", "DECLINE_POLITELY"),
+        ],
+        "invitation" => [
+            ("accept", "ACCEPT"),
+            ("clarify", "ASK_DETAILS"),
+            ("boundary", "DECLINE_POLITELY"),
+        ],
+        "suggestion" => [
+            ("supportive", "SUPPORT"),
+            ("continue", "EXPLORE"),
+            ("alternative", "SUGGEST_ALTERNATIVE"),
+        ],
+        "greeting" => [
+            ("direct", "RETURN_GREETING"),
+            ("continue", "START_CONVERSATION"),
+            ("warm", "WARM_VARIATION"),
+        ],
+        "thanks" => [
+            ("direct", "ACCEPT_THANKS"),
+            ("warm", "RESPOND_WARMLY"),
+            ("continue", "CONTINUE"),
+        ],
+        "apology" => [
+            ("accept", "ACCEPT_APOLOGY"),
+            ("reassure", "REASSURE"),
+            ("continue", "DISCUSS_FURTHER"),
+        ],
+        "compliment" => [
+            ("accept", "ACCEPT_COMPLIMENT"),
+            ("reciprocal", "RECIPROCATE"),
+            ("modest", "RESPOND_MODESTLY"),
+        ],
+        "emotion" => [
+            ("empathetic", "EMPATHIZE"),
+            ("continue", "EXPLORE"),
+            ("supportive", "OFFER_SUPPORT"),
+        ],
+        "information" => [
+            ("acknowledge", "ACKNOWLEDGE"),
+            ("continue", "ASK_FOLLOW_UP"),
+            ("related", "ADD_RELATED_POINT"),
+        ],
+        _ => return None,
+    })
+}
+
+fn validate_speakai_output(output: &str) -> Result<String, String> {
+    let trimmed = output.trim();
+    let without_fence_prefix = trimmed
+        .strip_prefix("```json")
+        .or_else(|| trimmed.strip_prefix("```"))
+        .unwrap_or(trimmed);
+    let json = without_fence_prefix
+        .strip_suffix("```")
+        .unwrap_or(without_fence_prefix)
+        .trim();
+    let json = json
+        .split_once("; response=")
+        .map(|(_, response)| response.trim())
+        .unwrap_or(json);
+    let value: SpeakAiOutput = serde_json::from_str(json)
+        .map_err(|error| format!("SpeakAI output failed schema validation: {error}"))?;
+    for (name, field) in [
+        ("speechAct", value.speech_act.as_str()),
+        ("topic", value.topic.as_str()),
+        ("summary", value.summary.as_str()),
+    ] {
+        if field.trim().is_empty() {
+            return Err(format!(
+                "SpeakAI output failed schema validation: `{name}` must not be empty"
+            ));
+        }
+    }
+    let expected = speakai_reply_contract(&value.speech_act).ok_or_else(|| {
+        format!(
+            "SpeakAI output failed schema validation: unsupported speechAct `{}`",
+            value.speech_act
+        )
+    })?;
+    if value.speech_act == "question" {
+        if value
+            .question_type
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .is_none()
+        {
+            return Err("SpeakAI output failed schema validation: questions require a non-empty `questionType`".to_string());
+        }
+    } else if value.question_type.is_some() {
+        return Err(
+            "SpeakAI output failed schema validation: `questionType` is allowed only for questions"
+                .to_string(),
+        );
+    }
+    if value.replies.len() != 3 {
+        return Err(
+            "SpeakAI output failed schema validation: `replies` must contain exactly 3 items"
+                .to_string(),
+        );
+    }
+    for (index, (reply, (strategy, purpose))) in value.replies.iter().zip(expected).enumerate() {
+        if reply.strategy != strategy || reply.purpose != purpose {
+            return Err(format!(
+                "SpeakAI output failed schema validation: reply {} for `{}` must use strategy `{strategy}` and purpose `{purpose}`",
+                index + 1,
+                value.speech_act
+            ));
+        }
+        if reply.text.trim().is_empty() || reply.meaning.trim().is_empty() {
+            return Err(format!("SpeakAI output failed schema validation: reply {} text and meaning must not be empty", index + 1));
+        }
+    }
+    serde_json::to_string(&serde_json::from_str::<serde_json::Value>(json).expect("validated JSON"))
+        .map_err(|error| format!("SpeakAI output serialization failed: {error}"))
 }
 
 fn graph_execution_allowed(
@@ -2774,22 +3073,49 @@ fn graph_node_execution_prompt(
         let max_section_chars = assigned_node
             .map(reducer_section_char_limit)
             .unwrap_or(REDUCER_SECTION_CHARS_STANDARD);
-        let sections = job
-            .graph
-            .nodes
+        let sections = node
+            .depends_on
             .iter()
-            .filter(|candidate| candidate.id != node.id)
-            .filter_map(|candidate| {
-                candidate.output.as_ref().map(|output| {
-                    format!(
-                        "## {}\n{}",
-                        candidate.name,
-                        reducer_section_text_with_limit(output, max_section_chars)
-                    )
+            .filter_map(|dependency_id| {
+                job.graph.results.iter().find(|result| {
+                    result.node_id == *dependency_id
+                        && result.status == JobGraphNodeStatus::Completed
+                        && result.verification_status == JobResultVerificationStatus::Accepted
                 })
+            })
+            .map(|result| {
+                let artifact_refs = result
+                    .artifacts
+                    .iter()
+                    .map(|artifact| {
+                        format!(
+                            "{}:{}:{}",
+                            artifact.artifact_id,
+                            artifact.path.as_deref().unwrap_or("inline"),
+                            artifact.checksum_sha256
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!(
+                    "## {} [{}]\n{}",
+                    result.name,
+                    artifact_refs,
+                    reducer_section_text_with_limit(
+                        result.output.as_deref().unwrap_or_default(),
+                        max_section_chars
+                    )
+                )
             })
             .collect::<Vec<_>>()
             .join("\n\n");
+
+        if job.classification.task_type == RequestTaskType::Coding {
+            return format!(
+                "Original user request:\n{}\n\nCompleted section notes and accepted dependency artifacts, in required order:\n{}\n\nWrite one accurate, coherent final answer as a complete implementation result. Preserve every required accepted artifact and reconcile names and interfaces across work units. Return explanatory text only when needed, then return each file change as its own fenced unified diff block using workspace-relative a/path and b/path headers. Return shell commands only in separate fenced shell blocks. Never combine two target files into an unlabeled code block, never silently choose between conflicting edits, never truncate a file or patch, and never claim completion when a required artifact is missing. If two accepted artifacts conflict, state the conflict explicitly before the affected patch blocks.",
+                job.prompt, sections
+            );
+        }
 
         return format!(
             "Original user request:\n{}\n\nCompleted section notes:\n{}\n\nWrite one accurate, coherent final answer. Preserve the requested section order and every relevant, nonduplicated fact or detail from the completed notes; do not shorten the answer into a highlights summary. Use plain-text section titles without # Markdown markers. Resolve contradictions in favor of well-established facts, remove only genuine duplication, ignore repeated instructions or boilerplate, omit uncertain claims, and finish every sentence. Return only the final answer.",
@@ -3669,6 +3995,7 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
                         .to_string(),
                 recommended_max_tokens: None,
                 minimum_max_tokens: None,
+                workload: StepWorkloadRequirements::default(),
             }],
         };
     }
@@ -3862,6 +4189,7 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
                     .to_string(),
                 recommended_max_tokens: None,
                 minimum_max_tokens: None,
+            workload: StepWorkloadRequirements::default(),
             }],
         };
     }
@@ -4002,6 +4330,7 @@ fn single_execution_plan(
             reason: reason.to_string(),
             recommended_max_tokens: None,
             minimum_max_tokens: None,
+            workload: StepWorkloadRequirements::default(),
         }],
     }
 }
@@ -4038,6 +4367,7 @@ fn plan_job_request_for_submission(
                         .to_string(),
                 recommended_max_tokens: None,
                 minimum_max_tokens: None,
+            workload: StepWorkloadRequirements::default(),
             }],
         };
     }
@@ -4086,6 +4416,7 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
                 required_output: job.required_output.clone(),
                 recommended_max_tokens: job.recommended_max_tokens,
                 minimum_max_tokens: job.minimum_max_tokens,
+                workload: job.workload.clone(),
                 status: JobGraphNodeStatus::Waiting,
                 blocked_by: job.depends_on.clone(),
                 assigned_node_id: None,
@@ -4122,6 +4453,8 @@ pub fn build_job_graph(request_id: &str, plan: &JobPlan, created_at: &str) -> Jo
         results: Vec::new(),
         final_output: None,
         merge_error: None,
+        synthesis_status: SynthesisStatus::Collecting,
+        final_manifest: None,
         created_at: created_at.to_string(),
         updated_at: created_at.to_string(),
     };
@@ -4279,6 +4612,8 @@ fn refresh_graph_results(
         .map(|node| {
             let (verification_status, verification_reason) =
                 verify_graph_result(node, expected_format);
+            let artifacts =
+                extract_result_artifacts(node, verification_status, verification_reason.as_deref());
             JobResultRecord {
                 node_id: node.id.clone(),
                 name: node.name.clone(),
@@ -4302,6 +4637,7 @@ fn refresh_graph_results(
                 estimated_output_tokens: node.estimated_output_tokens,
                 verification_status,
                 verification_reason,
+                artifacts,
             }
         })
         .collect();
@@ -4315,6 +4651,465 @@ fn refresh_graph_results(
         }
         graph.status = JobGraphStatus::Failed;
     }
+    graph.synthesis_status = synthesis_status_for_graph(graph);
+    graph.final_manifest = Some(build_synthesis_manifest(graph));
+}
+
+fn synthesis_status_for_graph(graph: &JobGraph) -> SynthesisStatus {
+    if graph.status == JobGraphStatus::Failed {
+        return SynthesisStatus::Failed;
+    }
+    let final_completed = graph.final_node_id.as_deref().is_some_and(|final_id| {
+        graph
+            .nodes
+            .iter()
+            .any(|node| node.id == final_id && node.status == JobGraphNodeStatus::Completed)
+    });
+    if graph.status == JobGraphStatus::Completed {
+        return if final_completed && graph.merge_error.is_none() {
+            SynthesisStatus::Completed
+        } else {
+            SynthesisStatus::CompletedPartial
+        };
+    }
+    let active = graph.nodes.iter().find(|node| {
+        matches!(
+            node.status,
+            JobGraphNodeStatus::Ready | JobGraphNodeStatus::Running
+        )
+    });
+    match active.map(|node| node.responsibility.as_str()) {
+        Some("merge" | "synthesize") => SynthesisStatus::Synthesizing,
+        Some("reduce") => SynthesisStatus::Reducing,
+        _ => SynthesisStatus::Collecting,
+    }
+}
+
+fn extract_result_artifacts(
+    node: &JobGraphNode,
+    verification_status: JobResultVerificationStatus,
+    verification_reason: Option<&str>,
+) -> Vec<ResultArtifact> {
+    let Some(output) = node
+        .output
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Vec::new();
+    };
+    let blocks = fenced_output_blocks(output);
+    let values = if blocks.is_empty() {
+        vec![("text".to_string(), output.to_string())]
+    } else {
+        blocks
+    };
+    values
+        .into_iter()
+        .enumerate()
+        .map(|(index, (language, content))| {
+            let kind = artifact_kind_for_language(&language);
+            let path = artifact_path(kind, &content);
+            let media_type = artifact_media_type(kind, &language).to_string();
+            let checksum_sha256 = sha256_hex(content.as_bytes());
+            let validation_evidence = validate_artifact(kind, path.as_deref(), &content);
+            let structurally_valid = validation_evidence.iter().all(|item| item.passed);
+            let artifact_status = if verification_status == JobResultVerificationStatus::Accepted
+                && structurally_valid
+            {
+                JobResultVerificationStatus::Accepted
+            } else if !structurally_valid {
+                JobResultVerificationStatus::Repairable
+            } else {
+                verification_status
+            };
+            let artifact_reason = if structurally_valid {
+                verification_reason.map(str::to_string)
+            } else {
+                Some("artifact failed control-plane structural validation".to_string())
+            };
+            ResultArtifact {
+                artifact_id: format!("{}-{:04}-{}", node.id, index + 1, &checksum_sha256[..12]),
+                result_node_id: node.id.clone(),
+                sequence: index as u32,
+                kind,
+                path,
+                language: (!language.is_empty() && language != "text").then_some(language),
+                media_type,
+                byte_size: content.len(),
+                content,
+                checksum_sha256,
+                base_checksum_sha256: None,
+                verification_status: artifact_status,
+                verification_reason: artifact_reason,
+                source_worker_id: node.worker_id.clone(),
+                source_node_id: node.assigned_node_id.clone(),
+                validation_evidence,
+            }
+        })
+        .collect()
+}
+
+fn validation_evidence(
+    kind: ValidationEvidenceKind,
+    passed: bool,
+    summary: &str,
+) -> ArtifactValidationEvidence {
+    ArtifactValidationEvidence {
+        version: 1,
+        kind,
+        passed,
+        provenance: ValidationEvidenceProvenance::ControlPlane,
+        summary: summary.to_string(),
+    }
+}
+
+fn validate_artifact(
+    kind: ResultArtifactKind,
+    path: Option<&str>,
+    content: &str,
+) -> Vec<ArtifactValidationEvidence> {
+    let mut evidence = vec![validation_evidence(
+        ValidationEvidenceKind::OutputPresence,
+        !content.trim().is_empty(),
+        "artifact output is non-empty",
+    )];
+    match kind {
+        ResultArtifactKind::Patch => {
+            evidence.push(validation_evidence(
+                ValidationEvidenceKind::PathSafety,
+                path.is_some_and(safe_artifact_path),
+                "patch target is a safe workspace-relative path",
+            ));
+            let has_old_header = content.lines().any(|line| line.starts_with("--- "));
+            let has_new_header = content.lines().any(|line| line.starts_with("+++ "));
+            let has_hunk = content.lines().any(|line| line.starts_with("@@"));
+            evidence.push(validation_evidence(
+                ValidationEvidenceKind::PatchStructure,
+                has_old_header && has_new_header && has_hunk,
+                "patch contains old/new file headers and at least one hunk",
+            ));
+        }
+        ResultArtifactKind::StructuredData => evidence.push(validation_evidence(
+            ValidationEvidenceKind::StructuredDataSyntax,
+            serde_json::from_str::<serde_json::Value>(content).is_ok(),
+            "structured data parses as JSON",
+        )),
+        _ => {}
+    }
+    evidence
+}
+
+fn fenced_output_blocks(output: &str) -> Vec<(String, String)> {
+    let mut blocks = Vec::new();
+    let mut language: Option<String> = None;
+    let mut content = Vec::new();
+    for line in output.lines() {
+        if let Some(fence) = line.trim_start().strip_prefix("```") {
+            if let Some(open_language) = language.take() {
+                blocks.push((open_language, content.join("\n").trim().to_string()));
+                content.clear();
+            } else {
+                language = Some(fence.trim().to_ascii_lowercase());
+            }
+            continue;
+        }
+        if language.is_some() {
+            content.push(line);
+        }
+    }
+    if let Some(open_language) = language {
+        if !content.is_empty() {
+            blocks.push((open_language, content.join("\n").trim().to_string()));
+        }
+    }
+    blocks.retain(|(_, content)| !content.is_empty());
+    blocks
+}
+
+fn artifact_kind_for_language(language: &str) -> ResultArtifactKind {
+    match language {
+        "diff" | "patch" => ResultArtifactKind::Patch,
+        "sh" | "bash" | "shell" | "powershell" | "ps1" | "terminal" => ResultArtifactKind::Command,
+        "json" => ResultArtifactKind::StructuredData,
+        "test" | "tests" | "tap" | "junit" => ResultArtifactKind::TestReport,
+        "" | "text" | "txt" | "markdown" | "md" => ResultArtifactKind::Text,
+        _ => ResultArtifactKind::Code,
+    }
+}
+
+fn artifact_media_type(kind: ResultArtifactKind, language: &str) -> &'static str {
+    match kind {
+        ResultArtifactKind::Patch => "text/x-diff",
+        ResultArtifactKind::Command => "text/x-shellscript",
+        ResultArtifactKind::StructuredData => "application/json",
+        ResultArtifactKind::TestReport => "text/plain",
+        ResultArtifactKind::Code => match language {
+            "typescript" | "ts" | "tsx" => "text/typescript",
+            "javascript" | "js" | "jsx" => "text/javascript",
+            "python" | "py" => "text/x-python",
+            "rust" | "rs" => "text/x-rust",
+            _ => "text/plain",
+        },
+        ResultArtifactKind::Text => "text/plain",
+    }
+}
+
+fn artifact_path(kind: ResultArtifactKind, content: &str) -> Option<String> {
+    if kind != ResultArtifactKind::Patch {
+        return None;
+    }
+    content.lines().find_map(|line| {
+        let value = line.strip_prefix("+++ ")?.trim();
+        if value == "/dev/null" {
+            return None;
+        }
+        let normalized = value.strip_prefix("b/").unwrap_or(value);
+        safe_artifact_path(normalized).then(|| normalized.to_string())
+    })
+}
+
+fn safe_artifact_path(path: &str) -> bool {
+    !path.is_empty()
+        && !path.starts_with('/')
+        && !path.starts_with('\\')
+        && !path.contains("../")
+        && !path.contains("..\\")
+        && !path.split(['/', '\\']).any(|part| part == "..")
+        && !path.chars().nth(1).is_some_and(|value| value == ':')
+}
+
+fn build_synthesis_manifest(graph: &JobGraph) -> SynthesisManifest {
+    let mut artifacts = graph
+        .results
+        .iter()
+        .flat_map(|result| result.artifacts.clone())
+        .filter(|artifact| artifact.verification_status == JobResultVerificationStatus::Accepted)
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| {
+        left.path
+            .as_deref()
+            .unwrap_or("")
+            .cmp(right.path.as_deref().unwrap_or(""))
+            .then(left.checksum_sha256.cmp(&right.checksum_sha256))
+            .then(left.artifact_id.cmp(&right.artifact_id))
+    });
+    artifacts.dedup_by(|left, right| left.checksum_sha256 == right.checksum_sha256);
+    let conflicts = artifact_conflicts(&artifacts);
+    let repair_plans = artifact_repair_plans(graph, &conflicts);
+    let timeline = orchestration_timeline(graph, &repair_plans);
+    let batches = artifact_batches(&graph.graph_id, &artifacts);
+    let omitted_dependency_ids = graph
+        .nodes
+        .iter()
+        .filter(|node| node.status == JobGraphNodeStatus::Failed)
+        .map(|node| node.id.clone())
+        .collect::<Vec<_>>();
+    let mut warnings = Vec::new();
+    if !conflicts.is_empty() {
+        warnings.push("Conflicting artifacts require client review before apply.".to_string());
+    }
+    if !omitted_dependency_ids.is_empty() {
+        warnings
+            .push("One or more graph dependencies did not produce an accepted result.".to_string());
+    }
+    if let Some(error) = graph.merge_error.as_ref() {
+        warnings.push(error.clone());
+    }
+    let complete = graph.synthesis_status == SynthesisStatus::Completed
+        && conflicts.is_empty()
+        && omitted_dependency_ids.is_empty();
+    let checksum_input = artifacts
+        .iter()
+        .map(|artifact| artifact.checksum_sha256.as_str())
+        .collect::<Vec<_>>()
+        .join(":");
+    SynthesisManifest {
+        version: 1,
+        manifest_id: format!("manifest-{}", graph.graph_id),
+        status: if complete {
+            SynthesisStatus::Completed
+        } else if graph.synthesis_status == SynthesisStatus::Completed {
+            SynthesisStatus::CompletedPartial
+        } else {
+            graph.synthesis_status
+        },
+        artifacts,
+        batches,
+        conflicts,
+        repair_plans,
+        timeline,
+        warnings,
+        omitted_dependency_ids,
+        final_text: graph.final_output.clone(),
+        complete,
+        checksum_sha256: sha256_hex(checksum_input.as_bytes()),
+    }
+}
+
+fn artifact_repair_plans(
+    graph: &JobGraph,
+    conflicts: &[ArtifactConflict],
+) -> Vec<ArtifactRepairPlan> {
+    let mut plans = conflicts
+        .iter()
+        .enumerate()
+        .map(|(index, conflict)| ArtifactRepairPlan {
+            repair_id: format!("repair-{}-conflict-{:04}", graph.graph_id, index + 1),
+            artifact_ids: conflict.artifact_ids.clone(),
+            target_paths: vec![conflict.path.clone()],
+            reason: conflict.reason.clone(),
+            attempt: 0,
+            max_attempts: DEFAULT_GRAPH_NODE_MAX_ATTEMPTS,
+        })
+        .collect::<Vec<_>>();
+    for result in &graph.results {
+        let rejected = result
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                artifact.verification_status != JobResultVerificationStatus::Accepted
+            })
+            .collect::<Vec<_>>();
+        if rejected.is_empty() {
+            continue;
+        }
+        plans.push(ArtifactRepairPlan {
+            repair_id: format!("repair-{}-{}", graph.graph_id, result.node_id),
+            artifact_ids: rejected
+                .iter()
+                .map(|item| item.artifact_id.clone())
+                .collect(),
+            target_paths: rejected
+                .iter()
+                .filter_map(|item| item.path.clone())
+                .collect(),
+            reason: rejected
+                .iter()
+                .filter_map(|item| item.verification_reason.clone())
+                .next()
+                .unwrap_or_else(|| "artifact validation was rejected or unverifiable".to_string()),
+            attempt: result
+                .source_node_id
+                .as_deref()
+                .and_then(|_| graph.nodes.iter().find(|node| node.id == result.node_id))
+                .map(|node| node.attempt_count)
+                .unwrap_or_default(),
+            max_attempts: graph
+                .nodes
+                .iter()
+                .find(|node| node.id == result.node_id)
+                .map(|node| node.max_attempts)
+                .unwrap_or(DEFAULT_GRAPH_NODE_MAX_ATTEMPTS),
+        });
+    }
+    plans.sort_by(|left, right| left.repair_id.cmp(&right.repair_id));
+    plans
+}
+
+fn orchestration_timeline(
+    graph: &JobGraph,
+    repairs: &[ArtifactRepairPlan],
+) -> Vec<OrchestrationTimelineEvent> {
+    let mut events = graph
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(index, node)| OrchestrationTimelineEvent {
+            sequence: index as u32,
+            stage: node.responsibility.clone(),
+            status: format!("{:?}", node.status).to_ascii_lowercase(),
+            graph_node_id: Some(node.id.clone()),
+            summary: format!(
+                "{}; capacity={:?}; assigned={}",
+                node.name,
+                node.workload.minimum_capacity_class,
+                node.assigned_node_id.as_deref().unwrap_or("unassigned")
+            ),
+        })
+        .collect::<Vec<_>>();
+    for repair in repairs {
+        events.push(OrchestrationTimelineEvent {
+            sequence: events.len() as u32,
+            stage: "repair".to_string(),
+            status: if repair.attempt >= repair.max_attempts {
+                "exhausted".to_string()
+            } else {
+                "planned".to_string()
+            },
+            graph_node_id: None,
+            summary: format!("{}: {}", repair.repair_id, repair.reason),
+        });
+    }
+    events.truncate(256);
+    events
+}
+
+fn artifact_batches(graph_id: &str, artifacts: &[ResultArtifact]) -> Vec<ArtifactBatch> {
+    let mut batches = Vec::new();
+    let mut artifact_ids = Vec::new();
+    let mut byte_size = 0usize;
+    for artifact in artifacts {
+        let would_overflow = !artifact_ids.is_empty()
+            && (artifact_ids.len() >= ARTIFACT_BATCH_MAX_ITEMS
+                || byte_size.saturating_add(artifact.byte_size) > ARTIFACT_BATCH_MAX_BYTES);
+        if would_overflow {
+            let sequence = batches.len() as u32;
+            batches.push(ArtifactBatch {
+                batch_id: format!("{}-batch-{:04}", graph_id, sequence + 1),
+                sequence,
+                artifact_ids: std::mem::take(&mut artifact_ids),
+                byte_size,
+                complete: true,
+            });
+            byte_size = 0;
+        }
+        artifact_ids.push(artifact.artifact_id.clone());
+        byte_size = byte_size.saturating_add(artifact.byte_size);
+    }
+    if !artifact_ids.is_empty() {
+        let sequence = batches.len() as u32;
+        batches.push(ArtifactBatch {
+            batch_id: format!("{}-batch-{:04}", graph_id, sequence + 1),
+            sequence,
+            artifact_ids,
+            byte_size,
+            complete: true,
+        });
+    }
+    batches
+}
+
+fn artifact_conflicts(artifacts: &[ResultArtifact]) -> Vec<ArtifactConflict> {
+    let mut by_path: BTreeMap<&str, Vec<&ResultArtifact>> = BTreeMap::new();
+    for artifact in artifacts.iter().filter(|artifact| artifact.path.is_some()) {
+        by_path
+            .entry(artifact.path.as_deref().expect("filtered"))
+            .or_default()
+            .push(artifact);
+    }
+    by_path
+        .into_iter()
+        .filter_map(|(path, values)| {
+            let distinct = values
+                .iter()
+                .map(|artifact| artifact.checksum_sha256.as_str())
+                .collect::<std::collections::BTreeSet<_>>();
+            (distinct.len() > 1).then(|| ArtifactConflict {
+                path: path.to_string(),
+                artifact_ids: values
+                    .iter()
+                    .map(|artifact| artifact.artifact_id.clone())
+                    .collect(),
+                reason: "multiple accepted artifacts target the same path with different content"
+                    .to_string(),
+            })
+        })
+        .collect()
+}
+
+fn sha256_hex(content: &[u8]) -> String {
+    hex::encode(Sha256::digest(content))
 }
 
 fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
@@ -4479,6 +5274,8 @@ fn verification_status_label(status: JobResultVerificationStatus) -> &'static st
     match status {
         JobResultVerificationStatus::Accepted => "accepted",
         JobResultVerificationStatus::Rejected => "rejected",
+        JobResultVerificationStatus::Repairable => "repairable",
+        JobResultVerificationStatus::Unverifiable => "unverifiable",
         JobResultVerificationStatus::FallbackNeeded => "fallback_needed",
     }
 }
@@ -4501,6 +5298,7 @@ fn push_planned_job(
         reason: reason.to_string(),
         recommended_max_tokens: None,
         minimum_max_tokens: None,
+        workload: StepWorkloadRequirements::default(),
     });
 }
 
@@ -4915,9 +5713,13 @@ pub fn evaluate_policy(
         reasons.push("model name is missing".to_string());
     }
 
-    let mlx_runtime = worker_health.runtime_mode.eq_ignore_ascii_case("mlx");
-    let vllm_runtime = worker_health.runtime_mode.eq_ignore_ascii_case("vllm");
-    let remote_model_runtime = mlx_runtime || vllm_runtime;
+    // A contributed cluster is a local LLM runtime the contributor already runs.
+    // The node routes to its endpoint, so it has no MundusX model file, no
+    // llama-cli, and no accelerator of its own to report.
+    let contributed_cluster_runtime = worker_health
+        .runtime_mode
+        .eq_ignore_ascii_case("contributed-cluster");
+    let remote_model_runtime = ControlPlaneState::serves_models_remotely(worker_health);
     if worker_health
         .model_path
         .as_deref()
@@ -4954,6 +5756,7 @@ pub fn evaluate_policy(
         && !runtime_mode.eq_ignore_ascii_case("mlx")
         && !runtime_mode.eq_ignore_ascii_case("cuda")
         && !uses_vllm_runtime
+        && !contributed_cluster_runtime
         && !runtime_mode.eq_ignore_ascii_case("blas")
     {
         reasons.push(format!(
@@ -4962,11 +5765,18 @@ pub fn evaluate_policy(
     }
 
     let uses_mlx_runtime = runtime_mode.eq_ignore_ascii_case("mlx");
-    if !uses_mlx_runtime && !uses_vllm_runtime && !worker_health.llama_cli_available {
+    if !uses_mlx_runtime
+        && !uses_vllm_runtime
+        && !contributed_cluster_runtime
+        && !worker_health.llama_cli_available
+    {
         reasons.push("llama-cli is unavailable".to_string());
     }
 
-    if runtime_mode.eq_ignore_ascii_case("cuda") || uses_vllm_runtime {
+    if contributed_cluster_runtime {
+        // Health for these nodes is the contributed endpoint answering, which
+        // `worker_health.healthy` already covers above.
+    } else if runtime_mode.eq_ignore_ascii_case("cuda") || uses_vllm_runtime {
         if !worker_health.cuda_driver_available {
             reasons.push("CUDA driver is unavailable".to_string());
         }
@@ -5011,6 +5821,30 @@ pub fn evaluate_admission_policy(
             reasons.push(format!(
                 "backend {backend} is not allowed by admission policy"
             ));
+        }
+
+        if policy.enforce_model_policy {
+            match worker_health
+                .model_name
+                .as_deref()
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+            {
+                Some(name) if policy.allowed_models.iter().any(|allowed| allowed == name) => {}
+                Some(name)
+                    if crate::contracts::OFFICIAL_MODELS
+                        .iter()
+                        .any(|(known, _)| *known == name) =>
+                {
+                    reasons.push(format!("model {name} is denied by operator model policy"));
+                }
+                Some(name) => reasons.push(format!(
+                    "model {name} is under investigation and is not admitted"
+                )),
+                None => {
+                    reasons.push("model identity is missing and is under investigation".to_string())
+                }
+            }
         }
 
         if policy.require_trusted_identity && !is_trusted_identity_path(identity_trust_path) {
@@ -5114,6 +5948,20 @@ mod tests {
     use crate::contracts::{
         RuntimeMode, WorkerHealthReport, IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
     };
+
+    #[test]
+    fn validates_question_specific_speakai_replies() {
+        let output = r#"{"speechAct":"question","questionType":"personal_information","topic":"Place of residence","summary":"They are asking where the other person lives.","replies":[{"strategy":"direct","purpose":"ANSWER","text":"Ich wohne in Warschau.","meaning":"I live in Warsaw."},{"strategy":"continue","purpose":"ANSWER_AND_EXPLORE","text":"Ich wohne in Warschau. Und du?","meaning":"I live in Warsaw. And you?"},{"strategy":"boundary","purpose":"DECLINE_POLITELY","text":"Das möchte ich lieber nicht sagen.","meaning":"I would rather not say."}]}"#;
+        assert!(validate_speakai_output(output).is_ok());
+    }
+
+    #[test]
+    fn rejects_speakai_output_with_wrong_reply_contract() {
+        let output = r#"{"speechAct":"question","questionType":"personal_information","topic":"Place of residence","summary":"A question","replies":[{"strategy":"supportive","purpose":"AGREE","text":"Ja.","meaning":"Yes."},{"strategy":"continue","purpose":"ANSWER_AND_EXPLORE","text":"Und du?","meaning":"And you?"},{"strategy":"boundary","purpose":"DECLINE_POLITELY","text":"Lieber nicht.","meaning":"Rather not."}]}"#;
+        assert!(validate_speakai_output(output)
+            .expect_err("wrong question strategy must fail")
+            .contains("reply 1"));
+    }
 
     fn m_series_registration(node_id: &str) -> AgentRegistration {
         AgentRegistration {
@@ -5313,6 +6161,8 @@ mod tests {
         state.register(m_series_registration("node-1"));
         state.set_admission_policy(
             AdmissionPolicyUpdate {
+                enforce_model_policy: false,
+                allowed_models: crate::contracts::official_model_names(),
                 enabled: true,
                 require_trusted_identity: false,
                 require_healthy_runtime: true,
@@ -5336,11 +6186,35 @@ mod tests {
     }
 
     #[test]
+    fn model_policy_quarantines_unknown_models_for_investigation() {
+        let mut policy = AdmissionPolicy::default();
+        policy.enforce_model_policy = true;
+        let health = healthy_worker_health("1");
+
+        let (allowed, reason) = evaluate_admission_policy(
+            true,
+            None,
+            &policy,
+            Backend::M,
+            crate::contracts::IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
+            16_000,
+            &health,
+        );
+
+        assert!(!allowed);
+        assert!(reason
+            .as_deref()
+            .is_some_and(|value| value.contains("under investigation")));
+    }
+
+    #[test]
     fn admission_policy_blocks_underpowered_cuda_node() {
         let mut state = ControlPlaneState::default();
         state.register(cuda_registration("node-cuda"));
         state.set_admission_policy(
             AdmissionPolicyUpdate {
+                enforce_model_policy: false,
+                allowed_models: crate::contracts::official_model_names(),
                 enabled: true,
                 require_trusted_identity: false,
                 require_healthy_runtime: true,
@@ -5372,6 +6246,8 @@ mod tests {
 
         state.set_admission_policy(
             AdmissionPolicyUpdate {
+                enforce_model_policy: false,
+                allowed_models: crate::contracts::official_model_names(),
                 enabled: true,
                 require_trusted_identity: true,
                 require_healthy_runtime: true,
@@ -5406,6 +6282,7 @@ mod tests {
             required_output: "historical scheduler telemetry".to_string(),
             recommended_max_tokens: None,
             minimum_max_tokens: None,
+            workload: StepWorkloadRequirements::default(),
             status,
             blocked_by: Vec::new(),
             assigned_node_id: Some(node_id.to_string()),
@@ -5441,6 +6318,7 @@ mod tests {
             request_id: job_id.to_string(),
             prompt: "historical telemetry job".to_string(),
             preferred_backend: Backend::Auto,
+            routing_mode: RoutingMode::Normal,
             runtime_mode: RuntimeMode::Local,
             stream: false,
             model: Some("demo".to_string()),
@@ -5468,6 +6346,8 @@ mod tests {
                 results: Vec::new(),
                 final_output: None,
                 merge_error: None,
+                synthesis_status: SynthesisStatus::Collecting,
+                final_manifest: None,
                 final_node_id: None,
                 created_at: "1".to_string(),
                 updated_at: "2".to_string(),
@@ -5513,6 +6393,7 @@ mod tests {
             request_id: "job-1".to_string(),
             prompt: prompt.to_string(),
             preferred_backend: Backend::Auto,
+            routing_mode: RoutingMode::Normal,
             runtime_mode: RuntimeMode::Local,
             execution_mode: JobExecutionMode::Single,
             stream: false,
@@ -5854,6 +6735,7 @@ mod tests {
                 prompt: "Give me a detailed history of apple from its origins to today."
                     .to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Decompose,
                 stream: false,
@@ -5911,6 +6793,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -6145,6 +7028,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Interactive,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8433,6 +9317,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8512,6 +9397,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8554,6 +9440,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8635,6 +9522,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8701,6 +9589,7 @@ mod tests {
                 request_id: "job-2".to_string(),
                 prompt: "hello again".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8767,6 +9656,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "Draft a concise report.".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8814,6 +9704,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "Answer in one word: 4+3?".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8868,6 +9759,7 @@ mod tests {
                 prompt: "Give me a detailed history of Honda from its origins to today."
                     .to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -8926,6 +9818,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "Draft a concise public history note.".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9216,6 +10109,7 @@ mod tests {
                 request_id: "job-low-score".to_string(),
                 prompt: "Estimate this public sequence: 2, 4, 8.".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9234,6 +10128,7 @@ mod tests {
                 request_id: "job-high-score".to_string(),
                 prompt: "Draft a markdown operator report for this internal rollout.".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9273,6 +10168,7 @@ mod tests {
                     request_id: request_id.to_string(),
                     prompt: "hello world".to_string(),
                     preferred_backend: Backend::M,
+                    routing_mode: RoutingMode::Normal,
                     runtime_mode: RuntimeMode::Local,
                     execution_mode: JobExecutionMode::Single,
                     stream: false,
@@ -9442,6 +10338,98 @@ mod tests {
         assert_eq!(node.policy_reason, None);
     }
 
+    /// Health exactly as a node contributing an already-running local cluster
+    /// reports it: the endpoint answers, but there is no MundusX model file, no
+    /// llama-cli, and no accelerator of its own.
+    fn contributed_cluster_worker_health(checked_at: &str) -> WorkerHealthReport {
+        let mut health = healthy_worker_health(checked_at);
+        health.runtime_mode = "contributed-cluster".to_string();
+        health.model_path = None;
+        health.model_name = Some("UD-IQ2_M".to_string());
+        health.llama_cli_available = false;
+        health.blas_device_available = false;
+        health.cuda_device_available = false;
+        health.cuda_driver_available = false;
+        health
+    }
+
+    #[test]
+    fn schedules_jobs_onto_a_node_contributing_a_running_local_cluster() {
+        // Admission alone was not enough: `worker_runtime_dependencies_ready`
+        // also required mlx, vllm, or a local llama-cli, so these nodes were
+        // never eligible and jobs stayed queued and unassigned.
+        let health = contributed_cluster_worker_health("2");
+
+        assert!(ControlPlaneState::worker_runtime_dependencies_ready(
+            &health
+        ));
+    }
+
+    #[test]
+    fn a_node_without_a_remote_runtime_still_needs_llama_cli_to_be_scheduled() {
+        let mut health = healthy_worker_health("2");
+        health.llama_cli_available = false;
+
+        assert!(!ControlPlaneState::worker_runtime_dependencies_ready(
+            &health
+        ));
+    }
+
+    #[test]
+    fn admits_a_node_contributing_a_running_local_cluster() {
+        // Before this, such a node was blocked with "model path is missing;
+        // llama-cli is unavailable; BLAS device acceleration is unavailable",
+        // even though it routes every job to a healthy local endpoint.
+        let health = contributed_cluster_worker_health("2");
+
+        let (allowed, reason) =
+            evaluate_policy(AgentState::Ready, "AC Power", false, Some(90), &health);
+
+        assert!(allowed, "unexpected block: {reason:?}");
+        assert_eq!(reason, None);
+    }
+
+    #[test]
+    fn a_contributed_cluster_still_needs_a_model_and_a_healthy_endpoint() {
+        let mut unhealthy = contributed_cluster_worker_health("2");
+        unhealthy.healthy = false;
+        let (allowed, reason) =
+            evaluate_policy(AgentState::Ready, "AC Power", false, Some(90), &unhealthy);
+        assert!(!allowed);
+        assert!(reason
+            .as_deref()
+            .expect("reason")
+            .contains("worker health probe reported unhealthy"));
+
+        let mut no_model = contributed_cluster_worker_health("2");
+        no_model.model_name = None;
+        let (allowed, reason) =
+            evaluate_policy(AgentState::Ready, "AC Power", false, Some(90), &no_model);
+        assert!(!allowed);
+        assert!(reason
+            .as_deref()
+            .expect("reason")
+            .contains("model name is missing"));
+    }
+
+    #[test]
+    fn other_runtimes_still_require_a_local_model_and_accelerator() {
+        // The exemption must not leak into the normal local-runtime path.
+        let mut health = healthy_worker_health("2");
+        health.model_path = None;
+        health.llama_cli_available = false;
+        health.blas_device_available = false;
+
+        let (allowed, reason) =
+            evaluate_policy(AgentState::Ready, "AC Power", false, Some(90), &health);
+        let reason = reason.expect("reason");
+
+        assert!(!allowed);
+        assert!(reason.contains("model path is missing"));
+        assert!(reason.contains("llama-cli is unavailable"));
+        assert!(reason.contains("BLAS device acceleration is unavailable"));
+    }
+
     #[test]
     fn blocks_windows_cuda_node_when_llama_cli_is_missing() {
         let mut state = ControlPlaneState::default();
@@ -9525,6 +10513,7 @@ mod tests {
                 request_id: "mlx-job".to_string(),
                 prompt: "Summarize this request".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9698,6 +10687,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -9858,6 +10848,7 @@ mod tests {
                     request_id: request_id.to_string(),
                     prompt: "short answer".to_string(),
                     preferred_backend: Backend::Auto,
+                    routing_mode: RoutingMode::Normal,
                     runtime_mode: RuntimeMode::Local,
                     execution_mode: JobExecutionMode::Single,
                     stream: false,
@@ -9925,6 +10916,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10019,6 +11011,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10105,6 +11098,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Local,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10139,6 +11133,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Interactive,
                 execution_mode: JobExecutionMode::Single,
                 stream: false,
@@ -10169,6 +11164,7 @@ mod tests {
                 request_id: "job-1".to_string(),
                 prompt: "hello world".to_string(),
                 preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
                 runtime_mode: RuntimeMode::Interactive,
                 execution_mode: JobExecutionMode::Single,
                 stream: true,
@@ -10222,5 +11218,86 @@ mod tests {
             &health,
             NodeRole::Vision
         ));
+    }
+
+    #[test]
+    fn artifact_parser_preserves_separate_code_batches_and_safe_paths() {
+        let output =
+            "```diff\n--- a/src/a.rs\n+++ b/src/a.rs\n@@\n-old\n+new\n```\n```sh\ncargo test\n```";
+        let blocks = fenced_output_blocks(output);
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(
+            artifact_kind_for_language(&blocks[0].0),
+            ResultArtifactKind::Patch
+        );
+        assert_eq!(
+            artifact_path(ResultArtifactKind::Patch, &blocks[0].1).as_deref(),
+            Some("src/a.rs")
+        );
+        assert_eq!(
+            artifact_kind_for_language(&blocks[1].0),
+            ResultArtifactKind::Command
+        );
+        assert!(!safe_artifact_path("../secret"));
+    }
+
+    #[test]
+    fn artifact_validation_rejects_unsafe_patches_and_invalid_json() {
+        let unsafe_patch = "--- a/secret\n+++ b/../secret\n@@ -1 +1 @@\n-old\n+new";
+        let patch_evidence = validate_artifact(ResultArtifactKind::Patch, None, unsafe_patch);
+        assert!(patch_evidence
+            .iter()
+            .any(|item| { item.kind == ValidationEvidenceKind::PathSafety && !item.passed }));
+
+        let json_evidence = validate_artifact(ResultArtifactKind::StructuredData, None, "{nope}");
+        assert!(json_evidence.iter().any(|item| {
+            item.kind == ValidationEvidenceKind::StructuredDataSyntax && !item.passed
+        }));
+    }
+
+    #[test]
+    fn deterministic_conflicts_create_bounded_repair_plans_and_timeline_events() {
+        let artifact = |id: &str, checksum: &str| ResultArtifact {
+            artifact_id: id.to_string(),
+            result_node_id: "node-a".to_string(),
+            sequence: 0,
+            kind: ResultArtifactKind::Patch,
+            path: Some("src/lib.rs".to_string()),
+            language: Some("diff".to_string()),
+            media_type: "text/x-diff".to_string(),
+            content: checksum.to_string(),
+            byte_size: checksum.len(),
+            checksum_sha256: checksum.to_string(),
+            base_checksum_sha256: None,
+            verification_status: JobResultVerificationStatus::Accepted,
+            verification_reason: None,
+            source_worker_id: Some("worker-a".to_string()),
+            source_node_id: Some("machine-a".to_string()),
+            validation_evidence: Vec::new(),
+        };
+        let conflicts = artifact_conflicts(&[artifact("a", "111"), artifact("b", "222")]);
+        assert_eq!(conflicts.len(), 1);
+
+        let graph = JobGraph {
+            graph_id: "graph-1".to_string(),
+            request_id: "request-1".to_string(),
+            plan_id: "plan-1".to_string(),
+            status: JobGraphStatus::InProgress,
+            nodes: Vec::new(),
+            results: Vec::new(),
+            final_output: None,
+            merge_error: None,
+            synthesis_status: SynthesisStatus::Collecting,
+            final_manifest: None,
+            final_node_id: None,
+            created_at: "1".to_string(),
+            updated_at: "1".to_string(),
+        };
+        let repairs = artifact_repair_plans(&graph, &conflicts);
+        assert_eq!(repairs.len(), 1);
+        assert_eq!(repairs[0].max_attempts, DEFAULT_GRAPH_NODE_MAX_ATTEMPTS);
+        let timeline = orchestration_timeline(&graph, &repairs);
+        assert_eq!(timeline[0].stage, "repair");
+        assert_eq!(timeline[0].status, "planned");
     }
 }

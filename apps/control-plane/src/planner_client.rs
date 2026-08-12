@@ -1,6 +1,6 @@
 use crate::contracts::{
-    JobPlan, JobRequest, JobSchedulingRequirements, NodeRole, PlannedJob, RequestClassification,
-    RequestTaskType,
+    CapacityClass, JobPlan, JobRequest, JobSchedulingRequirements, NodeRole, PlannedJob,
+    RequestClassification, RequestTaskType, StepWorkloadRequirements,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -72,6 +72,37 @@ struct PlanStepWire {
     reason: Option<String>,
     recommended_max_tokens: Option<u32>,
     minimum_max_tokens: Option<u32>,
+    #[serde(default)]
+    minimum_capacity_class: CapacityClass,
+    #[serde(default)]
+    recommended_capacity_class: CapacityClass,
+    #[serde(default)]
+    context_budget_tokens: u32,
+    #[serde(default)]
+    expected_artifact_count: u32,
+    #[serde(default)]
+    expected_artifact_bytes: u64,
+    #[serde(default)]
+    model_quality_floor: String,
+    #[serde(default)]
+    required_tools: Vec<String>,
+    #[serde(default)]
+    requires_repository: bool,
+    #[serde(default)]
+    requires_compile: bool,
+    #[serde(default)]
+    requires_tests: bool,
+    #[serde(default)]
+    validation_level: String,
+    #[serde(default = "default_allowed_parallelism")]
+    allowed_parallelism: u32,
+    #[serde(default)]
+    reducer_credibility: String,
+    #[serde(default)]
+    synthesizer_credibility: String,
+}
+fn default_allowed_parallelism() -> u32 {
+    1
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -136,6 +167,7 @@ pub fn planner_service_status_from_env() -> PlannerServiceStatus {
         request_id: "planner-status-probe".to_string(),
         prompt: "Answer health probe.".to_string(),
         preferred_backend: crate::contracts::Backend::Auto,
+        routing_mode: crate::contracts::RoutingMode::Normal,
         runtime_mode: crate::contracts::RuntimeMode::Local,
         execution_mode: crate::contracts::JobExecutionMode::Single,
         stream: false,
@@ -292,6 +324,22 @@ fn response_to_plan(
                     .unwrap_or_else(|| "Planner service selected this step.".to_string()),
                 recommended_max_tokens: step.recommended_max_tokens,
                 minimum_max_tokens: step.minimum_max_tokens,
+                workload: StepWorkloadRequirements {
+                    minimum_capacity_class: step.minimum_capacity_class,
+                    recommended_capacity_class: step.recommended_capacity_class,
+                    context_budget_tokens: step.context_budget_tokens,
+                    expected_artifact_count: step.expected_artifact_count,
+                    expected_artifact_bytes: step.expected_artifact_bytes,
+                    model_quality_floor: step.model_quality_floor,
+                    required_tools: step.required_tools,
+                    requires_repository: step.requires_repository,
+                    requires_compile: step.requires_compile,
+                    requires_tests: step.requires_tests,
+                    validation_level: step.validation_level,
+                    allowed_parallelism: step.allowed_parallelism,
+                    reducer_credibility: step.reducer_credibility,
+                    synthesizer_credibility: step.synthesizer_credibility,
+                },
             })
         })
         .collect::<Vec<_>>();

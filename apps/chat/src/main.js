@@ -18,8 +18,15 @@ const DEFAULT_WEB_SEARCH_URL = "https://api.search.brave.com/res/v1/web/search";
 const DEFAULT_WEB_SEARCH_MAX_RESULTS = 4;
 const DEFAULT_WEB_SEARCH_TTL_SECONDS = 1800;
 const DEFAULT_WEB_SEARCH_DAILY_BUDGET = 0;
+const DEFAULT_CONTEXT_WINDOW_TOKENS = 8192;
+const CONTEXT_SAFETY_TOKENS = 256;
+const MAX_HISTORY_CONTEXT_TOKENS = 2048;
+const RECENT_HISTORY_MESSAGES = 6;
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
+// Temporarily disabled by product decision. Keep the implementation available so it can
+// be restored without rebuilding the output-cleaning and redaction pipeline.
+const CHAT_VERIFIER_ENABLED = false;
 const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LOGO_PATH = resolve(MODULE_DIR, "../public/mundusx-logo.png");
 const MARIE_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/marie-persona.md");
@@ -2436,7 +2443,45 @@ export function page(config = configFromEnv()) {
       const parts = [completed + "/" + total + " " + unit + " complete"];
       if (running) parts.push(running + " running");
       if (failed) parts.push(failed + " failed");
+      const tokenUsage = formatTokenUsageSummary(progress.token_usage);
+      if (tokenUsage) parts.push(tokenUsage);
+      const contextUsage = formatContextUsageSummary(progress.context_usage);
+      if (contextUsage) parts.push(contextUsage);
       return "Completed work sections - " + parts.join(" - ");
+    }
+
+    function formatTokenUsageSummary(usage) {
+      if (!usage || !Number.isFinite(usage.total_tokens)) return "";
+      const qualifier = usage.source === "runtime" ? "" : " estimated";
+      const parts = [
+        "tokens " + usage.total_tokens + " total" + qualifier +
+          " (" + usage.input_tokens + " input + " + usage.output_tokens + " output)",
+      ];
+      if (Number.isFinite(usage.max_output_tokens)) {
+        const percent = Number.isFinite(usage.output_budget_percent)
+          ? " (" + usage.output_budget_percent + "%)"
+          : "";
+        parts.push("output " + usage.output_tokens + "/" + usage.max_output_tokens + percent);
+      }
+      return parts.join(" - ");
+    }
+
+    function formatContextUsageSummary(usage) {
+      if (!usage || !Number.isFinite(usage.context_window_tokens)) return "";
+      const qualifier = usage.source === "runtime" ? "" : " estimated";
+      const parts = [
+        "context " + usage.used_tokens + "/" + usage.context_window_tokens +
+          " used" + qualifier + " (" + usage.used_percent + "%)",
+        "reserved " + usage.reserved_tokens + "/" + usage.context_window_tokens +
+          " (" + usage.reserved_percent + "%)",
+      ];
+      if (usage.history_compressed) {
+        parts.push(
+          "history compressed " + usage.history_source_messages + "→" +
+            usage.history_included_messages + " messages",
+        );
+      }
+      return parts.join(" - ");
     }
 
     function createChunkRow(chunk) {
@@ -3120,13 +3165,35 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     }
   }
 
+  const model = String(body?.model ?? config.modelOverride ?? "").trim();
+  const capacityProfile = await fetchChatCapacityProfile(config, fetchImpl, model);
+  const contextWindowTokens = capacityProfile?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
   let systemPrompt = buildChatSystemPrompt(message, body?.voicePersona);
   let codeTransformationFollowUp = false;
+  let historyContext = emptyHistoryContext();
   if (conversationId) {
     try {
-      const history = await fetchConversationHistory(conversationId, config, fetchImpl, 16);
+      const history = await fetchConversationHistory(conversationId, config, fetchImpl, 80);
       codeTransformationFollowUp = isCodeTransformationFollowUp(message, history);
-      const context = buildRelevantHistoryContext(history, codeTransformationFollowUp);
+      const maxOutputTokens = inferMaxTokens(
+        message,
+        body?.maxTokens,
+        capacityProfile,
+        codeTransformationFollowUp,
+      );
+      const historyTokenBudget = conversationHistoryTokenBudget({
+        contextWindowTokens,
+        maxOutputTokens,
+        baseInputTokens: estimateDisplayTokens(`${systemPrompt}\n${message}`) ?? 0,
+      });
+      historyContext = codeTransformationFollowUp
+        ? historyContextForCodeTransformation(history, message, historyTokenBudget)
+        : buildCompressedHistoryContext(history, {
+            currentMessage: message,
+            maxTokens: historyTokenBudget,
+            recentMessages: RECENT_HISTORY_MESSAGES,
+          });
+      const context = historyContext.text;
       if (context) {
         systemPrompt = `${systemPrompt}\n\nPrior conversation (most recent last):\n${context}`;
       }
@@ -3135,13 +3202,17 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     }
   }
 
-  const model = String(body?.model ?? config.modelOverride ?? "").trim();
-  const capacityProfile = await fetchChatCapacityProfile(config, fetchImpl, model);
+  const resolvedMaxTokens = inferMaxTokens(
+    message,
+    body?.maxTokens,
+    capacityProfile,
+    codeTransformationFollowUp,
+  );
   const jobBody = buildGenericJobBody(message, config, {
     model: body?.model,
     voicePersona: body?.voicePersona,
     executionMode: body?.executionMode,
-    maxTokens: body?.maxTokens,
+    maxTokens: resolvedMaxTokens,
     temperature: body?.temperature,
     topP: body?.topP,
     capacityProfile,
@@ -3165,8 +3236,16 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(502, "control plane did not return a job id");
   }
   rememberPromptForJob(jobId, message);
+  const contextUsage = plannedContextUsage({
+    contextWindowTokens,
+    systemPrompt: jobBody.system_prompt,
+    prompt: jobBody.prompt,
+    maxOutputTokens: jobBody.max_tokens,
+    historyContext,
+  });
+  rememberContextUsageForJob(jobId, contextUsage);
 
-  return formatChatJob(jobId, job, jobBody.model || null, { prompt: message });
+  return formatChatJob(jobId, job, jobBody.model || null, { prompt: message, contextUsage });
 }
 
 async function recordAssistantTurn(conversationId, config, fetchImpl, result) {
@@ -3350,7 +3429,14 @@ function capacityProfileFromNode(node, requestedModel = "") {
   const memoryMb = positiveInteger(node.available_memory_mb, 0);
   const cudaReady = health.cuda_device_available === true || String(node.backend ?? "").toLowerCase() === "cuda";
   const lowVram = String(health.notes ?? "").toLowerCase().includes("low-vram");
-  const base = capacityProfileFromModel(modelName, { gpuAvailable, memoryMb, cudaReady, lowVram });
+  const contextWindowTokens = contextWindowTokensForNode(node, modelName);
+  const base = capacityProfileFromModel(modelName, {
+    gpuAvailable,
+    memoryMb,
+    cudaReady,
+    lowVram,
+    contextWindowTokens,
+  });
   return {
     ...base,
     score: base.score + Math.min(20, Math.floor(gpuAvailable / 5)) + Math.min(20, Math.floor(memoryMb / 2048)),
@@ -3363,6 +3449,7 @@ function capacityProfileFromModel(modelName, node = null) {
   const memoryMb = node?.memoryMb ?? 0;
   const cudaReady = node?.cudaReady ?? false;
   const lowVram = node?.lowVram ?? false;
+  const contextWindowTokens = positiveInteger(node?.contextWindowTokens, DEFAULT_CONTEXT_WINDOW_TOKENS);
   let tier = "small";
   let score = modelBillions * 10;
 
@@ -3380,7 +3467,23 @@ function capacityProfileFromModel(modelName, node = null) {
     score += 25;
   }
 
-  return { tier, modelBillions, gpuAvailable, memoryMb, cudaReady, lowVram, score };
+  return { tier, modelBillions, gpuAvailable, memoryMb, cudaReady, lowVram, contextWindowTokens, score };
+}
+
+function contextWindowTokensForNode(node, modelName) {
+  const capabilities = node?.capabilities ?? {};
+  const requested = String(modelName ?? "").trim().toLowerCase();
+  const models = Array.isArray(capabilities.models) ? capabilities.models : [];
+  const matchingModel = models.find((model) => {
+    const names = [model?.name, ...(Array.isArray(model?.aliases) ? model.aliases : [])]
+      .map((value) => String(value ?? "").trim().toLowerCase())
+      .filter(Boolean);
+    return requested && names.includes(requested);
+  });
+  return positiveInteger(
+    matchingModel?.context_tokens ?? capabilities.max_context_tokens,
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+  );
 }
 
 function modelSizeBillions(modelName) {
@@ -3408,11 +3511,17 @@ function stripToolModePrefix(message) {
 
 export function extractLinearEquation(message) {
   const text = String(message ?? "").trim();
-  if (!/\b(?:solve|equation|find)\b/i.test(text) || !text.includes("=")) {
+  if (!/\b(?:solve|equation|find)\b/i.test(text)) {
     return null;
   }
 
-  const equation = cleanEquationText(text);
+  const requestedVariable = extractRequestedLinearVariable(text);
+  const implicitExpression = text.includes("=") ? null : extractImplicitZeroExpression(text, requestedVariable);
+  if (!text.includes("=") && !implicitExpression) {
+    return null;
+  }
+
+  const equation = implicitExpression ? `${implicitExpression}=0` : cleanEquationText(text);
   const sides = equation.split("=");
   if (sides.length !== 2) {
     return null;
@@ -3421,24 +3530,127 @@ export function extractLinearEquation(message) {
   const left = parseLinearExpression(sides[0]);
   const right = parseLinearExpression(sides[1]);
   const variable = mergeLinearVariable(left?.variable, right?.variable);
-  if (!left || !right || variable === false) {
-    return null;
+  if (
+    left &&
+    right &&
+    variable !== false &&
+    (!requestedVariable || !variable || requestedVariable === variable)
+  ) {
+    const coefficient = left.coefficient - right.coefficient;
+    const constant = right.constant - left.constant;
+    if (Math.abs(coefficient) >= 1e-12) {
+      const solution = normalizeNumber(constant / coefficient);
+      return {
+        variable,
+        equation,
+        solution,
+        left,
+        right,
+      };
+    }
   }
 
-  const coefficient = left.coefficient - right.coefficient;
-  const constant = right.constant - left.constant;
-  if (Math.abs(coefficient) < 1e-12) {
+  return requestedVariable
+    ? solveSymbolicLinearEquation(equation, requestedVariable, Boolean(implicitExpression))
+    : null;
+}
+
+function extractRequestedLinearVariable(text) {
+  const findMatch = String(text).match(/\bfind\s+([a-z])\b/i);
+  if (findMatch) return findMatch[1].toLowerCase();
+  const solveForMatch = String(text).match(/\bsolve\b[\s\S]*?\bfor\s+([a-z])\b/i);
+  return solveForMatch ? solveForMatch[1].toLowerCase() : null;
+}
+
+function extractImplicitZeroExpression(text, requestedVariable) {
+  if (!requestedVariable) return null;
+  const source = String(text).trim();
+  const trailingFind = source.match(/^(.+?)\s*[,;:]\s*find\s+[a-z]\b/i);
+  const leadingFind = source.match(/^\s*find\s+[a-z]\s*[:;,]\s*(.+)$/i);
+  const expression = String(trailingFind?.[1] ?? leadingFind?.[1] ?? "")
+    .replace(/[−–—]/g, "-")
+    .replace(/\s+/g, "");
+  if (
+    !expression ||
+    !expression.toLowerCase().includes(requestedVariable) ||
+    !/^[0-9a-zA-Z+\-*.]+$/.test(expression)
+  ) {
     return null;
   }
+  return expression;
+}
 
-  const solution = normalizeNumber(constant / coefficient);
+function solveSymbolicLinearEquation(equation, requestedVariable, assumedZero) {
+  const [leftText, rightText] = equation.split("=");
+  const left = parseSymbolicLinearSide(leftText);
+  const right = parseSymbolicLinearSide(rightText);
+  if (!left || !right) return null;
+
+  const combined = new Map(left);
+  for (const [name, coefficient] of right) {
+    combined.set(name, (combined.get(name) ?? 0) - coefficient);
+  }
+  const targetCoefficient = normalizeNumber(combined.get(requestedVariable) ?? 0);
+  if (Math.abs(targetCoefficient) < 1e-12) return null;
+  combined.delete(requestedVariable);
+
+  const isolated = new Map();
+  const solution = new Map();
+  for (const [name, coefficient] of combined) {
+    const moved = normalizeNumber(-coefficient);
+    if (Math.abs(moved) < 1e-12) continue;
+    isolated.set(name, moved);
+    solution.set(name, normalizeNumber(moved / targetCoefficient));
+  }
+
   return {
-    variable,
+    variable: requestedVariable,
     equation,
-    solution,
-    left,
-    right,
+    solutionExpression: formatSymbolicLinearExpression(solution),
+    targetCoefficient,
+    isolatedExpression: formatSymbolicLinearExpression(isolated),
+    assumedZero,
   };
+}
+
+function parseSymbolicLinearSide(expression) {
+  const compact = String(expression ?? "").replace(/\s+/g, "");
+  if (!compact || !/^[+\-]?(?:\d+(?:\.\d+)?|(?:\d+(?:\.\d+)?)?\*?[a-z])(?:[+\-](?:\d+(?:\.\d+)?|(?:\d+(?:\.\d+)?)?\*?[a-z]))*$/i.test(compact)) {
+    return null;
+  }
+
+  const values = new Map();
+  for (const rawTerm of compact.match(/[+\-]?[^+\-]+/g) ?? []) {
+    const sign = rawTerm.startsWith("-") ? -1 : 1;
+    const body = rawTerm.replace(/^[+\-]/, "");
+    const variableMatch = body.match(/^(\d+(?:\.\d+)?)?\*?([a-z])$/i);
+    const name = variableMatch ? variableMatch[2].toLowerCase() : "constant";
+    const magnitude = variableMatch ? Number(variableMatch[1] || 1) : Number(body);
+    if (!Number.isFinite(magnitude)) return null;
+    values.set(name, normalizeNumber((values.get(name) ?? 0) + sign * magnitude));
+  }
+  return values;
+}
+
+function formatSymbolicLinearExpression(values) {
+  const entries = [...values.entries()]
+    .filter(([, coefficient]) => Math.abs(coefficient) >= 1e-12)
+    .sort(([left], [right]) => {
+      if (left === "constant") return 1;
+      if (right === "constant") return -1;
+      return left.localeCompare(right);
+    });
+  if (!entries.length) return "0";
+
+  return entries.map(([name, coefficient], index) => {
+    const negative = coefficient < 0;
+    const magnitude = Math.abs(coefficient);
+    const core = name === "constant"
+      ? formatNumber(magnitude)
+      : `${Math.abs(magnitude - 1) < 1e-12 ? "" : formatNumber(magnitude)}${name}`;
+    if (index === 0) return negative ? `-${core}` : core;
+    return `${negative ? " - " : " + "}${core}`;
+  }).join("");
 }
 
 function cleanEquationText(text) {
@@ -4629,17 +4841,26 @@ function pluralizeUnit(unit, value) {
 }
 
 function fetchLinearEquationJob(message, equation) {
-  const answer = `${equation.variable} = ${formatNumber(equation.solution)}`;
-  const reducedCoefficient = normalizeNumber(equation.left.coefficient - equation.right.coefficient);
-  const reducedConstant = normalizeNumber(equation.right.constant - equation.left.constant);
+  const symbolic = typeof equation.solutionExpression === "string";
+  const answer = `${equation.variable} = ${symbolic ? equation.solutionExpression : formatNumber(equation.solution)}`;
+  const reducedCoefficient = symbolic
+    ? equation.targetCoefficient
+    : normalizeNumber(equation.left.coefficient - equation.right.coefficient);
+  const reducedConstant = symbolic
+    ? equation.isolatedExpression
+    : formatNumber(normalizeNumber(equation.right.constant - equation.left.constant));
+  const assumption = equation.assumedZero
+    ? `Assuming ${equation.equation} because no equality was provided.`
+    : null;
   const output = [
     `Equation: ${equation.equation}`,
+    assumption,
     `Answer: ${answer}`,
     "",
     "Method:",
-    `Move variable terms and constants to opposite sides: ${formatNumber(reducedCoefficient)}${equation.variable} = ${formatNumber(reducedConstant)}`,
+    `Move variable terms and constants to opposite sides: ${formatNumber(reducedCoefficient)}${equation.variable} = ${reducedConstant}`,
     `Divide both sides by ${formatNumber(reducedCoefficient)}.`,
-  ].join("\n");
+  ].filter((line) => line !== null).join("\n");
   return {
     job_id: `math-${Date.now().toString(36)}-${hashText(message).slice(0, 10)}`,
     status: "completed",
@@ -4657,7 +4878,7 @@ function fetchLinearEquationJob(message, equation) {
       answer,
       steps: [
         equation.equation,
-        `${formatNumber(reducedCoefficient)}${equation.variable} = ${formatNumber(reducedConstant)}`,
+        `${formatNumber(reducedCoefficient)}${equation.variable} = ${reducedConstant}`,
         answer,
       ],
     },
@@ -4893,8 +5114,131 @@ function fetchMundusXKnowledgeJob(message, topic) {
   };
 }
 
+// Common misspellings of the words that trigger a weather lookup. Without these
+// a typo sends the question to an LLM, which cannot know today's weather.
+const WEATHER_WORD_TYPOS = [
+  [/\bwheather\b/gi, "weather"],
+  [/\bweahter\b/gi, "weather"],
+  [/\bweater\b/gi, "weather"],
+  [/\bwether\b/gi, "weather"],
+  [/\bweathe?r?r\b/gi, "weather"],
+  [/\bforcast\b/gi, "forecast"],
+  [/\bforecase\b/gi, "forecast"],
+  [/\btemprature\b/gi, "temperature"],
+  [/\btemperatur\b/gi, "temperature"],
+  [/\btempreature\b/gi, "temperature"],
+];
+
+export function normalizeWeatherWordTypos(value) {
+  return WEATHER_WORD_TYPOS.reduce(
+    (text, [pattern, replacement]) => text.replace(pattern, replacement),
+    String(value ?? ""),
+  );
+}
+
+// Words that can sit directly before "weather" without naming a place, so
+// "is the weather nice" never looks up a city called "is".
+const WEATHER_LOCATION_STOPWORDS = new Set([
+  "a",
+  "an",
+  "and",
+  "current",
+  "currently",
+  "for",
+  "how",
+  "hows",
+  "is",
+  "it",
+  "its",
+  "latest",
+  "local",
+  "me",
+  "my",
+  "our",
+  "s",
+  "show",
+  "significant",
+  "somewhere",
+  "tell",
+  "that",
+  "the",
+  "there",
+  "these",
+  "this",
+  "those",
+  "today",
+  "todays",
+  "tomorrow",
+  "tomorrows",
+  "us",
+  "was",
+  "what",
+  "whats",
+  "which",
+  "whos",
+  "why",
+  "will",
+  "yesterday",
+]);
+
+// Words that can follow "weather" without naming a place, so "is the weather
+// nice" does not look up a city called "nice".
+const WEATHER_DESCRIPTOR_WORDS = new Set([
+  "bad",
+  "chilly",
+  "cloudy",
+  "cold",
+  "condition",
+  "conditions",
+  "cool",
+  "data",
+  "dry",
+  "fine",
+  "forecast",
+  "good",
+  "here",
+  "hot",
+  "humid",
+  "info",
+  "information",
+  "like",
+  "lately",
+  "looking",
+  "nice",
+  "out",
+  "outside",
+  "rainy",
+  "report",
+  "snowy",
+  "sunny",
+  "there",
+  "update",
+  "warm",
+  "wet",
+  "windy",
+]);
+
+function isNonPlaceWord(word) {
+  const normalized = word.replace(/['’]/g, "").toLowerCase();
+  return (
+    WEATHER_LOCATION_STOPWORDS.has(normalized) || WEATHER_DESCRIPTOR_WORDS.has(normalized)
+  );
+}
+
+/// Rejects a candidate made up entirely of words that never name a place.
+function rejectNonPlaceLocation(location) {
+  if (!location) {
+    return null;
+  }
+  const words = location.split(/\s+/).filter(Boolean);
+  if (words.length === 0 || words.every(isNonPlaceWord)) {
+    return null;
+  }
+  return location;
+}
+
 export function extractWeatherLocation(message) {
-  const text = String(message ?? "").trim();
+  const text = normalizeWeatherWordTypos(String(message ?? "").trim());
   if (!text) {
     return null;
   }
@@ -4913,12 +5257,39 @@ export function extractWeatherLocation(message) {
   ];
   for (const pattern of patterns) {
     const match = text.match(pattern);
-    const location = cleanWeatherLocation(match?.[1]);
+    const location = rejectNonPlaceLocation(cleanWeatherLocation(match?.[1]));
     if (location) {
       return location;
     }
   }
-  return null;
+
+  // "the berlin weather today" names the place before the subject, so the
+  // patterns above see only "weather today" and find nothing.
+  return extractLeadingWeatherLocation(text);
+}
+
+function extractLeadingWeatherLocation(text) {
+  const match = text.match(
+    /([\p{L}][\p{L}\s.'-]*?)\s+(?:weather|forecast|temperature|temp)\b/u,
+  );
+  const candidate = cleanWeatherLocation(match?.[1]);
+  if (!candidate) {
+    return null;
+  }
+
+  // Keep only the trailing words that look like a place name.
+  const words = candidate.split(/\s+/).filter(Boolean);
+  while (words.length > 0 && isNonPlaceWord(words[0])) {
+    words.shift();
+  }
+  if (words.length === 0 || words.length > 4) {
+    return null;
+  }
+  if (words.some(isNonPlaceWord)) {
+    return null;
+  }
+
+  return rejectNonPlaceLocation(cleanWeatherLocation(words.join(" ")));
 }
 
 function isCompoundPromptForDirectTools(message) {
@@ -5819,6 +6190,7 @@ function buildGroundedSystemPrompt(message, voicePersona, sources) {
 
 const groundingSourcesByJobId = new Map();
 const promptContextByJobId = new Map();
+const contextUsageByJobId = new Map();
 const MAX_TRACKED_PROMPT_CONTEXTS = 250;
 
 function rememberPromptForJob(jobId, prompt) {
@@ -5843,6 +6215,25 @@ function lookupPromptForJob(jobId) {
 
 function forgetPromptForJob(jobId) {
   promptContextByJobId.delete(String(jobId ?? "").trim());
+}
+
+function rememberContextUsageForJob(jobId, usage) {
+  const key = String(jobId ?? "").trim();
+  if (!key || !usage) return;
+  contextUsageByJobId.set(key, usage);
+  while (contextUsageByJobId.size > MAX_TRACKED_PROMPT_CONTEXTS) {
+    const oldestKey = contextUsageByJobId.keys().next().value;
+    if (!oldestKey) break;
+    contextUsageByJobId.delete(oldestKey);
+  }
+}
+
+function lookupContextUsageForJob(jobId) {
+  return contextUsageByJobId.get(String(jobId ?? "").trim()) ?? null;
+}
+
+function forgetContextUsageForJob(jobId) {
+  contextUsageByJobId.delete(String(jobId ?? "").trim());
 }
 
 function trackGroundingSources(jobId, sources, config) {
@@ -6026,11 +6417,16 @@ export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = f
   }
   const conversationId = options.conversationId ?? null;
   const prompt = String(options.message ?? "").trim() || lookupPromptForJob(jobId);
+  const contextUsage = lookupContextUsageForJob(jobId);
   const latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
   const job = latest.job ?? latest;
-  const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null, { prompt });
+  const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null, {
+    prompt,
+    contextUsage,
+  });
   if (["completed", "failed"].includes(String(formatted.status ?? "").toLowerCase())) {
     forgetPromptForJob(jobId);
+    forgetContextUsageForJob(jobId);
     logChatJobTerminalState(jobId, formatted);
   }
   if (formatted.status === "completed" && conversationId) {
@@ -6087,11 +6483,11 @@ async function waitForChatJob(jobId, body, config, fetchImpl) {
 }
 
 function formatChatJob(jobId, job, fallbackModel, options = {}) {
-  const progress = summarizeChatProgress(job);
+  const progress = summarizeChatProgress(job, options.contextUsage);
   const sourceOutput = String(job.output ?? "");
   const rawOutput = job.status === "completed" ? cleanChatOutput(sourceOutput) : "";
   const output = job.status === "completed" ? promoteSectionOutputWhenFinalIsThin(rawOutput, progress) : "";
-  const qualityFlags = job.status === "completed"
+  const qualityFlags = CHAT_VERIFIER_ENABLED && job.status === "completed"
     ? detectChatQualityFlags(sourceOutput, rawOutput, output, options.prompt)
     : [];
   const rejectFlag = qualityFlags.find((flag) => flag.severity === "reject");
@@ -6143,11 +6539,20 @@ function mergedCompletedSectionOutputs(progress) {
   return sections.length ? sections.join("\n\n") : "";
 }
 
-function summarizeChatProgress(job) {
+function summarizeChatProgress(job, plannedContext = null) {
   const graph = job.graph ?? {};
   const nodes = Array.isArray(graph.nodes) ? graph.nodes : [];
   const parentStatus = String(job.status ?? "").toLowerCase();
   if (!nodes.length) {
+      const directNode = formatChatProgressNode({
+        id: job.job_id || "direct",
+        name: "Direct response",
+        status: parentStatus,
+        assigned_node_id: job.assigned_node_id ?? null,
+        output: job.output ?? null,
+        effective_max_tokens: job.effective_max_tokens ?? job.max_tokens ?? null,
+      }, job);
+      const tokenUsage = summarizeTokenUsage([directNode], job);
       return {
         total: 0,
         completed: 0,
@@ -6160,6 +6565,8 @@ function summarizeChatProgress(job) {
         merging: false,
         final_synthesis: false,
         strategy: job.plan?.strategy ?? "single_job",
+        token_usage: tokenUsage,
+        context_usage: summarizeContextUsage(tokenUsage, plannedContext),
       };
   }
 
@@ -6188,6 +6595,8 @@ function summarizeChatProgress(job) {
   const nodeNameById = Object.fromEntries(
     effectiveNodes.map((node) => [node.id, node.name || node.id]),
   );
+  const formattedNodes = effectiveNodes.map((node) => formatChatProgressNode(node, job, nodeNameById));
+  const tokenUsage = summarizeTokenUsage(formattedNodes, job);
 
     return {
       total: effectiveNodes.length,
@@ -6199,7 +6608,9 @@ function summarizeChatProgress(job) {
       merging,
       final_synthesis: Boolean(finalNodeId),
       strategy: job.plan?.strategy ?? graph.strategy ?? "graph",
-      nodes: effectiveNodes.map((node) => formatChatProgressNode(node, job, nodeNameById)),
+      nodes: formattedNodes,
+      token_usage: tokenUsage,
+      context_usage: summarizeContextUsage(tokenUsage, plannedContext),
     };
 }
 
@@ -6233,6 +6644,62 @@ function formatChatProgressNode(node, job, nodeNameById = {}) {
     runtime_metrics: runtimeMetrics,
     output: compactOutput,
   };
+}
+
+function summarizeTokenUsage(nodes, job) {
+  const completedNodes = (Array.isArray(nodes) ? nodes : [])
+    .filter((node) => String(node?.status ?? "").toLowerCase() === "completed");
+  if (!completedNodes.length) return null;
+
+  const exactInputCounts = completedNodes
+    .map((node) => node.runtime_metrics?.prompt_eval_count)
+    .filter(Number.isFinite);
+  const exactOutputCounts = completedNodes
+    .map((node) => node.runtime_metrics?.eval_count)
+    .filter(Number.isFinite);
+  const hasExactInput = exactInputCounts.length === completedNodes.length;
+  const hasExactOutput = exactOutputCounts.length === completedNodes.length;
+
+  const inputTokens = hasExactInput
+    ? exactInputCounts.reduce((sum, value) => sum + value, 0)
+    : estimateJobInputTokens(job);
+  const outputTokens = hasExactOutput
+    ? exactOutputCounts.reduce((sum, value) => sum + value, 0)
+    : sumAvailableMetric(completedNodes, "estimated_output_tokens");
+  if (!Number.isFinite(inputTokens) || !Number.isFinite(outputTokens)) return null;
+
+  const nodeBudgets = completedNodes
+    .map((node) => node.effective_max_tokens)
+    .filter(Number.isFinite);
+  const maxOutputTokens = nodeBudgets.length
+    ? nodeBudgets.reduce((sum, value) => sum + value, 0)
+    : positiveNumberOrNull(job.effective_max_tokens) ?? positiveNumberOrNull(job.max_tokens);
+  const outputBudgetPercent = Number.isFinite(maxOutputTokens) && maxOutputTokens > 0
+    ? Math.round((outputTokens / maxOutputTokens) * 100)
+    : null;
+
+  return {
+    input_tokens: inputTokens,
+    output_tokens: outputTokens,
+    total_tokens: inputTokens + outputTokens,
+    max_output_tokens: maxOutputTokens ?? null,
+    output_budget_percent: outputBudgetPercent,
+    source: hasExactInput && hasExactOutput ? "runtime" : "estimated",
+  };
+}
+
+function estimateJobInputTokens(job) {
+  const parts = [job?.system_prompt, job?.prompt]
+    .map((value) => String(value ?? "").trim())
+    .filter(Boolean);
+  return parts.length ? estimateDisplayTokens(parts.join("\n")) : null;
+}
+
+function sumAvailableMetric(values, key) {
+  const metrics = values.map((value) => value?.[key]).filter(Number.isFinite);
+  return metrics.length === values.length
+    ? metrics.reduce((sum, value) => sum + value, 0)
+    : null;
 }
 
 function logChatJobTerminalState(jobId, formatted) {
@@ -6668,6 +7135,9 @@ function inferMaxTokens(message, explicitValue, capacityProfile = null, codeTran
   if (message.length > 600) {
     return adaptiveTokenBudget("long", 768, capacityProfile);
   }
+  if (looksLikeMathRequest(lower)) {
+    return adaptiveTokenBudget("normal", 512, capacityProfile);
+  }
   if (message.length <= 40 && !containsAny(lower, ["explain", "why", "how", "what", "tell me", "describe"])) {
     return 128;
   }
@@ -6864,6 +7334,14 @@ function looksLikeCompleteProgramRequest(lower) {
       "need a program",
       "show me a program",
       "show me a code",
+      "give me a program",
+      "give me program",
+      "give me a code",
+      "give me code",
+      "provide a program",
+      "provide program",
+      "provide a code",
+      "provide code",
       "program in c",
       "program in java",
       "java program",
@@ -6888,6 +7366,7 @@ function looksLikeCompleteProgramRequest(lower) {
 
 function looksLikeMathRequest(lower) {
   return /\b(?:solve|equation|derivative|differentiate|integral|integrate|compute|calculate|simplify|factor|evaluate)\b/i.test(lower) ||
+    /\bfind\s+[a-z]\b/i.test(lower) ||
     /(?:\d+\s*[+\-*/=]\s*\d+|[a-z]\s*[+\-*/=]\s*\d+|\bint\b|d\/dx|[a-z]\^\d+)/i.test(lower);
 }
 
@@ -6972,12 +7451,12 @@ export function selectChatSkills(message = "") {
   if (complexity.requiresDecomposition || looksLikeCompleteProgramRequest(lower) || complexity.size === "long") {
     skills.push({ name: "chunk-planner.md", content: CHAT_SKILLS.chunkPlanner });
   }
-  if (
+  if (CHAT_VERIFIER_ENABLED && (
     looksLikeCompleteProgramRequest(lower) ||
     looksLikeMathRequest(lower) ||
     needsGrounding(text) ||
     extractFactualSummaryTopic(text)
-  ) {
+  )) {
     skills.push({ name: "verifier.md", content: CHAT_SKILLS.verifier });
   }
 
@@ -7040,6 +7519,187 @@ export function buildHistoryContext(messages, maxChars = 3000, maxTurns = 8) {
     used += line.length;
   }
   return lines.join("\n");
+}
+
+function summarizeContextUsage(tokenUsage, planned) {
+  if (!planned || !Number.isFinite(planned.context_window_tokens)) return null;
+  const inputTokens = Number.isFinite(tokenUsage?.input_tokens)
+    ? tokenUsage.input_tokens
+    : planned.estimated_input_tokens;
+  const outputTokens = Number.isFinite(tokenUsage?.output_tokens) ? tokenUsage.output_tokens : 0;
+  const maxOutputTokens = Number.isFinite(tokenUsage?.max_output_tokens)
+    ? tokenUsage.max_output_tokens
+    : planned.max_output_tokens;
+  const usedTokens = inputTokens + outputTokens;
+  const reservedTokens = inputTokens + maxOutputTokens + CONTEXT_SAFETY_TOKENS;
+  const contextWindowTokens = planned.context_window_tokens;
+  return {
+    context_window_tokens: contextWindowTokens,
+    used_tokens: usedTokens,
+    used_percent: Math.round((usedTokens / contextWindowTokens) * 100),
+    reserved_tokens: reservedTokens,
+    reserved_percent: Math.round((reservedTokens / contextWindowTokens) * 100),
+    history_tokens: planned.history_tokens,
+    history_compressed: planned.history_compressed,
+    history_source_messages: planned.history_source_messages,
+    history_included_messages: planned.history_included_messages,
+    duplicate_messages_removed: planned.duplicate_messages_removed,
+    source: tokenUsage?.source === "runtime" ? "runtime" : "estimated",
+  };
+}
+
+export function buildCompressedHistoryContext(messages, options = {}) {
+  const source = Array.isArray(messages) ? messages : [];
+  const currentMessage = String(options.currentMessage ?? "").trim();
+  const maxTokens = Math.max(0, positiveInteger(options.maxTokens, MAX_HISTORY_CONTEXT_TOKENS));
+  const maxChars = maxTokens * 4;
+  const recentMessageLimit = Math.max(2, positiveInteger(options.recentMessages, RECENT_HISTORY_MESSAGES));
+  const { messages: filtered, removed } = removeCurrentMessageFromHistory(source, currentMessage);
+  const fullText = filtered.map(formatHistoryMessage).join("\n");
+  if (!filtered.length || maxChars <= 0) {
+    return {
+      text: "",
+      compressed: filtered.length > 0,
+      source_messages: source.length,
+      included_messages: 0,
+      recent_messages: 0,
+      compressed_messages: filtered.length,
+      duplicate_messages_removed: removed,
+      estimated_tokens: 0,
+      max_tokens: maxTokens,
+    };
+  }
+  if (filtered.length <= 12 && fullText.length <= maxChars) {
+    return {
+      text: fullText,
+      compressed: false,
+      source_messages: source.length,
+      included_messages: filtered.length,
+      recent_messages: filtered.length,
+      compressed_messages: 0,
+      duplicate_messages_removed: removed,
+      estimated_tokens: estimateDisplayTokens(fullText) ?? 0,
+      max_tokens: maxTokens,
+    };
+  }
+
+  const recent = filtered.slice(-recentMessageLimit);
+  const older = filtered.slice(0, -recent.length);
+  const header = `[Earlier conversation compressed from ${older.length} messages]`;
+  const recentCharBudget = Math.max(0, Math.floor((maxChars - header.length - 2) * 0.68));
+  const perRecentChars = Math.max(40, Math.floor(recentCharBudget / Math.max(1, recent.length)) - 1);
+  const recentLines = recent.map((entry) => compactHistoryMessage(entry, perRecentChars));
+  const recentText = recentLines.join("\n");
+  const summaryBudget = Math.max(0, maxChars - header.length - recentText.length - 2);
+  const summaryLines = [];
+  let summaryChars = 0;
+  for (let index = older.length - 1; index >= 0; index--) {
+    const line = compactHistoryMessage(older[index], Math.min(180, summaryBudget));
+    const next = line.length + (summaryLines.length ? 1 : 0);
+    if (!line || summaryChars + next > summaryBudget) continue;
+    summaryLines.unshift(line);
+    summaryChars += next;
+  }
+  const text = [header, summaryLines.join("\n"), recentText].filter(Boolean).join("\n").slice(0, maxChars);
+  return {
+    text,
+    compressed: true,
+    source_messages: source.length,
+    included_messages: summaryLines.length + recentLines.length,
+    recent_messages: recentLines.length,
+    compressed_messages: older.length,
+    duplicate_messages_removed: removed,
+    estimated_tokens: estimateDisplayTokens(text) ?? 0,
+    max_tokens: maxTokens,
+  };
+}
+
+function removeCurrentMessageFromHistory(messages, currentMessage) {
+  const filtered = [...messages];
+  let removed = 0;
+  const last = filtered[filtered.length - 1];
+  if (
+    currentMessage &&
+    String(last?.role ?? "").toLowerCase() === "user" &&
+    String(last?.content ?? "").trim() === currentMessage
+  ) {
+    filtered.pop();
+    removed = 1;
+  }
+  return { messages: filtered, removed };
+}
+
+function formatHistoryMessage(entry) {
+  const label = entry?.role === "assistant" ? "Assistant" : "User";
+  return `${label}: ${String(entry?.content ?? "").trim()}`;
+}
+
+function compactHistoryMessage(entry, maxChars) {
+  const label = entry?.role === "assistant" ? "Assistant" : "User";
+  if (maxChars <= label.length + 2) return `${label}:`.slice(0, Math.max(0, maxChars));
+  const contentBudget = Math.max(1, maxChars - label.length - 2);
+  const content = compactRelevantContent(entry?.content, contentBudget);
+  return `${label}: ${content}`.slice(0, maxChars);
+}
+
+function emptyHistoryContext() {
+  return {
+    text: "",
+    compressed: false,
+    source_messages: 0,
+    included_messages: 0,
+    recent_messages: 0,
+    compressed_messages: 0,
+    duplicate_messages_removed: 0,
+    estimated_tokens: 0,
+    max_tokens: 0,
+  };
+}
+
+function historyContextForCodeTransformation(history, currentMessage, maxTokens) {
+  const source = Array.isArray(history) ? history : [];
+  const { messages: filtered, removed } = removeCurrentMessageFromHistory(source, currentMessage);
+  const relevant = buildRelevantHistoryContext(filtered, true);
+  const maxChars = Math.max(0, maxTokens * 4);
+  const text = maxChars <= 0
+    ? ""
+    : relevant.length > maxChars
+      ? compactRelevantContent(relevant, maxChars)
+      : relevant;
+  return {
+    text,
+    compressed: filtered.length > 2 || relevant.length > maxChars,
+    source_messages: source.length,
+    included_messages: Math.min(2, filtered.length),
+    recent_messages: Math.min(2, filtered.length),
+    compressed_messages: Math.max(0, filtered.length - 2),
+    duplicate_messages_removed: removed,
+    estimated_tokens: estimateDisplayTokens(text) ?? 0,
+    max_tokens: maxTokens,
+  };
+}
+
+function conversationHistoryTokenBudget({ contextWindowTokens, maxOutputTokens, baseInputTokens }) {
+  const available = Math.max(
+    0,
+    contextWindowTokens - maxOutputTokens - baseInputTokens - CONTEXT_SAFETY_TOKENS,
+  );
+  const proportional = Math.floor(contextWindowTokens * 0.35);
+  return Math.max(0, Math.min(MAX_HISTORY_CONTEXT_TOKENS, proportional, available));
+}
+
+function plannedContextUsage({ contextWindowTokens, systemPrompt, prompt, maxOutputTokens, historyContext }) {
+  const estimatedInputTokens = estimateDisplayTokens(`${systemPrompt}\n${prompt}`) ?? 0;
+  return {
+    context_window_tokens: contextWindowTokens,
+    estimated_input_tokens: estimatedInputTokens,
+    max_output_tokens: maxOutputTokens,
+    history_compressed: Boolean(historyContext.compressed),
+    history_source_messages: historyContext.source_messages,
+    history_included_messages: historyContext.included_messages,
+    history_tokens: historyContext.estimated_tokens,
+    duplicate_messages_removed: historyContext.duplicate_messages_removed,
+  };
 }
 
 export function buildRelevantHistoryContext(messages, codeTransformationFollowUp = false) {
