@@ -992,7 +992,9 @@ impl ControlPlaneState {
         active_graph_node_id: Option<&str>,
     ) -> bool {
         if let Some(workload) = Self::graph_workload(job, active_graph_node_id) {
-            if Self::capacity_class_for(node) < workload.minimum_capacity_class {
+            if Self::capacity_class_for(node) < workload.minimum_capacity_class
+                && !graph_node_allows_degraded_capacity_retry(job, active_graph_node_id)
+            {
                 return false;
             }
             if let Some(health) = node.worker_health.as_ref() {
@@ -1312,12 +1314,24 @@ impl ControlPlaneState {
                 && candidate.policy_allowed
                 && candidate.backend == Backend::Vllm
         });
+        let schedulable_retry_nodes = self
+            .nodes
+            .values()
+            .filter(|candidate| {
+                Self::node_is_schedulable_state(candidate) && candidate.policy_allowed
+            })
+            .map(|candidate| candidate.node_id.clone())
+            .collect::<Vec<_>>();
         let selected = self
             .jobs
             .iter()
             .filter_map(|(job_id, job)| {
                 let active_graph_node_id = if job.graph_execution_enabled {
-                    next_ready_graph_node_id_for_node(&job.graph, node_id)
+                    next_claimable_graph_node_id_for_node(
+                        &job.graph,
+                        node_id,
+                        &schedulable_retry_nodes,
+                    )
                 } else {
                     None
                 };
@@ -1343,6 +1357,20 @@ impl ControlPlaneState {
                 {
                     let mut decision =
                         self.scheduler_score(node, job, active_graph_node_id.as_deref());
+                    if graph_node_allows_degraded_capacity_retry(
+                        job,
+                        active_graph_node_id.as_deref(),
+                    ) && Self::graph_workload(job, active_graph_node_id.as_deref())
+                        .map(|workload| {
+                            Self::capacity_class_for(node) < workload.minimum_capacity_class
+                        })
+                        .unwrap_or(false)
+                    {
+                        decision.reasons.push(
+                            "capacity_degraded_retry:no fully qualified retry node claimed the work"
+                                .to_string(),
+                        );
+                    }
                     if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref()) {
                         apply_reducer_scheduler_score(&mut decision, node);
                     }
@@ -1389,7 +1417,7 @@ impl ControlPlaneState {
             }
 
             let active_graph_node_id = if job.graph_execution_enabled {
-                next_ready_graph_node_id_for_node(&job.graph, node_id)
+                next_claimable_graph_node_id_for_node(&job.graph, node_id, &schedulable_retry_nodes)
             } else {
                 None
             };
@@ -2802,6 +2830,54 @@ fn next_ready_graph_node_id_for_node(graph: &JobGraph, node_id: &str) -> Option<
         .map(|node| node.id.clone())
 }
 
+fn next_claimable_graph_node_id_for_node(
+    graph: &JobGraph,
+    node_id: &str,
+    schedulable_node_ids: &[String],
+) -> Option<String> {
+    next_ready_graph_node_id_for_node(graph, node_id).or_else(|| {
+        graph
+            .nodes
+            .iter()
+            .find(|node| {
+                node.status == JobGraphNodeStatus::Ready
+                    && node.attempt_count > 0
+                    && node.failed_node_ids.iter().any(|failed| failed == node_id)
+                    && schedulable_node_ids.iter().all(|candidate| {
+                        node.failed_node_ids
+                            .iter()
+                            .any(|failed| failed == candidate)
+                    })
+                    && node
+                        .assigned_node_id
+                        .as_deref()
+                        .map_or(true, |assigned| assigned == node_id)
+            })
+            .map(|node| node.id.clone())
+    })
+}
+
+fn graph_node_allows_degraded_capacity_retry(
+    job: &JobRecord,
+    active_graph_node_id: Option<&str>,
+) -> bool {
+    let Some(active_graph_node_id) = active_graph_node_id else {
+        return false;
+    };
+    job.graph
+        .nodes
+        .iter()
+        .find(|node| node.id == active_graph_node_id)
+        .map(|node| {
+            node.attempt_count > 0
+                && matches!(
+                    graph_node_required_role(&job.graph, Some(active_graph_node_id)),
+                    Some(NodeRole::ChunkAnalysis | NodeRole::Batch)
+                )
+        })
+        .unwrap_or(false)
+}
+
 fn complete_graph_execution_job(
     job: &mut JobRecord,
     completion: JobCompletion,
@@ -2903,6 +2979,17 @@ fn complete_graph_execution_job(
                             graph_node.error = completion.error.clone();
                         }
                     } else {
+                        let retry_needs_more_output_budget = automatic_budget
+                            && completion
+                                .error
+                                .as_deref()
+                                .map(|error| {
+                                    let error = error.to_ascii_lowercase();
+                                    error.contains("whole budget")
+                                        || error.contains("token budget")
+                                        || error.contains("returned no content")
+                                })
+                                .unwrap_or(false);
                         if !graph_node
                             .failed_node_ids
                             .iter()
@@ -2916,6 +3003,14 @@ fn complete_graph_execution_job(
                             graph_node.output = completion.output.clone();
                             graph_node.error = completion.error.clone();
                         } else {
+                            if retry_needs_more_output_budget {
+                                let previous_budget = graph_node
+                                    .effective_max_tokens
+                                    .or(graph_node.recommended_max_tokens)
+                                    .unwrap_or(512);
+                                graph_node.recommended_max_tokens =
+                                    Some(previous_budget.saturating_mul(2).min(8_192));
+                            }
                             graph_node.status = JobGraphNodeStatus::Ready;
                             graph_node.output = None;
                             graph_node.error = completion.error.clone();
@@ -7988,6 +8083,122 @@ mod tests {
         assert_eq!(retry_node.attempt_count, 2);
         assert!(retry_node.failed_node_ids.contains(&"node-1".to_string()));
         assert_eq!(retry_node.assigned_node_id.as_deref(), Some("node-2"));
+    }
+
+    #[test]
+    fn failed_analysis_chunk_falls_back_to_a_healthy_lower_capacity_node() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        let mut micro_heartbeat = ready_heartbeat("node-2", "1");
+        micro_heartbeat.worker_health.capabilities.capacity_class = "micro".to_string();
+        state.heartbeat(micro_heartbeat, "1".to_string());
+
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "2".to_string());
+        state
+            .jobs
+            .get_mut("job-1")
+            .expect("job")
+            .graph
+            .nodes
+            .first_mut()
+            .expect("first analysis node")
+            .workload
+            .minimum_capacity_class = CapacityClass::Standard;
+
+        let chunk_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("analysis claim");
+        let failed_chunk = chunk_claim
+            .active_graph_node_id
+            .clone()
+            .expect("analysis node");
+        let first_budget = chunk_claim
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == failed_chunk)
+            .and_then(|node| node.effective_max_tokens)
+            .expect("first analysis budget");
+        let retryable = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Failed,
+                    output: None,
+                    error: Some(
+                        "model spent its whole budget on reasoning and returned no content"
+                            .to_string(),
+                    ),
+                    latency_ms: Some(10),
+                },
+                "4".to_string(),
+            )
+            .expect("retryable analysis failure");
+        let failed_node = retryable
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == failed_chunk)
+            .expect("failed analysis node");
+        assert_eq!(failed_node.status, JobGraphNodeStatus::Ready);
+        assert_eq!(
+            failed_node.recommended_max_tokens,
+            Some(first_budget.saturating_mul(2).min(8_192))
+        );
+
+        let fallback_claim = state
+            .claim_job("node-2", "5".to_string())
+            .job
+            .expect("lower-capacity fallback claim");
+        assert_eq!(
+            fallback_claim.active_graph_node_id.as_deref(),
+            Some(failed_chunk.as_str())
+        );
+        assert!(fallback_claim
+            .scheduler_decision
+            .as_ref()
+            .expect("scheduler decision")
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("capacity_degraded_retry")));
+    }
+
+    #[test]
+    fn failed_analysis_chunk_can_return_to_original_node_after_all_nodes_were_tried() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+
+        let mut request = classification_request("Analyze a topic in parallel.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "2".to_string());
+
+        let graph = &mut state.jobs.get_mut("job-1").expect("job").graph;
+        for node in graph.nodes.iter_mut().skip(1) {
+            node.status = JobGraphNodeStatus::Waiting;
+        }
+        let graph_node = graph.nodes.first_mut().expect("first analysis node");
+        let expected_graph_node_id = graph_node.id.clone();
+        graph_node.status = JobGraphNodeStatus::Ready;
+        graph_node.attempt_count = 2;
+        graph_node.failed_node_ids = vec!["node-1".to_string(), "node-2".to_string()];
+        graph_node.assigned_node_id = None;
+
+        let retry_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("original node may retry after all schedulable nodes were tried");
+        assert_eq!(
+            retry_claim.active_graph_node_id.as_deref(),
+            Some(expected_graph_node_id.as_str())
+        );
     }
 
     #[test]
