@@ -396,6 +396,8 @@ impl ControlPlaneState {
         let classification = classify_job_request(&request);
         let mut scheduling_requirements = scheduling_requirements_for(&request, &classification);
         let compatible_ready_nodes = self.compatible_ready_node_count_for_request(&request);
+        let compatible_research_nodes =
+            self.compatible_ready_node_count_for_research(&request);
         let mut plan =
             plan_job_request_for_submission(&request, &classification, compatible_ready_nodes);
         if request.execution_mode != JobExecutionMode::Single {
@@ -447,7 +449,7 @@ impl ControlPlaneState {
         plan = dynamically_shape_research_plan(
             &request,
             &classification,
-            compatible_ready_nodes,
+            compatible_research_nodes,
             credible_synthesizer_context,
             plan,
         );
@@ -692,6 +694,26 @@ impl ControlPlaneState {
                     && node.policy_allowed
                     && Self::node_backend_can_run_request(node.backend, request.preferred_backend)
                     && Self::node_worker_can_run_request(node, request)
+            })
+            .count()
+    }
+
+    fn compatible_ready_node_count_for_research(&self, request: &JobRequest) -> usize {
+        let required_context = dynamic_research_context_budget(request);
+        self.nodes
+            .values()
+            .filter(|node| {
+                Self::node_is_schedulable_state(node)
+                    && node.policy_allowed
+                    && Self::node_backend_can_run_request(node.backend, request.preferred_backend)
+                    && Self::node_worker_can_run_request(node, request)
+                    && node.worker_health.as_ref().is_some_and(|health| {
+                        Self::capability_has_role(health, NodeRole::ChunkAnalysis)
+                            && health
+                                .capabilities
+                                .max_context_tokens
+                                .map_or(true, |limit| limit >= required_context)
+                    })
             })
             .count()
     }
@@ -4650,7 +4672,7 @@ fn dynamically_shape_research_plan(
         .checked_div(research_count as u32)
         .unwrap_or(512)
         .clamp(512, 1_536);
-    let context_tokens = if detailed { 8_192 } else { 4_096 };
+    let context_tokens = dynamic_research_context_budget(request);
     let mut jobs = Vec::new();
     for (index, section) in sections.iter().enumerate() {
         push_planned_job(
@@ -4668,7 +4690,7 @@ fn dynamically_shape_research_plan(
         job.workload.minimum_capacity_class = CapacityClass::Standard;
         job.workload.recommended_capacity_class = CapacityClass::Performance;
         job.workload.context_budget_tokens = context_tokens;
-        job.workload.allowed_parallelism = research_count as u32;
+        job.workload.allowed_parallelism = compatible_ready_nodes.max(1) as u32;
     }
 
     let synthesis_context_required = if detailed { 8_192 } else { 4_096 };
@@ -4707,6 +4729,18 @@ fn dynamically_shape_research_plan(
             }
         ),
         jobs,
+    }
+}
+
+fn dynamic_research_context_budget(request: &JobRequest) -> u32 {
+    let lower = request.prompt.to_ascii_lowercase();
+    if contains_any(
+        &lower,
+        &["detailed", "complete", "comprehensive", "to date", "today"],
+    ) {
+        8_192
+    } else {
+        4_096
     }
 }
 
@@ -8043,6 +8077,51 @@ mod tests {
                 .map(|job| job.responsibility.as_str()),
             Some("synthesize")
         );
+        assert!(one_node
+            .jobs
+            .iter()
+            .filter(|job| job.responsibility == "chunk_analysis")
+            .all(|job| job.workload.allowed_parallelism == 1));
+    }
+
+    #[test]
+    fn detailed_research_fanout_excludes_nodes_below_the_planned_context() {
+        let mut state = ready_state();
+        state
+            .nodes
+            .get_mut("node-1")
+            .expect("first node")
+            .worker_health
+            .as_mut()
+            .expect("first node health")
+            .capabilities
+            .max_context_tokens = Some(8_192);
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+        state
+            .nodes
+            .get_mut("node-2")
+            .expect("second node")
+            .worker_health
+            .as_mut()
+            .expect("second node health")
+            .capabilities
+            .max_context_tokens = Some(1_536);
+
+        let mut request =
+            classification_request("Give me a detailed history of OpenAI to date.");
+        request.execution_mode = JobExecutionMode::Auto;
+
+        assert_eq!(state.compatible_ready_node_count_for_request(&request), 2);
+        assert_eq!(state.compatible_ready_node_count_for_research(&request), 1);
+
+        let job = state.submit_job(request, "2".to_string());
+        assert!(job
+            .graph
+            .nodes
+            .iter()
+            .filter(|node| node.responsibility == "chunk_analysis")
+            .all(|node| node.workload.allowed_parallelism == 1));
     }
 
     #[test]
