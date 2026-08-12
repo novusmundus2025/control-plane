@@ -2514,6 +2514,7 @@ fn render_pagination_controls(path: &str, query: Option<&str>, pagination: &Pagi
 
 #[derive(Clone, Copy)]
 enum OperatorPage {
+    Flow,
     Nodes,
     Jobs,
     Credits,
@@ -2524,6 +2525,7 @@ enum OperatorPage {
 impl OperatorPage {
     fn from_path(path: &str) -> Option<Self> {
         match path {
+            "/flow" => Some(Self::Flow),
             "/nodes" => Some(Self::Nodes),
             "/jobs" => Some(Self::Jobs),
             "/credits" => Some(Self::Credits),
@@ -2535,6 +2537,7 @@ impl OperatorPage {
 
     fn title(self) -> &'static str {
         match self {
+            Self::Flow => "Request Flow",
             Self::Nodes => "Nodes",
             Self::Jobs => "Jobs",
             Self::Credits => "Credits",
@@ -2545,6 +2548,7 @@ impl OperatorPage {
 
     fn path(self) -> &'static str {
         match self {
+            Self::Flow => "/flow",
             Self::Nodes => "/nodes",
             Self::Jobs => "/jobs",
             Self::Credits => "/credits",
@@ -2555,6 +2559,7 @@ impl OperatorPage {
 
     fn nav_label(self) -> &'static str {
         match self {
+            Self::Flow => "Flow",
             Self::Nodes => "Nodes",
             Self::Jobs => "Jobs",
             Self::Credits => "Credits",
@@ -2565,6 +2570,9 @@ impl OperatorPage {
 
     fn nav_icon(self) -> &'static str {
         match self {
+            Self::Flow => {
+                r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h6v5H3zM15 13h6v5h-6z"/><path d="M9 8.5h3a3 3 0 0 1 3 3V13"/><path d="m12 10 3 3 3-3"/></svg>"#
+            }
             Self::Nodes => {
                 r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>"#
             }
@@ -2742,6 +2750,36 @@ fn control_plane_operator_page(
         .map(|node_id| render_node_profile_panel(state, node_id))
         .unwrap_or_default();
     let body = match page {
+        OperatorPage::Flow => format!(
+            r#"<section class="flow-intro panel">
+              <div><span class="flow-kicker">Distributed inference lifecycle</span><h2>From customer request to incremental response</h2><p class="meta">Requests can enter from any approved client. The control plane classifies the intent, builds a capability-aware plan from the currently available fleet, fans work out to eligible nodes, and synthesizes the results.</p></div>
+              <div class="flow-live"><span class="status-dot"></span><strong>{nodes}</strong><span>nodes currently available</span></div>
+            </section>
+            <section class="flow-sources" aria-label="Customer request channels">
+              <div class="flow-source"><strong>Chat</strong><span>Text, voice, files</span></div>
+              <div class="flow-source"><strong>Vehicle</strong><span>In-car assistant</span></div>
+              <div class="flow-source"><strong>VS Code</strong><span>Code and agent tasks</span></div>
+              <div class="flow-source"><strong>Smart glasses</strong><span>Vision and ambient input</span></div>
+            </section>
+            <section class="flow-track" aria-label="Request processing stages">
+              <article class="flow-step"><span class="flow-number">01</span><div><h3>Secure intake</h3><p>Authenticate the client, normalize the request, preserve modality and conversation context, then create a traceable job.</p><span class="pill">request accepted</span></div></article>
+              <article class="flow-step"><span class="flow-number">02</span><div><h3>Classify</h3><p>Detect intent, risk, tools, privacy, modality, complexity, latency target and model requirements.</p><span class="pill">classification visible</span></div></article>
+              <article class="flow-step"><span class="flow-number">03</span><div><h3>Plan against the live fleet</h3><p>Compare the task with trusted nodes, admitted models, memory, runtime health, context capacity and current load.</p><span class="pill">single or decomposed graph</span></div></article>
+              <article class="flow-step"><span class="flow-number">04</span><div><h3>Parallel node execution</h3><p>Independent graph sections are claimed by eligible nodes. Dependencies wait; unrelated work proceeds concurrently.</p><span class="pill">fan-out by capability</span></div></article>
+              <article class="flow-step"><span class="flow-number">05</span><div><h3>Synthesize and verify</h3><p>A qualified synthesizer combines completed sections, removes duplication, checks the requested contract and records provenance.</p><span class="pill">quality gate</span></div></article>
+              <article class="flow-step"><span class="flow-number">06</span><div><h3>Return to the customer</h3><p>The final answer uses the originating channel and can include text, code, audio, visual output or structured actions.</p><span class="pill">channel-aware delivery</span></div></article>
+            </section>
+            <section class="batch-panel panel">
+              <div class="batch-copy"><span class="flow-kicker">Progressive delivery</span><h2>Customers do not always wait for the full job</h2><p class="meta">When sections are independently useful, the gateway can release verified batches as soon as they complete. The final synthesis still arrives afterward as the authoritative combined answer.</p></div>
+              <div class="batch-timeline" aria-label="Incremental response batches">
+                <div class="batch batch-ready"><strong>Batch 1</strong><span>First verified section</span><small>send immediately</small></div>
+                <div class="batch batch-ready"><strong>Batch 2</strong><span>More completed work</span><small>append to response</small></div>
+                <div class="batch batch-working"><strong>Batch 3</strong><span>Nodes still processing</span><small>progress update</small></div>
+                <div class="batch batch-final"><strong>Final</strong><span>Synthesized result</span><small>close stream</small></div>
+              </div>
+              <p class="batch-rule"><strong>Safety rule:</strong> stream only self-contained, verified sections. Hold dependent, sensitive or contract-critical output until synthesis completes.</p>
+            </section>"#,
+        ),
         OperatorPage::Nodes => format!(
             r#"{filters}
             <section class="grid four">
@@ -2833,6 +2871,7 @@ fn control_plane_operator_page(
         ),
     };
     let nav = [
+        OperatorPage::Flow,
         OperatorPage::Nodes,
         OperatorPage::Jobs,
         OperatorPage::Credits,
@@ -2910,6 +2949,33 @@ fn control_plane_operator_page(
       .metric-link:hover,.metric-link:focus-visible {{ border-color:var(--line-strong); background:linear-gradient(180deg,rgba(23,26,30,.98),rgba(10,11,13,.98)); transform:translateY(-1px); outline:none; }}
       .metric span {{ color:var(--muted); display:block; font-size:13px; text-transform:uppercase; }}
       .metric strong {{ display:block; margin-top:7px; font-size:28px; }}
+      .flow-intro {{ display:flex; align-items:center; justify-content:space-between; gap:24px; margin-bottom:18px; }}
+      .flow-intro h2,.batch-copy h2 {{ font-size:24px; margin:5px 0 8px; }}
+      .flow-kicker {{ color:#60a5fa; font-size:11px; font-weight:800; letter-spacing:.16em; text-transform:uppercase; }}
+      .flow-live {{ min-width:170px; display:grid; grid-template-columns:auto 1fr; align-items:center; gap:3px 10px; border-left:1px solid var(--line); padding-left:22px; }}
+      .flow-live strong {{ font-size:30px; }}
+      .flow-live span:last-child {{ grid-column:1 / -1; color:var(--muted); font-size:12px; }}
+      .flow-sources {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-bottom:14px; }}
+      .flow-source {{ position:relative; border:1px solid var(--line); border-radius:8px; padding:15px 16px 15px 38px; background:rgba(17,19,22,.92); }}
+      .flow-source::before {{ content:""; position:absolute; left:16px; top:20px; width:9px; height:9px; border-radius:50%; background:#60a5fa; box-shadow:0 0 14px rgba(96,165,250,.7); }}
+      .flow-source strong,.flow-source span {{ display:block; }}
+      .flow-source span {{ margin-top:4px; color:var(--muted); font-size:12px; }}
+      .flow-track {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; margin-bottom:18px; }}
+      .flow-step {{ min-width:0; display:grid; grid-template-columns:auto 1fr; gap:14px; border:1px solid var(--line); border-radius:8px; padding:18px; background:linear-gradient(145deg,rgba(19,21,25,.98),rgba(8,9,11,.98)); }}
+      .flow-step h3 {{ margin:0 0 7px; font-size:16px; }}
+      .flow-step p {{ min-height:66px; margin:0 0 12px; color:var(--muted); font-size:13px; line-height:1.5; }}
+      .flow-number {{ color:#60a5fa; font:700 12px ui-monospace,SFMono-Regular,Consolas,monospace; }}
+      .flow-step .pill {{ border:1px solid rgba(96,165,250,.28); background:rgba(96,165,250,.08); color:#bfdbfe; font-size:10px; letter-spacing:.08em; text-transform:uppercase; }}
+      .batch-panel {{ display:grid; grid-template-columns:minmax(240px,.8fr) minmax(420px,1.5fr); gap:24px; }}
+      .batch-timeline {{ display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; align-items:stretch; }}
+      .batch {{ position:relative; display:flex; flex-direction:column; gap:7px; border:1px solid var(--line); border-radius:8px; padding:14px; background:#090b0e; }}
+      .batch:not(:last-child)::after {{ content:"›"; position:absolute; right:-9px; top:40%; z-index:2; color:#60a5fa; font-size:18px; }}
+      .batch span,.batch small {{ color:var(--muted); font-size:11px; line-height:1.35; }}
+      .batch small {{ margin-top:auto; color:#93c5fd; }}
+      .batch-ready {{ border-color:rgba(52,211,153,.38); }}
+      .batch-working {{ border-color:rgba(251,191,36,.38); }}
+      .batch-final {{ border-color:rgba(96,165,250,.55); background:rgba(37,99,235,.08); }}
+      .batch-rule {{ grid-column:1 / -1; margin:0; border-top:1px solid var(--line); padding-top:14px; color:var(--muted); font-size:12px; }}
       .table {{ display:grid; overflow-x:auto; }}
       .thead,.row {{ display:grid; grid-template-columns:minmax(210px,1.15fr) minmax(130px,.7fr) minmax(170px,.95fr) minmax(90px,.45fr) minmax(90px,.45fr) minmax(340px,1.8fr) minmax(130px,.7fr) minmax(110px,.55fr); gap:14px; min-width:1280px; padding:14px 0; border-bottom:1px solid var(--line); }}
       .registry-table .thead,.registry-table .row {{ grid-template-columns:minmax(180px,1fr) minmax(240px,1.35fr) minmax(180px,1fr) minmax(220px,1.2fr) minmax(220px,1.2fr) minmax(150px,.8fr); min-width:1190px; }}
@@ -2983,7 +3049,10 @@ fn control_plane_operator_page(
       html[data-theme="light"] .metric,
       html[data-theme="light"] .panel,
       html[data-theme="light"] .node-profile-card,
-      html[data-theme="light"] .side-card {{
+      html[data-theme="light"] .side-card,
+      html[data-theme="light"] .flow-source,
+      html[data-theme="light"] .flow-step,
+      html[data-theme="light"] .batch {{
         border-color:#dfe5ec;
         background:rgba(255,255,255,.96);
         box-shadow:0 6px 20px rgba(16,24,40,.055);
@@ -3018,7 +3087,8 @@ fn control_plane_operator_page(
         background:linear-gradient(135deg,#dbeafe,#eef4ff);
         color:#075fd8;
       }}
-      @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two,.node-profile-grid,.profile-sections,.profile-kv {{ grid-template-columns:1fr; }} .profile-head {{ flex-direction:column; }} .pager {{ align-items:stretch; flex-direction:column; }} .pager-actions {{ display:grid; grid-template-columns:1fr 1fr; }} main {{ padding:22px; }} }}
+      @media (max-width: 1100px) {{ .flow-track {{ grid-template-columns:repeat(2,minmax(0,1fr)); }} .batch-panel {{ grid-template-columns:1fr; }} }}
+      @media (max-width: 900px) {{ .shell {{ grid-template-columns:1fr; }} .sidebar {{ position:relative; height:auto; }} .sidebar-bottom {{ display:none; }} .toolbar,.grid.four,.grid.two,.node-profile-grid,.profile-sections,.profile-kv,.flow-track,.flow-sources {{ grid-template-columns:1fr; }} .flow-intro {{ align-items:flex-start; flex-direction:column; }} .flow-live {{ width:100%; border-left:0; border-top:1px solid var(--line); padding:14px 0 0; }} .batch-timeline {{ grid-template-columns:1fr 1fr; }} .profile-head {{ flex-direction:column; }} .pager {{ align-items:stretch; flex-direction:column; }} .pager-actions {{ display:grid; grid-template-columns:1fr 1fr; }} main {{ padding:22px; }} }}
       @media (prefers-reduced-motion: reduce) {{ *,*::before,*::after {{ animation-duration:.01ms!important; animation-iteration-count:1!important; scroll-behavior:auto!important; transition-duration:.01ms!important; }} .motion-lift:hover,.motion-lift:focus-visible,.motion-glow:hover,.motion-glow:focus-visible {{ transform:none; }} }}
     </style>
   </head>
@@ -4285,6 +4355,7 @@ fn control_plane_home(
         <a class="brand motion-glow" href="/" aria-label="EHDA control plane home"><img class="brand-mark" alt="Mercedes-Benz emblem" src="{logo_path}" /><span class="brand-copy"><strong>EHDA</strong><small>Control Plane</small></span></a>
         <nav class="nav">
           <a class="nav-item motion-lift active" href="/"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m3 11 9-8 9 8"/><path d="M5 10v10h14V10"/><path d="M9 20v-6h6v6"/></svg>Overview</a>
+          <a class="nav-item motion-lift" href="/flow"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M3 6h6v5H3zM15 13h6v5h-6z"/><path d="M9 8.5h3a3 3 0 0 1 3 3V13"/><path d="m12 10 3 3 3-3"/></svg>Flow</a>
           <a class="nav-item motion-lift" href="/nodes"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>Nodes</a>
           <a class="nav-item motion-lift" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>Jobs</a>
           <a class="nav-item motion-lift" href="/credits"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>Credits</a>
@@ -4794,6 +4865,7 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
     let api_href = escape_html(api_path);
 
     match page {
+        OperatorPage::Flow => String::new(),
         OperatorPage::Nodes | OperatorPage::Registry => format!(
             r#"<form class="toolbar" method="get" action="{action}">
               <input name="search" aria-label="Search" placeholder="Search node id, host, model, backend" value="{search}" />
@@ -7915,6 +7987,32 @@ mod tests {
         assert!(html.contains(r#"href="/nodes""#));
         assert!(html.contains(r#"href="/nodes?state=online""#));
         assert!(html.contains(r#"href="/v1/nodes?page=1&amp;page_size=25&amp;search=node-new&amp;start=1&amp;end=99&amp;state=online&amp;backend=m&amp;trust=trusted&amp;policy=allowed""#));
+    }
+
+    #[test]
+    fn request_flow_explains_multichannel_fanout_synthesis_and_batch_delivery() {
+        let state = ControlPlaneState::default();
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Flow,
+            None,
+        );
+
+        assert!(html.contains("Request Flow"));
+        assert!(html.contains("Chat"));
+        assert!(html.contains("Vehicle"));
+        assert!(html.contains("VS Code"));
+        assert!(html.contains("Smart glasses"));
+        assert!(html.contains("Classify"));
+        assert!(html.contains("Plan against the live fleet"));
+        assert!(html.contains("Parallel node execution"));
+        assert!(html.contains("Synthesize and verify"));
+        assert!(html.contains("Customers do not always wait for the full job"));
+        assert!(html.contains("Batch 1"));
+        assert!(html.contains("stream only self-contained, verified sections"));
+        assert!(html.contains(r#"class="nav-item motion-lift active" href="/flow""#));
     }
 
     #[test]
