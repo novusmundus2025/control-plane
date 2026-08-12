@@ -3250,6 +3250,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     voicePersona: body?.voicePersona,
     executionMode: body?.executionMode,
     maxTokens: resolvedMaxTokens,
+    maxTokensSource: positiveInteger(body?.maxTokens, 0) > 0 ? "explicit" : "auto",
     temperature: body?.temperature,
     topP: body?.topP,
     capacityProfile,
@@ -3364,6 +3365,7 @@ function buildGenericJobBody(message, config, options = {}) {
       options.capacityProfile ?? null,
       options.codeTransformationFollowUp,
     ),
+    max_tokens_source: options.maxTokensSource === "explicit" ? "explicit" : "auto",
     temperature: typeof options.temperature === "number" ? options.temperature : 0.2,
     top_p: typeof options.topP === "number" ? options.topP : 0.9,
   };
@@ -7380,7 +7382,9 @@ function looksLikeCompleteProgramRequest(lower) {
     containsAny(lower, [
       "write a program",
       "create a program",
+      "create me a program",
       "make a program",
+      "make me a program",
       "need a program",
       "show me a program",
       "show me a code",
@@ -7401,6 +7405,10 @@ function looksLikeCompleteProgramRequest(lower) {
     containsAny(lower, [
       "source",
       "code",
+      "program in java",
+      "java program",
+      "python program",
+      "javascript program",
       "cli",
       "binary file",
       "property file",

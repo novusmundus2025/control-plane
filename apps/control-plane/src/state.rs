@@ -2846,15 +2846,21 @@ fn looks_like_complete_code_prompt(lower_prompt: &str) -> bool {
         &[
             "write a program",
             "create a program",
+            "create me a program",
             "make a program",
+            "make me a program",
             "need a program",
             "program in c",
+            "program in java",
+            "java program",
         ],
     ) && contains_any(
         lower_prompt,
         &[
             "c program",
             "program in c",
+            "program in java",
+            "java program",
             "turbo c",
             "source",
             "code",
@@ -7031,6 +7037,26 @@ mod tests {
         let claimed_job = claim.job.expect("claimed job");
 
         assert_eq!(claimed_job.max_tokens, Some(1_024));
+    }
+
+    #[test]
+    fn create_me_fibonacci_program_is_classified_as_complete_code() {
+        let mut request = classification_request("create me a fibonacci program in java");
+        request.max_tokens = Some(1_536);
+        request.max_tokens_source = Some("auto".to_string());
+
+        let classification = classify_job_request(&request);
+        assert_eq!(classification.task_type, RequestTaskType::Coding);
+        assert_eq!(classification.output_format, ExpectedOutputFormat::Code);
+        assert_eq!(classification.complexity, RequestComplexity::High);
+
+        let mut state = ready_state();
+        state.submit_job(request, "2".to_string());
+        let claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("coding job claim");
+        assert!(claim.max_tokens.expect("dynamic budget") >= 1_536);
     }
 
     #[test]

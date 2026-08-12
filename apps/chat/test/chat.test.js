@@ -522,6 +522,32 @@ test("uses a complete-code budget for short code conversion requests", async () 
   assert.equal(calls[0].max_tokens, 1536);
 });
 
+test("uses an automatic complete-code budget for create-me Fibonacci requests", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-fibonacci",
+      job: {
+        job_id: "job-fibonacci",
+        status: "queued",
+        execution_mode: "single",
+        graph: { nodes: [] },
+      },
+    });
+  };
+
+  await submitChatJob(
+    { message: "create me a fibonacci program in java" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].max_tokens, 1536);
+  assert.equal(calls[0].max_tokens_source, "auto");
+  assert.equal(calls[0].execution_mode, "single");
+});
+
 test("recognizes concise give-me-code prompts as complete program requests", async () => {
   const calls = [];
   const fetchImpl = async (_url, init) => {
