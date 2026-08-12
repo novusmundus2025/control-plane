@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 
 import {
   buildHistoryContext,
+  buildCompressedHistoryContext,
   buildRelevantHistoryContext,
   buildChatSystemPrompt,
   cleanChatOutput,
@@ -17,6 +18,7 @@ import {
   extractPolynomialIntegral,
   extractPolynomialSubtraction,
   extractWeatherLocation,
+  normalizeWeatherWordTypos,
   fetchChatConversation,
   fetchNetworkSummary,
   needsGrounding,
@@ -85,6 +87,9 @@ test("renders a usable chat page", () => {
   assert.match(html, /id="network-state"/);
   assert.match(html, /\.work-trace/);
   assert.match(html, /Completed work sections/);
+  assert.match(html, /function formatTokenUsageSummary/);
+  assert.match(html, /function formatContextUsageSummary/);
+  assert.match(html, /token_usage/);
   assert.match(html, /Ask everyone/);
   assert.doesNotMatch(html, /<span class="kbd">\/<\/span>Commands/);
   assert.match(html, /id="web-search-toggle"/);
@@ -210,7 +215,7 @@ test("composes chat system prompts from selected markdown skills", () => {
   assert.match(prompt, /\[formatter\]/);
   assert.match(prompt, /\[code\]/);
   assert.match(prompt, /\[chunk-planner\]/);
-  assert.match(prompt, /\[verifier\]/);
+  assert.doesNotMatch(prompt, /\[verifier\]/);
   assert.doesNotMatch(prompt, /# Router Skill/);
   assert.doesNotMatch(prompt, /# Formatter Skill/);
   assert.doesNotMatch(prompt, /# Atlas Persona Skill/);
@@ -230,11 +235,11 @@ test("selects focused markdown skills by request type", () => {
   );
   assert.deepEqual(
     selectChatSkills("Differentiate y = cosh(arcsin(x^2 ln x))").map((skill) => skill.name),
-    ["router.md", "formatter.md", "math.md", "chunk-planner.md", "verifier.md"],
+    ["router.md", "formatter.md", "math.md", "chunk-planner.md"],
   );
   assert.deepEqual(
     selectChatSkills("What is the weather in Berlin today?").map((skill) => skill.name),
-    ["router.md", "formatter.md", "weather.md", "facts.md", "verifier.md"],
+    ["router.md", "formatter.md", "weather.md", "facts.md"],
   );
   assert.deepEqual(
     selectChatSkills("Translate to German Hi how are you").map((skill) => skill.name),
@@ -515,6 +520,27 @@ test("uses a complete-code budget for short code conversion requests", async () 
 
   assert.equal(calls[0].execution_mode, "single");
   assert.equal(calls[0].max_tokens, 1536);
+});
+
+test("recognizes concise give-me-code prompts as complete program requests", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-magic-square",
+      job: { job_id: "job-magic-square", status: "queued", execution_mode: "single", graph: { nodes: [] } },
+    });
+  };
+
+  await submitChatJob(
+    { message: "give me a code in java magic square 3x3" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].execution_mode, "single");
+  assert.equal(calls[0].max_tokens, 1536);
+  assert.match(calls[0].system_prompt, /complete compilable source file/i);
 });
 
 test("decomposes advanced nested calculus prompts", async () => {
@@ -822,6 +848,42 @@ test("routes simple linear equations to the math tool", async () => {
   ]);
   assert.match(result.output, /Answer: y = -9\.4/);
   assert.doesNotMatch(result.output, /\\frac|Certainly|To solve/i);
+});
+
+test("rearranges an implicit-zero linear expression for the requested variable", async () => {
+  const result = await submitChatJob(
+    { message: "x+x-25y, find x" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      throw new Error("implicit linear expressions should not call the control plane");
+    },
+  );
+
+  assert.equal(result.status, "completed");
+  assert.equal(result.model, "math-tool");
+  assert.equal(result.tool, "linear_equation");
+  assert.equal(result.response.answer, "x = 12.5y");
+  assert.match(result.output, /Assuming x\+x-25y=0/);
+  assert.match(result.output, /Answer: x = 12\.5y/);
+});
+
+test("uses a safe model budget when short math cannot use a deterministic tool", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: "job-short-math",
+      job: { job_id: "job-short-math", status: "queued", execution_mode: "auto", graph: { nodes: [] } },
+    });
+  };
+
+  await submitChatJob(
+    { message: "calculate pi" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].max_tokens, 512);
 });
 
 test("routes simple rate-distance word problems to the math tool", async () => {
@@ -1797,7 +1859,7 @@ test("falls back to deterministic compound tools when planner misses obvious dir
   assert.doesNotMatch(result.output, /generated unrelated questions/i);
 });
 
-test("rejects fallback answers that drift into invented question lists", async () => {
+test("allows fallback answers without verifier rejection", async () => {
   const prompt = "Tell me something interesting about math and explain why learning is useful?";
   const fetchImpl = async (url, init = {}) => {
     if (url === "https://uat.mundusx.ai/v1/jobs") {
@@ -1836,13 +1898,12 @@ test("rejects fallback answers that drift into invented question lists", async (
     fetchImpl,
   );
 
-  assert.equal(result.status, "failed");
-  assert.equal(result.output, "");
-  assert.match(result.error, /generated unrelated questions/i);
-  assert.ok(result.quality_flags.some((flag) => flag.code === "question_drift"));
+  assert.equal(result.status, "completed");
+  assert.match(result.output, /sum of the first 100 odd numbers/);
+  assert.deepEqual(result.quality_flags, []);
 });
 
-test("rejects drifting fallback answers when async polling completes later", async () => {
+test("allows asynchronously completed answers without verifier rejection", async () => {
   const prompt = "Tell me something interesting about math and explain why learning is useful?";
   const fetchImpl = async (url, init = {}) => {
     if (url === "https://uat.mundusx.ai/v1/jobs" && init.method === "POST") {
@@ -1896,10 +1957,9 @@ test("rejects drifting fallback answers when async polling completes later", asy
     fetchImpl,
   );
 
-  assert.equal(polled.status, "failed");
-  assert.equal(polled.output, "");
-  assert.match(polled.error, /generated unrelated questions/i);
-  assert.ok(polled.quality_flags.some((flag) => flag.code === "question_drift"));
+  assert.equal(polled.status, "completed");
+  assert.match(polled.output, /sum of the first 100 odd numbers/);
+  assert.deepEqual(polled.quality_flags, []);
 });
 
 test("answers compound weather and name prompts without polluting the weather location", async () => {
@@ -2680,6 +2740,15 @@ test("extracts simple linear equations", () => {
     left: { coefficient: 2, constant: 5, variable: "x" },
     right: { coefficient: 0, constant: 11, variable: null },
   });
+  assert.deepEqual(extractLinearEquation("x+x-25y, find x"), {
+    variable: "x",
+    equation: "x+x-25y=0",
+    solutionExpression: "12.5y",
+    targetCoefficient: 2,
+    isolatedExpression: "25y",
+    assumedZero: true,
+  });
+  assert.equal(extractLinearEquation("find y: 2x + 5 = 11"), null);
   assert.equal(extractLinearEquation("solve x^2 = 4"), null);
   assert.equal(extractLinearEquation("write a story with x=3"), null);
 });
@@ -3073,6 +3142,7 @@ test("exposes runtime metrics from completed chunk output", async () => {
               id: "job.direct",
               name: "Direct response",
               status: "completed",
+              effective_max_tokens: 256,
               output:
                 "llama.cpp mode=cuda; total_duration=3000000000; load_duration=500000000; prompt_eval_count=20; prompt_eval_duration=100000000; prompt_eval_rate=200; eval_count=40; eval_duration=2000000000; eval_rate=20; response=Done.",
             },
@@ -3096,6 +3166,53 @@ test("exposes runtime metrics from completed chunk output", async () => {
     eval_count: 40,
     eval_duration_ms: 2000,
     eval_rate: 20,
+  });
+  assert.deepEqual(result.progress.token_usage, {
+    input_tokens: 20,
+    output_tokens: 40,
+    total_tokens: 60,
+    max_output_tokens: 256,
+    output_budget_percent: 16,
+    source: "runtime",
+  });
+});
+
+test("labels aggregate token usage as estimated when runtime counters are unavailable", async () => {
+  const fetchImpl = async () =>
+    jsonResponse({
+      job: {
+        job_id: "job-estimated-token-usage",
+        status: "completed",
+        prompt: "12345678",
+        system_prompt: "12345678",
+        max_tokens: 100,
+        graph_execution_enabled: false,
+        graph: {
+          nodes: [
+            {
+              id: "job.direct",
+              name: "Direct response",
+              status: "completed",
+              output: "response=12345678",
+            },
+          ],
+        },
+      },
+    });
+
+  const result = await pollChatJob(
+    "job-estimated-token-usage",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.deepEqual(result.progress.token_usage, {
+    input_tokens: 5,
+    output_tokens: 2,
+    total_tokens: 7,
+    max_output_tokens: 100,
+    output_budget_percent: 2,
+    source: "estimated",
   });
 });
 
@@ -3611,6 +3728,129 @@ test("buildHistoryContext formats turns chronologically with role labels", () =>
   assert.equal(context, "User: hello\nAssistant: hi there");
 });
 
+test("compresses older history while preserving recent turns within a token budget", () => {
+  const messages = Array.from({ length: 20 }, (_, index) => ({
+    role: index % 2 === 0 ? "user" : "assistant",
+    content: `turn-${index} ${"detail ".repeat(30)}`,
+  }));
+
+  const result = buildCompressedHistoryContext(messages, {
+    maxTokens: 180,
+    recentMessages: 4,
+  });
+
+  assert.equal(result.compressed, true);
+  assert.equal(result.source_messages, 20);
+  assert.equal(result.recent_messages, 4);
+  assert.match(result.text, /Earlier conversation compressed from 16 messages/);
+  assert.match(result.text, /turn-16/);
+  assert.match(result.text, /turn-19/);
+  assert.ok(result.estimated_tokens <= 180);
+});
+
+test("removes the just-submitted user message from reconstructed history", () => {
+  const result = buildCompressedHistoryContext([
+    { role: "user", content: "Earlier question" },
+    { role: "assistant", content: "Earlier answer" },
+    { role: "user", content: "Continue the discussion." },
+  ], {
+    currentMessage: "Continue the discussion.",
+    maxTokens: 500,
+  });
+
+  assert.equal(result.duplicate_messages_removed, 1);
+  assert.doesNotMatch(result.text, /Continue the discussion/);
+  assert.match(result.text, /Earlier question/);
+  assert.match(result.text, /Earlier answer/);
+});
+
+test("tracks model context occupancy and compression for submitted chat jobs", async () => {
+  let submittedBody = null;
+  const history = Array.from({ length: 20 }, (_, index) => ({
+    role: index === 19 ? "user" : index % 2 === 0 ? "user" : "assistant",
+    content: index === 19 ? "Continue the discussion." : `history-${index} ${"detail ".repeat(90)}`,
+  }));
+  const fetchImpl = async (url, init = {}) => {
+    if (url.includes("/v1/conversations/conv-context/messages") && init.method === "POST") {
+      return jsonResponse({ id: 1 }, true, 201);
+    }
+    if (url.includes("/v1/conversations/conv-context/messages")) {
+      return jsonResponse({ conversation_id: "conv-context", messages: history });
+    }
+    if (url === "https://uat.mundusx.ai/v1/nodes?page=1&page_size=25") {
+      return jsonResponse({ items: [{
+        node_id: "node-context",
+        state: "ready",
+        policy_allowed: true,
+        computed_policy_allowed: true,
+        available_memory_mb: 8192,
+        available_gpu_percent: 70,
+        capabilities: {
+          max_context_tokens: 4096,
+          models: [{ name: "Qwen/Qwen2.5-7B-Instruct", context_tokens: 4096 }],
+        },
+        worker_health: {
+          healthy: true,
+          runtime_ready: true,
+          model_name: "Qwen/Qwen2.5-7B-Instruct",
+          cuda_device_available: true,
+        },
+      }] });
+    }
+    if (url === "https://uat.mundusx.ai/v1/jobs") {
+      submittedBody = JSON.parse(init.body);
+      return jsonResponse({
+        job_id: "job-context",
+        job: { job_id: "job-context", status: "queued", prompt: submittedBody.prompt, system_prompt: submittedBody.system_prompt, max_tokens: submittedBody.max_tokens },
+      });
+    }
+    if (url === "https://uat.mundusx.ai/v1/jobs/job-context") {
+      return jsonResponse({ job: {
+        job_id: "job-context",
+        status: "completed",
+        prompt: submittedBody.prompt,
+        system_prompt: submittedBody.system_prompt,
+        max_tokens: submittedBody.max_tokens,
+        graph_execution_enabled: false,
+        graph: { nodes: [{
+          id: "job.direct",
+          name: "Direct response",
+          status: "completed",
+          effective_max_tokens: submittedBody.max_tokens,
+          output: "llama.cpp mode=cuda; prompt_eval_count=500; eval_count=100; response=Done.",
+        }] },
+        output: "llama.cpp mode=cuda; prompt_eval_count=500; eval_count=100; response=Done.",
+      } });
+    }
+    throw new Error(`unexpected url ${url}`);
+  };
+
+  const result = await submitChatJob(
+    { message: "Continue the discussion.", conversationId: "conv-context" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.match(submittedBody.system_prompt, /Earlier conversation compressed from/);
+  assert.equal((submittedBody.system_prompt.match(/Continue the discussion\./g) ?? []).length, 0);
+  assert.equal(result.progress.context_usage.context_window_tokens, 4096);
+  assert.equal(result.progress.context_usage.history_compressed, true);
+  assert.equal(result.progress.context_usage.duplicate_messages_removed, 1);
+  assert.ok(result.progress.context_usage.reserved_percent < 100);
+
+  const completed = await pollChatJob(
+    "job-context",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+  assert.equal(completed.progress.context_usage.source, "runtime");
+  assert.equal(completed.progress.context_usage.used_tokens, 600);
+  assert.equal(
+    completed.progress.context_usage.reserved_tokens,
+    500 + submittedBody.max_tokens + 256,
+  );
+});
+
 test("buildRelevantHistoryContext keeps only code and conversion instructions for follow-ups", () => {
   const context = buildRelevantHistoryContext([
     { role: "user", content: "Tell me a joke." },
@@ -3878,7 +4118,7 @@ test("pollChatJob persists the assistant turn exactly once on completion", async
   assert.equal(body.jobId, "job-1");
 });
 
-test("pollChatJob exposes quality flags for suspicious cleaned output", async () => {
+test("pollChatJob keeps deterministic cleanup while verifier is disabled", async () => {
   const fetchImpl = async (url) => {
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-quality");
     return jsonResponse({
@@ -3899,15 +4139,12 @@ test("pollChatJob exposes quality flags for suspicious cleaned output", async ()
   );
 
   assert.equal(result.status, "completed");
-  assert.equal(result.needs_repair, true);
+  assert.equal(result.needs_repair, false);
   assert.match(result.output, /explanation instead of source code/i);
-  assert.deepEqual(
-    result.quality_flags.map((flag) => flag.code),
-    ["sanitized_output", "worker_or_role_leak", "instruction_leak", "repeated_text", "code_missing"],
-  );
+  assert.deepEqual(result.quality_flags, []);
 });
 
-test("pollChatJob rejects answers that only restate the user intent", async () => {
+test("pollChatJob does not reject restated intent while verifier is disabled", async () => {
   const prompt = "How can we begin creating a conversation with context on, and with compacting context as well?";
   const fetchImpl = async (url) => {
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs/job-restated-intent");
@@ -3929,10 +4166,9 @@ test("pollChatJob rejects answers that only restate the user intent", async () =
     { message: prompt },
   );
 
-  assert.equal(result.status, "failed");
-  assert.equal(result.output, "");
-  assert.match(result.error, /restated the request/i);
-  assert.ok(result.quality_flags.some((flag) => flag.code === "prompt_restatement"));
+  assert.equal(result.status, "completed");
+  assert.match(result.output, /conversation that has context/i);
+  assert.deepEqual(result.quality_flags, []);
 });
 
 test("pollChatJob allows self-evaluation answers that reuse prompt terms", async () => {
@@ -4132,4 +4368,47 @@ test("deleteChatConversation treats missing backend records as shallow local his
   assert.equal(result.conversation_id, "tool-only");
   assert.equal(result.deleted, false);
   assert.equal(result.persisted, false);
+});
+
+test("extracts a location that comes before the word weather", () => {
+  // "Whats the berlin weather today?" previously found nothing: the patterns
+  // only look after "weather", so they saw "today" and rejected it.
+  assert.equal(extractWeatherLocation("Whats the berlin weather today?"), "berlin");
+  assert.equal(extractWeatherLocation("the manila weather"), "manila");
+  assert.equal(extractWeatherLocation("Berlin temperature right now"), "Berlin");
+  assert.equal(extractWeatherLocation("new york city weather today"), "new york city");
+});
+
+test("does not invent a location from words that are not places", () => {
+  assert.equal(extractWeatherLocation("is the weather nice"), null);
+  assert.equal(extractWeatherLocation("what's the weather"), null);
+  assert.equal(extractWeatherLocation("how is the weather today"), null);
+  assert.equal(extractWeatherLocation("show me the current weather"), null);
+  assert.equal(extractWeatherLocation("tell me the weather"), null);
+});
+
+test("still prefers the explicit location that follows weather", () => {
+  assert.equal(extractWeatherLocation("weather in Berlin"), "Berlin");
+  assert.equal(extractWeatherLocation("what is the weather in Manila today?"), "Manila");
+  assert.equal(extractWeatherLocation("forecast for Tokyo"), "Tokyo");
+});
+
+test("tolerates misspelled weather words", () => {
+  assert.equal(extractWeatherLocation("wheather in Berlin"), "Berlin");
+  assert.equal(extractWeatherLocation("whats the berlin wheather today?"), "berlin");
+  assert.equal(extractWeatherLocation("weater in Manila"), "Manila");
+  assert.equal(extractWeatherLocation("forcast for Tokyo"), "Tokyo");
+  assert.equal(extractWeatherLocation("temprature in Paris"), "Paris");
+});
+
+test("normalizeWeatherWordTypos leaves correct spellings alone", () => {
+  assert.equal(normalizeWeatherWordTypos("weather in Berlin"), "weather in Berlin");
+  assert.equal(normalizeWeatherWordTypos("wheather"), "weather");
+  assert.equal(normalizeWeatherWordTypos(""), "");
+});
+
+test("a question with no weather intent is still ignored", () => {
+  assert.equal(extractWeatherLocation("who is Ada Lovelace"), null);
+  assert.equal(extractWeatherLocation(""), null);
+  assert.equal(extractWeatherLocation(null), null);
 });
