@@ -1006,6 +1006,13 @@ impl ControlPlaneState {
                 return false;
             }
             if let Some(health) = node.worker_health.as_ref() {
+                if health
+                    .capabilities
+                    .max_context_tokens
+                    .is_some_and(|limit| limit < workload.context_budget_tokens)
+                {
+                    return false;
+                }
                 if health.capabilities.schema_version >= 2 {
                     if workload
                         .required_tools
@@ -1033,6 +1040,16 @@ impl ControlPlaneState {
             .as_ref()
             .map(|health| Self::capability_has_role(health, required))
             .unwrap_or(false)
+    }
+
+    fn node_meets_graph_capacity_strict(
+        node: &NodeRecord,
+        job: &JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) -> bool {
+        Self::graph_workload(job, active_graph_node_id)
+            .map(|workload| Self::capacity_class_for(node) >= workload.minimum_capacity_class)
+            .unwrap_or(true)
     }
 
     fn scheduler_score(
@@ -1350,6 +1367,45 @@ impl ControlPlaneState {
                         }
                     }
                 }
+                let degraded_capacity = !Self::node_meets_graph_capacity_strict(
+                    node,
+                    job,
+                    active_graph_node_id.as_deref(),
+                );
+                let qualified_slot_available = degraded_capacity
+                    && active_graph_node_id
+                        .as_deref()
+                        .is_some_and(|graph_node_id| {
+                            self.nodes.values().any(|candidate| {
+                                candidate.node_id != node.node_id
+                                    && next_claimable_graph_node_id_for_node(
+                                        &job.graph,
+                                        &candidate.node_id,
+                                        &schedulable_retry_nodes,
+                                    )
+                                    .as_deref()
+                                        == Some(graph_node_id)
+                                    && self.node_has_available_slot_for_job(candidate, job)
+                                    && Self::node_backend_matches(
+                                        job,
+                                        candidate.backend,
+                                        ready_m_exists,
+                                        ready_cuda_exists,
+                                        ready_vllm_exists,
+                                    )
+                                    && Self::node_can_run_job(candidate, job)
+                                    && Self::node_meets_graph_capacity_strict(
+                                        candidate,
+                                        job,
+                                        Some(graph_node_id),
+                                    )
+                                    && Self::node_can_run_graph_role(
+                                        candidate,
+                                        job,
+                                        Some(graph_node_id),
+                                    )
+                            })
+                        });
                 if self.job_can_be_claimed(job)
                     && self.node_has_available_slot_for_job(node, job)
                     && (!job.graph_execution_enabled || active_graph_node_id.is_some())
@@ -1362,18 +1418,11 @@ impl ControlPlaneState {
                     )
                     && Self::node_can_run_job(node, job)
                     && Self::node_can_run_graph_role(node, job, active_graph_node_id.as_deref())
+                    && !qualified_slot_available
                 {
                     let mut decision =
                         self.scheduler_score(node, job, active_graph_node_id.as_deref());
-                    if graph_node_allows_degraded_capacity_retry(
-                        job,
-                        active_graph_node_id.as_deref(),
-                    ) && Self::graph_workload(job, active_graph_node_id.as_deref())
-                        .map(|workload| {
-                            Self::capacity_class_for(node) < workload.minimum_capacity_class
-                        })
-                        .unwrap_or(false)
-                    {
+                    if degraded_capacity {
                         decision.reasons.push(
                             "capacity_degraded_retry:no fully qualified retry node claimed the work"
                                 .to_string(),
@@ -8210,12 +8259,14 @@ mod tests {
             }
         }
 
+        assert!(state.claim_job("node-2", "3".to_string()).job.is_none());
+
         let qualified_claim = state
-            .claim_job("node-1", "3".to_string())
+            .claim_job("node-1", "4".to_string())
             .job
             .expect("qualified node claims the first analysis chunk");
         let fallback_claim = state
-            .claim_job("node-2", "3".to_string())
+            .claim_job("node-2", "4".to_string())
             .job
             .expect("micro node claims another independent chunk");
 
@@ -8237,6 +8288,36 @@ mod tests {
             .reasons
             .iter()
             .any(|reason| reason.contains("capacity_degraded_retry")));
+    }
+
+    #[test]
+    fn node_with_insufficient_advertised_context_cannot_claim_graph_chunk() {
+        let mut state = ready_state();
+        state
+            .nodes
+            .get_mut("node-1")
+            .expect("node")
+            .worker_health
+            .as_mut()
+            .expect("health")
+            .capabilities
+            .max_context_tokens = Some(1_536);
+
+        let mut request = classification_request("Analyze a long factual topic.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "2".to_string());
+        state
+            .jobs
+            .get_mut("job-1")
+            .expect("job")
+            .graph
+            .nodes
+            .first_mut()
+            .expect("graph node")
+            .workload
+            .context_budget_tokens = 8_192;
+
+        assert!(state.claim_job("node-1", "3".to_string()).job.is_none());
     }
 
     #[test]
