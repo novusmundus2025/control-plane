@@ -425,6 +425,12 @@ impl ControlPlaneState {
                     .push(format!("planner_fallback:{error}")),
             }
         }
+        plan = dynamically_shape_research_plan(
+            &request,
+            &classification,
+            compatible_ready_nodes,
+            plan,
+        );
         let fallback_decision = fallback_decision_for(&scheduling_requirements);
         if request.execution_mode == JobExecutionMode::Single
             && plan.strategy == "complete_code_generation"
@@ -4557,6 +4563,122 @@ fn plan_job_request_for_submission(
     plan
 }
 
+fn dynamically_shape_research_plan(
+    request: &JobRequest,
+    classification: &RequestClassification,
+    compatible_ready_nodes: usize,
+    original: JobPlan,
+) -> JobPlan {
+    let lower = request.prompt.to_ascii_lowercase();
+    let dynamic_history_requested = lower.contains("to date")
+        || lower.starts_with("brief history")
+        || lower.starts_with("a brief history");
+    if request.execution_mode == JobExecutionMode::Single
+        || classification.task_type == RequestTaskType::Coding
+        || !dynamic_history_requested
+    {
+        return original;
+    }
+
+    let explicit_sections = explicit_split_sections(&request.prompt);
+    let detailed = contains_any(
+        &lower,
+        &["detailed", "complete", "comprehensive", "to date", "today"],
+    );
+    let requested_output = request
+        .max_tokens
+        .unwrap_or(if detailed { 3_072 } else { 1_024 });
+    let meaningful_limit = if explicit_sections.len() >= 2 {
+        explicit_sections.len().min(10)
+    } else if detailed {
+        6
+    } else {
+        2
+    };
+    let capacity_width = compatible_ready_nodes.max(1).min(6);
+    let research_count = if explicit_sections.len() >= 2 {
+        meaningful_limit
+    } else if detailed {
+        capacity_width.max(2).min(meaningful_limit)
+    } else {
+        1
+    };
+
+    let default_sections = [
+        "Origins and founding context",
+        "Early development and strategy",
+        "Major research and product milestones",
+        "Growth, partnerships, and market impact",
+        "Governance, leadership, and controversies",
+        "Current position and developments to date",
+    ];
+    let sections = if explicit_sections.len() >= 2 {
+        explicit_sections
+            .into_iter()
+            .take(research_count)
+            .collect::<Vec<_>>()
+    } else {
+        default_sections
+            .iter()
+            .take(research_count)
+            .map(|section| (*section).to_string())
+            .collect::<Vec<_>>()
+    };
+    let section_tokens = requested_output
+        .saturating_add(research_count as u32 - 1)
+        .checked_div(research_count as u32)
+        .unwrap_or(512)
+        .clamp(512, 1_536);
+    let context_tokens = if detailed { 8_192 } else { 4_096 };
+    let mut jobs = Vec::new();
+    for (index, section) in sections.iter().enumerate() {
+        push_planned_job(
+            &mut jobs,
+            &format!("research.{:02}", index + 1),
+            section,
+            "chunk_analysis",
+            Vec::new(),
+            &format!("Research only the {section} responsibility with factual chronology and evidence appropriate to the request."),
+            "The dynamic research planner selected an independent, meaningful responsibility that fits current qualified parallel capacity.",
+        );
+        let job = jobs.last_mut().expect("dynamic research job");
+        job.recommended_max_tokens = Some(section_tokens);
+        job.minimum_max_tokens = Some(section_tokens.min(512));
+        job.workload.minimum_capacity_class = CapacityClass::Standard;
+        job.workload.recommended_capacity_class = CapacityClass::Performance;
+        job.workload.context_budget_tokens = context_tokens;
+        job.workload.allowed_parallelism = research_count as u32;
+    }
+
+    if research_count > 1 {
+        let dependencies = jobs.iter().map(|job| job.id.clone()).collect::<Vec<_>>();
+        push_planned_job(
+            &mut jobs,
+            "research.synthesize",
+            "Synthesize research answer",
+            "synthesize",
+            dependencies,
+            "Combine the completed research responsibilities into one coherent, chronological answer without duplication.",
+            "Multiple independent research outputs require one context-aware synthesis stage.",
+        );
+        let synthesis = jobs.last_mut().expect("research synthesis");
+        synthesis.recommended_max_tokens = Some(requested_output.clamp(1_024, 4_096));
+        synthesis.minimum_max_tokens = Some(1_024);
+        synthesis.workload.minimum_capacity_class = CapacityClass::Performance;
+        synthesis.workload.recommended_capacity_class = CapacityClass::Synthesis;
+        synthesis.workload.context_budget_tokens = 16_384;
+    }
+
+    JobPlan {
+        plan_id: format!("plan-{}", request.request_id),
+        strategy: "dynamic_research".to_string(),
+        summary: format!(
+            "Dynamically planned {research_count} research responsibility unit(s) for {compatible_ready_nodes} currently compatible node slot(s); per-section output target {section_tokens} tokens."
+        ),
+        jobs,
+    }
+}
+
 fn sectionable_prompt_warrants_single_node_decomposition(
     request: &JobRequest,
     classification: &RequestClassification,
@@ -7838,6 +7960,65 @@ mod tests {
         assert!(running
             .iter()
             .any(|node| node.assigned_node_id.as_deref() == Some("node-2")));
+    }
+
+    #[test]
+    fn detailed_research_graph_width_tracks_available_qualified_nodes() {
+        let mut request = classification_request("Give me a detailed history of OpenAI to date.");
+        request.execution_mode = JobExecutionMode::Auto;
+        let classification = classify_job_request(&request);
+        let base = plan_job_request_for_submission(&request, &classification, 1);
+
+        let one_node = dynamically_shape_research_plan(&request, &classification, 1, base.clone());
+        let four_nodes = dynamically_shape_research_plan(&request, &classification, 4, base);
+
+        assert_eq!(one_node.strategy, "dynamic_research");
+        assert_eq!(
+            one_node
+                .jobs
+                .iter()
+                .filter(|job| job.responsibility == "chunk_analysis")
+                .count(),
+            2
+        );
+        assert_eq!(
+            four_nodes
+                .jobs
+                .iter()
+                .filter(|job| job.responsibility == "chunk_analysis")
+                .count(),
+            4
+        );
+        assert!(four_nodes
+            .jobs
+            .iter()
+            .filter(|job| job.responsibility == "chunk_analysis")
+            .all(|job| {
+                job.recommended_max_tokens == Some(768)
+                    && job.workload.context_budget_tokens == 8_192
+                    && job.workload.allowed_parallelism == 4
+            }));
+        assert_eq!(
+            four_nodes
+                .jobs
+                .last()
+                .map(|job| job.responsibility.as_str()),
+            Some("synthesize")
+        );
+    }
+
+    #[test]
+    fn brief_research_uses_one_chunk_without_synthesis() {
+        let mut request = classification_request("Brief history of OpenAI.");
+        request.execution_mode = JobExecutionMode::Auto;
+        let classification = classify_job_request(&request);
+        let base = plan_job_request_for_submission(&request, &classification, 4);
+        let plan = dynamically_shape_research_plan(&request, &classification, 4, base);
+
+        assert_eq!(plan.strategy, "dynamic_research");
+        assert_eq!(plan.jobs.len(), 1);
+        assert_eq!(plan.jobs[0].responsibility, "chunk_analysis");
+        assert_eq!(plan.jobs[0].recommended_max_tokens, Some(1_024));
     }
 
     #[test]
