@@ -425,10 +425,30 @@ impl ControlPlaneState {
                     .push(format!("planner_fallback:{error}")),
             }
         }
+        let credible_synthesizer_context = self
+            .nodes
+            .values()
+            .filter(|node| {
+                Self::node_is_schedulable_state(node)
+                    && node.policy_allowed
+                    && Self::capacity_class_for(node) >= CapacityClass::Performance
+                    && node.worker_health.as_ref().is_some_and(|health| {
+                        health.healthy
+                            && health.runtime_ready
+                            && Self::capability_has_role(health, NodeRole::Synthesizer)
+                    })
+            })
+            .filter_map(|node| {
+                node.worker_health
+                    .as_ref()
+                    .and_then(|health| health.capabilities.max_context_tokens)
+            })
+            .max();
         plan = dynamically_shape_research_plan(
             &request,
             &classification,
             compatible_ready_nodes,
+            credible_synthesizer_context,
             plan,
         );
         let fallback_decision = fallback_decision_for(&scheduling_requirements);
@@ -4567,6 +4587,7 @@ fn dynamically_shape_research_plan(
     request: &JobRequest,
     classification: &RequestClassification,
     compatible_ready_nodes: usize,
+    credible_synthesizer_context: Option<u32>,
     original: JobPlan,
 ) -> JobPlan {
     let lower = request.prompt.to_ascii_lowercase();
@@ -4650,7 +4671,10 @@ fn dynamically_shape_research_plan(
         job.workload.allowed_parallelism = research_count as u32;
     }
 
-    if research_count > 1 {
+    let synthesis_context_required = if detailed { 8_192 } else { 4_096 };
+    let synthesis_available = credible_synthesizer_context
+        .is_some_and(|available| available >= synthesis_context_required);
+    if research_count > 1 && synthesis_available {
         let dependencies = jobs.iter().map(|job| job.id.clone()).collect::<Vec<_>>();
         push_planned_job(
             &mut jobs,
@@ -4666,14 +4690,21 @@ fn dynamically_shape_research_plan(
         synthesis.minimum_max_tokens = Some(1_024);
         synthesis.workload.minimum_capacity_class = CapacityClass::Performance;
         synthesis.workload.recommended_capacity_class = CapacityClass::Synthesis;
-        synthesis.workload.context_budget_tokens = 16_384;
+        synthesis.workload.context_budget_tokens = synthesis_context_required;
     }
 
     JobPlan {
         plan_id: format!("plan-{}", request.request_id),
         strategy: "dynamic_research".to_string(),
         summary: format!(
-            "Dynamically planned {research_count} research responsibility unit(s) for {compatible_ready_nodes} currently compatible node slot(s); per-section output target {section_tokens} tokens."
+            "Dynamically planned {research_count} research responsibility unit(s) for {compatible_ready_nodes} currently compatible node slot(s); per-section output target {section_tokens} tokens; synthesis {}.",
+            if research_count <= 1 {
+                "unnecessary"
+            } else if synthesis_available {
+                "assigned to a context-capable synthesizer"
+            } else {
+                "omitted because no current synthesizer meets the required context budget; verified sections are returned directly"
+            }
         ),
         jobs,
     }
@@ -7969,8 +8000,15 @@ mod tests {
         let classification = classify_job_request(&request);
         let base = plan_job_request_for_submission(&request, &classification, 1);
 
-        let one_node = dynamically_shape_research_plan(&request, &classification, 1, base.clone());
-        let four_nodes = dynamically_shape_research_plan(&request, &classification, 4, base);
+        let one_node = dynamically_shape_research_plan(
+            &request,
+            &classification,
+            1,
+            Some(16_384),
+            base.clone(),
+        );
+        let four_nodes =
+            dynamically_shape_research_plan(&request, &classification, 4, Some(16_384), base);
 
         assert_eq!(one_node.strategy, "dynamic_research");
         assert_eq!(
@@ -8013,12 +8051,29 @@ mod tests {
         request.execution_mode = JobExecutionMode::Auto;
         let classification = classify_job_request(&request);
         let base = plan_job_request_for_submission(&request, &classification, 4);
-        let plan = dynamically_shape_research_plan(&request, &classification, 4, base);
+        let plan = dynamically_shape_research_plan(&request, &classification, 4, None, base);
 
         assert_eq!(plan.strategy, "dynamic_research");
         assert_eq!(plan.jobs.len(), 1);
         assert_eq!(plan.jobs[0].responsibility, "chunk_analysis");
         assert_eq!(plan.jobs[0].recommended_max_tokens, Some(1_024));
+    }
+
+    #[test]
+    fn detailed_research_omits_impossible_synthesis_for_small_context_cluster() {
+        let mut request = classification_request("Give me a detailed history of OpenAI to date.");
+        request.execution_mode = JobExecutionMode::Auto;
+        let classification = classify_job_request(&request);
+        let base = plan_job_request_for_submission(&request, &classification, 2);
+        let plan = dynamically_shape_research_plan(&request, &classification, 2, Some(1_536), base);
+
+        assert_eq!(plan.strategy, "dynamic_research");
+        assert_eq!(plan.jobs.len(), 2);
+        assert!(plan
+            .jobs
+            .iter()
+            .all(|job| job.responsibility == "chunk_analysis"));
+        assert!(plan.summary.contains("synthesis omitted"));
     }
 
     #[test]
