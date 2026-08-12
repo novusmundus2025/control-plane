@@ -2876,12 +2876,11 @@ fn graph_node_allows_degraded_capacity_retry(
         .nodes
         .iter()
         .find(|node| node.id == active_graph_node_id)
-        .map(|node| {
-            node.attempt_count > 0
-                && matches!(
-                    graph_node_required_role(&job.graph, Some(active_graph_node_id)),
-                    Some(NodeRole::ChunkAnalysis | NodeRole::Batch)
-                )
+        .map(|_| {
+            matches!(
+                graph_node_required_role(&job.graph, Some(active_graph_node_id)),
+                Some(NodeRole::ChunkAnalysis | NodeRole::Batch)
+            )
         })
         .unwrap_or(false)
 }
@@ -8184,6 +8183,53 @@ mod tests {
             fallback_claim.active_graph_node_id.as_deref(),
             Some(failed_chunk.as_str())
         );
+        assert!(fallback_claim
+            .scheduler_decision
+            .as_ref()
+            .expect("scheduler decision")
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("capacity_degraded_retry")));
+    }
+
+    #[test]
+    fn untried_analysis_chunk_uses_healthy_micro_node_when_qualified_node_is_busy() {
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        let mut micro_heartbeat = ready_heartbeat("node-2", "1");
+        micro_heartbeat.worker_health.capabilities.capacity_class = "micro".to_string();
+        state.heartbeat(micro_heartbeat, "1".to_string());
+
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "2".to_string());
+        for node in &mut state.jobs.get_mut("job-1").expect("job").graph.nodes {
+            if node.status == JobGraphNodeStatus::Ready {
+                node.workload.minimum_capacity_class = CapacityClass::Standard;
+            }
+        }
+
+        let qualified_claim = state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("qualified node claims the first analysis chunk");
+        let fallback_claim = state
+            .claim_job("node-2", "3".to_string())
+            .job
+            .expect("micro node claims another independent chunk");
+
+        assert_ne!(
+            qualified_claim.active_graph_node_id,
+            fallback_claim.active_graph_node_id
+        );
+        let fallback_node = fallback_claim
+            .graph
+            .nodes
+            .iter()
+            .find(|node| Some(node.id.as_str()) == fallback_claim.active_graph_node_id.as_deref())
+            .expect("fallback graph node");
+        assert_eq!(fallback_node.attempt_count, 1);
         assert!(fallback_claim
             .scheduler_decision
             .as_ref()
