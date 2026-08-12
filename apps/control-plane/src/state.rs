@@ -991,6 +991,14 @@ impl ControlPlaneState {
         job: &JobRecord,
         active_graph_node_id: Option<&str>,
     ) -> bool {
+        // A compact node cannot credibly regenerate a reducer/synthesizer answer, but it can
+        // safely trigger the deterministic section-preserving fallback below. Keep this path
+        // claimable so completed graph work is returned instead of expiring in the queue.
+        if graph_node_is_merge(&job.graph, active_graph_node_id)
+            && reducer_profile(node) == ReducerProfile::Compact
+        {
+            return true;
+        }
         if let Some(workload) = Self::graph_workload(job, active_graph_node_id) {
             if Self::capacity_class_for(node) < workload.minimum_capacity_class
                 && !graph_node_allows_degraded_capacity_retry(job, active_graph_node_id)
@@ -9013,28 +9021,13 @@ mod tests {
 
         assert!(state.claim_job("node-weak", "7".to_string()).job.is_none());
 
-        let waiting = state.jobs.get("job-1").expect("job exists");
-        assert_eq!(waiting.status, JobStatus::Queued);
-        assert_eq!(
-            waiting.active_graph_node_id.as_deref(),
-            Some("job.final_merge")
-        );
-        assert!(waiting
-            .scheduler_decision
-            .as_ref()
-            .and_then(|decision| decision.reasons.first())
-            .expect("waiting reason")
-            .contains("waiting_for_role:synthesizer"));
-
-        let changed = state.run_maintenance("66");
-        assert_eq!(changed.len(), 1);
         let degraded = state.jobs.get("job-1").expect("job exists");
-        assert_eq!(degraded.status, JobStatus::Failed);
+        assert_eq!(degraded.status, JobStatus::Completed);
+        assert_eq!(degraded.error, None);
         assert!(degraded
-            .error
+            .output
             .as_deref()
-            .expect("degradation error")
-            .starts_with("NO_CREDIBLE_SYNTHESIZER"));
+            .is_some_and(|output| !output.trim().is_empty()));
         assert_eq!(
             degraded
                 .graph
@@ -9042,7 +9035,7 @@ mod tests {
                 .iter()
                 .filter(|node| node.status == JobGraphNodeStatus::Completed)
                 .count(),
-            4
+            5
         );
         assert!(degraded
             .graph
