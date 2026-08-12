@@ -396,8 +396,8 @@ impl ControlPlaneState {
         let classification = classify_job_request(&request);
         let mut scheduling_requirements = scheduling_requirements_for(&request, &classification);
         let compatible_ready_nodes = self.compatible_ready_node_count_for_request(&request);
-        let compatible_research_nodes =
-            self.compatible_ready_node_count_for_research(&request);
+        let (compatible_research_nodes, research_context_budget) =
+            self.compatible_ready_research_profile(&request);
         let mut plan =
             plan_job_request_for_submission(&request, &classification, compatible_ready_nodes);
         if request.execution_mode != JobExecutionMode::Single {
@@ -446,10 +446,11 @@ impl ControlPlaneState {
                     .and_then(|health| health.capabilities.max_context_tokens)
             })
             .max();
-        plan = dynamically_shape_research_plan(
+        plan = dynamically_shape_research_plan_with_context(
             &request,
             &classification,
             compatible_research_nodes,
+            research_context_budget,
             credible_synthesizer_context,
             plan,
         );
@@ -698,24 +699,40 @@ impl ControlPlaneState {
             .count()
     }
 
-    fn compatible_ready_node_count_for_research(&self, request: &JobRequest) -> usize {
-        let required_context = dynamic_research_context_budget(request);
-        self.nodes
+    fn compatible_ready_research_profile(&self, request: &JobRequest) -> (usize, u32) {
+        let desired_context = dynamic_research_context_budget(request);
+        let mut contexts = self
+            .nodes
             .values()
-            .filter(|node| {
-                Self::node_is_schedulable_state(node)
+            .filter_map(|node| {
+                (Self::node_is_schedulable_state(node)
                     && node.policy_allowed
                     && Self::node_backend_can_run_request(node.backend, request.preferred_backend)
-                    && Self::node_worker_can_run_request(node, request)
-                    && node.worker_health.as_ref().is_some_and(|health| {
-                        Self::capability_has_role(health, NodeRole::ChunkAnalysis)
-                            && health
-                                .capabilities
-                                .max_context_tokens
-                                .map_or(true, |limit| limit >= required_context)
-                    })
+                    && Self::node_worker_can_run_request(node, request))
+                .then_some(node)
+                .and_then(|node| node.worker_health.as_ref())
+                .filter(|health| Self::capability_has_role(health, NodeRole::ChunkAnalysis))
+                .map(|health| {
+                    health
+                        .capabilities
+                        .max_context_tokens
+                        .unwrap_or(desired_context)
+                        .min(desired_context)
+                })
+                .filter(|context| *context >= 1_536)
             })
-            .count()
+            .collect::<Vec<_>>();
+        contexts.sort_unstable_by(|left, right| right.cmp(left));
+        let context_budget = if contexts.len() >= 2 {
+            contexts[1]
+        } else {
+            contexts.first().copied().unwrap_or(desired_context)
+        };
+        let eligible = contexts
+            .iter()
+            .filter(|context| **context >= context_budget)
+            .count();
+        (eligible, context_budget)
     }
 
     fn node_is_schedulable_state(node: &NodeRecord) -> bool {
@@ -3579,7 +3596,7 @@ fn graph_node_max_tokens(
     let adaptive_critical_stage =
         (is_synthesis || is_reduction) && !job_has_explicit_max_tokens(job);
 
-    if requested > 0 && !job_uses_auto_max_tokens(job) && !adaptive_critical_stage {
+    let budget = if requested > 0 && !job_uses_auto_max_tokens(job) && !adaptive_critical_stage {
         requested
             .min(stage_budget)
             .max(node.minimum_max_tokens.unwrap_or(1).min(requested))
@@ -3588,6 +3605,14 @@ fn graph_node_max_tokens(
         scale_auto_generation_budget(baseline, node_generation_ceiling(claiming_node))
     } else {
         stage_budget
+    };
+    if job.plan.strategy == "dynamic_research"
+        && node.responsibility == "chunk_analysis"
+        && node.workload.context_budget_tokens <= 2_047
+    {
+        budget.min(512).max(1)
+    } else {
+        budget
     }
 }
 
@@ -4612,6 +4637,24 @@ fn dynamically_shape_research_plan(
     credible_synthesizer_context: Option<u32>,
     original: JobPlan,
 ) -> JobPlan {
+    dynamically_shape_research_plan_with_context(
+        request,
+        classification,
+        compatible_ready_nodes,
+        dynamic_research_context_budget(request),
+        credible_synthesizer_context,
+        original,
+    )
+}
+
+fn dynamically_shape_research_plan_with_context(
+    request: &JobRequest,
+    classification: &RequestClassification,
+    compatible_ready_nodes: usize,
+    research_context_budget: u32,
+    credible_synthesizer_context: Option<u32>,
+    original: JobPlan,
+) -> JobPlan {
     let lower = request.prompt.to_ascii_lowercase();
     let dynamic_history_requested = lower.contains("to date")
         || lower.starts_with("brief history")
@@ -4672,7 +4715,7 @@ fn dynamically_shape_research_plan(
         .checked_div(research_count as u32)
         .unwrap_or(512)
         .clamp(512, 1_536);
-    let context_tokens = dynamic_research_context_budget(request);
+    let context_tokens = research_context_budget;
     let mut jobs = Vec::new();
     for (index, section) in sections.iter().enumerate() {
         push_planned_job(
@@ -8085,7 +8128,7 @@ mod tests {
     }
 
     #[test]
-    fn detailed_research_fanout_excludes_nodes_below_the_planned_context() {
+    fn detailed_research_fanout_uses_a_safe_shared_context_for_two_live_nodes() {
         let mut state = ready_state();
         state
             .nodes
@@ -8108,12 +8151,14 @@ mod tests {
             .capabilities
             .max_context_tokens = Some(1_536);
 
-        let mut request =
-            classification_request("Give me a detailed history of OpenAI to date.");
+        let mut request = classification_request("Give me a detailed history of OpenAI to date.");
         request.execution_mode = JobExecutionMode::Auto;
 
         assert_eq!(state.compatible_ready_node_count_for_request(&request), 2);
-        assert_eq!(state.compatible_ready_node_count_for_research(&request), 1);
+        assert_eq!(
+            state.compatible_ready_research_profile(&request),
+            (2, 1_536)
+        );
 
         let job = state.submit_job(request, "2".to_string());
         assert!(job
@@ -8121,7 +8166,10 @@ mod tests {
             .nodes
             .iter()
             .filter(|node| node.responsibility == "chunk_analysis")
-            .all(|node| node.workload.allowed_parallelism == 1));
+            .all(|node| {
+                node.workload.allowed_parallelism == 2
+                    && node.workload.context_budget_tokens == 1_536
+            }));
     }
 
     #[test]
