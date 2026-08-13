@@ -1445,7 +1445,7 @@ impl ControlPlaneState {
             .jobs
             .iter()
             .filter_map(|(job_id, job)| {
-                let active_graph_node_id = if job.graph_execution_enabled {
+                let mut active_graph_node_id = if job.graph_execution_enabled {
                     next_claimable_graph_node_id_for_node(
                         &job.graph,
                         node_id,
@@ -1454,6 +1454,15 @@ impl ControlPlaneState {
                 } else {
                     None
                 };
+                if active_graph_node_id.is_none() && job.graph_execution_enabled {
+                    if let Some(ready_node_id) = next_ready_graph_node_id(&job.graph) {
+                        if graph_node_is_merge(&job.graph, Some(ready_node_id.as_str()))
+                            && best_reducer_node_id_for_job(self, job).as_deref() == Some(node_id)
+                        {
+                            active_graph_node_id = Some(ready_node_id);
+                        }
+                    }
+                }
                 if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref()) {
                     if let Some(best_node_id) = best_reducer_node_id_for_job(self, job) {
                         if best_node_id != node.node_id {
@@ -1539,19 +1548,21 @@ impl ControlPlaneState {
                             }
                         }
                     }
-                    Some((job_id.clone(), decision))
+                    Some((job_id.clone(), decision, active_graph_node_id))
                 } else {
                     None
                 }
             })
-            .max_by(|(left_id, left_decision), (right_id, right_decision)| {
-                left_decision
-                    .score
-                    .cmp(&right_decision.score)
-                    .then_with(|| right_id.cmp(left_id))
-            });
+            .max_by(
+                |(left_id, left_decision, _), (right_id, right_decision, _)| {
+                    left_decision
+                        .score
+                        .cmp(&right_decision.score)
+                        .then_with(|| right_id.cmp(left_id))
+                },
+            );
 
-        let Some((job_id, scheduler_decision)) = selected else {
+        let Some((job_id, scheduler_decision, selected_graph_node_id)) = selected else {
             return JobClaimResponse { job: None };
         };
 
@@ -1567,11 +1578,7 @@ impl ControlPlaneState {
                 }
             }
 
-            let active_graph_node_id = if job.graph_execution_enabled {
-                next_claimable_graph_node_id_for_node(&job.graph, node_id, &schedulable_retry_nodes)
-            } else {
-                None
-            };
+            let active_graph_node_id = selected_graph_node_id;
             if active_graph_node_id.is_none() {
                 job.max_tokens = Some(job_max_tokens_for_node(job, &claiming_node));
             }
@@ -3726,6 +3733,8 @@ pub(crate) fn graph_node_required_role(
 }
 
 fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> Option<String> {
+    let active_merge_node_id = next_ready_graph_node_id(&job.graph)
+        .filter(|node_id| graph_node_is_merge(&job.graph, Some(node_id.as_str())))?;
     let ready_m_exists = state.nodes.values().any(|candidate| {
         ControlPlaneState::node_is_schedulable_state(candidate)
             && candidate.policy_allowed
@@ -3758,13 +3767,12 @@ fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> O
                 && ControlPlaneState::node_can_run_graph_role(
                     candidate,
                     job,
-                    next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).as_deref(),
+                    Some(active_merge_node_id.as_str()),
                 )
-                && next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id).is_some()
         })
         .map(|candidate| {
-            let active_node_id = next_ready_graph_node_id_for_node(&job.graph, &candidate.node_id);
-            let mut decision = state.scheduler_score(candidate, job, active_node_id.as_deref());
+            let mut decision =
+                state.scheduler_score(candidate, job, Some(active_merge_node_id.as_str()));
             apply_reducer_scheduler_score(&mut decision, candidate);
             let profile_rank = match reducer_profile(candidate) {
                 ReducerProfile::Strong => 3,
@@ -9686,6 +9694,17 @@ mod tests {
 
         state.register(m_series_registration("node-strong"));
         state.heartbeat(ready_heartbeat("node-strong", "7"), "7".to_string());
+        state
+            .jobs
+            .get_mut("job-1")
+            .and_then(|job| {
+                job.graph
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == "job.final_merge")
+            })
+            .expect("final merge")
+            .assigned_node_id = Some("node-weak".to_string());
 
         assert!(state.claim_job("node-weak", "8".to_string()).job.is_none());
         let reducer_claim = state
