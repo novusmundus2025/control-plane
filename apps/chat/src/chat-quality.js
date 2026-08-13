@@ -87,6 +87,24 @@ export function detectDegenerateRepetitionQualityFlags(outputValue) {
   }];
 }
 
+export function detectStructuredOutputQualityFlags(outputValue, requested = false) {
+  if (!requested) return [];
+  const output = String(outputValue ?? "").trim();
+  const fenced = output.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+  const candidate = String(fenced?.[1] ?? output).trim();
+  try {
+    const parsed = JSON.parse(candidate);
+    if (parsed !== null && typeof parsed === "object") return [];
+  } catch {
+    // Report one stable validation failure below.
+  }
+  return [{
+    code: "invalid_structured_output",
+    severity: "reject",
+    message: "MundusX returned malformed requested JSON. Please retry.",
+  }];
+}
+
 export function normalizeCompleteCodeOutput(outputValue, promptValue = "") {
   const output = String(outputValue ?? "");
   const prompt = String(promptValue ?? "");
