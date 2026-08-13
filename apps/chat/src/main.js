@@ -9,6 +9,7 @@ import {
   detectChatQualityFlags,
   detectCompleteCodeQualityFlags,
   detectDegenerateRepetitionQualityFlags,
+  detectStructuredOutputQualityFlags,
   normalizeCompleteCodeOutput,
 } from "./chat-quality.js";
 
@@ -3033,10 +3034,11 @@ export function createServerApp(config = configFromEnv()) {
       }
       if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
         const body = await readJsonBody(request);
+        if (body?.stream === true) {
+          return streamOpenAiChatCompletion(response, body, config);
+        }
         const result = await submitOpenAiChatCompletion(body, config);
-        return body?.stream === true
-          ? sendOpenAiStream(response, result)
-          : sendOpenAiJson(response, 200, result);
+        return sendOpenAiJson(response, 200, result);
       }
       if (request.method === "GET" && url.pathname === "/api/network") {
         const result = await fetchNetworkSummary(config);
@@ -3086,7 +3088,7 @@ export async function submitChatTurn(body, config = configFromEnv(), fetchImpl =
     ? submitted
     : await waitForChatJob(submitted.job_id, body, config, fetchImpl);
   const retryableQualityFailure = result?.quality_flags?.some((flag) =>
-    ["invalid_complete_code", "invalid_math_output", "broken_markdown", "degenerate_repetition"].includes(flag.code),
+    ["invalid_complete_code", "invalid_math_output", "invalid_structured_output", "output_token_limit", "broken_markdown", "degenerate_repetition"].includes(flag.code),
   );
   if (result.status === "failed" && retryableQualityFailure && body?.qualityRetry !== true) {
     return submitChatTurn({ ...body, qualityRetry: true }, config, fetchImpl);
@@ -3120,6 +3122,7 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
       maxTokens: body?.max_tokens,
       timeoutSeconds: body?.timeout_seconds,
       conversationId: body?.conversation_id ?? body?.metadata?.conversation_id,
+      structuredOutput: Boolean(body?.response_format) || /\bjson\b/i.test(messages[lastUserIndex].content),
     },
     config,
     fetchImpl,
@@ -3142,7 +3145,7 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model: PUBLIC_MODEL_ID,
-    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
+    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: result.finish_reason ?? "stop" }],
     usage: {
       prompt_tokens: promptTokens,
       completion_tokens: completionTokens,
@@ -3154,6 +3157,41 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
       execution_mode: result.execution_mode ?? null,
     },
   };
+}
+
+export function requiresValidatedStreaming(message, body = {}) {
+  const text = String(message ?? "");
+  const lower = text.toLowerCase();
+  return looksLikeCompleteProgramRequest(lower) ||
+    looksLikeMathRequest(lower) ||
+    isNodeExpressMysqlCustomerCrudRequest(text) ||
+    Boolean(body?.response_format) ||
+    /\b(?:json|json schema|structured output|xml|yaml|sql schema|csv)\b/i.test(text);
+}
+
+export async function streamOpenAiChatCompletion(response, body, config, fetchImpl = fetch) {
+  const lastUserMessage = Array.isArray(body?.messages)
+    ? [...body.messages].reverse().find((entry) => normalizeOpenAiRole(entry?.role) === "user")
+    : null;
+  const message = openAiMessageText(lastUserMessage?.content);
+  const buffered = requiresValidatedStreaming(message, body);
+  startOpenAiStream(response, buffered ? "validated" : "ordinary");
+  const heartbeat = setInterval(() => {
+    if (!response.writableEnded) response.write(": keep-alive\n\n");
+  }, 10_000);
+  heartbeat.unref?.();
+  try {
+    const completion = await submitOpenAiChatCompletion(body, config, fetchImpl);
+    for (const frame of openAiSseFrames(completion, { buffered })) {
+      response.write(frame);
+    }
+    response.end("data: [DONE]\n\n");
+  } catch (error) {
+    const payload = { error: { message: error.message ?? "request failed", type: "mundusx_error" } };
+    response.end(`data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`);
+  } finally {
+    clearInterval(heartbeat);
+  }
 }
 
 export function openAiModelsResponse() {
@@ -3169,6 +3207,10 @@ export function openAiModelsResponse() {
 }
 
 export function openAiSseBody(completion) {
+  return `${openAiSseFrames(completion, { buffered: true }).join("")}data: [DONE]\n\n`;
+}
+
+export function openAiSseFrames(completion, { buffered = true } = {}) {
   const choice = completion?.choices?.[0] ?? {};
   const base = {
     id: completion?.id,
@@ -3176,22 +3218,34 @@ export function openAiSseBody(completion) {
     created: completion?.created,
     model: PUBLIC_MODEL_ID,
   };
-  const contentChunk = {
+  const content = String(choice?.message?.content ?? "");
+  const pieces = buffered ? [content] : splitOrdinaryStreamContent(content);
+  const contentChunks = pieces.map((piece, index) => ({
     ...base,
-    choices: [{
-      index: 0,
-      delta: {
-        role: "assistant",
-        content: String(choice?.message?.content ?? ""),
-      },
-      finish_reason: null,
-    }],
-  };
+    choices: [{ index: 0, delta: { ...(index === 0 ? { role: "assistant" } : {}), content: piece }, finish_reason: null }],
+  }));
   const finalChunk = {
     ...base,
     choices: [{ index: 0, delta: {}, finish_reason: choice?.finish_reason ?? "stop" }],
   };
-  return `data: ${JSON.stringify(contentChunk)}\n\ndata: ${JSON.stringify(finalChunk)}\n\ndata: [DONE]\n\n`;
+  return [...contentChunks, finalChunk].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`);
+}
+
+function splitOrdinaryStreamContent(value, targetChars = 120) {
+  const text = String(value ?? "");
+  if (text.length <= targetChars) return [text];
+  const pieces = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    let end = Math.min(text.length, cursor + targetChars);
+    if (end < text.length) {
+      const boundary = Math.max(text.lastIndexOf(" ", end), text.lastIndexOf("\n", end));
+      if (boundary > cursor + Math.floor(targetChars / 2)) end = boundary + 1;
+    }
+    pieces.push(text.slice(cursor, end));
+    cursor = end;
+  }
+  return pieces;
 }
 
 function normalizeOpenAiRole(value) {
@@ -3445,6 +3499,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(502, "control plane did not return a job id");
   }
   rememberPromptForJob(jobId, message);
+  rememberValidationContractForJob(jobId, { structuredOutput: body?.structuredOutput === true });
   const contextUsage = plannedContextUsage({
     contextWindowTokens,
     systemPrompt: jobBody.system_prompt,
@@ -3454,7 +3509,11 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   });
   rememberContextUsageForJob(jobId, contextUsage);
 
-  return formatChatJob(jobId, job, jobBody.model || null, { prompt: message, contextUsage });
+  return formatChatJob(jobId, job, jobBody.model || null, {
+    prompt: message,
+    contextUsage,
+    structuredOutput: body?.structuredOutput === true,
+  });
 }
 
 async function recordAssistantTurn(conversationId, config, fetchImpl, result) {
@@ -6724,6 +6783,7 @@ function buildGroundedSystemPrompt(message, voicePersona, sources) {
 const groundingSourcesByJobId = new Map();
 const promptContextByJobId = new Map();
 const contextUsageByJobId = new Map();
+const validationContractByJobId = new Map();
 const MAX_TRACKED_PROMPT_CONTEXTS = 250;
 
 function rememberPromptForJob(jobId, prompt) {
@@ -6767,6 +6827,23 @@ function lookupContextUsageForJob(jobId) {
 
 function forgetContextUsageForJob(jobId) {
   contextUsageByJobId.delete(String(jobId ?? "").trim());
+}
+
+function rememberValidationContractForJob(jobId, contract) {
+  const key = String(jobId ?? "").trim();
+  if (!key || !contract?.structuredOutput) return;
+  validationContractByJobId.set(key, { structuredOutput: true });
+  while (validationContractByJobId.size > MAX_TRACKED_PROMPT_CONTEXTS) {
+    validationContractByJobId.delete(validationContractByJobId.keys().next().value);
+  }
+}
+
+function lookupValidationContractForJob(jobId) {
+  return validationContractByJobId.get(String(jobId ?? "").trim()) ?? null;
+}
+
+function forgetValidationContractForJob(jobId) {
+  validationContractByJobId.delete(String(jobId ?? "").trim());
 }
 
 function trackGroundingSources(jobId, sources, config) {
@@ -6951,15 +7028,18 @@ export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = f
   const conversationId = options.conversationId ?? null;
   const prompt = String(options.message ?? "").trim() || lookupPromptForJob(jobId);
   const contextUsage = lookupContextUsageForJob(jobId);
+  const validationContract = lookupValidationContractForJob(jobId);
   const latest = await controlPlaneFetch(fetchImpl, config, `/v1/jobs/${encodeURIComponent(jobId)}`);
   const job = latest.job ?? latest;
   const formatted = formatChatJob(jobId, job, job.model ?? config.modelOverride ?? null, {
     prompt,
     contextUsage,
+    structuredOutput: validationContract?.structuredOutput === true,
   });
   if (["completed", "failed"].includes(String(formatted.status ?? "").toLowerCase())) {
     forgetPromptForJob(jobId);
     forgetContextUsageForJob(jobId);
+    forgetValidationContractForJob(jobId);
     logChatJobTerminalState(jobId, formatted);
   }
   if (formatted.status === "completed" && conversationId) {
@@ -7017,6 +7097,7 @@ export async function waitForChatJob(jobId, body, config, fetchImpl) {
       return latest;
     }
     if (latest.status === "failed") {
+      if (latest.quality_flags?.some((flag) => flag.severity === "reject")) return latest;
       throw httpError(502, latest.error || "MundusX job failed");
     }
     await delay(POLL_INTERVAL_MS);
@@ -7061,7 +7142,15 @@ function formatChatJob(jobId, job, fallbackModel, options = {}) {
   const repetitionFlags = job.status === "completed"
     ? detectDegenerateRepetitionQualityFlags(output)
     : [];
-  const qualityFlags = [...verifierFlags, ...codeFlags, ...repetitionFlags].filter(
+  const structuredFlags = job.status === "completed"
+    ? detectStructuredOutputQualityFlags(output, options.structuredOutput === true)
+    : [];
+  const finishReason = inferChatFinishReason(job, progress);
+  const tokenLimitFlags = job.status === "completed" && finishReason === "length" &&
+    (options.structuredOutput === true || requiresValidatedStreaming(options.prompt))
+    ? [{ code: "output_token_limit", severity: "reject", message: "MundusX reached the output token limit before completing a validated answer. Please retry." }]
+    : [];
+  const qualityFlags = [...verifierFlags, ...codeFlags, ...repetitionFlags, ...structuredFlags, ...tokenLimitFlags].filter(
     (flag, index, flags) => flags.findIndex((candidate) => candidate.code === flag.code) === index,
   );
   const rejectFlag = qualityFlags.find((flag) => flag.severity === "reject");
@@ -7083,7 +7172,22 @@ function formatChatJob(jobId, job, fallbackModel, options = {}) {
     graph_execution_enabled: Boolean(job.graph_execution_enabled),
     response: job.response ?? null,
     progress,
+    finish_reason: finishReason,
   };
+}
+
+function inferChatFinishReason(job, progress) {
+  const explicit = String(job?.finish_reason ?? job?.finishReason ?? "").toLowerCase();
+  if (["stop", "length"].includes(explicit)) return explicit;
+  const completedNodes = Array.isArray(progress?.nodes)
+    ? progress.nodes.filter((node) => node.status === "completed")
+    : [];
+  const exhausted = completedNodes.some((node) => {
+    const used = node.runtime_metrics?.eval_count;
+    const limit = node.effective_max_tokens;
+    return Number.isFinite(used) && Number.isFinite(limit) && limit > 0 && used >= limit;
+  });
+  return exhausted ? "length" : "stop";
 }
 
 function promoteSectionOutputWhenFinalIsThin(output, progress) {
@@ -8577,14 +8681,20 @@ function sendOpenAiJson(response, status, payload) {
 }
 
 function sendOpenAiStream(response, completion) {
+  startOpenAiStream(response, "validated");
+  response.end(openAiSseBody(completion));
+}
+
+function startOpenAiStream(response, mode) {
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "X-MundusX-Stream-Mode": mode,
   });
-  response.end(openAiSseBody(completion));
+  response.flushHeaders?.();
 }
 
 export function escapeHtml(value) {

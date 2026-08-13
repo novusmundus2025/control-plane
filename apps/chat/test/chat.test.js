@@ -26,15 +26,19 @@ import {
   needsGrounding,
   openAiModelsResponse,
   openAiSseBody,
+  openAiSseFrames,
   page,
   pollChatJob,
   redactSensitiveText,
   selectChatSkills,
+  requiresValidatedStreaming,
   submitChatJob,
   submitChatTurn,
   submitOpenAiChatCompletion,
+  streamOpenAiChatCompletion,
   waitForChatJob,
 } from "../src/main.js";
+import { detectStructuredOutputQualityFlags } from "../src/chat-quality.js";
 
 function plannerJobResponse(intents, jobId = "planner-test") {
   return jsonResponse({
@@ -2976,6 +2980,81 @@ test("Open WebUI adapter exposes a discoverable model and buffered SSE completio
   assert.match(body, /data: \[DONE\]/);
 });
 
+test("hybrid streaming buffers structured requests and chunks ordinary prose", () => {
+  assert.equal(requiresValidatedStreaming("Create a complete Java program"), true);
+  assert.equal(requiresValidatedStreaming("Return this as JSON"), true);
+  assert.equal(requiresValidatedStreaming("What do you think about learning?"), false);
+
+  const completion = {
+    id: "chatcmpl-hybrid",
+    created: 123,
+    choices: [{ message: { role: "assistant", content: "A ".repeat(140).trim() }, finish_reason: "stop" }],
+  };
+  const ordinary = openAiSseFrames(completion, { buffered: false });
+  const structured = openAiSseFrames(completion, { buffered: true });
+  assert.ok(ordinary.length > 2);
+  assert.equal(structured.length, 2);
+  assert.match(ordinary.at(-1), /"finish_reason":"stop"/);
+});
+
+test("validates requested JSON before a structured response can complete", () => {
+  assert.equal(detectStructuredOutputQualityFlags('{"ok":true}', true).length, 0);
+  assert.equal(detectStructuredOutputQualityFlags('```json\n{"ok":true}\n```', true).length, 0);
+  assert.equal(detectStructuredOutputQualityFlags('{"ok":', true)[0].code, "invalid_structured_output");
+  assert.equal(detectStructuredOutputQualityFlags("ordinary prose", false).length, 0);
+});
+
+test("OpenAI adapter preserves an upstream length finish reason", async () => {
+  const result = await submitOpenAiChatCompletion(
+    { messages: [{ role: "user", content: "Tell me a short story." }] },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url, init = {}) => {
+      if (url.endsWith("/v1/nodes?page=1&page_size=25")) return jsonResponse({ nodes: [] });
+      if (url.endsWith("/v1/jobs") && init.method === "POST") {
+        return jsonResponse({
+          job_id: "job-length",
+          job: { job_id: "job-length", status: "completed", output: "An intentionally partial story", finish_reason: "length" },
+        }, true, 202);
+      }
+      throw new Error(`unexpected URL ${url}`);
+    },
+  );
+  assert.equal(result.choices[0].finish_reason, "length");
+});
+
+test("streaming adapter opens SSE before the upstream answer is ready", async () => {
+  let releaseWeather;
+  const pendingWeather = new Promise((resolve) => { releaseWeather = resolve; });
+  const events = [];
+  const response = {
+    writableEnded: false,
+    writeHead: (status, headers) => events.push({ type: "headers", status, headers }),
+    flushHeaders: () => events.push({ type: "flush" }),
+    write: (value) => events.push({ type: "write", value }),
+    end(value) {
+      this.writableEnded = true;
+      events.push({ type: "end", value });
+    },
+  };
+  const streaming = streamOpenAiChatCompletion(
+    response,
+    { stream: true, messages: [{ role: "user", content: "Weather in Warsaw?" }] },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => pendingWeather,
+  );
+  assert.equal(events[0].type, "headers");
+  assert.equal(events[0].headers["X-MundusX-Stream-Mode"], "ordinary");
+  assert.equal(events[1].type, "flush");
+  releaseWeather(jsonResponse({
+    nearest_area: [{ areaName: [{ value: "Warsaw" }], country: [{ value: "Poland" }] }],
+    current_condition: [{
+      weatherDesc: [{ value: "Sunny" }], temp_C: "24", temp_F: "75", FeelsLikeC: "23", FeelsLikeF: "73", humidity: "40", windspeedKmph: "8",
+    }],
+  }));
+  await streaming;
+  assert.match(events.at(-1).value, /data: \[DONE\]/);
+});
+
 test("Hermes model discovery intentionally hides heterogeneous implementation details", () => {
   const result = openAiModelsResponse(configFromEnv({ MUNDUSX_CHAT_MODEL: "physical/private-model" }));
   assert.deepEqual(result.data, [{
@@ -4706,6 +4785,32 @@ test("submitChatTurn retries malformed math output before completing", async () 
   assert.match(prompts[1], /internal validation retry/i);
   assert.equal(result.status, "completed");
   assert.match(result.output, /60 degrees/);
+});
+
+test("OpenAI adapter retries malformed requested JSON before completing", async () => {
+  let attempts = 0;
+  const result = await submitOpenAiChatCompletion(
+    {
+      messages: [{ role: "user", content: "Return the customer record." }],
+      response_format: { type: "json_object" },
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url, init = {}) => {
+      if (url.startsWith("https://uat.mundusx.ai/v1/nodes")) return jsonResponse({ items: [] });
+      assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
+      attempts += 1;
+      return jsonResponse({
+        job_id: `job-json-${attempts}`,
+        job: {
+          job_id: `job-json-${attempts}`,
+          status: "completed",
+          output: attempts === 1 ? '{"name":"Ada"' : '{"name":"Ada"}',
+        },
+      });
+    },
+  );
+  assert.equal(attempts, 2);
+  assert.deepEqual(JSON.parse(result.choices[0].message.content), { name: "Ada" });
 });
 
 test("pollChatJob rejects a repeated prose loop after a valid fenced Java program", async () => {
