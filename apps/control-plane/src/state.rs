@@ -428,7 +428,18 @@ impl ControlPlaneState {
                             .constraints
                             .push(format!("planner_degraded:{reason}"));
                     }
-                    plan = external.plan;
+                    if external_plan_preserves_explicit_decomposition(
+                        &request,
+                        &plan,
+                        &external.plan,
+                    ) {
+                        plan = external.plan;
+                    } else {
+                        scheduling_requirements.constraints.push(
+                            "planner_fallback:external_plan_collapsed_explicit_decomposition"
+                                .to_string(),
+                        );
+                    }
                 }
                 Ok(_) => {}
                 Err(error) => scheduling_requirements
@@ -2198,6 +2209,16 @@ impl ControlPlaneState {
         self.reevaluate_queued_jobs();
         record
     }
+}
+
+fn external_plan_preserves_explicit_decomposition(
+    request: &JobRequest,
+    deterministic_plan: &JobPlan,
+    external_plan: &JobPlan,
+) -> bool {
+    request.execution_mode != JobExecutionMode::Decompose
+        || deterministic_plan.jobs.len() <= 1
+        || external_plan.jobs.len() > 1
 }
 
 fn graph_execution_allowed(
@@ -7490,6 +7511,34 @@ mod tests {
         assert!(final_merge
             .depends_on
             .contains(&"job.code_review".to_string()));
+    }
+
+    #[test]
+    fn explicit_decomposition_rejects_an_external_single_job_collapse() {
+        let mut request = classification_request(
+            "i need nodejs program using express, i want api to produce CRUD operations to a customer model, with md documentation and code review",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        let classification = classify_job_request(&request);
+        let deterministic = plan_job_request(&request, &classification);
+        let collapsed = JobPlan {
+            plan_id: "external-single".to_string(),
+            strategy: "langgraph".to_string(),
+            summary: "External planner collapsed the request.".to_string(),
+            jobs: vec![deterministic.jobs[0].clone()],
+        };
+
+        assert!(deterministic.jobs.len() > 1);
+        assert!(!external_plan_preserves_explicit_decomposition(
+            &request,
+            &deterministic,
+            &collapsed,
+        ));
+        assert!(external_plan_preserves_explicit_decomposition(
+            &request,
+            &deterministic,
+            &deterministic,
+        ));
     }
 
     #[test]
