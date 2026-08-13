@@ -4320,6 +4320,30 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
         );
     }
 
+    if contains_any(
+        &lower,
+        &["code review", "review the code", "review my code"],
+    ) {
+        let implementation_dependencies = jobs
+            .iter()
+            .filter(|job| job.responsibility == "backend" || job.responsibility == "frontend")
+            .map(|job| job.id.clone())
+            .collect::<Vec<_>>();
+        push_planned_job(
+            &mut jobs,
+            "job.code_review",
+            "Code review",
+            "validation",
+            if implementation_dependencies.is_empty() {
+                vec!["job.scope".to_string()]
+            } else {
+                implementation_dependencies
+            },
+            "Review the completed implementation for correctness, contract coverage, maintainability, and concrete defects. Do not rewrite unrelated code.",
+            "Code review is a validation responsibility and must wait for implementation output.",
+        );
+    }
+
     if classification.task_type == RequestTaskType::Document
         || contains_any(&lower, &["docs", "documentation", "readme"])
     {
@@ -7418,6 +7442,54 @@ mod tests {
         assert!(final_merge.depends_on.contains(&"job.backend".to_string()));
         assert!(final_merge.depends_on.contains(&"job.frontend".to_string()));
         assert!(final_merge.depends_on.contains(&"job.tests".to_string()));
+    }
+
+    #[test]
+    fn plans_word_only_crud_documentation_and_review_as_dependency_aware_work() {
+        let request = classification_request(
+            "i need nodejs program using express, i want api to produce CRUD operations to a customer model (firstname, lastname, birthdate, gender), with md documentation and code review",
+        );
+        let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
+
+        assert_eq!(classification.task_type, RequestTaskType::Coding);
+        assert_eq!(plan.strategy, "responsibility_based");
+        let backend = plan
+            .jobs
+            .iter()
+            .find(|job| job.id == "job.backend")
+            .expect("backend");
+        let documentation = plan
+            .jobs
+            .iter()
+            .find(|job| job.id == "job.documentation")
+            .expect("documentation");
+        let review = plan
+            .jobs
+            .iter()
+            .find(|job| job.id == "job.code_review")
+            .expect("review");
+        let tests = plan
+            .jobs
+            .iter()
+            .find(|job| job.id == "job.tests")
+            .expect("tests");
+        let final_merge = plan
+            .jobs
+            .iter()
+            .find(|job| job.id == "job.final_merge")
+            .expect("final merge");
+
+        assert_eq!(backend.depends_on, vec!["job.scope".to_string()]);
+        assert_eq!(documentation.depends_on, vec!["job.scope".to_string()]);
+        assert_eq!(review.depends_on, vec!["job.backend".to_string()]);
+        assert_eq!(tests.depends_on, vec!["job.backend".to_string()]);
+        assert!(final_merge
+            .depends_on
+            .contains(&"job.documentation".to_string()));
+        assert!(final_merge
+            .depends_on
+            .contains(&"job.code_review".to_string()));
     }
 
     #[test]
