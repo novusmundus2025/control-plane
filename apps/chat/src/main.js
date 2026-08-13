@@ -8067,7 +8067,7 @@ export function inferChatRequestTimeoutSeconds(
   if (explicit > 0) return explicit;
   const baseline = positiveInteger(defaultSeconds, DEFAULT_TIMEOUT_SECONDS);
   return chooseChatExecutionMode(message, requestedMode) === "decompose"
-    ? Math.max(baseline, 300)
+    ? Math.max(baseline, 600)
     : baseline;
 }
 

@@ -629,9 +629,9 @@ test("uses word-only CRUD deliverables to select coherent or parallel code execu
   assert.equal(calls[1].max_tokens, 4096);
   assert.match(calls[1].system_prompt, /complete compilable source file/i);
   assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90), 90);
-  assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90), 300);
+  assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90), 600);
   assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, 120, 90), 120);
-  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90, "decompose"), 300);
+  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90, "decompose"), 600);
   assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90, "single"), 90);
 });
 
