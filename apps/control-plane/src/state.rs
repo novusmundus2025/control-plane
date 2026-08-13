@@ -1534,7 +1534,10 @@ impl ControlPlaneState {
                     if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref()) {
                         apply_reducer_scheduler_score(&mut decision, node);
                     }
-                    if graph_node_latency_weight(&job.graph, active_graph_node_id.as_deref()) > 1 {
+                    if !graph_node_is_merge(&job.graph, active_graph_node_id.as_deref())
+                        && graph_node_latency_weight(&job.graph, active_graph_node_id.as_deref())
+                            > 1
+                    {
                         if let Some(best_decision) = self
                             .best_scheduler_decision_for_active_graph_node(
                                 job,
@@ -9668,6 +9671,7 @@ mod tests {
         state.heartbeat(low_vram_cuda_heartbeat("node-weak", "1"), "1".to_string());
         let mut request = reducer_fixture_request();
         request.execution_mode = JobExecutionMode::Decompose;
+        request.model = None;
         state.submit_job(request, "2".to_string());
 
         for updated_at in ["3", "4", "5", "6"] {
@@ -9692,8 +9696,32 @@ mod tests {
                 .expect("section completion");
         }
 
+        let cuda_node = state.nodes.get_mut("node-weak").expect("cuda node");
+        cuda_node.available_memory_mb = 2_898;
+        cuda_node.available_gpu_percent = 70;
+        let cuda_health = cuda_node.worker_health.as_mut().expect("cuda health");
+        cuda_health.model_name = Some("UD-IQ2_M".to_string());
+        cuda_health.cuda_device_name = Some("NVIDIA RTX 5090".to_string());
+        cuda_health.notes.clear();
+        cuda_health.capabilities.max_context_tokens = Some(1_536);
+        cuda_health.capabilities.roles.push(NodeRole::Coding);
+        cuda_health.capabilities.roles.push(NodeRole::Reducer);
+        cuda_health.capabilities.roles.push(NodeRole::Synthesizer);
+
         state.register(m_series_registration("node-strong"));
-        state.heartbeat(ready_heartbeat("node-strong", "7"), "7".to_string());
+        let mut mlx_heartbeat = ready_heartbeat("node-strong", "7");
+        mlx_heartbeat.available_memory_mb = 8_192;
+        mlx_heartbeat.worker_health.model_name =
+            Some("mlx-community/Qwen2.5-3B-Instruct-4bit".to_string());
+        mlx_heartbeat.worker_health.runtime_mode = "mlx".to_string();
+        mlx_heartbeat.worker_health.capabilities.max_context_tokens = Some(8_192);
+        mlx_heartbeat.worker_health.capabilities.roles = vec![
+            NodeRole::Batch,
+            NodeRole::Chat,
+            NodeRole::ChunkAnalysis,
+            NodeRole::Coding,
+        ];
+        state.heartbeat(mlx_heartbeat, "7".to_string());
         state
             .jobs
             .get_mut("job-1")
@@ -9705,6 +9733,12 @@ mod tests {
             })
             .expect("final merge")
             .assigned_node_id = Some("node-weak".to_string());
+
+        assert_eq!(
+            best_reducer_node_id_for_job(&state, state.jobs.get("job-1").expect("decomposed job"))
+                .as_deref(),
+            Some("node-strong")
+        );
 
         assert!(state.claim_job("node-weak", "8".to_string()).job.is_none());
         let reducer_claim = state
