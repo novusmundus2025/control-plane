@@ -1077,6 +1077,14 @@ impl ControlPlaneState {
         job: &JobRecord,
         active_graph_node_id: Option<&str>,
     ) -> bool {
+        // Reducer strength already accounts for runtime health and acceleration. A healthy
+        // strong reducer can synthesize a merge even when an older worker registration did not
+        // advertise the explicit synthesizer role yet.
+        if graph_node_is_merge(&job.graph, active_graph_node_id)
+            && reducer_profile(node) == ReducerProfile::Strong
+        {
+            return true;
+        }
         // A compact node cannot credibly regenerate a reducer/synthesizer answer, but it can
         // safely trigger the deterministic section-preserving fallback below. Keep this path
         // claimable so completed graph work is returned instead of expiring in the queue.
@@ -3160,8 +3168,27 @@ fn graph_node_execution_prompt(
     };
 
     if graph_node_is_merge(&job.graph, Some(active_node_id)) {
+        let completed_dependency_count = node
+            .depends_on
+            .iter()
+            .filter(|dependency_id| {
+                job.graph.results.iter().any(|result| {
+                    result.node_id == **dependency_id
+                        && result.status == JobGraphNodeStatus::Completed
+                        && result.verification_status == JobResultVerificationStatus::Accepted
+                })
+            })
+            .count()
+            .max(1);
         let max_section_chars = assigned_node
-            .map(reducer_section_char_limit)
+            .map(|assigned_node| {
+                reducer_section_char_limit(assigned_node).min(
+                    reducer_total_input_char_budget(
+                        assigned_node,
+                        graph_node_max_tokens(job, active_node_id, Some(assigned_node)),
+                    ) / completed_dependency_count,
+                )
+            })
             .unwrap_or(REDUCER_SECTION_CHARS_STANDARD);
         let sections = node
             .depends_on
@@ -3311,7 +3338,13 @@ fn node_generation_ceiling(node: Option<&NodeRecord>) -> u32 {
             .and_then(|health| health.model_name.as_deref()),
     );
     let memory_ceiling = memory_generation_ceiling(node.available_memory_mb);
-    model_ceiling.min(memory_ceiling)
+    let context_ceiling = node
+        .worker_health
+        .as_ref()
+        .and_then(|health| health.capabilities.max_context_tokens)
+        .map(|limit| limit.saturating_sub(512).max(1))
+        .unwrap_or(u32::MAX);
+    model_ceiling.min(memory_ceiling).min(context_ceiling)
 }
 
 fn scale_auto_generation_budget(baseline: u32, ceiling: u32) -> u32 {
@@ -3325,7 +3358,7 @@ fn scale_auto_generation_budget(baseline: u32, ceiling: u32) -> u32 {
         1_537..=2_048 => 4_096,
         _ => 8_192,
     };
-    target.min(ceiling).max(baseline).max(1)
+    target.max(baseline).min(ceiling).max(1)
 }
 
 fn job_max_tokens_for_node(job: &JobRecord, claiming_node: &NodeRecord) -> u32 {
@@ -3458,6 +3491,16 @@ fn graph_node_max_tokens(
         scale_auto_generation_budget(baseline, node_generation_ceiling(claiming_node))
     } else {
         stage_budget
+    };
+    let budget = if is_synthesis || is_reduction {
+        let context_output_ceiling = claiming_node
+            .and_then(|node| node.worker_health.as_ref())
+            .and_then(|health| health.capabilities.max_context_tokens)
+            .map(|limit| limit.saturating_div(2).max(1))
+            .unwrap_or(u32::MAX);
+        budget.min(context_output_ceiling)
+    } else {
+        budget
     };
     if job.plan.strategy == "dynamic_research"
         && node.responsibility == "chunk_analysis"
@@ -3775,6 +3818,22 @@ fn reducer_section_char_limit(node: &NodeRecord) -> usize {
         ReducerProfile::Standard => REDUCER_SECTION_CHARS_STANDARD,
         ReducerProfile::Compact => REDUCER_SECTION_CHARS_COMPACT,
     }
+}
+
+fn reducer_total_input_char_budget(node: &NodeRecord, output_tokens: u32) -> usize {
+    const SYNTHESIS_INSTRUCTION_RESERVE_TOKENS: u32 = 768;
+    const APPROX_CHARS_PER_TOKEN: u32 = 3;
+    node.worker_health
+        .as_ref()
+        .and_then(|health| health.capabilities.max_context_tokens)
+        .map(|context_tokens| {
+            context_tokens
+                .saturating_sub(output_tokens)
+                .saturating_sub(SYNTHESIS_INSTRUCTION_RESERVE_TOKENS)
+                .saturating_mul(APPROX_CHARS_PER_TOKEN) as usize
+        })
+        .unwrap_or(REDUCER_SECTION_CHARS_STANDARD * 4)
+        .max(256)
 }
 
 fn reducer_profile(node: &NodeRecord) -> ReducerProfile {
@@ -9345,8 +9404,16 @@ mod tests {
         assert!(!claim.prompt.contains("Do not return output"));
         assert!(!claim.prompt.contains("llama.cpp mode=cuda"));
         assert!(!claim.prompt.contains("C:\\models\\demo.gguf"));
-        assert!(claim.prompt.len() > 20_000);
-        assert!(claim.prompt.len() < 26_000);
+        // The combined dependency payload must leave room for synthesis output inside the
+        // worker's advertised context instead of independently spending the per-section cap.
+        assert!(claim.prompt.len() > 12_000);
+        assert!(claim.prompt.len() < 18_000);
+    }
+
+    #[test]
+    fn auto_generation_budget_never_exceeds_worker_ceiling() {
+        assert_eq!(scale_auto_generation_budget(4_096, 1_024), 1_024);
+        assert_eq!(scale_auto_generation_budget(512, 2_048), 1_024);
     }
 
     #[test]
