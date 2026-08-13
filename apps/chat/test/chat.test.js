@@ -19,6 +19,7 @@ import {
   extractPolynomialSubtraction,
   extractWeatherLocation,
   extractWeatherDayOffset,
+  inferChatRequestTimeoutSeconds,
   isFocusedQuotedRequest,
   normalizeWeatherWordTypos,
   fetchChatConversation,
@@ -598,6 +599,40 @@ test("treats an example Node Express CRUD API as a complete code project", async
   assert.equal(calls[0].execution_mode, "single");
   assert.equal(calls[0].max_tokens, 4096);
   assert.match(calls[0].system_prompt, /complete compilable source file/i);
+});
+
+test("uses word-only CRUD deliverables to select coherent or parallel code execution", async () => {
+  const calls = [];
+  const fetchImpl = async (_url, init) => {
+    calls.push(JSON.parse(init.body));
+    return jsonResponse({
+      job_id: `job-natural-crud-${calls.length}`,
+      job: { job_id: `job-natural-crud-${calls.length}`, status: "queued", graph: { nodes: [] } },
+    });
+  };
+  const basePrompt = "i need nodejs program using express, i want api to produce CRUD operations to a customer model (firstname, lastname, birthdate, gender)";
+
+  await submitChatJob(
+    { message: basePrompt },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+  await submitChatJob(
+    { message: `${basePrompt}, with md documentation and code review` },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(calls[0].execution_mode, "single");
+  assert.equal(calls[0].max_tokens, 4096);
+  assert.equal(calls[1].execution_mode, "decompose");
+  assert.equal(calls[1].max_tokens, 4096);
+  assert.match(calls[1].system_prompt, /complete compilable source file/i);
+  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90), 90);
+  assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90), 300);
+  assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, 120, 90), 120);
+  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90, "decompose"), 300);
+  assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90, "single"), 90);
 });
 
 test("returns a complete deterministic Node Express MySQL customer CRUD project", async () => {

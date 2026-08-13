@@ -3120,7 +3120,12 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
       temperature: body?.temperature,
       topP: body?.top_p,
       maxTokens: body?.max_tokens,
-      timeoutSeconds: body?.timeout_seconds,
+      timeoutSeconds: inferChatRequestTimeoutSeconds(
+        messages[lastUserIndex].content,
+        body?.timeout_seconds,
+        config.defaultTimeoutSeconds,
+        body?.execution_mode ?? "auto",
+      ),
       conversationId: body?.conversation_id ?? body?.metadata?.conversation_id,
       structuredOutput: Boolean(body?.response_format) || /\bjson\b/i.test(messages[lastUserIndex].content),
     },
@@ -3636,6 +3641,9 @@ function shouldUseSingleCodeExecution(message) {
   const lower = String(message ?? "").toLowerCase();
   if (!looksLikeCompleteProgramRequest(lower)) {
     return false;
+  }
+  if (looksLikeNaturalCodeProjectRequest(lower) && !looksLikeMultiDeliverableRequest(lower)) {
+    return true;
   }
   if (message.length <= 420 && looksLikeCodeProjectRequest(lower) && /\b(?:simple|example)\b/i.test(lower)) {
     return true;
@@ -7913,6 +7921,7 @@ function looksLikeMultiDeliverableRequest(lower) {
     "implementation",
     "tests",
     "documentation",
+    "code review",
     "explanation",
     "usage notes",
   ];
@@ -8045,7 +8054,21 @@ function looksLikeCompleteProgramRequest(lower) {
       "update",
       "student",
     ])
-  ) || looksLikeCodeProjectRequest(lower);
+  ) || looksLikeCodeProjectRequest(lower) || looksLikeNaturalCodeProjectRequest(lower);
+}
+
+export function inferChatRequestTimeoutSeconds(
+  message,
+  requestedSeconds,
+  defaultSeconds = DEFAULT_TIMEOUT_SECONDS,
+  requestedMode = "auto",
+) {
+  const explicit = positiveInteger(requestedSeconds, 0);
+  if (explicit > 0) return explicit;
+  const baseline = positiveInteger(defaultSeconds, DEFAULT_TIMEOUT_SECONDS);
+  return chooseChatExecutionMode(message, requestedMode) === "decompose"
+    ? Math.max(baseline, 300)
+    : baseline;
 }
 
 function looksLikeCodeProjectRequest(lower) {
@@ -8055,6 +8078,14 @@ function looksLikeCodeProjectRequest(lower) {
   const hasRuntime = /\b(?:node(?:\.?js)?|express|javascript|typescript|python|java|spring|flask|fastapi|go|rust|c#|\.net)\b/i.test(text);
   const hasProjectScope = /\b(?:crud|database|mysql|postgres(?:ql)?|mongodb|rest(?:ful)?|endpoint|route|api)\b/i.test(text);
   return asksForCode && hasRuntime && hasProjectScope;
+}
+
+function looksLikeNaturalCodeProjectRequest(lower) {
+  const text = String(lower ?? "");
+  const naturalRequest = /\b(?:i\s+)?(?:need|want)\b[\s\S]{0,80}\b(?:program|api|application|app|service)\b/i.test(text);
+  const hasRuntime = /\b(?:node(?:\.?js)?|express|javascript|typescript|python|java|spring|flask|fastapi|go|rust|c#|\.net)\b/i.test(text);
+  const hasProjectScope = /\b(?:crud|database|mysql|postgres(?:ql)?|mongodb|rest(?:ful)?|endpoint|route|api)\b/i.test(text);
+  return naturalRequest && hasRuntime && hasProjectScope;
 }
 
 function looksLikeMathRequest(lower) {

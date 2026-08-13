@@ -256,7 +256,10 @@ function isCompleteCodeRequest(promptValue) {
     /\b(?:code|api|backend|server|service|application|app)\b/i.test(prompt) &&
     /\b(?:node(?:\.?js)?|express|javascript|typescript|python|java|spring|flask|fastapi|go|rust|c#|\.net)\b/i.test(prompt) &&
     /\b(?:crud|database|mysql|postgres(?:ql)?|mongodb|rest(?:ful)?|endpoint|route|api)\b/i.test(prompt);
-  return explicitComplete || codeProject;
+  const naturalCodeProject = /\b(?:i\s+)?(?:need|want)\b[\s\S]{0,80}\b(?:program|api|application|app|service)\b/i.test(prompt) &&
+    /\b(?:node(?:\.?js)?|express|javascript|typescript|python|java|spring|flask|fastapi|go|rust|c#|\.net)\b/i.test(prompt) &&
+    /\b(?:crud|database|mysql|postgres(?:ql)?|mongodb|rest(?:ful)?|endpoint|route|api)\b/i.test(prompt);
+  return explicitComplete || codeProject || naturalCodeProject;
 }
 
 function extractPrimaryFencedSource(outputValue, promptValue = "") {
