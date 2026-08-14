@@ -140,12 +140,15 @@ pub fn plan_from_env(
     request: &JobRequest,
     classification: &RequestClassification,
     base_requirements: &JobSchedulingRequirements,
+    capability_summary: &Value,
 ) -> Result<Option<PlannerPlanResult>, String> {
     let Some(config) = PlannerProbeConfig::from_env() else {
         return Ok(None);
     };
-    let response = request_plan(&config, request, classification)?;
-    Ok(Some(response_to_plan(response, request, base_requirements)))
+    let response = request_plan(&config, request, classification, capability_summary)?;
+    let result = response_to_plan(response, request, base_requirements);
+    validate_external_plan(&result.plan)?;
+    Ok(Some(result))
 }
 
 pub fn planner_service_status_from_env() -> PlannerServiceStatus {
@@ -181,7 +184,7 @@ pub fn planner_service_status_from_env() -> PlannerServiceStatus {
     };
     let classification = RequestClassification::default();
     let started = Instant::now();
-    match request_plan(&config, &request, &classification) {
+    match request_plan(&config, &request, &classification, &json!({})) {
         Ok(response) => PlannerServiceStatus {
             enabled: true,
             url_configured: true,
@@ -215,6 +218,7 @@ fn request_plan(
     config: &PlannerProbeConfig,
     request: &JobRequest,
     classification: &RequestClassification,
+    capability_summary: &Value,
 ) -> Result<PlannerResponseWire, String> {
     let parsed = parse_planner_url(&config.url)?;
     let body = json!({
@@ -222,7 +226,7 @@ fn request_plan(
         "prompt": request.prompt,
         "model": request.model,
         "classification": classification,
-        "available_capability_summary": {},
+        "available_capability_summary": capability_summary,
         "policy": {
             "preferred_backend": request.preferred_backend,
             "runtime_mode": request.runtime_mode,
@@ -258,6 +262,64 @@ fn request_plan(
     }?;
     serde_json::from_str(&response)
         .map_err(|error| format!("planner_response_decode_failed: {error}"))
+}
+
+fn validate_external_plan(plan: &JobPlan) -> Result<(), String> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    if plan.jobs.is_empty() {
+        return Err("planner_invalid_graph:empty".to_string());
+    }
+    if plan.jobs.len() > 24 {
+        return Err("planner_invalid_graph:too_many_steps".to_string());
+    }
+
+    let ids = plan
+        .jobs
+        .iter()
+        .map(|job| job.id.as_str())
+        .collect::<BTreeSet<_>>();
+    if ids.len() != plan.jobs.len() {
+        return Err("planner_invalid_graph:duplicate_step_id".to_string());
+    }
+    if plan.jobs.iter().any(|job| {
+        job.depends_on
+            .iter()
+            .any(|dependency| dependency == &job.id || !ids.contains(dependency.as_str()))
+    }) {
+        return Err("planner_invalid_graph:unknown_or_self_dependency".to_string());
+    }
+
+    let mut indegree = plan
+        .jobs
+        .iter()
+        .map(|job| (job.id.as_str(), job.depends_on.len()))
+        .collect::<BTreeMap<_, _>>();
+    let mut ready = indegree
+        .iter()
+        .filter_map(|(id, degree)| (*degree == 0).then_some(*id))
+        .collect::<Vec<_>>();
+    let mut visited = 0;
+    while let Some(completed) = ready.pop() {
+        visited += 1;
+        for job in &plan.jobs {
+            if job
+                .depends_on
+                .iter()
+                .any(|dependency| dependency == completed)
+            {
+                let degree = indegree.get_mut(job.id.as_str()).expect("known step");
+                *degree -= 1;
+                if *degree == 0 {
+                    ready.push(job.id.as_str());
+                }
+            }
+        }
+    }
+    if visited != plan.jobs.len() {
+        return Err("planner_invalid_graph:cycle".to_string());
+    }
+    Ok(())
 }
 
 fn exchange_http<S: Read + Write>(mut stream: S, request: &[u8]) -> Result<String, String> {
@@ -471,6 +533,20 @@ mod tests {
         LOCK.get_or_init(|| Mutex::new(()))
     }
 
+    fn planned_job(id: &str, depends_on: Vec<&str>) -> PlannedJob {
+        PlannedJob {
+            id: id.to_string(),
+            name: id.to_string(),
+            responsibility: "test".to_string(),
+            depends_on: depends_on.into_iter().map(str::to_string).collect(),
+            required_output: "test output".to_string(),
+            reason: "test plan".to_string(),
+            recommended_max_tokens: None,
+            minimum_max_tokens: None,
+            workload: StepWorkloadRequirements::default(),
+        }
+    }
+
     #[test]
     fn planner_status_reports_disabled_without_url() {
         let _guard = env_lock().lock().expect("env lock");
@@ -559,6 +635,48 @@ mod tests {
                 port: 443,
                 path: "/v1/plan".to_string(),
             }
+        );
+    }
+
+    #[test]
+    fn accepts_valid_external_dag() {
+        let plan = JobPlan {
+            plan_id: "plan-test".to_string(),
+            strategy: "planner".to_string(),
+            summary: "test".to_string(),
+            jobs: vec![
+                planned_job("scope", vec![]),
+                planned_job("implementation", vec!["scope"]),
+                planned_job("documentation", vec!["scope"]),
+                planned_job("synthesize", vec!["implementation", "documentation"]),
+            ],
+        };
+
+        assert!(validate_external_plan(&plan).is_ok());
+    }
+
+    #[test]
+    fn rejects_external_dag_cycles_and_unknown_dependencies() {
+        let cyclic = JobPlan {
+            plan_id: "plan-cycle".to_string(),
+            strategy: "planner".to_string(),
+            summary: "cycle".to_string(),
+            jobs: vec![planned_job("a", vec!["b"]), planned_job("b", vec!["a"])],
+        };
+        assert_eq!(
+            validate_external_plan(&cyclic),
+            Err("planner_invalid_graph:cycle".to_string())
+        );
+
+        let unknown = JobPlan {
+            plan_id: "plan-unknown".to_string(),
+            strategy: "planner".to_string(),
+            summary: "unknown".to_string(),
+            jobs: vec![planned_job("a", vec!["missing"])],
+        };
+        assert_eq!(
+            validate_external_plan(&unknown),
+            Err("planner_invalid_graph:unknown_or_self_dependency".to_string())
         );
     }
 }

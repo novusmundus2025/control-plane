@@ -405,15 +405,18 @@ impl ControlPlaneState {
         let classification = classify_job_request(&request);
         let mut scheduling_requirements = scheduling_requirements_for(&request, &classification);
         let compatible_ready_nodes = self.compatible_ready_node_count_for_request(&request);
+        let planner_capability_summary = self.planner_capability_summary(&request);
         let (compatible_research_nodes, research_context_budget) =
             self.compatible_ready_research_profile(&request);
         let mut plan =
             plan_job_request_for_submission(&request, &classification, compatible_ready_nodes);
+        let mut external_plan_accepted = false;
         if request.execution_mode != JobExecutionMode::Single {
             match crate::planner_client::plan_from_env(
                 &request,
                 &classification,
                 &scheduling_requirements,
+                &planner_capability_summary,
             ) {
                 Ok(Some(external)) if !external.plan.jobs.is_empty() => {
                     scheduling_requirements = external.requirements;
@@ -434,6 +437,7 @@ impl ControlPlaneState {
                         &external.plan,
                     ) {
                         plan = external.plan;
+                        external_plan_accepted = true;
                     } else {
                         scheduling_requirements.constraints.push(
                             "planner_fallback:external_plan_collapsed_explicit_decomposition"
@@ -466,14 +470,16 @@ impl ControlPlaneState {
                     .and_then(|health| health.capabilities.max_context_tokens)
             })
             .max();
-        plan = dynamically_shape_research_plan_with_context(
-            &request,
-            &classification,
-            compatible_research_nodes,
-            research_context_budget,
-            credible_synthesizer_context,
-            plan,
-        );
+        if !external_plan_accepted {
+            plan = dynamically_shape_research_plan_with_context(
+                &request,
+                &classification,
+                compatible_research_nodes,
+                research_context_budget,
+                credible_synthesizer_context,
+                plan,
+            );
+        }
         let fallback_decision = fallback_decision_for(&scheduling_requirements);
         if request.execution_mode == JobExecutionMode::Single
             && plan.strategy == "complete_code_generation"
@@ -718,6 +724,62 @@ impl ControlPlaneState {
                     && Self::node_worker_can_run_request(node, request)
             })
             .count()
+    }
+
+    fn planner_capability_summary(&self, request: &JobRequest) -> serde_json::Value {
+        let mut backend_counts = BTreeMap::<String, u32>::new();
+        let mut capacity_counts = BTreeMap::<String, u32>::new();
+        let mut role_counts = BTreeMap::<String, u32>::new();
+        let mut tool_counts = BTreeMap::<String, u32>::new();
+        let mut eligible_nodes = 0_u32;
+        let mut eligible_parallel_slots = 0_u32;
+        let mut max_context_tokens = 0_u32;
+
+        for node in self.nodes.values().filter(|node| {
+            Self::node_is_schedulable_state(node)
+                && node.policy_allowed
+                && Self::node_backend_can_run_request(node.backend, request.preferred_backend)
+                && Self::node_worker_can_run_request(node, request)
+        }) {
+            let Some(health) = node.worker_health.as_ref() else {
+                continue;
+            };
+            eligible_nodes += 1;
+            *backend_counts
+                .entry(node.backend.as_str().to_string())
+                .or_default() += 1;
+            *capacity_counts
+                .entry(Self::capacity_class_for(node).as_str().to_string())
+                .or_default() += 1;
+            for role in &health.capabilities.roles {
+                *role_counts.entry(role.as_str().to_string()).or_default() += 1;
+            }
+            for tool in &health.capabilities.supported_tools {
+                let normalized = tool.trim().to_ascii_lowercase();
+                if !normalized.is_empty() && normalized.len() <= 64 {
+                    *tool_counts.entry(normalized).or_default() += 1;
+                }
+            }
+            max_context_tokens =
+                max_context_tokens.max(health.capabilities.max_context_tokens.unwrap_or_default());
+            let reported_slots = u32::from(health.parallel_slots.max(1))
+                .min(health.capabilities.max_parallel_jobs.max(1));
+            let active = self.active_assignment_count_for_node(&node.node_id) as u32;
+            eligible_parallel_slots =
+                eligible_parallel_slots.saturating_add(reported_slots.saturating_sub(active));
+        }
+
+        serde_json::json!({
+            "schema_version": 1,
+            "eligible_nodes": eligible_nodes,
+            "eligible_parallel_slots": eligible_parallel_slots,
+            "max_context_tokens": max_context_tokens,
+            "backend_counts": backend_counts,
+            "capacity_class_counts": capacity_counts,
+            "role_counts": role_counts,
+            "tool_counts": tool_counts,
+            "privacy": "aggregate_only_no_node_or_model_identifiers"
+        })
     }
 
     fn compatible_ready_research_profile(&self, request: &JobRequest) -> (usize, u32) {
@@ -1289,6 +1351,23 @@ impl ControlPlaneState {
         reasons.push(format!(
             "parallel_slots:{active_assignments}/{parallel_capacity}"
         ));
+
+        if job.graph_execution_enabled && active_graph_node_id.is_some() {
+            let running_sibling_nodes = job
+                .graph
+                .nodes
+                .iter()
+                .filter(|graph_node| graph_node.status == JobGraphNodeStatus::Running)
+                .filter_map(|graph_node| graph_node.assigned_node_id.as_deref())
+                .collect::<std::collections::BTreeSet<_>>();
+            if running_sibling_nodes.contains(node.node_id.as_str()) {
+                score -= 24;
+                reasons.push("parallel_sibling prefers an unused eligible node".to_string());
+            } else if !running_sibling_nodes.is_empty() {
+                score += 8;
+                reasons.push("parallel_sibling spreads independent work".to_string());
+            }
+        }
 
         let trust_bonus = node.trust.score as i32 / 5 - 10;
         score += trust_bonus;
@@ -8934,6 +9013,31 @@ mod tests {
             .iter()
             .filter(|job| job.responsibility == "chunk_analysis")
             .all(|job| job.workload.allowed_parallelism == 1));
+    }
+
+    #[test]
+    fn planner_capability_summary_is_aggregate_and_tracks_free_slots() {
+        let mut state = ControlPlaneState::default();
+        let mut first = ready_heartbeat("node-private-a", "1");
+        first.worker_health.parallel_slots = 2;
+        first.worker_health.capabilities.max_parallel_jobs = 2;
+        first.worker_health.capabilities.max_context_tokens = Some(8_192);
+        first.worker_health.capabilities.supported_tools = vec!["repository".to_string()];
+        let second = ready_heartbeat("node-private-b", "1");
+        state.heartbeat(first, "1".to_string());
+        state.heartbeat(second, "1".to_string());
+
+        let summary = state.planner_capability_summary(&classification_request("Explain MundusX"));
+
+        assert_eq!(summary["eligible_nodes"], 2);
+        assert_eq!(summary["eligible_parallel_slots"], 3);
+        assert_eq!(summary["max_context_tokens"], 8_192);
+        assert_eq!(summary["backend_counts"]["m"], 2);
+        assert_eq!(summary["tool_counts"]["repository"], 1);
+        let serialized = summary.to_string();
+        assert!(!serialized.contains("node-private-a"));
+        assert!(!serialized.contains("node-private-b"));
+        assert!(!serialized.contains("demo"));
     }
 
     #[test]
