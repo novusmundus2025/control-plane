@@ -1,14 +1,15 @@
+mod chat_gateway;
 mod contracts;
 mod migrations;
 mod planner_client;
 mod postgres_store;
 mod state;
 mod supabase;
+mod tools;
 
 use contracts::{
     is_trusted_identity_path, trust_path_label, AdmissionPolicyUpdate, AgentRegistration,
-    AppendChatMessageRequest, Backend, ChatCompletionChoice, ChatCompletionChoiceMessage,
-    ChatCompletionMundusX, ChatCompletionRequest, ChatCompletionResponse, ChatMessagesResponse,
+    AppendChatMessageRequest, Backend, ChatCompletionRequest, ChatMessagesResponse,
     CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord,
     JobRequest, JobStatus, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
     OperatorNodePolicyOverrideUpdate, RoutingMode, RuntimeMode, ToolRewardRequest,
@@ -380,6 +381,27 @@ fn json_response(status: &str, body: serde_json::Value) -> String {
     )
 }
 
+fn openai_error(message: &str) -> serde_json::Value {
+    serde_json::json!({
+        "error": {
+            "message": message,
+            "type": "mundusx_error",
+            "param": serde_json::Value::Null,
+            "code": serde_json::Value::Null
+        }
+    })
+}
+
+fn write_json_and_finish(stream: &mut TcpStream, status: &str, body: serde_json::Value) {
+    if let Err(error) = stream.write_all(json_response(status, body).as_bytes()) {
+        eprintln!("failed to write response: {error}");
+    }
+}
+
+fn write_chat_error(stream: &mut TcpStream, status: &str, message: &str) {
+    write_json_and_finish(stream, status, openai_error(message));
+}
+
 fn text_response(status: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -520,12 +542,13 @@ fn chat_messages_to_prompt(messages: &[contracts::ChatMessage]) -> (Option<Strin
 
     for message in messages {
         let role = message.role.trim().to_lowercase();
-        let content = message.content.trim();
+        let text = message.text();
+        let content = text.trim();
         if content.is_empty() {
             continue;
         }
 
-        if role == "system" {
+        if matches!(role.as_str(), "system" | "developer") {
             system_messages.push(content.to_string());
         } else {
             conversation_lines.push(format!("{role}: {content}"));
@@ -541,7 +564,7 @@ fn chat_messages_to_prompt(messages: &[contracts::ChatMessage]) -> (Option<Strin
     let prompt = if conversation_lines.is_empty() {
         messages
             .last()
-            .map(|message| message.content.clone())
+            .map(contracts::ChatMessage::text)
             .unwrap_or_default()
     } else {
         conversation_lines.join("\n")
@@ -5180,7 +5203,6 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
             | ("GET", "/v1/job-events")
             | ("GET", "/v1/credits")
             | ("POST", "/v1/jobs")
-            | ("POST", "/v1/chat/completions")
             | ("POST", "/v1/tool-rewards")
             | ("POST", "/v1/nodes/contribution-cap")
     )
@@ -5733,6 +5755,13 @@ fn handle_connection(
     }
 
     let response = match (request.method.as_str(), clean_path) {
+        ("GET", "/v1/models") => {
+            let environment = control_plane_environment_from_env(
+                std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
+            );
+            let model = chat_gateway::public_model_id(Some(&environment));
+            json_response("200 OK", chat_gateway::models_response(model))
+        }
         ("GET", "/") => {
             let snapshot = state.lock().expect("state lock");
             let sync_snapshot = sync_status.lock().expect("sync status lock").clone();
@@ -6391,21 +6420,21 @@ fn handle_connection(
         ("POST", "/v1/chat/completions") => {
             match serde_json::from_str::<ChatCompletionRequest>(&request.body) {
                 Ok(request_body) => {
-                    if request_body.stream.unwrap_or(false) {
-                        if let Err(error) = stream.write_all(
-                            json_response(
-                                "400 Bad Request",
-                                serde_json::json!({
-                                    "error": "streaming chat completions are not supported yet"
-                                }),
-                            )
-                            .as_bytes(),
-                        ) {
-                            eprintln!("failed to write response: {error}");
-                        }
-                        return;
+                    if let Err(error) = chat_gateway::validate_request(&request_body) {
+                        return write_chat_error(&mut stream, "400 Bad Request", &error);
                     }
-
+                    let environment = control_plane_environment_from_env(
+                        std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
+                    );
+                    let public_model = chat_gateway::public_model_id(Some(&environment));
+                    if let Err(error) =
+                        chat_gateway::validate_model(request_body.model.as_deref(), public_model)
+                    {
+                        return write_chat_error(&mut stream, "400 Bad Request", &error);
+                    }
+                    let completion_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
+                    let created = now_unix_seconds_u64();
+                    let wants_stream = request_body.stream.unwrap_or(false);
                     let (system_prompt, prompt) = chat_messages_to_prompt(&request_body.messages);
                     let (mode, system_prompt, max_tokens) = match apply_chat_mode(
                         request_body.mode.as_deref(),
@@ -6414,27 +6443,70 @@ fn handle_connection(
                     ) {
                         Ok(values) => values,
                         Err(error) => {
-                            if let Err(write_error) = stream.write_all(
-                                json_response(
-                                    "400 Bad Request",
-                                    serde_json::json!({ "error": error }),
-                                )
-                                .as_bytes(),
-                            ) {
-                                eprintln!("failed to write response: {write_error}");
-                            }
-                            return;
+                            return write_chat_error(&mut stream, "400 Bad Request", &error);
                         }
                     };
+                    if wants_stream {
+                        if let Err(error) = stream.write_all(
+                            chat_gateway::sse_start(&completion_id, created, public_model)
+                                .as_bytes(),
+                        ) {
+                            eprintln!("failed to start chat stream: {error}");
+                            return;
+                        }
+                        let _ = stream.flush();
+                    }
+
+                    match if mode.is_none() {
+                        tools::execute(&request_body.messages)
+                    } else {
+                        Ok(None)
+                    } {
+                        Ok(Some(tool)) => {
+                            let completion = chat_gateway::completion_response(
+                                &completion_id,
+                                created,
+                                public_model,
+                                &tool.content,
+                                "stop",
+                                None,
+                                Some(&tool),
+                            );
+                            if wants_stream {
+                                let _ = stream
+                                    .write_all(chat_gateway::sse_finish(&completion).as_bytes());
+                                return;
+                            }
+                            return write_json_and_finish(&mut stream, "200 OK", completion);
+                        }
+                        Ok(None) => {}
+                        Err(error) => {
+                            if wants_stream {
+                                let completion = chat_gateway::completion_response(
+                                    &completion_id,
+                                    created,
+                                    public_model,
+                                    &format!("MundusX tool request failed: {error}"),
+                                    "stop",
+                                    None,
+                                    None,
+                                );
+                                let _ = stream
+                                    .write_all(chat_gateway::sse_finish(&completion).as_bytes());
+                                return;
+                            }
+                            return write_chat_error(&mut stream, "502 Bad Gateway", &error);
+                        }
+                    }
                     let job_request = JobRequest {
-                        request_id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
+                        request_id: completion_id.clone(),
                         prompt,
                         preferred_backend: crate::contracts::Backend::Auto,
                         routing_mode: RoutingMode::Normal,
                         runtime_mode: RuntimeMode::Local,
-                        execution_mode: JobExecutionMode::Single,
+                        execution_mode: JobExecutionMode::Auto,
                         stream: false,
-                        model: request_body.model.clone(),
+                        model: None,
                         system_prompt,
                         max_tokens,
                         max_tokens_source: Some(
@@ -6472,33 +6544,69 @@ fn handle_connection(
                             note_supabase_failure(&sync_status, error);
                         }
                     }
+                    drop(guard);
 
-                    let response = ChatCompletionResponse {
-                        id: format!("chatcmpl-{}", Uuid::new_v4().simple()),
-                        object: "chat.completion".to_string(),
-                        created: now_unix_seconds_u64(),
-                        model: request_body.model.unwrap_or_else(|| "auto".to_string()),
-                        choices: vec![ChatCompletionChoice {
-                            index: 0,
-                            message: ChatCompletionChoiceMessage {
-                                role: "assistant".to_string(),
-                                content: String::new(),
+                    let completed_result = if wants_stream {
+                        chat_gateway::wait_for_job_with_keepalive(
+                            &state,
+                            &record.job_id,
+                            chat_gateway::timeout_from_env(),
+                            || {
+                                stream
+                                    .write_all(chat_gateway::sse_keep_alive().as_bytes())
+                                    .and_then(|_| stream.flush())
+                                    .map_err(|error| format!("chat stream disconnected: {error}"))
                             },
-                            finish_reason: "queued".to_string(),
-                        }],
-                        mundusx: ChatCompletionMundusX {
-                            job_id: record.job_id.clone(),
-                            request_id: record.request_id.clone(),
-                            status: record.status.to_string(),
-                        },
+                        )
+                    } else {
+                        chat_gateway::wait_for_job(
+                            &state,
+                            &record.job_id,
+                            chat_gateway::timeout_from_env(),
+                        )
                     };
-
-                    json_response("200 OK", serde_json::to_value(response).expect("json"))
+                    let completed = match completed_result {
+                        Ok(job) => job,
+                        Err(error) => {
+                            if wants_stream {
+                                let completion = chat_gateway::completion_response(
+                                    &completion_id,
+                                    created,
+                                    public_model,
+                                    &format!("MundusX request failed: {error}"),
+                                    "stop",
+                                    None,
+                                    None,
+                                );
+                                let _ = stream
+                                    .write_all(chat_gateway::sse_finish(&completion).as_bytes());
+                                return;
+                            }
+                            let status = if error.contains("timed out") {
+                                "504 Gateway Timeout"
+                            } else {
+                                "502 Bad Gateway"
+                            };
+                            return write_chat_error(&mut stream, status, &error);
+                        }
+                    };
+                    let content = completed.output.as_deref().unwrap_or_default();
+                    let completion = chat_gateway::completion_response(
+                        &completion_id,
+                        created,
+                        public_model,
+                        content,
+                        "stop",
+                        Some(&completed),
+                        None,
+                    );
+                    if wants_stream {
+                        let _ = stream.write_all(chat_gateway::sse_finish(&completion).as_bytes());
+                        return;
+                    }
+                    json_response("200 OK", completion)
                 }
-                Err(error) => json_response(
-                    "400 Bad Request",
-                    serde_json::json!({ "error": error.to_string() }),
-                ),
+                Err(error) => json_response("400 Bad Request", openai_error(&error.to_string())),
             }
         }
         ("POST", "/v1/jobs/complete") => match serde_json::from_str::<JobCompletion>(&request.body)
@@ -6744,6 +6852,8 @@ fn main() {
     println!("register: POST /v1/register");
     println!("heartbeat: POST /v1/heartbeat");
     println!("submit job: POST /v1/jobs");
+    println!("models: GET /v1/models");
+    println!("OpenAI chat: POST /v1/chat/completions");
     println!("claim job: GET /v1/jobs/next?node_id=...");
     println!("complete job: POST /v1/jobs/complete");
 
@@ -6752,13 +6862,16 @@ fn main() {
             Ok(stream) => {
                 let state = Arc::clone(&state);
                 let sync_status = Arc::clone(&sync_status);
-                handle_connection(
-                    stream,
-                    state,
-                    sync_status,
-                    supabase.as_ref(),
-                    storage_source,
-                );
+                let database = supabase.clone();
+                thread::spawn(move || {
+                    handle_connection(
+                        stream,
+                        state,
+                        sync_status,
+                        database.as_ref(),
+                        storage_source,
+                    );
+                });
             }
             Err(error) => eprintln!("incoming connection error: {error}"),
         }
@@ -6975,7 +7088,7 @@ mod tests {
     }
 
     #[test]
-    fn non_streaming_chat_completions_queue_local_runtime_jobs() {
+    fn non_streaming_chat_completions_wait_for_validated_local_runtime_output() {
         let state = Arc::new(Mutex::new(ControlPlaneState::default()));
         let sync_status = Arc::new(Mutex::new(SupabaseSyncStatus::disabled(
             StorageSource::LocalJsonOnly,
@@ -6984,6 +7097,7 @@ mod tests {
         let address = listener.local_addr().expect("listener address");
         let handler_state = Arc::clone(&state);
         let handler_sync_status = Arc::clone(&sync_status);
+        let completion_state = Arc::clone(&state);
 
         let handler = thread::spawn(move || {
             let (stream, _) = listener.accept().expect("accept request");
@@ -6994,6 +7108,17 @@ mod tests {
                 None,
                 StorageSource::LocalJsonOnly,
             );
+        });
+        let completer = thread::spawn(move || loop {
+            let mut guard = completion_state.lock().expect("state lock");
+            if let Some(job) = guard.jobs.values_mut().next() {
+                job.status = JobStatus::Completed;
+                job.output =
+                    Some("The current president is available from verified sources.".to_string());
+                break;
+            }
+            drop(guard);
+            thread::sleep(std::time::Duration::from_millis(10));
         });
 
         let body = serde_json::json!({
@@ -7018,9 +7143,11 @@ mod tests {
         let mut response = String::new();
         client.read_to_string(&mut response).expect("read response");
         handler.join().expect("handler completes");
+        completer.join().expect("completer finishes");
 
         assert!(response.starts_with("HTTP/1.1 200 OK"));
-        assert!(response.contains(r#""finish_reason":"queued""#));
+        assert!(response.contains(r#""finish_reason":"stop""#));
+        assert!(response.contains("The current president is available from verified sources."));
 
         let guard = state.lock().expect("state lock");
         let job = guard.jobs.values().next().expect("queued chat job");
@@ -7031,6 +7158,116 @@ mod tests {
             job.prompt,
             "user: Who is the current Philippines president?"
         );
+    }
+
+    #[test]
+    fn streaming_chat_completions_return_openai_sse_for_direct_tools() {
+        let state = Arc::new(Mutex::new(ControlPlaneState::default()));
+        let sync_status = Arc::new(Mutex::new(SupabaseSyncStatus::disabled(
+            StorageSource::LocalJsonOnly,
+        )));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let handler = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept request");
+            handle_connection(
+                stream,
+                state,
+                sync_status,
+                None,
+                StorageSource::LocalJsonOnly,
+            );
+        });
+        let body = serde_json::json!({
+            "model": "mundusx-agnostic",
+            "messages": [{"role": "user", "content": "How is the weather today?"}],
+            "stream": true
+        })
+        .to_string();
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        );
+        let mut client = TcpStream::connect(address).expect("connect to test listener");
+        client.write_all(request.as_bytes()).expect("write request");
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read response");
+        handler.join().expect("handler completes");
+
+        assert!(response.starts_with("HTTP/1.1 200 OK"));
+        assert!(response.contains("Content-Type: text/event-stream"));
+        assert!(response.contains(r#""role":"assistant""#));
+        assert!(response.contains("Which city or location would you like the weather for?"));
+        assert!(response.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn streaming_chat_opens_before_planner_job_completes() {
+        let state = Arc::new(Mutex::new(ControlPlaneState::default()));
+        let sync_status = Arc::new(Mutex::new(SupabaseSyncStatus::disabled(
+            StorageSource::LocalJsonOnly,
+        )));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let handler_state = Arc::clone(&state);
+        let completion_state = Arc::clone(&state);
+        let handler = thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept request");
+            handle_connection(
+                stream,
+                handler_state,
+                sync_status,
+                None,
+                StorageSource::LocalJsonOnly,
+            );
+        });
+        let completer = thread::spawn(move || {
+            thread::sleep(std::time::Duration::from_millis(250));
+            loop {
+                let mut guard = completion_state.lock().expect("state lock");
+                if let Some(job) = guard.jobs.values_mut().next() {
+                    job.status = JobStatus::Completed;
+                    job.output = Some("Planner result.".to_string());
+                    break;
+                }
+                drop(guard);
+                thread::sleep(std::time::Duration::from_millis(10));
+            }
+        });
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "Explain dependency injection."}],
+            "stream": true
+        })
+        .to_string();
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        );
+        let mut client = TcpStream::connect(address).expect("connect to test listener");
+        client
+            .set_read_timeout(Some(std::time::Duration::from_millis(150)))
+            .expect("set read timeout");
+        client.write_all(request.as_bytes()).expect("write request");
+        let mut first_bytes = [0_u8; 2048];
+        let first_count = client
+            .read(&mut first_bytes)
+            .expect("stream opens promptly");
+        let first = String::from_utf8_lossy(&first_bytes[..first_count]);
+        assert!(first.contains("Content-Type: text/event-stream"));
+        assert!(first.contains(r#""role":"assistant""#));
+        assert!(!first.contains("Planner result."));
+
+        client
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("extend read timeout");
+        let mut rest = String::new();
+        client
+            .read_to_string(&mut rest)
+            .expect("read completed stream");
+        handler.join().expect("handler completes");
+        completer.join().expect("completer finishes");
+        assert!(rest.contains("Planner result."));
+        assert!(rest.contains("data: [DONE]"));
     }
 
     #[test]
@@ -8874,6 +9111,12 @@ mod tests {
     #[test]
     fn protects_operator_cap_update_route() {
         assert!(requires_operator_auth("POST", "/v1/nodes/contribution-cap"));
+    }
+
+    #[test]
+    fn keeps_openai_client_routes_public() {
+        assert!(!requires_operator_auth("GET", "/v1/models"));
+        assert!(!requires_operator_auth("POST", "/v1/chat/completions"));
     }
 
     #[test]

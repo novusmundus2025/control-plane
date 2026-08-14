@@ -1,8 +1,8 @@
 # MundusX Chat
 
-Standalone chat surface for the future `chat.mundusx.ai` deployment.
+Legacy standalone chat surface. The OpenAI-compatible adapter and live-weather route now live in the control plane so clients can use one API origin.
 
-The app is intentionally separate from the operator control-plane UI. It serves a user-facing chat page and proxies prompt requests to the MundusX control plane.
+Keep this service available only during UAT parity testing. After Open WebUI is pointed at the control-plane `/v1` URL and the smoke tests pass, the `chat-u` deployment can be stopped. The browser UI code remains here until its separate retirement decision.
 
 ## Run locally
 
@@ -91,12 +91,12 @@ Railway provides `PORT`; the app reads it automatically.
 
 Streaming is not enabled yet; the first version uses polling because the control plane already exposes job status and output.
 
-## Hermes / OpenAI-Compatible Adapter
+## Legacy Hermes / OpenAI-Compatible Adapter
 
-Chat-U exposes a synchronous OpenAI-compatible adapter for clients such as Hermes:
+New integrations should use the control plane directly:
 
 ```text
-Base URL: https://chat-u.mundusx.ai/v1
+UAT base URL: https://uat.mundusx.ai/v1
 Chat completions: POST /chat/completions
 Models: GET /models
 Model: ehda-agnostic (EHDA model-agnostic interface over heterogeneous routing)
@@ -107,7 +107,7 @@ Streaming: accepted as buffered SSE after final validation
 Example:
 
 ```bash
-curl https://chat-u.mundusx.ai/v1/chat/completions \
+curl https://uat.mundusx.ai/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"ehda-agnostic","messages":[{"role":"user","content":"What is the weather in Warsaw?"}]}'
 ```
@@ -127,11 +127,9 @@ For Open WebUI, go to **Admin Settings → Connections → OpenAI → Add Connec
 
 ```text
 Connection type: External / OpenAI-compatible
-URL: https://chat-u.mundusx.ai/v1
+URL: https://uat.mundusx.ai/v1
 API key: not-required
 Model IDs filter: leave empty (auto-discovers ehda-agnostic)
 ```
 
-Chat-U accepts Open WebUI's default `stream=true`. Until genuine worker token streaming exists,
-it waits for the complete MundusX result, validates it, and then emits one OpenAI-compatible SSE
-content chunk followed by the terminal chunk and `[DONE]`.
+The control plane accepts Open WebUI's default `stream=true`. Until genuine worker-token streaming exists, it waits for validated output and emits OpenAI-compatible buffered SSE followed by `[DONE]`.
