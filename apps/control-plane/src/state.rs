@@ -1595,7 +1595,8 @@ impl ControlPlaneState {
             if let Some(active_node_id) = active_graph_node_id.as_ref() {
                 let effective_max_tokens =
                     graph_node_max_tokens(job, active_node_id, Some(&claiming_node));
-                let queue_wait_ms = elapsed_ms_between(&job.submitted_at, &claimed_at);
+                let ready_at = graph_node_ready_at(job, active_node_id);
+                let queue_wait_ms = elapsed_ms_between(&ready_at, &claimed_at);
                 let model = claiming_node
                     .worker_health
                     .as_ref()
@@ -2386,6 +2387,29 @@ fn elapsed_ms_between(start: &str, end: &str) -> Option<u64> {
     let start = parse_unix_seconds(start)?;
     let end = parse_unix_seconds(end)?;
     Some(end.saturating_sub(start).saturating_mul(1_000))
+}
+
+fn graph_node_ready_at(job: &JobRecord, graph_node_id: &str) -> String {
+    let Some(graph_node) = job.graph.nodes.iter().find(|node| node.id == graph_node_id) else {
+        return job.submitted_at.clone();
+    };
+    if graph_node.depends_on.is_empty() {
+        return job.graph.created_at.clone();
+    }
+
+    graph_node
+        .depends_on
+        .iter()
+        .filter_map(|dependency_id| {
+            job.graph
+                .nodes
+                .iter()
+                .find(|node| node.id == *dependency_id)
+                .and_then(|node| node.completed_at.as_deref())
+        })
+        .max_by_key(|completed_at| parse_unix_seconds(completed_at).unwrap_or_default())
+        .unwrap_or(job.graph.created_at.as_str())
+        .to_string()
 }
 
 fn estimate_tokens_from_chars(chars: usize) -> usize {
@@ -3463,6 +3487,11 @@ fn graph_node_max_tokens(
             "job.code_explanation" => 512,
             _ => 768,
         },
+        "compact_reviewed_code_delivery" => match node.id.as_str() {
+            "job.backend" => 1_536,
+            "job.documentation" | "job.code_review" => 512,
+            _ => 512,
+        },
         _ => match node.responsibility.as_str() {
             "synthesize" => requested.max(2_048),
             "reduce" | "merge" => requested.max(1_024),
@@ -3509,6 +3538,16 @@ fn graph_node_max_tokens(
             .map(|limit| limit.saturating_div(2).max(1))
             .unwrap_or(u32::MAX);
         budget.min(context_output_ceiling)
+    } else {
+        budget
+    };
+    let budget = if job.plan.strategy == "compact_reviewed_code_delivery" {
+        let stage_ceiling = match node.id.as_str() {
+            "job.backend" => 1_536,
+            "job.documentation" | "job.code_review" => 512,
+            _ => 512,
+        };
+        budget.min(stage_ceiling)
     } else {
         budget
     };
@@ -4315,6 +4354,32 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
     }
 
     if classification.task_type == RequestTaskType::Coding
+        && classification.complexity != RequestComplexity::High
+        && contains_any(
+            &lower,
+            &["code review", "review the code", "review my code"],
+        )
+        && contains_any(
+            &lower,
+            &[
+                "documentation",
+                "docs",
+                "readme",
+                "markdown",
+                "md documentation",
+            ],
+        )
+    {
+        let jobs = compact_reviewed_code_plan_jobs();
+        return JobPlan {
+            plan_id: format!("plan-{}", request.request_id),
+            strategy: "compact_reviewed_code_delivery".to_string(),
+            summary: "Planned one coherent implementation followed by parallel documentation and independent review; accepted outputs are assembled deterministically without a reducer call.".to_string(),
+            jobs,
+        };
+    }
+
+    if classification.task_type == RequestTaskType::Coding
         && looks_like_complete_code_prompt(&lower)
     {
         if looks_like_code_explanation_prompt(&lower) && looks_like_small_code_prompt(&lower) {
@@ -5014,8 +5079,15 @@ fn synthesis_status_for_graph(graph: &JobGraph) -> SynthesisStatus {
             .iter()
             .any(|node| node.id == final_id && node.status == JobGraphNodeStatus::Completed)
     });
+    let deterministic_assembly_completed = graph.final_node_id.is_none()
+        && graph
+            .final_output
+            .as_deref()
+            .is_some_and(|output| !output.trim().is_empty());
     if graph.status == JobGraphStatus::Completed {
-        return if final_completed && graph.merge_error.is_none() {
+        return if (final_completed || deterministic_assembly_completed)
+            && graph.merge_error.is_none()
+        {
             SynthesisStatus::Completed
         } else {
             SynthesisStatus::CompletedPartial
@@ -5649,6 +5721,38 @@ fn push_planned_job(
         minimum_max_tokens: None,
         workload: StepWorkloadRequirements::default(),
     });
+}
+
+fn compact_reviewed_code_plan_jobs() -> Vec<PlannedJob> {
+    let mut jobs = Vec::new();
+    push_planned_job(
+        &mut jobs,
+        "job.backend",
+        "Complete implementation",
+        "backend",
+        Vec::new(),
+        "Produce one complete runnable implementation that satisfies the requested API and data-model contract. Include input validation, error handling, and focused executable checks where appropriate. Do not emit placeholders, TODOs, or documentation/review prose.",
+        "A low-complexity code project is faster and more coherent when one worker owns the implementation contract without a separate scope-generation call.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.documentation",
+        "Markdown documentation",
+        "documentation",
+        vec!["job.backend".to_string()],
+        "Using the completed implementation as the source of truth, write concise Markdown setup, run, endpoint, request-field, and example documentation. Do not repeat the full source code.",
+        "Documentation and review can run concurrently once the implementation contract is concrete.",
+    );
+    push_planned_job(
+        &mut jobs,
+        "job.code_review",
+        "Independent code review",
+        "validation",
+        vec!["job.backend".to_string()],
+        "Review the completed implementation for correctness, requested contract coverage, validation, error handling, maintainability, and concrete defects. Report concise findings and do not rewrite or repeat the full source code.",
+        "Independent review must see the implementation, but it does not need to block documentation or trigger another model synthesis.",
+    );
+    jobs
 }
 
 fn complete_code_plan_jobs() -> Vec<PlannedJob> {
@@ -7204,6 +7308,56 @@ mod tests {
     }
 
     #[test]
+    fn compact_reviewed_code_plan_caps_each_generation_stage() {
+        let mut state = ready_state();
+        let mut request = classification_request(
+            "Create a Node.js Express CRUD API for customers, with Markdown documentation and a code review.",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.max_tokens = Some(3_072);
+        request.max_tokens_source = Some("auto".to_string());
+        let record = state.submit_job(request, "2".to_string());
+        let node = state.nodes.get("node-1").expect("ready node");
+
+        assert_eq!(
+            graph_node_max_tokens(&record, "job.backend", Some(node)),
+            1_536
+        );
+        assert_eq!(
+            graph_node_max_tokens(&record, "job.documentation", Some(node)),
+            512
+        );
+        assert_eq!(
+            graph_node_max_tokens(&record, "job.code_review", Some(node)),
+            512
+        );
+    }
+
+    #[test]
+    fn dependent_graph_queue_wait_starts_when_dependencies_complete() {
+        let mut state = ready_state();
+        let mut request = classification_request(
+            "Create a Node.js Express CRUD API for customers, with Markdown documentation and a code review.",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        let mut record = state.submit_job(request, "10".to_string());
+        record
+            .graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == "job.backend")
+            .expect("backend")
+            .completed_at = Some("40".to_string());
+
+        assert_eq!(graph_node_ready_at(&record, "job.backend"), "10");
+        assert_eq!(graph_node_ready_at(&record, "job.documentation"), "40");
+        assert_eq!(
+            elapsed_ms_between(&graph_node_ready_at(&record, "job.documentation"), "43"),
+            Some(3_000)
+        );
+    }
+
+    #[test]
     fn create_me_fibonacci_program_is_classified_as_complete_code() {
         let mut request = classification_request("create me a fibonacci program in java");
         request.max_tokens = Some(1_536);
@@ -7544,7 +7698,8 @@ mod tests {
         let plan = plan_job_request(&request, &classification);
 
         assert_eq!(classification.task_type, RequestTaskType::Coding);
-        assert_eq!(plan.strategy, "responsibility_based");
+        assert_eq!(plan.strategy, "compact_reviewed_code_delivery");
+        assert_eq!(plan.jobs.len(), 3);
         let backend = plan
             .jobs
             .iter()
@@ -7560,27 +7715,89 @@ mod tests {
             .iter()
             .find(|job| job.id == "job.code_review")
             .expect("review");
-        let tests = plan
-            .jobs
-            .iter()
-            .find(|job| job.id == "job.tests")
-            .expect("tests");
-        let final_merge = plan
-            .jobs
-            .iter()
-            .find(|job| job.id == "job.final_merge")
-            .expect("final merge");
-
-        assert_eq!(backend.depends_on, vec!["job.scope".to_string()]);
-        assert_eq!(documentation.depends_on, vec!["job.scope".to_string()]);
+        assert!(backend.depends_on.is_empty());
+        assert_eq!(documentation.depends_on, vec!["job.backend".to_string()]);
         assert_eq!(review.depends_on, vec!["job.backend".to_string()]);
-        assert_eq!(tests.depends_on, vec!["job.backend".to_string()]);
-        assert!(final_merge
-            .depends_on
-            .contains(&"job.documentation".to_string()));
-        assert!(final_merge
-            .depends_on
-            .contains(&"job.code_review".to_string()));
+        assert!(plan.jobs.iter().all(|job| job.id != "job.scope"));
+        assert!(plan.jobs.iter().all(|job| job.id != "job.tests"));
+        assert!(plan.jobs.iter().all(|job| job.id != "job.final_merge"));
+    }
+
+    #[test]
+    fn compact_reviewed_code_graph_runs_documentation_and_review_in_parallel() {
+        let mut state = ready_state();
+        let mut request = classification_request(
+            "Create a Node.js Express CRUD API for customers, with Markdown documentation and a code review.",
+        );
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.max_tokens = Some(3_072);
+        request.max_tokens_source = Some("auto".to_string());
+
+        let record = state.submit_job(request, "1".to_string());
+
+        assert_eq!(record.plan.strategy, "compact_reviewed_code_delivery");
+        assert_eq!(record.graph.final_node_id, None);
+        assert_eq!(record.graph.nodes.len(), 3);
+        assert_eq!(record.graph.nodes[0].id, "job.backend");
+        assert_eq!(record.graph.nodes[0].status, JobGraphNodeStatus::Ready);
+
+        state
+            .update_graph_node(
+                "job-1",
+                "job.backend",
+                JobGraphNodeStatus::Completed,
+                Some("```js\nconst express = require('express');\n```".to_string()),
+                None,
+                "2".to_string(),
+            )
+            .expect("complete implementation");
+
+        let graph = &state.jobs.get("job-1").expect("job").graph;
+        let ready_ids = graph
+            .nodes
+            .iter()
+            .filter(|node| node.status == JobGraphNodeStatus::Ready)
+            .map(|node| node.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(ready_ids, vec!["job.documentation", "job.code_review"]);
+    }
+
+    #[test]
+    fn compact_reviewed_code_graph_assembles_outputs_without_a_reducer() {
+        let request = classification_request(
+            "Create a Node.js Express CRUD API for customers, with Markdown documentation and a code review.",
+        );
+        let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
+        let mut graph = build_job_graph("job-1", &plan, "1");
+
+        for node in &mut graph.nodes {
+            node.status = JobGraphNodeStatus::Completed;
+            node.output = Some(
+                match node.id.as_str() {
+                    "job.backend" => "```js\nconst express = require('express');\n```",
+                    "job.documentation" => "Install dependencies and run the server.",
+                    "job.code_review" => "No blocking correctness defects found.",
+                    _ => unreachable!("unexpected compact-plan node"),
+                }
+                .to_string(),
+            );
+        }
+        refresh_job_graph(&mut graph);
+        refresh_graph_results(&mut graph, ExpectedOutputFormat::Code, None, None, None);
+
+        let output = graph
+            .final_output
+            .expect("deterministically assembled output");
+        assert_eq!(graph.final_node_id, None);
+        assert_eq!(graph.synthesis_status, SynthesisStatus::Completed);
+        assert!(graph
+            .final_manifest
+            .as_ref()
+            .is_some_and(|manifest| manifest.complete));
+        assert!(output.starts_with("Complete implementation\n```js"));
+        assert!(output.contains("Markdown documentation\nInstall dependencies"));
+        assert!(output.contains("Independent code review\nNo blocking"));
     }
 
     #[test]
