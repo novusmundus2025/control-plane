@@ -4038,12 +4038,15 @@ fn clean_direct_job_output(job: &JobRecord, output: Option<String>) -> Option<St
 
 fn strip_worker_transport_envelope(output: &str) -> String {
     let trimmed = output.trim();
-    let looks_like_worker_envelope = ["mlx-lm ", "llama.cpp ", "vllm "]
+    let looks_like_worker_envelope = ["mlx-lm ", "llama.cpp ", "vllm ", "contributed-cluster "]
         .iter()
         .any(|prefix| trimmed.to_ascii_lowercase().starts_with(prefix));
     if looks_like_worker_envelope {
-        if let Some((metadata, response)) = trimmed.rsplit_once("response=") {
-            if metadata.contains("mode=") || metadata.contains("model=") {
+        if let Some((metadata, response)) = trimmed.split_once("response=") {
+            if metadata.contains("mode=")
+                || metadata.contains("model=")
+                || (metadata.contains("kind=") && metadata.contains("endpoint="))
+            {
                 return response.replace("[end of text]", "").trim().to_string();
             }
         }
@@ -8691,6 +8694,51 @@ mod tests {
             completed.output.as_deref(),
             Some("The capital of the Philippines is Manila.")
         );
+    }
+
+    #[test]
+    fn direct_completion_strips_contributed_cluster_transport_envelope() {
+        let mut state = ready_state();
+        state.submit_job(
+            classification_request("Create a Java Fibonacci program."),
+            "1".to_string(),
+        );
+        state
+            .claim_job("node-1", "2".to_string())
+            .job
+            .expect("direct claim");
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("contributed-cluster kind=vllm; endpoint=http://127.0.0.1:8000; model=Qwen/Qwen3-Coder-Next-FP8; max_tokens=3072; temperature=0.2; top_p=0.9; seed=42; response=Here's a clean Java program. [end of text]".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "3".to_string(),
+            )
+            .expect("direct completion");
+
+        assert_eq!(
+            completed.output.as_deref(),
+            Some("Here's a clean Java program.")
+        );
+    }
+
+    #[test]
+    fn worker_transport_cleanup_preserves_response_assignments_inside_payload() {
+        let output = strip_worker_transport_envelope(
+            "contributed-cluster kind=vllm; endpoint=http://127.0.0.1:8000; model=Qwen; response=```javascript\nconst response = await fetch('/api');\n```",
+        );
+
+        assert!(output.contains("const response = await fetch('/api');"));
+        assert!(!output.contains("contributed-cluster"));
+        assert!(!output.contains("127.0.0.1"));
     }
 
     #[test]
