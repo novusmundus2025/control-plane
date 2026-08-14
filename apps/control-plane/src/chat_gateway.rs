@@ -6,16 +6,8 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-pub fn public_model_id(environment: Option<&str>) -> &'static str {
-    if environment
-        .unwrap_or_default()
-        .to_ascii_lowercase()
-        .contains("benz")
-    {
-        "ehda-agnostic"
-    } else {
-        "mundusx-agnostic"
-    }
+pub fn public_model_id(_environment: Option<&str>) -> &'static str {
+    "ehda-agnostic"
 }
 
 pub fn validate_model(requested: Option<&str>, public_model: &str) -> Result<(), String> {
@@ -92,7 +84,7 @@ pub fn sse_start(id: &str, created: u64, model: &str) -> String {
 pub fn sse_finish(completion: &Value) -> String {
     let id = completion["id"].as_str().unwrap_or("chatcmpl-mundusx");
     let created = completion["created"].as_u64().unwrap_or_default();
-    let model = completion["model"].as_str().unwrap_or("mundusx-agnostic");
+    let model = completion["model"].as_str().unwrap_or("ehda-agnostic");
     let content = completion["choices"][0]["message"]["content"]
         .as_str()
         .unwrap_or_default();
@@ -209,13 +201,13 @@ mod tests {
 
     #[test]
     fn exposes_environment_specific_virtual_model() {
-        assert_eq!(public_model_id(Some("uat")), "mundusx-agnostic");
+        assert_eq!(public_model_id(Some("uat")), "ehda-agnostic");
         assert_eq!(public_model_id(Some("benz-ehda")), "ehda-agnostic");
-        assert!(validate_model(Some("mundusx-agnostic"), "mundusx-agnostic").is_ok());
-        assert!(validate_model(Some("mlx-community/model"), "mundusx-agnostic").is_err());
+        assert!(validate_model(Some("ehda-agnostic"), "ehda-agnostic").is_ok());
+        assert!(validate_model(Some("mlx-community/model"), "ehda-agnostic").is_err());
         assert_eq!(
-            models_response("mundusx-agnostic")["data"][0]["id"],
-            "mundusx-agnostic"
+            models_response("ehda-agnostic")["data"][0]["id"],
+            "ehda-agnostic"
         );
     }
 
@@ -225,10 +217,10 @@ mod tests {
             "id": "chatcmpl-test",
             "object": "chat.completion",
             "created": 1,
-            "model": "mundusx-agnostic",
+            "model": "ehda-agnostic",
             "choices": [{"message": {"content": "Done."}, "finish_reason": "stop"}]
         });
-        let start = sse_start("chatcmpl-test", 1, "mundusx-agnostic");
+        let start = sse_start("chatcmpl-test", 1, "ehda-agnostic");
         let finish = sse_finish(&completion);
         assert!(start.starts_with("HTTP/1.1 200 OK"));
         assert!(start.contains("Content-Type: text/event-stream"));

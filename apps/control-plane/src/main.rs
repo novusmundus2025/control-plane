@@ -7179,7 +7179,7 @@ mod tests {
             );
         });
         let body = serde_json::json!({
-            "model": "mundusx-agnostic",
+            "model": "ehda-agnostic",
             "messages": [{"role": "user", "content": "How is the weather today?"}],
             "stream": true
         })

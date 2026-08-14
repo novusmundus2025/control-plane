@@ -96,7 +96,7 @@ Streaming is not enabled yet; the first version uses polling because the control
 New integrations should use the control plane directly:
 
 ```text
-UAT base URL: https://uat.mundusx.ai/v1
+Benz EHDA base URL: https://mundusx.ai/v1
 Chat completions: POST /chat/completions
 Models: GET /models
 Model: ehda-agnostic (EHDA model-agnostic interface over heterogeneous routing)
@@ -107,7 +107,7 @@ Streaming: accepted as buffered SSE after final validation
 Example:
 
 ```bash
-curl https://uat.mundusx.ai/v1/chat/completions \
+curl https://mundusx.ai/v1/chat/completions \
   -H "Content-Type: application/json" \
   -d '{"model":"ehda-agnostic","messages":[{"role":"user","content":"What is the weather in Warsaw?"}]}'
 ```
@@ -118,16 +118,13 @@ privately choose the best eligible contributor node,
 runtime, and model for every request. Requested model names, selected physical models, and node
 identities are not exposed through the Hermes adapter.
 
-The adapter enables Chat-U tool routing by default, preserves prior `messages` as model context,
-waits internally for MundusX jobs, and returns the final answer in
-`choices[0].message.content`. Set the optional top-level field `tool_mode` to `false`
-to disable broad web-search grounding for a request; deterministic direct tools may still route.
+The control-plane gateway preserves prior `messages` as model context, handles live weather through its internal tool module, waits internally for planner-owned MundusX jobs, and returns the validated answer in `choices[0].message.content`.
 
 For Open WebUI, go to **Admin Settings → Connections → OpenAI → Add Connection** and use:
 
 ```text
 Connection type: External / OpenAI-compatible
-URL: https://uat.mundusx.ai/v1
+URL: https://mundusx.ai/v1
 API key: not-required
 Model IDs filter: leave empty (auto-discovers ehda-agnostic)
 ```
