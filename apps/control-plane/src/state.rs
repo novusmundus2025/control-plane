@@ -3944,6 +3944,7 @@ fn strip_ascii_case_prefix<'a>(value: &'a str, prefix: &str) -> Option<&'a str> 
 
 fn clean_direct_job_output(job: &JobRecord, output: Option<String>) -> Option<String> {
     let output = output?;
+    let output = strip_worker_transport_envelope(&output);
     let Some(translation) = parse_translation_request(&job.prompt) else {
         return Some(output);
     };
@@ -3954,6 +3955,21 @@ fn clean_direct_job_output(job: &JobRecord, output: Option<String>) -> Option<St
         return Some(trimmed[target_prefix.len()..].trim().to_string());
     }
     Some(trimmed.to_string())
+}
+
+fn strip_worker_transport_envelope(output: &str) -> String {
+    let trimmed = output.trim();
+    let looks_like_worker_envelope = ["mlx-lm ", "llama.cpp ", "vllm "]
+        .iter()
+        .any(|prefix| trimmed.to_ascii_lowercase().starts_with(prefix));
+    if looks_like_worker_envelope {
+        if let Some((metadata, response)) = trimmed.rsplit_once("response=") {
+            if metadata.contains("mode=") || metadata.contains("model=") {
+                return response.replace("[end of text]", "").trim().to_string();
+            }
+        }
+    }
+    trimmed.replace("[end of text]", "").trim().to_string()
 }
 
 fn is_reducer_boilerplate_line(line: &str) -> bool {
@@ -8562,6 +8578,70 @@ mod tests {
             completed.output.as_deref(),
             Some("Unsere Idee ist die Kosteneinsparung durch KI.")
         );
+    }
+
+    #[test]
+    fn direct_completion_strips_worker_transport_envelope() {
+        let mut state = ready_state();
+        state.submit_job(
+            classification_request("What is the capital of the Philippines?"),
+            "1".to_string(),
+        );
+        state
+            .claim_job("node-1", "2".to_string())
+            .job
+            .expect("direct claim");
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("mlx-lm mode=persistent-warm-mlx; model=mlx-community/Qwen2.5-3B-Instruct-4bit; max_tokens=96; response=The capital of the Philippines is Manila. [end of text]".to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "3".to_string(),
+            )
+            .expect("direct completion");
+
+        assert_eq!(
+            completed.output.as_deref(),
+            Some("The capital of the Philippines is Manila.")
+        );
+    }
+
+    #[test]
+    fn direct_completion_preserves_response_assignment_in_user_content() {
+        let mut state = ready_state();
+        state.submit_job(
+            classification_request("Show a JavaScript response assignment."),
+            "1".to_string(),
+        );
+        state
+            .claim_job("node-1", "2".to_string())
+            .job
+            .expect("direct claim");
+        let source = "```javascript\nconst response=await fetch('/health');\n```";
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some(source.to_string()),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "3".to_string(),
+            )
+            .expect("direct completion");
+        assert_eq!(completed.output.as_deref(), Some(source));
     }
 
     #[test]
