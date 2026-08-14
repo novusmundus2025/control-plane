@@ -42,7 +42,10 @@ import {
   streamOpenAiChatCompletion,
   waitForChatJob,
 } from "../src/main.js";
-import { detectStructuredOutputQualityFlags } from "../src/chat-quality.js";
+import {
+  detectCompleteCodeQualityFlags,
+  detectStructuredOutputQualityFlags,
+} from "../src/chat-quality.js";
 
 function plannerJobResponse(intents, jobId = "planner-test") {
   return jsonResponse({
@@ -4195,6 +4198,47 @@ test("removes prompt-completion leakage and duplicate fenced code blocks", () =>
   assert.match(output, /^```python/);
   assert.equal((output.match(/```python/g) || []).length, 1);
   assert.doesNotMatch(output, /I want to use it|Can you provide me/i);
+});
+
+test("preserves complete control-plane code assemblies before prose cleanup", () => {
+  const output = cleanChatOutput(
+    "Complete runnable implementation\n```javascript\nconst express = require('express');\nconst app = express();\napp.get('/customers', (_req, res) => res.json([]));\napp.post('/customers', (req, res) => res.status(201).json(req.body));\napp.put('/customers/:id', (req, res) => res.json(req.body));\napp.delete('/customers/:id', (_req, res) => res.status(204).end());\napp.listen(3000);\n```\n\nMarkdown documentation\nRun with `node server.js`.\n\nIndependent code review\nThe CRUD routes are complete.",
+  );
+
+  assert.match(output, /^```javascript/);
+  assert.match(output, /app\.listen\(3000\);\n```/);
+  assert.match(output, /Markdown documentation/);
+  assert.match(output, /Independent code review/);
+  assert.equal((output.match(/```/g) || []).length, 2);
+});
+
+test("deduplicates repeated source artifacts in a control-plane assembly", () => {
+  const source = "```javascript\nconst express = require('express');\nconst app = express();\napp.get('/customers', (_req, res) => res.json([]));\napp.post('/customers', (req, res) => res.status(201).json(req.body));\napp.put('/customers/:id', (req, res) => res.json(req.body));\napp.delete('/customers/:id', (_req, res) => res.status(204).end());\napp.listen(3000);\n```";
+  const output = cleanChatOutput(
+    `Complete runnable implementation\n${source}\n${source}\n\nMarkdown documentation\nRun the server.\n\nIndependent code review\nThe routes are complete.`,
+  );
+
+  assert.equal((output.match(/```javascript/g) || []).length, 1);
+  assert.match(output, /app\.listen\(3000\);/);
+  assert.match(output, /Markdown documentation/);
+  assert.match(output, /Independent code review/);
+});
+
+test("keeps JavaScript spread syntax in complete source artifacts", () => {
+  const output = cleanChatOutput(
+    "Complete runnable implementation\n```javascript\nconst current = { id: 1, name: 'Ada' };\nconst update = { name: 'Grace' };\nconst customer = { ...current, ...update };\nmodule.exports = customer;\n```",
+  );
+
+  assert.match(output, /^```javascript/);
+  assert.match(output, /\{ \.\.\.current, \.\.\.update \}/);
+  assert.doesNotMatch(output, /incomplete placeholder code/i);
+});
+
+test("accepts URL template literals in complete JavaScript source", () => {
+  const prompt = "Create a Node.js Express CRUD API for customers.";
+  const output = "```javascript\nconst express = require('express');\nconst app = express();\napp.get('/customers', (_req, res) => res.json([]));\napp.post('/customers', (req, res) => res.status(201).json(req.body));\napp.put('/customers/:id', (req, res) => res.json(req.body));\napp.delete('/customers/:id', (_req, res) => res.status(204).end());\nconst port = 3000;\napp.listen(port, () => console.log(`Server running at http://localhost:${port}`));\n```";
+
+  assert.deepEqual(detectCompleteCodeQualityFlags(output, prompt), []);
 });
 
 test("removes orphaned prompt continuation fragments before answers", () => {
