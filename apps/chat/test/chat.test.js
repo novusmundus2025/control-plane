@@ -28,6 +28,7 @@ import {
   openAiModelsResponse,
   openAiSseBody,
   openAiSseFrames,
+  openAiSseStartFrame,
   page,
   pollChatJob,
   redactSensitiveText,
@@ -629,9 +630,9 @@ test("uses word-only CRUD deliverables to select coherent or parallel code execu
   assert.equal(calls[1].max_tokens, 4096);
   assert.match(calls[1].system_prompt, /complete compilable source file/i);
   assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90), 90);
-  assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90), 600);
+  assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90), 900);
   assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, 120, 90), 120);
-  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90, "decompose"), 600);
+  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90, "decompose"), 900);
   assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90, "single"), 90);
 });
 
@@ -3015,6 +3016,17 @@ test("Open WebUI adapter exposes a discoverable model and buffered SSE completio
   assert.match(body, /data: \[DONE\]/);
 });
 
+test("Open WebUI stream starts with a standard stable assistant identity chunk", () => {
+  const frame = openAiSseStartFrame("chatcmpl-openwebui-stable", 123);
+  const chunk = JSON.parse(frame.replace(/^data: /, "").trim());
+  assert.equal(chunk.id, "chatcmpl-openwebui-stable");
+  assert.equal(chunk.object, "chat.completion.chunk");
+  assert.equal(chunk.created, 123);
+  assert.equal(chunk.choices[0].delta.role, "assistant");
+  assert.equal(chunk.choices[0].delta.content, "");
+  assert.equal(chunk.choices[0].finish_reason, null);
+});
+
 test("hybrid streaming buffers structured requests and chunks ordinary prose", () => {
   assert.equal(requiresValidatedStreaming("Create a complete Java program"), true);
   assert.equal(requiresValidatedStreaming("Return this as JSON"), true);
@@ -3057,6 +3069,45 @@ test("OpenAI adapter preserves an upstream length finish reason", async () => {
   assert.equal(result.choices[0].finish_reason, "length");
 });
 
+test("OpenAI adapter correlates its stable id and OpenWebUI chat id", async () => {
+  const jobBodies = [];
+  const conversationWrites = [];
+  const result = await submitOpenAiChatCompletion(
+    {
+      request_id: "chatcmpl-openwebui-correlation",
+      chat_id: "openwebui-chat-42",
+      messages: [{ role: "user", content: "Write one sentence." }],
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url, init = {}) => {
+      if (url.includes("/v1/conversations/openwebui-chat-42/messages")) {
+        if (init.method === "POST") {
+          conversationWrites.push(JSON.parse(init.body));
+          return jsonResponse({ stored: true });
+        }
+        return jsonResponse({ messages: [] });
+      }
+      if (url.endsWith("/v1/nodes?page=1&page_size=25")) return jsonResponse({ nodes: [] });
+      if (url.endsWith("/v1/jobs") && init.method === "POST") {
+        jobBodies.push(JSON.parse(init.body));
+        return jsonResponse({
+          job_id: "chatcmpl-openwebui-correlation",
+          job: {
+            job_id: "chatcmpl-openwebui-correlation",
+            status: "completed",
+            output: "A complete sentence.",
+          },
+        }, true, 202);
+      }
+      throw new Error(`unexpected URL ${url}`);
+    },
+  );
+
+  assert.equal(result.id, "chatcmpl-openwebui-correlation");
+  assert.equal(jobBodies[0].request_id, result.id);
+  assert.deepEqual(conversationWrites.map((entry) => entry.role), ["user", "assistant"]);
+});
+
 test("streaming adapter opens SSE before the upstream answer is ready", async () => {
   let releaseWeather;
   const pendingWeather = new Promise((resolve) => { releaseWeather = resolve; });
@@ -3079,7 +3130,13 @@ test("streaming adapter opens SSE before the upstream answer is ready", async ()
   );
   assert.equal(events[0].type, "headers");
   assert.equal(events[0].headers["X-MundusX-Stream-Mode"], "ordinary");
+  assert.equal(events[0].headers["X-Accel-Buffering"], "no");
   assert.equal(events[1].type, "flush");
+  assert.equal(events[2].type, "write");
+  const startChunk = JSON.parse(events[2].value.replace(/^data: /, "").trim());
+  assert.match(startChunk.id, /^chatcmpl-/);
+  assert.equal(startChunk.choices[0].delta.role, "assistant");
+  assert.equal(startChunk.choices[0].delta.content, "");
   releaseWeather(jsonResponse({
     nearest_area: [{ areaName: [{ value: "Warsaw" }], country: [{ value: "Poland" }] }],
     current_condition: [{
@@ -3088,6 +3145,13 @@ test("streaming adapter opens SSE before the upstream answer is ready", async ()
   }));
   await streaming;
   assert.match(events.at(-1).value, /data: \[DONE\]/);
+  const finalFrames = events
+    .filter((event) => event.type === "write" && event.value.startsWith("data: "))
+    .flatMap((event) => event.value.trim().split("\n\n"))
+    .filter((frame) => frame.startsWith("data: {") )
+    .map((frame) => JSON.parse(frame.slice(6)));
+  assert.ok(finalFrames.length >= 2);
+  assert.ok(finalFrames.every((frame) => frame.id === startChunk.id));
 });
 
 test("Hermes model discovery intentionally hides heterogeneous implementation details", () => {
