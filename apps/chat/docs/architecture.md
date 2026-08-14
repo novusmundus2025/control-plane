@@ -1,6 +1,6 @@
 # MundusX Chat Architecture
 
-MundusX Chat follows a modular monolith style with ports-and-adapters boundaries.
+MundusX Chat originally followed a modular monolith style with ports-and-adapters boundaries. Its OpenAI gateway and live-weather adapter have moved into the control plane; this document now describes the legacy service retained during UAT cutover.
 
 The app remains one deployable Railway service, but code should be grouped by responsibility:
 
@@ -14,7 +14,7 @@ The app remains one deployable Railway service, but code should be grouped by re
 
 Rules for future changes:
 
-- Keep one production service until scale requires separate services.
+- Do not add new protocol or tool behavior here; add it to the control-plane gateway or its internal tool modules.
 - Extract pure, standalone logic into small modules before adding more branches to `main.js`.
 - Do not let tool adapters know about UI rendering.
 - Do not let UI code know worker internals beyond normalized job status.
