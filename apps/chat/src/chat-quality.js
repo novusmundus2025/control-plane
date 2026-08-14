@@ -412,6 +412,7 @@ function escapeRegExp(value) {
 
 function hasBalancedCodeDelimiters(sourceValue, language) {
   const source = String(sourceValue ?? "")
+    .replace(/`(?:\\.|[^`\\])*`/g, "")
     .replace(/"(?:\\.|[^"\\])*"/g, "")
     .replace(/'(?:\\.|[^'\\])*'/g, "")
     .replace(/\/\/.*$/gm, "")
