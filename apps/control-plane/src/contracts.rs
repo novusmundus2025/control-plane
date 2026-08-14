@@ -870,7 +870,29 @@ pub struct JobRequest {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ChatMessage {
     pub role: String,
-    pub content: String,
+    pub content: serde_json::Value,
+}
+
+impl ChatMessage {
+    pub fn text(&self) -> String {
+        match &self.content {
+            serde_json::Value::String(value) => value.trim().to_string(),
+            serde_json::Value::Array(parts) => parts
+                .iter()
+                .filter(|part| {
+                    matches!(
+                        part.get("type").and_then(serde_json::Value::as_str),
+                        Some("text" | "input_text")
+                    )
+                })
+                .filter_map(|part| part.get("text").and_then(serde_json::Value::as_str))
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .collect::<Vec<_>>()
+                .join("\n"),
+            _ => String::new(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -884,42 +906,12 @@ pub struct ChatCompletionRequest {
     pub temperature: Option<f32>,
     #[serde(default)]
     pub top_p: Option<f32>,
-    #[serde(default)]
+    #[serde(default, alias = "max_completion_tokens")]
     pub max_tokens: Option<u32>,
     #[serde(default)]
     pub seed: Option<u64>,
     #[serde(default)]
     pub stream: Option<bool>,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChatCompletionChoiceMessage {
-    pub role: String,
-    pub content: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChatCompletionChoice {
-    pub index: u32,
-    pub message: ChatCompletionChoiceMessage,
-    pub finish_reason: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChatCompletionMundusX {
-    pub job_id: String,
-    pub request_id: String,
-    pub status: String,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct ChatCompletionResponse {
-    pub id: String,
-    pub object: String,
-    pub created: u64,
-    pub model: String,
-    pub choices: Vec<ChatCompletionChoice>,
-    pub mundusx: ChatCompletionMundusX,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1451,6 +1443,20 @@ pub struct ControlPlaneSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chat_message_accepts_openai_text_parts() {
+        let message: ChatMessage = serde_json::from_value(serde_json::json!({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Hello"},
+                {"type": "input_text", "text": "world"},
+                {"type": "image_url", "image_url": {"url": "ignored"}}
+            ]
+        }))
+        .expect("OpenAI content parts");
+        assert_eq!(message.text(), "Hello\nworld");
+    }
 
     #[test]
     fn registration_accepts_vllm_backend() {

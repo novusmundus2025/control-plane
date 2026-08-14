@@ -39,6 +39,8 @@ For the complete cross-repo setup path from local control-plane startup to CLI/n
 | `MUNDUSX_ENVIRONMENT` | **Yes in shared deployments** | Environment classification for auth guardrails. Use `local`, `dev`, `development`, `test`, `uat`, or `production`. Defaults to `local` when unset for local development. |
 | `MUNDUSX_AUTH_DISABLED` | Local/UAT only | Set to `true`, `1`, `yes`, or `on` to deliberately disable operator authentication even when `MUNDUSX_OPERATOR_TOKEN` is present. Startup rejects this flag unless `MUNDUSX_ENVIRONMENT` is `local`, `dev`, `development`, `test`, or `uat`. |
 | `MUNDUSX_CONTROL_PLANE_HOST` | No | Override the bind host. Defaults to `0.0.0.0` when `PORT` is set. |
+| `MUNDUSX_CHAT_TIMEOUT_SECONDS` | No | Maximum synchronous OpenAI chat wait. Defaults to 300 seconds and is bounded to 5–900 seconds. |
+| `MUNDUSX_WEATHER_URL` | No | Weather-tool origin. Defaults to `https://wttr.in`; override only with a compatible trusted endpoint. |
 
 ### Local `.env`
 
@@ -104,16 +106,25 @@ These endpoints require `Authorization: Bearer <MUNDUSX_OPERATOR_TOKEN>` when op
 | `GET` | `/v1/job-events` | Job event log (JSON) |
 | `GET` | `/v1/credits` | Credits ledger (JSON) |
 | `POST` | `/v1/jobs` | Submit a job |
-| `POST` | `/v1/chat/completions` | OpenAI-compatible chat completion (queued, non-streaming) |
 
 Operator auth is enforced when `MUNDUSX_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH_DISABLED` is not enabled. The legacy `OPENGPU_OPERATOR_TOKEN` name is accepted only as a deprecated fallback so old deployments fail closed instead of accidentally opening operator routes. `/health` includes `environment`, `operator_auth_enforced`, and `operator_auth_mode` so local/UAT smoke tests can verify the effective mode before submitting work.
+
+### Public OpenAI-compatible gateway
+
+These unauthenticated routes are the stable client boundary for Open WebUI, Hermes, and other OpenAI-compatible clients, matching the former Chat-U contract that accepts `not-required` when a client insists on an API-key value. Virtual model IDs never pin a physical contributor model; the planner and scheduler retain routing authority.
+
+| Method | Path | Description |
+|---|---|---|
+| `GET` | `/v1/models` | Discover `mundusx-agnostic` in UAT or `ehda-agnostic` in Benz EHDA |
+| `POST` | `/v1/chat/completions` | Wait for validated output and return a completed OpenAI response |
+
+`stream: true` returns validated buffered SSE with a role chunk, content chunk, terminal chunk, and `[DONE]`. Genuine worker-token streaming remains a separate future enhancement. Live weather requests are handled inside the control plane through its weather tool; ordinary and mixed requests remain planner-owned.
 
 ---
 
 ## Known gaps
 
-- **No `GET /v1/jobs/:id`** — after submitting a job or chat completion you get a `job_id` back, but there is no endpoint yet to poll individual job status or retrieve the result.
-- **Streaming not supported** — `POST /v1/chat/completions` with `"stream": true` returns `400`.
+- **Validated buffered streaming only** — the OpenAI gateway holds structured output until job validation succeeds; it does not yet relay live worker tokens.
 - **`operatorAuth: disabled (MUNDUSX_AUTH_DISABLED=true)`** in logs means operator endpoints are deliberately open for local/UAT smoke tests. Startup rejects this setting when `MUNDUSX_ENVIRONMENT` is `production` or another non-local environment.
 - **`operatorAuth: disabled (MUNDUSX_OPERATOR_TOKEN missing)`** in logs means operator endpoints are open because no token was configured.
 - **`operatorAuth warning: OPENGPU_OPERATOR_TOKEN is deprecated`** in logs means the process is using the old token alias and should be renamed to `MUNDUSX_OPERATOR_TOKEN`.
