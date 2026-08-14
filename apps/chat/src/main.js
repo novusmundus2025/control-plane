@@ -3091,7 +3091,7 @@ export async function submitChatTurn(body, config = configFromEnv(), fetchImpl =
     ["invalid_complete_code", "invalid_math_output", "invalid_structured_output", "output_token_limit", "broken_markdown", "degenerate_repetition"].includes(flag.code),
   );
   if (result.status === "failed" && retryableQualityFailure && body?.qualityRetry !== true) {
-    return submitChatTurn({ ...body, qualityRetry: true }, config, fetchImpl);
+    return submitChatTurn({ ...body, qualityRetry: true, requestId: undefined }, config, fetchImpl);
   }
   return result;
 }
@@ -3110,6 +3110,7 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
   }
 
   const toolMode = body?.tool_mode ?? body?.toolMode ?? true;
+  const completionId = normalizeOpenAiCompletionId(body?.request_id);
   const result = await submitChatTurn(
     {
       message: messages[lastUserIndex].content,
@@ -3126,7 +3127,8 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
         config.defaultTimeoutSeconds,
         body?.execution_mode ?? "auto",
       ),
-      conversationId: body?.conversation_id ?? body?.metadata?.conversation_id,
+      conversationId: body?.conversation_id ?? body?.chat_id ?? body?.metadata?.conversation_id ?? body?.metadata?.chat_id,
+      requestId: completionId,
       structuredOutput: Boolean(body?.response_format) || /\bjson\b/i.test(messages[lastUserIndex].content),
     },
     config,
@@ -3146,7 +3148,7 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
   const completionTokens = Number(usage.output_tokens ?? estimateDisplayTokens(content) ?? 0);
   const promptTokens = Number(usage.input_tokens ?? 0);
   return {
-    id: result.job_id || `chatcmpl-${Date.now().toString(36)}`,
+    id: completionId,
     object: "chat.completion",
     created: Math.floor(Date.now() / 1000),
     model: PUBLIC_MODEL_ID,
@@ -3180,14 +3182,21 @@ export async function streamOpenAiChatCompletion(response, body, config, fetchIm
     : null;
   const message = openAiMessageText(lastUserMessage?.content);
   const buffered = requiresValidatedStreaming(message, body);
+  const completionId = normalizeOpenAiCompletionId(body?.request_id);
+  const created = Math.floor(Date.now() / 1000);
   startOpenAiStream(response, buffered ? "validated" : "ordinary");
+  response.write(openAiSseStartFrame(completionId, created));
   const heartbeat = setInterval(() => {
     if (!response.writableEnded) response.write(": keep-alive\n\n");
   }, 10_000);
   heartbeat.unref?.();
   try {
-    const completion = await submitOpenAiChatCompletion(body, config, fetchImpl);
-    for (const frame of openAiSseFrames(completion, { buffered })) {
+    const completion = await submitOpenAiChatCompletion(
+      { ...body, request_id: completionId },
+      config,
+      fetchImpl,
+    );
+    for (const frame of openAiSseFrames(completion, { buffered, roleAlreadySent: true })) {
       response.write(frame);
     }
     response.end("data: [DONE]\n\n");
@@ -3215,7 +3224,17 @@ export function openAiSseBody(completion) {
   return `${openAiSseFrames(completion, { buffered: true }).join("")}data: [DONE]\n\n`;
 }
 
-export function openAiSseFrames(completion, { buffered = true } = {}) {
+export function openAiSseStartFrame(id, created = Math.floor(Date.now() / 1000)) {
+  return `data: ${JSON.stringify({
+    id,
+    object: "chat.completion.chunk",
+    created,
+    model: PUBLIC_MODEL_ID,
+    choices: [{ index: 0, delta: { role: "assistant", content: "" }, finish_reason: null }],
+  })}\n\n`;
+}
+
+export function openAiSseFrames(completion, { buffered = true, roleAlreadySent = false } = {}) {
   const choice = completion?.choices?.[0] ?? {};
   const base = {
     id: completion?.id,
@@ -3227,7 +3246,7 @@ export function openAiSseFrames(completion, { buffered = true } = {}) {
   const pieces = buffered ? [content] : splitOrdinaryStreamContent(content);
   const contentChunks = pieces.map((piece, index) => ({
     ...base,
-    choices: [{ index: 0, delta: { ...(index === 0 ? { role: "assistant" } : {}), content: piece }, finish_reason: null }],
+    choices: [{ index: 0, delta: { ...(!roleAlreadySent && index === 0 ? { role: "assistant" } : {}), content: piece }, finish_reason: null }],
   }));
   const finalChunk = {
     ...base,
@@ -3476,6 +3495,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     codeTransformationFollowUp,
   );
   const jobBody = buildGenericJobBody(message, config, {
+    requestId: body?.requestId,
     model: body?.model,
     voicePersona: body?.voicePersona,
     executionMode: body?.executionMode,
@@ -3514,11 +3534,14 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   });
   rememberContextUsageForJob(jobId, contextUsage);
 
-  return formatChatJob(jobId, job, jobBody.model || null, {
+  const formatted = formatChatJob(jobId, job, jobBody.model || null, {
     prompt: message,
     contextUsage,
     structuredOutput: body?.structuredOutput === true,
   });
+  return formatted.status === "completed"
+    ? recordAssistantTurn(conversationId, config, fetchImpl, formatted)
+    : formatted;
 }
 
 async function recordAssistantTurn(conversationId, config, fetchImpl, result) {
@@ -3587,7 +3610,7 @@ function buildGenericJobBody(message, config, options = {}) {
     options.codeTransformationFollowUp,
   );
   const jobBody = {
-    request_id: `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`,
+    request_id: normalizeOpenAiCompletionId(options.requestId),
     prompt: message,
     preferred_backend: "auto",
     runtime_mode: "local",
@@ -8067,8 +8090,16 @@ export function inferChatRequestTimeoutSeconds(
   if (explicit > 0) return explicit;
   const baseline = positiveInteger(defaultSeconds, DEFAULT_TIMEOUT_SECONDS);
   return chooseChatExecutionMode(message, requestedMode) === "decompose"
-    ? Math.max(baseline, 600)
+    ? Math.max(baseline, 900)
     : baseline;
+}
+
+function normalizeOpenAiCompletionId(value) {
+  const requested = String(value ?? "").trim();
+  if (/^chatcmpl-[A-Za-z0-9_-]{8,128}$/.test(requested)) {
+    return requested;
+  }
+  return `chatcmpl-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function looksLikeCodeProjectRequest(lower) {
@@ -8721,6 +8752,8 @@ function startOpenAiStream(response, mode) {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
     Connection: "keep-alive",
+    "Keep-Alive": "timeout=900",
+    "X-Accel-Buffering": "no",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
     "X-MundusX-Stream-Mode": mode,
