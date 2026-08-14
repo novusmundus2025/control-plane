@@ -2276,11 +2276,10 @@ fn graph_execution_allowed(
     match request.execution_mode {
         JobExecutionMode::Single => false,
         JobExecutionMode::Decompose => true,
-        JobExecutionMode::Auto => {
-            classification.privacy_level != PrivacyLevel::Sensitive
-                && (classification.complexity == RequestComplexity::High
-                    || looks_sectionable_prompt(&request.prompt))
-        }
+        // In auto mode, the accepted plan is the intent/decomposition decision.
+        // The deterministic classification remains a safety input, but it must
+        // not veto a valid multi-step plan returned by the planner service.
+        JobExecutionMode::Auto => classification.privacy_level != PrivacyLevel::Sensitive,
     }
 }
 
@@ -8250,6 +8249,85 @@ mod tests {
             &deterministic,
             &deterministic,
         ));
+    }
+
+    #[test]
+    fn auto_executes_an_accepted_multi_step_plan_without_classifier_veto() {
+        let mut request = classification_request("What version control system do you prefer?");
+        request.execution_mode = JobExecutionMode::Auto;
+        let classification = classify_job_request(&request);
+        let plan = JobPlan {
+            plan_id: "planner-owned-plan".to_string(),
+            strategy: "langgraph".to_string(),
+            summary: "Planner selected multiple execution units.".to_string(),
+            jobs: vec![
+                PlannedJob {
+                    id: "job.answer".to_string(),
+                    name: "Answer".to_string(),
+                    responsibility: "inference".to_string(),
+                    depends_on: Vec::new(),
+                    required_output: "Answer the request.".to_string(),
+                    reason: "Planner-selected work unit.".to_string(),
+                    recommended_max_tokens: None,
+                    minimum_max_tokens: None,
+                    workload: StepWorkloadRequirements::default(),
+                },
+                PlannedJob {
+                    id: "job.verify".to_string(),
+                    name: "Verify".to_string(),
+                    responsibility: "validation".to_string(),
+                    depends_on: vec!["job.answer".to_string()],
+                    required_output: "Verify the answer.".to_string(),
+                    reason: "Planner-selected validation unit.".to_string(),
+                    recommended_max_tokens: None,
+                    minimum_max_tokens: None,
+                    workload: StepWorkloadRequirements::default(),
+                },
+            ],
+        };
+
+        assert_eq!(classification.complexity, RequestComplexity::Low);
+        assert!(!looks_sectionable_prompt(&request.prompt));
+        assert!(graph_execution_allowed(&request, &classification, &plan));
+    }
+
+    #[test]
+    fn auto_still_blocks_multi_step_plans_for_sensitive_requests() {
+        let mut request = classification_request("Review this private key and summarize it.");
+        request.execution_mode = JobExecutionMode::Auto;
+        let classification = classify_job_request(&request);
+        let plan = JobPlan {
+            plan_id: "sensitive-plan".to_string(),
+            strategy: "langgraph".to_string(),
+            summary: "Planner selected multiple execution units.".to_string(),
+            jobs: vec![
+                PlannedJob {
+                    id: "job.inspect".to_string(),
+                    name: "Inspect".to_string(),
+                    responsibility: "analysis".to_string(),
+                    depends_on: Vec::new(),
+                    required_output: "Inspect the request.".to_string(),
+                    reason: "Planner-selected work unit.".to_string(),
+                    recommended_max_tokens: None,
+                    minimum_max_tokens: None,
+                    workload: StepWorkloadRequirements::default(),
+                },
+                PlannedJob {
+                    id: "job.summarize".to_string(),
+                    name: "Summarize".to_string(),
+                    responsibility: "summary".to_string(),
+                    depends_on: vec!["job.inspect".to_string()],
+                    required_output: "Summarize the result.".to_string(),
+                    reason: "Planner-selected work unit.".to_string(),
+                    recommended_max_tokens: None,
+                    minimum_max_tokens: None,
+                    workload: StepWorkloadRequirements::default(),
+                },
+            ],
+        };
+
+        assert_eq!(classification.privacy_level, PrivacyLevel::Sensitive);
+        assert!(!graph_execution_allowed(&request, &classification, &plan));
     }
 
     #[test]
