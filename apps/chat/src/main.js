@@ -8928,6 +8928,11 @@ function cleanChatOutputInternal(value, emptyFallback) {
   output = stripWorkerTrace(output);
   output = stripRolePrefixes(output);
   output = stripPersonaLabelLeak(output);
+  // Control-plane graph assembly can prefix a validated source artifact with a
+  // short display heading. Remove that heading before deciding whether prose
+  // cleanup is safe; otherwise prose leak filters can interpret source tokens
+  // as instructions and truncate an already-completed program.
+  output = stripPreCodeNarration(output);
   const fencedOutput = /^```/.test(output);
   if (!fencedOutput) {
     output = stripExpandedRequestLeak(output);
@@ -8939,7 +8944,6 @@ function cleanChatOutputInternal(value, emptyFallback) {
     output = stripExpandedRequestLeak(output);
     output = stripAssistantPreamble(output);
     output = stripOrphanedPromptContinuation(output);
-    output = stripPreCodeNarration(output);
     output = stripSkillPromptLeak(output);
     output = stripSystemPromptLeak(output);
     output = collapseRepeatedOpeningClause(output);
@@ -8993,7 +8997,7 @@ function isIncompletePlaceholderCode(value) {
     return false;
   }
   const placeholderMatches = text.match(
-    /(?:\/\/\s*(?:\.\.\.|todo|add .* here|implement .* here|save\.\.\.|load\.\.\.|delete .* here)|\/\*\s*(?:\.\.\.|todo|implement|placeholder)[\s\S]*?\*\/|\b(?:TODO|TBD)\b|\.{3,})/gi,
+    /(?:\/\/\s*(?:\.\.\.|todo|add .* here|implement .* here|save\.\.\.|load\.\.\.|delete .* here)|\/\*\s*(?:\.\.\.|todo|implement|placeholder)[\s\S]*?\*\/|\b(?:TODO|TBD)\b|(?<![\w$])\.{3,}(?![\w$]))/gi,
   ) ?? [];
   if (placeholderMatches.length < 2) {
     return false;
@@ -9003,7 +9007,7 @@ function isIncompletePlaceholderCode(value) {
     .map((line) => line.trim())
     .filter((line) => line && !/^```/.test(line));
   const placeholderLineCount = substantiveLines.filter((line) =>
-    /(?:\/\/\s*(?:\.\.\.|todo|add .* here|implement .* here|save\.\.\.|load\.\.\.|delete .* here)|\/\*|\b(?:TODO|TBD)\b|\.{3,})/i.test(line),
+    /(?:\/\/\s*(?:\.\.\.|todo|add .* here|implement .* here|save\.\.\.|load\.\.\.|delete .* here)|\/\*|\b(?:TODO|TBD)\b|(?<![\w$])\.{3,}(?![\w$]))/i.test(line),
   ).length;
   return placeholderLineCount >= 2 || placeholderMatches.length >= 2;
 }
@@ -9114,7 +9118,9 @@ function stripPreCodeNarration(value) {
   }
 
   const fenceIndex = output.search(/```(?:[a-zA-Z0-9_+#.-]{0,24})?\s*\n/);
-  if (fenceIndex > 0 && isDisposableCodeLeadIn(output.slice(0, fenceIndex))) {
+  const fenceLead = fenceIndex > 0 ? output.slice(0, fenceIndex).trim() : "";
+  const assembledArtifactHeading = /^Complete runnable implementation\s*$/i.test(fenceLead);
+  if (fenceIndex > 0 && (assembledArtifactHeading || isDisposableCodeLeadIn(fenceLead))) {
     return output.slice(fenceIndex).trim();
   }
 
