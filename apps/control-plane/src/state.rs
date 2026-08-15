@@ -7284,6 +7284,38 @@ mod tests {
     }
 
     #[test]
+    fn polluted_chat_history_cannot_override_tesla_history_intent() {
+        let mut request = classification_request(
+            "Give me a detailed history of Tesla from its origins to today.",
+        );
+        request.execution_mode = JobExecutionMode::Auto;
+        request.system_prompt = Some(
+            "Conversation context: implement a TypeScript API; discuss private token budgets."
+                .to_string(),
+        );
+
+        let classification = classify_job_request(&request);
+        let plan = plan_job_request(&request, &classification);
+
+        assert_eq!(classification.task_type, RequestTaskType::Inference);
+        assert_eq!(classification.privacy_level, PrivacyLevel::Public);
+        assert_eq!(classification.output_format, ExpectedOutputFormat::Text);
+        assert_eq!(plan.strategy, "sectioned_research");
+        assert!(plan
+            .jobs
+            .iter()
+            .any(|job| job.name == "Origins and founders"));
+        assert!(!plan.jobs.iter().any(|job| job.name.contains("source code")));
+
+        let mut state = ready_state();
+        state.register(m_series_registration("node-2"));
+        state.heartbeat(ready_heartbeat("node-2", "1"), "1".to_string());
+        let record = state.submit_job(request, "2".to_string());
+        assert!(record.graph_execution_enabled);
+        assert_eq!(record.plan.strategy, "sectioned_research");
+    }
+
+    #[test]
     fn sectioned_research_honors_user_requested_split_sections() {
         let mut request = classification_request(
             "Write a detailed history of Microsoft from its origins to today, split by founding, early years, expansion, cloud era, AI era, and summary.",
