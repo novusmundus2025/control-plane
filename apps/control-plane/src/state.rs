@@ -642,23 +642,10 @@ impl ControlPlaneState {
         ready_vllm_exists: bool,
     ) -> bool {
         match job.preferred_backend {
-            Backend::Auto if job.graph_execution_enabled => {
-                matches!(
-                    node_backend,
-                    Backend::Auto | Backend::M | Backend::Cuda | Backend::Vllm
-                )
-            }
-            Backend::Auto => {
-                if ready_m_exists {
-                    node_backend == Backend::M
-                } else if ready_vllm_exists {
-                    node_backend == Backend::Vllm
-                } else if ready_cuda_exists {
-                    node_backend == Backend::Cuda
-                } else {
-                    node_backend == Backend::Auto
-                }
-            }
+            Backend::Auto => matches!(
+                node_backend,
+                Backend::Auto | Backend::M | Backend::Cuda | Backend::Vllm
+            ),
             Backend::M => {
                 if ready_m_exists {
                     node_backend == Backend::M
@@ -1139,14 +1126,6 @@ impl ControlPlaneState {
         job: &JobRecord,
         active_graph_node_id: Option<&str>,
     ) -> bool {
-        // Reducer strength already accounts for runtime health and acceleration. A healthy
-        // strong reducer can synthesize a merge even when an older worker registration did not
-        // advertise the explicit synthesizer role yet.
-        if graph_node_is_merge(&job.graph, active_graph_node_id)
-            && reducer_profile(node) == ReducerProfile::Strong
-        {
-            return true;
-        }
         // A compact node cannot credibly regenerate a reducer/synthesizer answer, but it can
         // safely trigger the deterministic section-preserving fallback below. Keep this path
         // claimable so completed graph work is returned instead of expiring in the queue.
@@ -1188,6 +1167,14 @@ impl ControlPlaneState {
                     }
                 }
             }
+        }
+        // Reducer strength accounts for runtime health and acceleration, so a capable strong
+        // node may merge even when an older registration omitted the explicit role. Workload
+        // capacity, context, and tool constraints above remain mandatory.
+        if graph_node_is_merge(&job.graph, active_graph_node_id)
+            && reducer_profile(node) == ReducerProfile::Strong
+        {
+            return true;
         }
         let Some(required) = Self::graph_node_role(job, active_graph_node_id) else {
             return true;
@@ -1243,30 +1230,35 @@ impl ControlPlaneState {
             }
         }
 
+        let small_interactive_request = !job.graph_execution_enabled
+            && requirements.context_size == ContextSize::Small
+            && matches!(
+                requirements.task_type,
+                RequestTaskType::Document | RequestTaskType::Chat
+            );
+        let accelerated_work = job.graph_execution_enabled
+            || requirements.context_size == ContextSize::Large
+            || requirements.task_type == RequestTaskType::Coding;
         match (requirements.task_type, node.backend) {
             (RequestTaskType::Coding, Backend::Cuda | Backend::Vllm) => {
                 score += 20;
                 reasons.push("task:coding prefers cuda throughput".to_string());
             }
-            (RequestTaskType::Document | RequestTaskType::Chat, Backend::M) => {
-                score += 15;
-                reasons.push("task favors local M-series interactive execution".to_string());
-            }
-            (_, Backend::M) => {
-                score += 10;
-                reasons.push("M-series node is eligible".to_string());
-            }
-            (_, Backend::Cuda) => {
+            (RequestTaskType::Document | RequestTaskType::Chat, Backend::M)
+                if small_interactive_request =>
+            {
                 score += 8;
-                reasons.push("CUDA node is eligible".to_string());
+                reasons.push("small interactive request favors local M-series latency".to_string());
             }
-            (_, Backend::Vllm) => {
+            (_, Backend::Cuda | Backend::Vllm) if accelerated_work => {
                 score += 12;
-                reasons.push("vLLM node is eligible".to_string());
+                reasons.push(
+                    "accelerated backend favored for graph or large-context work".to_string(),
+                );
             }
-            (_, Backend::Auto) => {
-                score += 2;
-                reasons.push("auto backend fallback is eligible".to_string());
+            (_, _) => {
+                score += 4;
+                reasons.push("backend is eligible; capability scoring decides".to_string());
             }
         }
 
@@ -1636,6 +1628,14 @@ impl ControlPlaneState {
                     }
                     if graph_node_is_merge(&job.graph, active_graph_node_id.as_deref()) {
                         apply_reducer_scheduler_score(&mut decision, node);
+                    }
+                    if !job.graph_execution_enabled {
+                        let best_decision = self.best_scheduler_decision_for_job(job);
+                        if !best_decision.node_id.is_empty()
+                            && best_decision.node_id != node.node_id
+                        {
+                            return None;
+                        }
                     }
                     if !graph_node_is_merge(&job.graph, active_graph_node_id.as_deref())
                         && graph_node_latency_weight(&job.graph, active_graph_node_id.as_deref())
@@ -2435,7 +2435,12 @@ impl ModelTier {
 
 fn model_tier_for_name(model_name: &str) -> ModelTier {
     let lower = model_name.to_ascii_lowercase();
-    if contains_any(&lower, &["135m", "0.1b", "0.2b", "tiny", "smollm"]) {
+    if contains_any(
+        &lower,
+        &["qwen3-coder-next", "coder-next", "qwen3-coder-30b"],
+    ) {
+        ModelTier::Strong
+    } else if contains_any(&lower, &["135m", "0.1b", "0.2b", "tiny", "smollm"]) {
         ModelTier::Tiny
     } else if contains_any(&lower, &["0.5b", "500m", "0_5b"]) {
         ModelTier::Small
@@ -11214,7 +11219,7 @@ mod tests {
     }
 
     #[test]
-    fn prefers_m_series_nodes_for_auto_jobs_when_available() {
+    fn small_interactive_auto_jobs_may_prefer_m_series_latency() {
         let mut state = ready_state();
         state.register(AgentRegistration {
             node_id: "node-2".to_string(),
@@ -11300,6 +11305,135 @@ mod tests {
         assert_eq!(job.job_id, "job-1");
         assert_eq!(job.backend, Some(Backend::M));
         assert_eq!(job.assigned_node_id.as_deref(), Some("node-1"));
+    }
+
+    #[test]
+    fn large_agnostic_request_prefers_accelerated_context_capable_node() {
+        let mut state = ready_state();
+        state.register(cuda_registration("node-2"));
+        let mut cuda = low_vram_cuda_heartbeat("node-2", "2");
+        cuda.available_memory_mb = 64_000;
+        cuda.available_gpu_percent = 80;
+        cuda.worker_health.model_name = Some("Qwen/Qwen3-Coder-Next-FP8".to_string());
+        cuda.worker_health.model_path = None;
+        cuda.worker_health.llama_cli_available = false;
+        cuda.worker_health.runtime_mode = "contributed-cluster".to_string();
+        cuda.worker_health.capabilities.capacity_class = "heavy".to_string();
+        cuda.worker_health.capabilities.max_context_tokens = Some(16_384);
+        cuda.worker_health.capabilities.roles = vec![
+            NodeRole::Chat,
+            NodeRole::Batch,
+            NodeRole::ChunkAnalysis,
+            NodeRole::Coding,
+        ];
+        state.heartbeat(cuda, "2".to_string());
+        assert!(
+            state.nodes.get("node-2").expect("cuda node").policy_allowed,
+            "cuda policy: {:?}",
+            state
+                .nodes
+                .get("node-2")
+                .and_then(|node| node.policy_reason.as_deref())
+        );
+
+        let mut request = classification_request(&format!(
+            "Provide one complete analysis of this material: {}",
+            "important context ".repeat(400)
+        ));
+        request.execution_mode = JobExecutionMode::Single;
+        request.model = None;
+        request.preferred_backend = Backend::Auto;
+        state.submit_job(request, "3".to_string());
+
+        let job = state.jobs.get("job-1").expect("job");
+        assert_eq!(job.scheduling_requirements.context_size, ContextSize::Large);
+        let decision = job.scheduler_decision.as_ref().expect("scheduler decision");
+        let mac_score = state.scheduler_score(state.nodes.get("node-1").expect("mac"), job, None);
+        let cuda_score = state.scheduler_score(state.nodes.get("node-2").expect("cuda"), job, None);
+        assert!(
+            ControlPlaneState::node_can_run_job(state.nodes.get("node-2").expect("cuda"), job,),
+            "cuda must remain eligible"
+        );
+        assert_eq!(
+            decision.node_id, "node-2",
+            "mac={mac_score:?}; cuda={cuda_score:?}"
+        );
+        assert!(decision.reasons.iter().any(|reason| {
+            reason.contains("accelerated backend favored for graph or large-context work")
+        }));
+        assert!(state.claim_job("node-1", "4".to_string()).job.is_none());
+        assert_eq!(
+            state
+                .claim_job("node-2", "4".to_string())
+                .job
+                .expect("cuda claim")
+                .assigned_node_id
+                .as_deref(),
+            Some("node-2")
+        );
+    }
+
+    #[test]
+    fn merge_stage_requires_advertised_context_even_for_strong_reducer() {
+        let mut state = ready_state();
+        {
+            let mac = state.nodes.get_mut("node-1").expect("mac");
+            let health = mac.worker_health.as_mut().expect("mac health");
+            health.runtime_mode = "mlx".to_string();
+            health.model_name = Some("mlx-community/Qwen2.5-3B-Instruct-4bit".to_string());
+            health.capabilities.capacity_class = "micro".to_string();
+            health.capabilities.max_context_tokens = Some(8_192);
+        }
+        state.register(cuda_registration("node-2"));
+        let mut cuda = low_vram_cuda_heartbeat("node-2", "2");
+        cuda.available_memory_mb = 64_000;
+        cuda.available_gpu_percent = 80;
+        cuda.worker_health.model_name = Some("Qwen/Qwen3-Coder-Next-FP8".to_string());
+        cuda.worker_health.model_path = None;
+        cuda.worker_health.llama_cli_available = false;
+        cuda.worker_health.runtime_mode = "contributed-cluster".to_string();
+        cuda.worker_health.capabilities.capacity_class = "micro".to_string();
+        cuda.worker_health.capabilities.max_context_tokens = Some(16_384);
+        cuda.worker_health.capabilities.roles = vec![
+            NodeRole::Batch,
+            NodeRole::ChunkAnalysis,
+            NodeRole::Reducer,
+            NodeRole::Synthesizer,
+        ];
+        state.heartbeat(cuda, "2".to_string());
+
+        let mut request = reducer_fixture_request();
+        request.execution_mode = JobExecutionMode::Decompose;
+        request.model = None;
+        state.submit_job(request, "3".to_string());
+        let job = state.jobs.get_mut("job-1").expect("job");
+        let merge_id = job
+            .graph
+            .nodes
+            .iter()
+            .find(|node| graph_node_is_merge(&job.graph, Some(&node.id)))
+            .map(|node| node.id.clone())
+            .expect("merge node");
+        let merge = job
+            .graph
+            .nodes
+            .iter_mut()
+            .find(|node| node.id == merge_id)
+            .expect("merge workload");
+        merge.workload.minimum_capacity_class = CapacityClass::Micro;
+        merge.workload.context_budget_tokens = 16_384;
+
+        let job = state.jobs.get("job-1").expect("job");
+        assert!(!ControlPlaneState::node_can_run_graph_role(
+            state.nodes.get("node-1").expect("mac"),
+            job,
+            Some(&merge_id),
+        ));
+        assert!(ControlPlaneState::node_can_run_graph_role(
+            state.nodes.get("node-2").expect("cuda"),
+            job,
+            Some(&merge_id),
+        ));
     }
 
     #[test]
