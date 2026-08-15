@@ -31,6 +31,38 @@ pub fn validate_model(requested: Option<&str>, public_model: &str) -> Result<(),
     }
 }
 
+pub fn is_openwebui_metadata_request(prompt: &str) -> bool {
+    let normalized = prompt.trim().to_ascii_lowercase();
+    if !normalized.starts_with("### task:") {
+        return false;
+    }
+    [
+        "suggest 3-5 relevant follow-up questions",
+        "generate a concise title",
+        "generate 1-3 broad tags",
+        "generate search queries",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
+pub fn history_contains_sensitive_data(history: &str) -> bool {
+    let normalized = history.to_ascii_lowercase();
+    [
+        "-----begin private key-----",
+        "-----begin rsa private key-----",
+        "authorization: bearer ",
+        "api_key=",
+        "api-key=",
+        "password=",
+        "passwd=",
+        "client_secret=",
+        "aws_secret_access_key=",
+    ]
+    .iter()
+    .any(|marker| normalized.contains(marker))
+}
+
 pub fn models_response(model: &str) -> Value {
     json!({
         "object": "list",
@@ -205,7 +237,10 @@ pub fn validate_request(request: &ChatCompletionRequest) -> Result<(), String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{models_response, public_model_id, sse_finish, sse_start, validate_model};
+    use super::{
+        history_contains_sensitive_data, is_openwebui_metadata_request, models_response,
+        public_model_id, sse_finish, sse_start, validate_model,
+    };
 
     #[test]
     fn exposes_environment_specific_virtual_model() {
@@ -235,5 +270,26 @@ mod tests {
         assert!(start.contains("\"role\":\"assistant\""));
         assert!(finish.contains("\"delta\":{\"content\":\"Done.\"}"));
         assert!(finish.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn identifies_openwebui_metadata_without_stealing_normal_questions() {
+        assert!(is_openwebui_metadata_request(
+            "### Task:\nSuggest 3-5 relevant follow-up questions based on the chat history."
+        ));
+        assert!(!is_openwebui_metadata_request(
+            "Give me a detailed history of Tesla from its origins to today."
+        ));
+    }
+
+    #[test]
+    fn sensitive_history_guard_requires_secret_shaped_evidence() {
+        assert!(history_contains_sensitive_data(
+            "authorization: bearer secret-value"
+        ));
+        assert!(history_contains_sensitive_data("password=hunter2"));
+        assert!(!history_contains_sensitive_data(
+            "Discuss token budgets, private helper functions, and company history."
+        ));
     }
 }
