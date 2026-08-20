@@ -3299,6 +3299,33 @@ fn looks_like_complete_code_prompt(lower_prompt: &str) -> bool {
     ))
 }
 
+fn looks_like_substantial_code_scope(lower_prompt: &str) -> bool {
+    contains_any(
+        lower_prompt,
+        &[
+            "architecture",
+            "multi-step",
+            "multi-file",
+            "multiple files",
+            "end-to-end",
+            "backend",
+            "frontend",
+            " api",
+            "database",
+            "authentication",
+            "authorization",
+            "crud",
+            "binary file",
+            "file handling",
+            "test suite",
+            "with tests",
+            "refactor",
+            "security review",
+            "migration",
+        ],
+    )
+}
+
 fn next_ready_graph_node_id(graph: &JobGraph) -> Option<String> {
     graph
         .nodes
@@ -4792,6 +4819,7 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
     let lower = request.prompt.to_ascii_lowercase();
     let prompt_chars = request.prompt.chars().count();
     let complete_code_prompt = looks_like_complete_code_prompt(&lower);
+    let substantial_code_scope = looks_like_substantial_code_scope(&lower);
     let detailed_research_prompt = looks_like_detailed_research_prompt(&lower);
 
     let task_type = if complete_code_prompt
@@ -4839,7 +4867,7 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
     };
 
     let complexity = if prompt_chars > 4_000
-        || complete_code_prompt
+        || (complete_code_prompt && substantial_code_scope)
         || detailed_research_prompt
         || contains_any(
             &lower,
@@ -4921,12 +4949,11 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
     let compact_low_complexity_coding = task_type == RequestTaskType::Coding
         && complexity == RequestComplexity::Low
         && prompt_chars <= 800
-        && !complete_code_prompt
         && request.max_tokens.unwrap_or_default() <= 2_048;
     let context_size = if prompt_chars > 4_000 || request.max_tokens.unwrap_or_default() > 4_096 {
         ContextSize::Large
     } else if prompt_chars > 800
-        || complete_code_prompt
+        || (complete_code_prompt && substantial_code_scope)
         || detailed_research_prompt
         || (!compact_low_complexity_coding && request.max_tokens.unwrap_or_default() > 1_024)
     {
@@ -4972,8 +4999,6 @@ pub fn plan_job_request(request: &JobRequest, classification: &RequestClassifica
     let lower = request.prompt.to_ascii_lowercase();
 
     let decomposition_needed = classification.complexity == RequestComplexity::High
-        || (classification.task_type == RequestTaskType::Coding
-            && looks_like_complete_code_prompt(&lower))
         || looks_product_plan_prompt(&lower)
         || looks_sectionable_prompt(&request.prompt)
         || contains_any(
@@ -7708,8 +7733,7 @@ mod tests {
 
     #[test]
     fn compact_low_complexity_code_keeps_small_context_with_a_1536_token_output_budget() {
-        let mut request =
-            classification_request("give me a code in java magic square 3x3");
+        let mut request = classification_request("give me a code in java magic square 3x3");
         request.stream = true;
         request.max_tokens = Some(1_536);
 
@@ -7725,6 +7749,31 @@ mod tests {
             ControlPlaneState::required_model_capability(&record, None),
             "small_coding"
         );
+    }
+
+    #[test]
+    fn compact_complete_magic_square_program_remains_small_and_claimable() {
+        let mut request = classification_request(
+            "possible for you to show a complete program in java for magic square, 3x3 ?",
+        );
+        request.stream = true;
+        request.max_tokens = Some(1_536);
+
+        let classification = classify_job_request(&request);
+
+        assert_eq!(classification.task_type, RequestTaskType::Coding);
+        assert_eq!(classification.complexity, RequestComplexity::Low);
+        assert_eq!(classification.context_size, ContextSize::Small);
+        assert!(classification
+            .execution_constraints
+            .contains(&"complete_code_output".to_string()));
+
+        let mut state = ready_state();
+        let mut heartbeat = ready_heartbeat("node-1", "2");
+        heartbeat.worker_health.streaming_supported = true;
+        state.heartbeat(heartbeat, "2".to_string());
+        state.submit_job(request, "2".to_string());
+        assert!(state.claim_job("node-1", "3".to_string()).job.is_some());
     }
 
     #[test]
@@ -8273,7 +8322,7 @@ mod tests {
     }
 
     #[test]
-    fn create_me_fibonacci_program_is_classified_as_complete_code() {
+    fn compact_fibonacci_program_is_complete_but_low_complexity() {
         let mut request = classification_request("create me a fibonacci program in java");
         request.max_tokens = Some(1_536);
         request.max_tokens_source = Some("auto".to_string());
@@ -8281,7 +8330,11 @@ mod tests {
         let classification = classify_job_request(&request);
         assert_eq!(classification.task_type, RequestTaskType::Coding);
         assert_eq!(classification.output_format, ExpectedOutputFormat::Code);
-        assert_eq!(classification.complexity, RequestComplexity::High);
+        assert_eq!(classification.complexity, RequestComplexity::Low);
+        assert_eq!(classification.context_size, ContextSize::Small);
+        assert!(classification
+            .execution_constraints
+            .contains(&"complete_code_output".to_string()));
 
         let mut state = ready_state();
         state.submit_job(request, "2".to_string());
