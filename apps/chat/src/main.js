@@ -1974,18 +1974,31 @@ export function page(config = configFromEnv()) {
 
         renderPendingJob(pending, submitted);
         let payload = submitted;
+        let pollRecoveryDeadline = 0;
         while (!["completed", "failed"].includes(payload.status)) {
           await sleep(1500);
           const pollParams = new URLSearchParams({
             conversationId,
             prompt: message,
           });
-          const polled = await fetch(
-            "/api/chat/jobs/" + encodeURIComponent(submitted.job_id) + "?" + pollParams.toString(),
-          );
-          payload = await readApiPayload(polled, "chat poll failed");
-          if (!polled.ok) {
-            throw new Error(payload.error || "chat poll failed");
+          try {
+            const polled = await fetch(
+              "/api/chat/jobs/" + encodeURIComponent(submitted.job_id) + "?" + pollParams.toString(),
+            );
+            payload = await readApiPayload(polled, "chat poll failed");
+            if (!polled.ok) {
+              const error = new Error(payload.error || "chat poll failed");
+              error.status = polled.status;
+              throw error;
+            }
+            pollRecoveryDeadline = 0;
+          } catch (pollError) {
+            const status = Number(pollError?.status);
+            const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
+            pollRecoveryDeadline ||= Date.now() + 120000;
+            if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
+            setStatus("working", "Recovering");
+            continue;
           }
           renderPendingJob(pending, payload);
         }
