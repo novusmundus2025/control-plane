@@ -679,6 +679,27 @@ impl ControlPlaneState {
         }
     }
 
+    fn available_backend_flags_for_job(
+        &self,
+        job: &JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) -> (bool, bool, bool) {
+        let backend_is_available = |backend| {
+            self.nodes.values().any(|candidate| {
+                candidate.backend == backend
+                    && self.node_has_available_slot_for_job(candidate, job)
+                    && Self::node_can_run_job(candidate, job)
+                    && Self::node_can_run_graph_role(candidate, job, active_graph_node_id)
+            })
+        };
+
+        (
+            backend_is_available(Backend::M),
+            backend_is_available(Backend::Cuda),
+            backend_is_available(Backend::Vllm),
+        )
+    }
+
     fn reported_runtime_modes(worker_health: &WorkerHealthReport) -> Vec<RuntimeMode> {
         if !worker_health.supported_runtime_modes.is_empty() {
             return worker_health.supported_runtime_modes.clone();
@@ -1619,21 +1640,12 @@ impl ControlPlaneState {
     }
 
     fn best_scheduler_decision_for_job(&self, job: &JobRecord) -> SchedulerDecision {
-        let ready_m_exists = self.nodes.values().any(|candidate| {
-            Self::node_is_schedulable_state(candidate)
-                && candidate.policy_allowed
-                && candidate.backend == Backend::M
-        });
-        let ready_cuda_exists = self.nodes.values().any(|candidate| {
-            Self::node_is_schedulable_state(candidate)
-                && candidate.policy_allowed
-                && candidate.backend == Backend::Cuda
-        });
-        let ready_vllm_exists = self.nodes.values().any(|candidate| {
-            Self::node_is_schedulable_state(candidate)
-                && candidate.policy_allowed
-                && candidate.backend == Backend::Vllm
-        });
+        let active_graph_node_id = job
+            .graph_execution_enabled
+            .then(|| next_ready_graph_node_id(&job.graph))
+            .flatten();
+        let (ready_m_exists, ready_cuda_exists, ready_vllm_exists) =
+            self.available_backend_flags_for_job(job, active_graph_node_id.as_deref());
 
         self.nodes
             .values()
@@ -1729,21 +1741,6 @@ impl ControlPlaneState {
 
         let claiming_node = node.clone();
         let node_backend = node.backend;
-        let ready_m_exists = self.nodes.values().any(|candidate| {
-            Self::node_is_schedulable_state(candidate)
-                && candidate.policy_allowed
-                && candidate.backend == Backend::M
-        });
-        let ready_cuda_exists = self.nodes.values().any(|candidate| {
-            Self::node_is_schedulable_state(candidate)
-                && candidate.policy_allowed
-                && candidate.backend == Backend::Cuda
-        });
-        let ready_vllm_exists = self.nodes.values().any(|candidate| {
-            Self::node_is_schedulable_state(candidate)
-                && candidate.policy_allowed
-                && candidate.backend == Backend::Vllm
-        });
         let selected = self
             .jobs
             .iter()
@@ -1752,6 +1749,8 @@ impl ControlPlaneState {
                     .graph_execution_enabled
                     .then(|| next_ready_graph_node_id(&job.graph))
                     .flatten();
+                let (ready_m_exists, ready_cuda_exists, ready_vllm_exists) =
+                    self.available_backend_flags_for_job(job, ready_graph_node_id.as_deref());
                 let schedulable_retry_nodes = self
                     .nodes
                     .values()
@@ -2030,21 +2029,8 @@ impl ControlPlaneState {
         active_graph_node_id: Option<&str>,
     ) -> Option<SchedulerDecision> {
         let active_graph_node_id = active_graph_node_id?;
-        let ready_m_exists = self.nodes.values().any(|candidate| {
-            Self::node_is_schedulable_state(candidate)
-                && candidate.policy_allowed
-                && candidate.backend == Backend::M
-        });
-        let ready_cuda_exists = self.nodes.values().any(|candidate| {
-            Self::node_is_schedulable_state(candidate)
-                && candidate.policy_allowed
-                && candidate.backend == Backend::Cuda
-        });
-        let ready_vllm_exists = self.nodes.values().any(|candidate| {
-            Self::node_is_schedulable_state(candidate)
-                && candidate.policy_allowed
-                && candidate.backend == Backend::Vllm
-        });
+        let (ready_m_exists, ready_cuda_exists, ready_vllm_exists) =
+            self.available_backend_flags_for_job(job, Some(active_graph_node_id));
 
         self.nodes
             .values()
@@ -4602,21 +4588,8 @@ pub(crate) fn graph_node_required_role(
 fn best_reducer_node_id_for_job(state: &ControlPlaneState, job: &JobRecord) -> Option<String> {
     let active_merge_node_id = next_ready_graph_node_id(&job.graph)
         .filter(|node_id| graph_node_is_merge(&job.graph, Some(node_id.as_str())))?;
-    let ready_m_exists = state.nodes.values().any(|candidate| {
-        ControlPlaneState::node_is_schedulable_state(candidate)
-            && candidate.policy_allowed
-            && candidate.backend == Backend::M
-    });
-    let ready_cuda_exists = state.nodes.values().any(|candidate| {
-        ControlPlaneState::node_is_schedulable_state(candidate)
-            && candidate.policy_allowed
-            && candidate.backend == Backend::Cuda
-    });
-    let ready_vllm_exists = state.nodes.values().any(|candidate| {
-        ControlPlaneState::node_is_schedulable_state(candidate)
-            && candidate.policy_allowed
-            && candidate.backend == Backend::Vllm
-    });
+    let (ready_m_exists, ready_cuda_exists, ready_vllm_exists) =
+        state.available_backend_flags_for_job(job, Some(active_merge_node_id.as_str()));
 
     state
         .nodes
@@ -13496,6 +13469,40 @@ mod tests {
             state.jobs.get("job-1").map(|job| job.status),
             Some(JobStatus::Queued)
         );
+    }
+
+    #[test]
+    fn full_preferred_backend_does_not_block_an_available_auto_node() {
+        let mut state = ready_state();
+        let mut registration = m_series_registration("node-auto");
+        registration.backend = Backend::Auto;
+        state.register(registration);
+        let mut heartbeat = ready_heartbeat("node-auto", "1");
+        heartbeat.backend = Backend::Auto;
+        state.heartbeat(heartbeat, "1".to_string());
+
+        let mut running = classification_request("Explain the first sequence.");
+        running.preferred_backend = Backend::M;
+        state.submit_job(running, "2".to_string());
+        assert_eq!(
+            state
+                .claim_job("node-1", "3".to_string())
+                .job
+                .map(|job| job.job_id),
+            Some("job-1".to_string())
+        );
+
+        let mut waiting = classification_request("Explain the second sequence.");
+        waiting.request_id = "job-2".to_string();
+        waiting.preferred_backend = Backend::M;
+        state.submit_job(waiting, "4".to_string());
+
+        let claim = state
+            .claim_job("node-auto", "5".to_string())
+            .job
+            .expect("available fallback node claims while preferred backend is full");
+        assert_eq!(claim.job_id, "job-2");
+        assert_eq!(claim.backend, Some(Backend::Auto));
     }
 
     #[test]
