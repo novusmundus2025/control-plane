@@ -1992,18 +1992,31 @@ export function page(config = configFromEnv()) {
 
       renderPendingJob(pending, submitted);
       let payload = submitted;
+      let pollRecoveryDeadline = 0;
       while (!["completed", "failed"].includes(payload.status)) {
         await sleep(1500);
         const pollParams = new URLSearchParams({
           conversationId,
           prompt: message,
         });
-        const polled = await fetch(
-          "/api/chat/jobs/" + encodeURIComponent(submitted.job_id) + "?" + pollParams.toString(),
-        );
-        payload = await readApiPayload(polled, "chat poll failed");
-        if (!polled.ok) {
-          throw new Error(payload.error || "chat poll failed");
+        try {
+          const polled = await fetch(
+            "/api/chat/jobs/" + encodeURIComponent(submitted.job_id) + "?" + pollParams.toString(),
+          );
+          payload = await readApiPayload(polled, "chat poll failed");
+          if (!polled.ok) {
+            const error = new Error(payload.error || "chat poll failed");
+            error.status = polled.status;
+            throw error;
+          }
+          pollRecoveryDeadline = 0;
+        } catch (pollError) {
+          const status = Number(pollError?.status);
+          const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
+          pollRecoveryDeadline ||= Date.now() + 120000;
+          if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
+          setStatus("working", "Recovering");
+          continue;
         }
         renderPendingJob(pending, payload);
       }
@@ -2049,6 +2062,51 @@ export function page(config = configFromEnv()) {
       let finishReason = null;
       let sawDone = false;
 
+      const recoverCompletedJob = async (streamError) => {
+        if (!completionId) throw streamError;
+        try {
+          setStatus("working", "Recovering");
+          const pollParams = new URLSearchParams({
+            conversationId,
+            prompt: message,
+          });
+          let payload = { job_id: completionId, status: "assigned" };
+          const recoveryDeadline = Date.now() + 120000;
+          while (!["completed", "failed"].includes(payload.status)) {
+            try {
+              const polled = await fetch(
+                "/api/chat/jobs/" + encodeURIComponent(completionId) + "?" + pollParams.toString(),
+              );
+              payload = await readApiPayload(polled, "chat recovery poll failed");
+              if (!polled.ok) {
+                const error = new Error(payload.error || "chat recovery poll failed");
+                error.status = polled.status;
+                throw error;
+              }
+            } catch (pollError) {
+              const status = Number(pollError?.status);
+              const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
+              if (!retryable || Date.now() >= recoveryDeadline) throw pollError;
+              await sleep(1500);
+              continue;
+            }
+            if (!["completed", "failed"].includes(payload.status)) {
+              renderPendingJob(pending, payload);
+              await sleep(1500);
+            }
+          }
+          if (payload.status === "failed") {
+            throw new Error(payload.error || "MundusX job failed");
+          }
+          renderCompletedJob(pending, payload, conversationId);
+          return true;
+        } catch (recoveryError) {
+          throw new Error(
+            "Response connection was interrupted and recovery failed: " + recoveryError.message,
+          );
+        }
+      };
+
       const consumeEvent = (eventText) => {
         const data = eventText
           .split(/\\r?\\n/)
@@ -2073,18 +2131,23 @@ export function page(config = configFromEnv()) {
         if (choice?.finish_reason) finishReason = choice.finish_reason;
       };
 
-      while (true) {
-        const next = await reader.read();
-        if (next.done) break;
-        buffer += decoder.decode(next.value, { stream: true });
-        const events = buffer.split(/\\r?\\n\\r?\\n/);
-        buffer = events.pop() || "";
-        events.forEach(consumeEvent);
+      try {
+        while (true) {
+          const next = await reader.read();
+          if (next.done) break;
+          buffer += decoder.decode(next.value, { stream: true });
+          const events = buffer.split(/\\r?\\n\\r?\\n/);
+          buffer = events.pop() || "";
+          events.forEach(consumeEvent);
+        }
+        buffer += decoder.decode();
+        if (buffer.trim()) consumeEvent(buffer);
+        if (!sawDone) throw new Error("MundusX stream ended before completion");
+        if (!output.trim()) throw new Error("MundusX completed without assistant output");
+      } catch (streamError) {
+        await reader.cancel().catch(() => {});
+        return recoverCompletedJob(streamError);
       }
-      buffer += decoder.decode();
-      if (buffer.trim()) consumeEvent(buffer);
-      if (!sawDone) throw new Error("MundusX stream ended before completion");
-      if (!output.trim()) throw new Error("MundusX completed without assistant output");
 
       renderCompletedJob(pending, {
         status: "completed",

@@ -152,6 +152,11 @@ test("renders a usable chat page", () => {
   assert.match(html, /function progressLooksLikeCodePlan/);
   assert.match(html, /shouldShowSourceSections\(payload, output\)/);
   assert.match(html, /function appendRetryAction/);
+  assert.match(html, /pollRecoveryDeadline \|\|= Date\.now\(\) \+ 120000/);
+  assert.match(html, /const recoverCompletedJob = async/);
+  assert.match(html, /setStatus\("working", "Recovering"\)/);
+  assert.match(html, /chat recovery poll failed/);
+  assert.match(html, /return recoverCompletedJob\(streamError\)/);
   assert.match(html, /message-retry-button/);
   assert.match(html, /function progressUnit/);
   assert.match(html, /\.message-body ol/);
