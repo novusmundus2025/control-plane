@@ -149,6 +149,9 @@ test("renders a usable chat page", () => {
   assert.match(html, /function progressLooksLikeCodePlan/);
   assert.match(html, /shouldShowSourceSections\(payload, output\)/);
   assert.match(html, /function appendRetryAction/);
+  assert.match(html, /pollRecoveryDeadline \|\|= Date\.now\(\) \+ 120000/);
+  assert.match(html, /setStatus\("working", "Recovering"\)/);
+  assert.match(html, /\[408, 425, 429, 500, 502, 503, 504\]/);
   assert.match(html, /message-retry-button/);
   assert.match(html, /function progressUnit/);
   assert.match(html, /\.message-body ol/);
