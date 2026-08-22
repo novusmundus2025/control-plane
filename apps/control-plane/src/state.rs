@@ -1000,9 +1000,16 @@ impl ControlPlaneState {
         }
 
         let runtime_mode = worker_health.runtime_mode.to_ascii_lowercase();
+        if runtime_mode == "contributed-cluster" {
+            let mut capacity = usize::from(worker_health.parallel_slots.max(1))
+                .min(worker_health.capabilities.max_parallel_jobs.max(1) as usize);
+            if let Some(max_num_seqs) = worker_health.capabilities.max_num_seqs {
+                capacity = capacity.min(max_num_seqs.max(1) as usize);
+            }
+            return capacity.max(1);
+        }
         let warm_persistent_runtime = runtime_mode.contains("persistent")
             || runtime_mode.contains("warm")
-            || runtime_mode == "contributed-cluster"
             || node.backend == Backend::Vllm;
         if node.backend == Backend::Cuda && !warm_persistent_runtime {
             return 1;
@@ -13750,6 +13757,71 @@ mod tests {
             ControlPlaneState::node_parallel_capacity_for_job(node, &job),
             4
         );
+    }
+
+    #[test]
+    fn contributed_cluster_capacity_uses_its_explicit_runtime_budget() {
+        let mut state = ready_state();
+        let node = state.nodes.get_mut("node-1").expect("node exists");
+        node.backend = Backend::Cuda;
+        node.contribution_percent = 30;
+        let health = node.worker_health.as_mut().expect("worker health");
+        health.cuda_device_available = true;
+        health.cuda_memory_mb = None;
+        health.runtime_mode = "contributed-cluster".to_string();
+        health.parallel_slots = 16;
+        health.capabilities.max_parallel_jobs = 16;
+        health.capabilities.max_num_seqs = None;
+
+        let job = state.submit_job(
+            classification_request("Write a complete Rust program with tests."),
+            "3".to_string(),
+        );
+        let node = state.nodes.get("node-1").expect("node exists");
+        assert_eq!(
+            ControlPlaneState::node_parallel_capacity_for_job(node, &job),
+            16
+        );
+
+        let node = state.nodes.get_mut("node-1").expect("node exists");
+        let capabilities = &mut node
+            .worker_health
+            .as_mut()
+            .expect("worker health")
+            .capabilities;
+        capabilities.max_parallel_jobs = 8;
+        capabilities.max_num_seqs = Some(5);
+        assert_eq!(
+            ControlPlaneState::node_parallel_capacity_for_job(node, &job),
+            5
+        );
+    }
+
+    #[test]
+    fn contributed_cluster_can_claim_five_simultaneous_jobs() {
+        let mut state = ready_state();
+        let node = state.nodes.get_mut("node-1").expect("node exists");
+        node.backend = Backend::Cuda;
+        node.contribution_percent = 30;
+        let health = node.worker_health.as_mut().expect("worker health");
+        health.cuda_device_available = true;
+        health.cuda_memory_mb = None;
+        health.runtime_mode = "contributed-cluster".to_string();
+        health.parallel_slots = 16;
+        health.capabilities.max_parallel_jobs = 16;
+
+        for index in 1..=5 {
+            let mut request = classification_request("Write a complete Rust program with tests.");
+            request.request_id = format!("parallel-{index}");
+            state.submit_job(request, "3".to_string());
+        }
+
+        let claimed = (0..5)
+            .filter_map(|index| state.claim_job("node-1", format!("claim-{index}")).job)
+            .count();
+
+        assert_eq!(claimed, 5);
+        assert_eq!(state.node_slot_occupancy("node-1"), (5, 16, 11));
     }
 
     #[test]
