@@ -9,7 +9,7 @@ mod tools;
 
 use contracts::{
     is_trusted_identity_path, trust_path_label, AdmissionPolicyUpdate, AgentRegistration,
-    AppendChatMessageRequest, Backend, ChatCompletionRequest, ChatMessagesResponse,
+    AgentState, AppendChatMessageRequest, Backend, ChatCompletionRequest, ChatMessagesResponse,
     CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord,
     JobRequest, JobStatus, JobStreamAck, JobStreamDelta, NodePolicyOverrideInput, NodeRecord,
     OperatorContributionPercentUpdate, OperatorNodePolicyOverrideUpdate, RoutingMode, RuntimeMode,
@@ -912,7 +912,7 @@ fn render_topology_slots(state: &ControlPlaneState) -> String {
     html
 }
 
-fn render_node_records(nodes: Vec<NodeRecord>) -> String {
+fn render_node_records(state: &ControlPlaneState, nodes: Vec<NodeRecord>) -> String {
     if nodes.is_empty() {
         return r#"<div class="empty">No nodes have registered yet.</div>"#.to_string();
     }
@@ -932,6 +932,18 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
     );
 
     for node in nodes {
+        let (active_slots, total_slots, available_slots) = state.node_slot_occupancy(&node.node_id);
+        let slot_state = if !node.policy_allowed
+            || !matches!(node.state, AgentState::Ready | AgentState::Busy)
+        {
+            "Unavailable"
+        } else if active_slots == 0 {
+            "Idle"
+        } else if available_slots == 0 {
+            "Full"
+        } else {
+            "Available"
+        };
         let (state_bg, state_fg) = state_badge(node.state.as_str());
         let (trust_bg, trust_fg, trust_label) = trust_badge(&node.identity_trust_path);
         let (grade_bg, grade_fg, grade_label) = trust_grade_badge(
@@ -1008,6 +1020,7 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
               <div>
                 <span class="pill" style="background:{};color:{};">{}</span>
                 <div class="meta" style="margin-top:6px;">reported {}</div>
+                <div class="meta"><strong>{}</strong> &middot; {}/{} active &middot; {} free</div>
               </div>
               <div>
                 <div>{}</div>
@@ -1048,6 +1061,10 @@ fn render_node_records(nodes: Vec<NodeRecord>) -> String {
             state_fg,
             escape_html(&node.state.to_string()),
             escape_html(&node.reported_state.to_string()),
+            slot_state,
+            active_slots,
+            total_slots,
+            available_slots,
             escape_html(&power),
             escape_html(&node.public_key_fingerprint),
             worker_health,
@@ -1461,6 +1478,17 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
         .filter(|credit| credit.device_id.as_deref() == Some(node.node_id.as_str()))
         .map(|credit| credit.amount)
         .sum::<f64>();
+    let (active_slots, total_slots, available_slots) = state.node_slot_occupancy(node_id);
+    let slot_state =
+        if !node.policy_allowed || !matches!(node.state, AgentState::Ready | AgentState::Busy) {
+            "Unavailable"
+        } else if active_slots == 0 {
+            "Idle"
+        } else if available_slots == 0 {
+            "Full"
+        } else {
+            "Available"
+        };
     let total_attempts = node.trust.completed_jobs + node.trust.failed_jobs;
     let failure_rate = if total_attempts == 0 {
         "not enough data".to_string()
@@ -1577,6 +1605,7 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
             <div class="node-profile-card"><span>Total earned</span><strong>{earned:.2}</strong><div class="meta">credits</div></div>
             <div class="node-profile-card"><span>Contribution</span><strong>{contribution}%</strong><div class="meta">operator effective share</div></div>
             <div class="node-profile-card"><span>Current work</span><strong>{current_work}</strong><div class="meta">active assignment</div></div>
+            <div class="node-profile-card"><span>Execution slots</span><strong>{active_slots}/{total_slots} active</strong><div class="meta">{slot_state} &middot; {available_slots} free</div></div>
           </section>
           <section class="profile-sections">
             <div class="node-profile-card">
@@ -1633,6 +1662,10 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
         earned = total_earned,
         contribution = node.contribution_percent,
         current_work = escape_html(&current_work),
+        active_slots = active_slots,
+        total_slots = total_slots,
+        available_slots = available_slots,
+        slot_state = slot_state,
         completed = node.trust.completed_jobs,
         failed = node.trust.failed_jobs,
         consecutive = node.trust.consecutive_failures,
@@ -2761,7 +2794,7 @@ fn control_plane_operator_page(
         "nodes",
     );
     let (paged_nodes, nodes_pagination) = paged_node_records(filtered_nodes, query);
-    let filtered_nodes_html = render_node_records(paged_nodes);
+    let filtered_nodes_html = render_node_records(state, paged_nodes);
     let nodes_pagination_html = render_pagination_controls("/nodes", query, &nodes_pagination);
     let registry_nodes = filter_json_items(
         state.nodes.values().cloned().collect::<Vec<_>>(),
