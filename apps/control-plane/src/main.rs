@@ -1571,6 +1571,41 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
           <div><strong>unknown</strong><div class="meta">model readiness</div></div>"#
                 .to_string()
         });
+    let runtime_capacity = node
+        .worker_health
+        .as_ref()
+        .map(|health| {
+            let capabilities = &health.capabilities;
+            let context = capabilities
+                .max_context_tokens
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "not reported".to_string());
+            let sequences = capabilities
+                .max_num_seqs
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "not reported".to_string());
+            let kv_cache = capabilities
+                .kv_cache_size_tokens
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "not reported".to_string());
+            let admission = if capabilities.models.iter().any(|model| {
+                model.output_capacity_mode.as_deref() == Some("context_window")
+            }) {
+                "dynamic context fit"
+            } else {
+                "model output limit"
+            };
+            format!(
+                r#"<div><strong>{context}</strong><div class="meta">served context tokens</div></div>
+                <div><strong>{sequences}</strong><div class="meta">runtime max sequences</div></div>
+                <div><strong>{kv_cache}</strong><div class="meta">KV-cache tokens</div></div>
+                <div><strong>{admission}</strong><div class="meta">output admission</div></div>"#
+            )
+        })
+        .unwrap_or_else(|| {
+            r#"<div><strong>not reported</strong><div class="meta">runtime capacity</div></div>"#
+                .to_string()
+        });
     let policy_override = node
         .operator_policy_override
         .as_ref()
@@ -1626,6 +1661,10 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
             <div class="node-profile-card">
               <h3>Runtime</h3>
               <div class="profile-kv">{worker_health}</div>
+            </div>
+            <div class="node-profile-card">
+              <h3>Runtime capacity</h3>
+              <div class="profile-kv">{runtime_capacity}</div>
             </div>
             <div class="node-profile-card">
               <h3>Policy</h3>
@@ -2111,6 +2150,8 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
     } else {
         job.fallback_decision.triggers.join(", ")
     };
+    let context_demand =
+        ControlPlaneState::context_demand_for_job(job, job.active_graph_node_id.as_deref());
     let fallback_blocks = if job.fallback_decision.blocked_reasons.is_empty() {
         "none".to_string()
     } else {
@@ -2342,6 +2383,15 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
               <div class="profile-kv">{scheduler}</div>
             </div>
             <div class="node-profile-card">
+              <h3>Context admission</h3>
+              <div class="profile-kv">
+                <div><strong>{estimated_input}</strong><div class="meta">estimated input tokens</div></div>
+                <div><strong>{requested_output}</strong><div class="meta">requested output tokens</div></div>
+                <div><strong>{context_safety}</strong><div class="meta">scheduler safety tokens</div></div>
+                <div><strong>{required_context}</strong><div class="meta">required context tokens</div></div>
+              </div>
+            </div>
+            <div class="node-profile-card">
               <h3>Fallback</h3>
               <div class="profile-kv">
                 <div><strong>{fallback_status}</strong><div class="meta">decision</div></div>
@@ -2384,6 +2434,10 @@ fn render_job_detail_panel(state: &ControlPlaneState, job_id: &str) -> String {
         assigned = escape_html(job.assigned_at.as_deref().unwrap_or("not assigned")),
         completed = escape_html(job.completed_at.as_deref().unwrap_or("not completed")),
         scheduler = scheduler,
+        estimated_input = context_demand.estimated_input_tokens,
+        requested_output = context_demand.requested_output_tokens,
+        context_safety = context_demand.safety_tokens,
+        required_context = context_demand.required_context_tokens,
         fallback_status = escape_html(&format!("{:?}", job.fallback_decision.status)),
         fallback_approval = if job.fallback_decision.requires_operator_approval {
             "required"
@@ -7204,8 +7258,8 @@ mod tests {
 
     use crate::contracts::{
         AgentRegistration, AgentState, Backend, ChatMessage, Heartbeat, JobCompletion,
-        JobExecutionMode, JobGraphNodeStatus, JobRequest, JobStatus, RoutingMode, RuntimeMode,
-        WorkerHealthReport,
+        JobExecutionMode, JobGraphNodeStatus, JobRequest, JobStatus, ModelCapability, RoutingMode,
+        RuntimeMode, WorkerHealthReport,
     };
     use crate::state::ControlPlaneState;
     use ed25519_dalek::{Signer, SigningKey};
@@ -8286,6 +8340,9 @@ mod tests {
         assert!(!response.contains("Tesla output"));
         assert!(response.contains("single"));
         assert!(response.contains("Graph Chunks"));
+        assert!(response.contains("Context admission"));
+        assert!(response.contains("estimated input tokens"));
+        assert!(response.contains("required context tokens"));
         assert!(response.contains("advisory"));
         assert!(response.contains("advisory only and was not executed as chunks"));
         assert!(response.contains("trust:"));
@@ -8396,6 +8453,15 @@ mod tests {
     fn node_profile_shows_recent_scheduler_reason_for_node() {
         let mut state = ControlPlaneState::default();
         register_ready_node(&mut state, "node-1", "DAVE", "1");
+        let capabilities = &mut state
+            .nodes
+            .get_mut("node-1")
+            .and_then(|node| node.worker_health.as_mut())
+            .expect("health")
+            .capabilities;
+        capabilities.max_context_tokens = Some(131_072);
+        capabilities.max_num_seqs = Some(32);
+        capabilities.kv_cache_size_tokens = Some(9_435_151);
         state.submit_job(
             JobRequest {
                 request_id: "job-node-fit".to_string(),
@@ -8419,6 +8485,18 @@ mod tests {
             .claim_job("node-1", "3".to_string())
             .job
             .expect("claim");
+        state
+            .nodes
+            .get_mut("node-1")
+            .and_then(|node| node.worker_health.as_mut())
+            .expect("health")
+            .capabilities
+            .models
+            .push(ModelCapability {
+                name: "cluster-model".to_string(),
+                output_capacity_mode: Some("context_window".to_string()),
+                ..ModelCapability::default()
+            });
 
         let html = control_plane_operator_page(
             &state,
@@ -8432,6 +8510,10 @@ mod tests {
         assert!(html.contains(r#"href="/jobs/job-node-fit""#));
         assert!(html.contains("trust:"));
         assert!(html.contains("scheduler score"));
+        assert!(html.contains("Runtime capacity"));
+        assert!(html.contains("131072"));
+        assert!(html.contains("9435151"));
+        assert!(html.contains("dynamic context fit"));
     }
 
     #[test]
