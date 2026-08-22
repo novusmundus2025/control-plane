@@ -3058,7 +3058,7 @@ export function page(config = configFromEnv()) {
         readyNodeCount = payload.online_count;
         setText("network-state", payload.online_count > 0 ? "Online - nodes ready" : "Standby - no ready nodes");
         setText("network-card-state", payload.online_count > 0 ? "ONLINE" : "WAITING");
-        setText("network-card-metrics", payload.online_count + " nodes - " + payload.queued_job_count + " queued - " + payload.model_routing);
+        setText("network-card-metrics", payload.online_count + " nodes - " + payload.available_parallel_slots + "/" + payload.total_parallel_slots + " slots free - " + payload.queued_job_count + " queued");
         setText("network-latency", latency + " ms");
         setText("network-jobs", payload.completed_job_count + " completed");
         syncNetworkRuntimeStatus(false);
@@ -9387,6 +9387,10 @@ export async function fetchNetworkSummary(config = configFromEnv(), fetchImpl = 
       assigned_job_count: numberField(snapshot.assigned_job_count),
       completed_job_count: numberField(snapshot.completed_job_count),
       failed_job_count: numberField(snapshot.failed_job_count),
+      total_parallel_slots: numberField(snapshot.total_parallel_slots),
+      active_parallel_slots: numberField(snapshot.active_parallel_slots),
+      available_parallel_slots: numberField(snapshot.available_parallel_slots),
+      saturated_node_count: numberField(snapshot.saturated_node_count),
     };
   } catch (error) {
     return {
@@ -9402,6 +9406,10 @@ export async function fetchNetworkSummary(config = configFromEnv(), fetchImpl = 
       assigned_job_count: 0,
       completed_job_count: 0,
       failed_job_count: 0,
+      total_parallel_slots: 0,
+      active_parallel_slots: 0,
+      available_parallel_slots: 0,
+      saturated_node_count: 0,
     };
   }
 }

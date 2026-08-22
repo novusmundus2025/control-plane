@@ -1471,6 +1471,14 @@ pub struct ControlPlaneSnapshot {
     pub assigned_job_count: usize,
     pub completed_job_count: usize,
     pub failed_job_count: usize,
+    #[serde(default)]
+    pub total_parallel_slots: usize,
+    #[serde(default)]
+    pub active_parallel_slots: usize,
+    #[serde(default)]
+    pub available_parallel_slots: usize,
+    #[serde(default)]
+    pub saturated_node_count: usize,
 }
 
 #[cfg(test)]
