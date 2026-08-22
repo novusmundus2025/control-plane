@@ -385,6 +385,19 @@ fn json_response(status: &str, body: serde_json::Value) -> String {
     )
 }
 
+fn json_response_with_retry_after(
+    status: &str,
+    body: serde_json::Value,
+    retry_after_seconds: u64,
+) -> String {
+    let payload = body.to_string();
+    format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nRetry-After: {retry_after_seconds}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        payload.len(),
+        payload
+    )
+}
+
 fn openai_error(message: &str) -> serde_json::Value {
     serde_json::json!({
         "error": {
@@ -404,6 +417,19 @@ fn write_json_and_finish(stream: &mut TcpStream, status: &str, body: serde_json:
 
 fn write_chat_error(stream: &mut TcpStream, status: &str, message: &str) {
     write_json_and_finish(stream, status, openai_error(message));
+}
+
+fn write_chat_overloaded(stream: &mut TcpStream) {
+    let response = json_response_with_retry_after(
+        "429 Too Many Requests",
+        openai_error(
+            "MundusX is processing the maximum number of parent chat requests; retry shortly or use streaming delivery to wait in the admission queue",
+        ),
+        15,
+    );
+    if let Err(error) = stream.write_all(response.as_bytes()) {
+        eprintln!("failed to write overloaded chat response: {error}");
+    }
 }
 
 fn text_response(status: &str, body: &str) -> String {
@@ -476,7 +502,7 @@ fn job_async_payload(record: &JobRecord) -> serde_json::Value {
             "method": "GET",
             "url": job_status_path(&record.job_id),
             "recommended_interval_seconds": 2,
-            "default_timeout_seconds": 300
+            "default_timeout_seconds": chat_gateway::timeout_from_env().as_secs()
         },
         "job": job,
     })
@@ -5814,6 +5840,7 @@ fn handle_connection_with_streams(
     mut stream: TcpStream,
     state: Arc<Mutex<ControlPlaneState>>,
     live_streams: Arc<Mutex<chat_gateway::LiveStreamRegistry>>,
+    chat_admission: Arc<chat_gateway::ChatAdmissionController>,
     sync_status: Arc<Mutex<SupabaseSyncStatus>>,
     supabase: Option<&DatabaseMirror>,
     storage_source: StorageSource,
@@ -6002,6 +6029,7 @@ fn handle_connection_with_streams(
                 std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
             );
             let database = database_health_from_env(storage_source);
+            let chat_admission = chat_admission.snapshot();
             json_response(
                 "200 OK",
                 serde_json::json!({
@@ -6015,6 +6043,11 @@ fn handle_connection_with_streams(
                     "operator_auth_enforced": auth_mode.enforced(),
                     "operator_auth_mode": auth_mode.as_str(),
                     "planner_service": planner_service_status_from_env(),
+                    "chat_admission": {
+                        "active_parent_requests": chat_admission.active,
+                        "queued_parent_requests": chat_admission.queued,
+                        "max_active_parent_requests": chat_admission.max_active,
+                    },
                     "snapshot": snapshot,
                 }),
             )
@@ -6036,6 +6069,15 @@ fn handle_connection_with_streams(
                     "database".to_string(),
                     serde_json::to_value(database_health_from_env(storage_source))
                         .expect("database health json"),
+                );
+                let chat_admission = chat_admission.snapshot();
+                fields.insert(
+                    "chat_admission".to_string(),
+                    serde_json::json!({
+                        "active_parent_requests": chat_admission.active,
+                        "queued_parent_requests": chat_admission.queued,
+                        "max_active_parent_requests": chat_admission.max_active,
+                    }),
                 );
             }
             json_response("200 OK", snapshot)
@@ -6681,6 +6723,38 @@ fn handle_connection_with_streams(
                         }
                         let _ = stream.flush();
                     }
+                    let permit_result = if wants_stream {
+                        chat_admission.acquire(|| {
+                            stream
+                                .write_all(chat_gateway::sse_keep_alive().as_bytes())
+                                .and_then(|_| stream.flush())
+                                .map_err(|error| {
+                                    format!("chat stream disconnected while queued: {error}")
+                                })
+                        })
+                    } else {
+                        match chat_admission.try_acquire() {
+                            Ok(Some(permit)) => Ok(permit),
+                            Ok(None) => {
+                                write_chat_overloaded(&mut stream);
+                                return;
+                            }
+                            Err(error) => Err(error),
+                        }
+                    };
+                    let mut admission_permit = match permit_result {
+                        Ok(permit) => Some(permit),
+                        Err(error) => {
+                            if !wants_stream {
+                                return write_chat_error(
+                                    &mut stream,
+                                    "503 Service Unavailable",
+                                    &error,
+                                );
+                            }
+                            return;
+                        }
+                    };
                     let job_request = JobRequest {
                         request_id: completion_id.clone(),
                         prompt,
@@ -6791,6 +6865,13 @@ fn handle_connection_with_streams(
                     let completed = match completed_result {
                         Ok(job) => job,
                         Err(error) => {
+                            if let Some(permit) = admission_permit.take() {
+                                chat_gateway::release_permit_after_job_terminal(
+                                    permit,
+                                    Arc::clone(&state),
+                                    record.job_id.clone(),
+                                );
+                            }
                             if live_stream_job {
                                 live_streams
                                     .lock()
@@ -7053,6 +7134,7 @@ fn handle_connection(
         stream,
         state,
         Arc::new(Mutex::new(chat_gateway::LiveStreamRegistry::default())),
+        Arc::new(chat_gateway::ChatAdmissionController::from_env()),
         sync_status,
         supabase,
         storage_source,
@@ -7179,6 +7261,7 @@ fn main() {
     };
     let state = Arc::new(Mutex::new(restored_state));
     let live_streams = Arc::new(Mutex::new(chat_gateway::LiveStreamRegistry::default()));
+    let chat_admission = Arc::new(chat_gateway::ChatAdmissionController::from_env());
     let sync_status = Arc::new(Mutex::new(sync_status));
 
     println!("control plane listening on http://{bind_addr}");
@@ -7212,6 +7295,11 @@ fn main() {
     println!("submit job: POST /v1/jobs");
     println!("models: GET /v1/models");
     println!("OpenAI chat: POST /v1/chat/completions");
+    println!(
+        "chat admission: {} active parent requests; execution timeout: {} seconds",
+        chat_admission.snapshot().max_active,
+        chat_gateway::timeout_from_env().as_secs()
+    );
     println!("claim job: GET /v1/jobs/next?node_id=...");
     println!("complete job: POST /v1/jobs/complete");
 
@@ -7220,6 +7308,7 @@ fn main() {
             Ok(stream) => {
                 let state = Arc::clone(&state);
                 let live_streams = Arc::clone(&live_streams);
+                let chat_admission = Arc::clone(&chat_admission);
                 let sync_status = Arc::clone(&sync_status);
                 let database = supabase.clone();
                 thread::spawn(move || {
@@ -7227,6 +7316,7 @@ fn main() {
                         stream,
                         state,
                         live_streams,
+                        chat_admission,
                         sync_status,
                         database.as_ref(),
                         storage_source,
@@ -7245,16 +7335,28 @@ mod tests {
         chat_messages_to_prompt, completion_event_type, control_plane_bind_addr_from_env,
         control_plane_home, control_plane_operator_page, database_health_from_values,
         deploy_fingerprint_from_env, handle_connection, job_async_payload,
-        legacy_supabase_enabled_from_value, migration_database_url_from_values, now_unix_seconds,
-        operator_auth_mode_from_env, operator_auth_startup_config_error,
-        operator_auth_token_from_env, parse_conversation_messages_path, parse_conversation_path,
-        parse_request, read_http_request, requires_device_signature, requires_operator_auth,
+        json_response_with_retry_after, legacy_supabase_enabled_from_value,
+        migration_database_url_from_values, now_unix_seconds, operator_auth_mode_from_env,
+        operator_auth_startup_config_error, operator_auth_token_from_env,
+        parse_conversation_messages_path, parse_conversation_path, parse_request,
+        read_http_request, requires_device_signature, requires_operator_auth,
         status_snapshot_with_deploy_fingerprint, trust_grade, trust_grade_badge,
         HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource, SupabaseSyncStatus,
         AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, CONTROL_PLANE_LOGO_PATH,
         CONTROL_PLANE_VEHICLE_PATH, DATABASE_DIRECT_URL_ENV, DATABASE_POOL_URL_ENV,
         LEGACY_DATABASE_URL_ENV, LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
+
+    #[test]
+    fn overloaded_chat_response_advertises_retry_after() {
+        let response = json_response_with_retry_after(
+            "429 Too Many Requests",
+            serde_json::json!({ "error": "busy" }),
+            15,
+        );
+        assert!(response.starts_with("HTTP/1.1 429 Too Many Requests\r\n"));
+        assert!(response.contains("\r\nRetry-After: 15\r\n"));
+    }
 
     use crate::contracts::{
         AgentRegistration, AgentState, Backend, ChatMessage, Heartbeat, JobCompletion,
@@ -9727,7 +9829,7 @@ mod tests {
         assert_eq!(payload["polling"]["method"], "GET");
         assert_eq!(payload["polling"]["url"], "/v1/jobs/job-1");
         assert_eq!(payload["polling"]["recommended_interval_seconds"], 2);
-        assert_eq!(payload["polling"]["default_timeout_seconds"], 300);
+        assert_eq!(payload["polling"]["default_timeout_seconds"], 600);
         assert_eq!(payload["job"]["status"], "queued");
         assert_eq!(payload["job"]["output"], serde_json::Value::Null);
         assert_eq!(payload["job"]["error"], serde_json::Value::Null);
