@@ -39,7 +39,8 @@ For the complete cross-repo setup path from local control-plane startup to CLI/n
 | `MUNDUSX_ENVIRONMENT` | **Yes in shared deployments** | Environment classification for auth guardrails. Use `local`, `dev`, `development`, `test`, `uat`, or `production`. Defaults to `local` when unset for local development. |
 | `MUNDUSX_AUTH_DISABLED` | Local/UAT only | Set to `true`, `1`, `yes`, or `on` to deliberately disable operator authentication even when `MUNDUSX_OPERATOR_TOKEN` is present. Startup rejects this flag unless `MUNDUSX_ENVIRONMENT` is `local`, `dev`, `development`, `test`, or `uat`. |
 | `MUNDUSX_CONTROL_PLANE_HOST` | No | Override the bind host. Defaults to `0.0.0.0` when `PORT` is set. |
-| `MUNDUSX_CHAT_TIMEOUT_SECONDS` | No | Maximum synchronous OpenAI chat wait. Defaults to 300 seconds and is bounded to 5–900 seconds. |
+| `MUNDUSX_CHAT_MAX_ACTIVE_REQUESTS` | No | Maximum admitted parent OpenAI chat requests. Defaults to 7 and is bounded to 1–64. Additional streaming requests wait FIFO with SSE keep-alives before graph planning; non-streaming requests receive `429` plus `Retry-After` so an intermediary cannot abandon a silent queued connection. |
+| `MUNDUSX_CHAT_TIMEOUT_SECONDS` | No | Maximum synchronous OpenAI chat execution wait after parent admission. Defaults to 600 seconds and is bounded to 5–900 seconds. |
 | `MUNDUSX_WEATHER_URL` | No | Weather-tool origin. Defaults to `https://wttr.in`; override only with a compatible trusted endpoint. |
 | `MUNDUSX_SPORTS_URL` | No | TheSportsDB-compatible v1 origin. Defaults to `https://www.thesportsdb.com/api/v1/json`; non-HTTPS overrides are rejected except loopback tests. |
 | `MUNDUSX_SPORTS_API_KEY` | Recommended for broad sports coverage | TheSportsDB v1 key. Defaults to the documented free key `123`, whose event coverage is intentionally limited. Store production keys only in deployment secrets. |

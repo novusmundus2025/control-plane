@@ -3,13 +3,176 @@ use crate::state::ControlPlaneState;
 use crate::tools::ToolAnswer;
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, VecDeque};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
 pub const GENERATION_LIMIT_MARKER: &str = "[truncated: hit the generation limit]";
 const MAX_STREAM_DELTA_BYTES: usize = 64 * 1024;
 const MAX_STREAM_BUFFER_BYTES: usize = 256 * 1024;
+const DEFAULT_MAX_ACTIVE_CHAT_REQUESTS: usize = 7;
+const CHAT_ADMISSION_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ChatAdmissionSnapshot {
+    pub active: usize,
+    pub queued: usize,
+    pub max_active: usize,
+}
+
+#[derive(Debug, Default)]
+struct ChatAdmissionState {
+    active: usize,
+    next_ticket: u64,
+    queue: VecDeque<u64>,
+}
+
+#[derive(Debug)]
+pub struct ChatAdmissionController {
+    max_active: usize,
+    state: Mutex<ChatAdmissionState>,
+    changed: Condvar,
+}
+
+impl ChatAdmissionController {
+    pub fn new(max_active: usize) -> Self {
+        Self {
+            max_active: max_active.max(1),
+            state: Mutex::new(ChatAdmissionState::default()),
+            changed: Condvar::new(),
+        }
+    }
+
+    pub fn from_env() -> Self {
+        Self::new(max_active_chat_requests_from_env())
+    }
+
+    pub fn snapshot(&self) -> ChatAdmissionSnapshot {
+        let state = self.state.lock().expect("chat admission state lock");
+        ChatAdmissionSnapshot {
+            active: state.active,
+            queued: state.queue.len(),
+            max_active: self.max_active,
+        }
+    }
+
+    pub fn acquire<F>(self: &Arc<Self>, keep_alive: F) -> Result<ChatAdmissionPermit, String>
+    where
+        F: FnMut() -> Result<(), String>,
+    {
+        self.acquire_with_interval(keep_alive, CHAT_ADMISSION_KEEP_ALIVE_INTERVAL)
+    }
+
+    pub fn try_acquire(self: &Arc<Self>) -> Result<Option<ChatAdmissionPermit>, String> {
+        let mut state = self
+            .state
+            .lock()
+            .map_err(|_| "chat admission state lock poisoned".to_string())?;
+        if state.active >= self.max_active || !state.queue.is_empty() {
+            return Ok(None);
+        }
+        state.active += 1;
+        Ok(Some(ChatAdmissionPermit {
+            controller: Arc::clone(self),
+        }))
+    }
+
+    fn acquire_with_interval<F>(
+        self: &Arc<Self>,
+        mut keep_alive: F,
+        keep_alive_interval: Duration,
+    ) -> Result<ChatAdmissionPermit, String>
+    where
+        F: FnMut() -> Result<(), String>,
+    {
+        let ticket = {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "chat admission state lock poisoned".to_string())?;
+            let ticket = state.next_ticket;
+            state.next_ticket = state.next_ticket.wrapping_add(1);
+            state.queue.push_back(ticket);
+            ticket
+        };
+        let mut last_keep_alive = Instant::now();
+
+        loop {
+            let mut state = self
+                .state
+                .lock()
+                .map_err(|_| "chat admission state lock poisoned".to_string())?;
+            if state.active < self.max_active && state.queue.front() == Some(&ticket) {
+                state.queue.pop_front();
+                state.active += 1;
+                self.changed.notify_all();
+                return Ok(ChatAdmissionPermit {
+                    controller: Arc::clone(self),
+                });
+            }
+
+            let wait_for = keep_alive_interval
+                .saturating_sub(last_keep_alive.elapsed())
+                .max(Duration::from_millis(1));
+            let (guard, _) = self
+                .changed
+                .wait_timeout(state, wait_for)
+                .map_err(|_| "chat admission state lock poisoned".to_string())?;
+            drop(guard);
+
+            if last_keep_alive.elapsed() >= keep_alive_interval {
+                if let Err(error) = keep_alive() {
+                    self.remove_queued_ticket(ticket);
+                    return Err(error);
+                }
+                last_keep_alive = Instant::now();
+            }
+        }
+    }
+
+    fn remove_queued_ticket(&self, ticket: u64) {
+        if let Ok(mut state) = self.state.lock() {
+            if let Some(index) = state.queue.iter().position(|queued| *queued == ticket) {
+                state.queue.remove(index);
+                self.changed.notify_all();
+            }
+        }
+    }
+}
+
+pub struct ChatAdmissionPermit {
+    controller: Arc<ChatAdmissionController>,
+}
+
+impl Drop for ChatAdmissionPermit {
+    fn drop(&mut self) {
+        if let Ok(mut state) = self.controller.state.lock() {
+            state.active = state.active.saturating_sub(1);
+            self.controller.changed.notify_all();
+        }
+    }
+}
+
+pub fn release_permit_after_job_terminal(
+    permit: ChatAdmissionPermit,
+    state: Arc<Mutex<ControlPlaneState>>,
+    job_id: String,
+) {
+    thread::spawn(move || {
+        let _permit = permit;
+        loop {
+            let terminal = state
+                .lock()
+                .ok()
+                .and_then(|state| state.jobs.get(&job_id).map(|job| job.status))
+                .is_none_or(|status| matches!(status, JobStatus::Completed | JobStatus::Failed));
+            if terminal {
+                return;
+            }
+            thread::sleep(Duration::from_millis(250));
+        }
+    });
+}
 
 #[derive(Clone, Debug)]
 struct LiveStreamBuffer {
@@ -441,9 +604,17 @@ pub fn timeout_from_env() -> Duration {
     let seconds = std::env::var("MUNDUSX_CHAT_TIMEOUT_SECONDS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(300)
+        .unwrap_or(600)
         .clamp(5, 900);
     Duration::from_secs(seconds)
+}
+
+pub fn max_active_chat_requests_from_env() -> usize {
+    std::env::var("MUNDUSX_CHAT_MAX_ACTIVE_REQUESTS")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_MAX_ACTIVE_CHAT_REQUESTS)
+        .clamp(1, 64)
 }
 
 pub fn validate_request(request: &ChatCompletionRequest) -> Result<(), String> {
@@ -466,9 +637,92 @@ mod tests {
         completion_response, history_contains_sensitive_data, is_openwebui_metadata_request,
         models_response, output_hit_generation_limit, public_model_id, sse_finish, sse_start,
         strip_generation_limit_marker, validate_model, validated_stream_remainder,
-        LiveStreamRegistry, PushDeltaResult,
+        ChatAdmissionController, LiveStreamRegistry, PushDeltaResult,
     };
     use crate::tools::{ToolAnswer, ToolSource};
+    use std::sync::{mpsc, Arc};
+    use std::thread;
+    use std::time::Duration;
+
+    #[test]
+    fn parent_chat_admission_caps_active_requests_and_queues_fifo() {
+        let admission = Arc::new(ChatAdmissionController::new(7));
+        let mut permits = (0..7)
+            .map(|_| admission.acquire(|| Ok(())).unwrap())
+            .collect::<Vec<_>>();
+        assert_eq!(admission.snapshot().active, 7);
+        assert!(admission.try_acquire().unwrap().is_none());
+
+        let (acquired_tx, acquired_rx) = mpsc::channel();
+        let first_admission = Arc::clone(&admission);
+        let first_tx = acquired_tx.clone();
+        let first_waiter = thread::spawn(move || {
+            let permit = first_admission.acquire(|| Ok(())).unwrap();
+            first_tx.send(1_u8).unwrap();
+            permit
+        });
+
+        for _ in 0..100 {
+            if admission.snapshot().queued == 1 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(admission.snapshot().queued, 1);
+        assert!(acquired_rx.try_recv().is_err());
+
+        let second_admission = Arc::clone(&admission);
+        let second_waiter = thread::spawn(move || {
+            let permit = second_admission.acquire(|| Ok(())).unwrap();
+            acquired_tx.send(2_u8).unwrap();
+            permit
+        });
+        for _ in 0..100 {
+            if admission.snapshot().queued == 2 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(admission.snapshot().queued, 2);
+
+        drop(permits.pop().unwrap());
+        assert_eq!(acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 1);
+        let first_permit = first_waiter.join().unwrap();
+        assert_eq!(admission.snapshot().active, 7);
+        assert_eq!(admission.snapshot().queued, 1);
+
+        drop(permits.pop().unwrap());
+        assert_eq!(acquired_rx.recv_timeout(Duration::from_secs(1)).unwrap(), 2);
+        let second_permit = second_waiter.join().unwrap();
+        assert_eq!(admission.snapshot().active, 7);
+        assert_eq!(admission.snapshot().queued, 0);
+
+        drop(first_permit);
+        drop(second_permit);
+        drop(permits);
+    }
+
+    #[test]
+    fn disconnected_queued_chat_is_removed_without_consuming_a_slot() {
+        let admission = Arc::new(ChatAdmissionController::new(1));
+        let active = admission.acquire(|| Ok(())).unwrap();
+        let waiting_admission = Arc::clone(&admission);
+        let waiter = thread::spawn(move || {
+            waiting_admission.acquire_with_interval(
+                || Err("client disconnected".to_string()),
+                Duration::from_millis(5),
+            )
+        });
+
+        let error = match waiter.join().unwrap() {
+            Ok(_) => panic!("disconnected queued request must not be admitted"),
+            Err(error) => error,
+        };
+        assert_eq!(error, "client disconnected");
+        assert_eq!(admission.snapshot().active, 1);
+        assert_eq!(admission.snapshot().queued, 0);
+        drop(active);
+    }
 
     #[test]
     fn exposes_environment_specific_virtual_model() {
