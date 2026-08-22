@@ -1097,6 +1097,10 @@ pub struct ModelCapability {
     pub capacity_class: String,
     #[serde(default)]
     pub max_output_tokens: Option<u32>,
+    /// `context_window` means prompt, completion, and scheduler reserve share
+    /// the served context instead of using an independent output ceiling.
+    #[serde(default)]
+    pub output_capacity_mode: Option<String>,
     #[serde(default)]
     pub roles: Vec<NodeRole>,
     #[serde(default)]
@@ -1125,6 +1129,10 @@ pub struct NodeCapabilityProfile {
     pub capacity_class: String,
     #[serde(default)]
     pub max_context_tokens: Option<u32>,
+    #[serde(default)]
+    pub max_num_seqs: Option<u32>,
+    #[serde(default)]
+    pub kv_cache_size_tokens: Option<u64>,
     #[serde(default)]
     pub total_vram_mb: Option<u32>,
     #[serde(default)]
@@ -1157,6 +1165,8 @@ impl Default for NodeCapabilityProfile {
             available_memory_mb: None,
             capacity_class: String::new(),
             max_context_tokens: None,
+            max_num_seqs: None,
+            kv_cache_size_tokens: None,
             total_vram_mb: None,
             available_vram_mb: None,
             supports_vision: false,

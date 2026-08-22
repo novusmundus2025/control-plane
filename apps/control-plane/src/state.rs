@@ -34,6 +34,7 @@ const GRAPH_NODE_LEASE_SECONDS_ENV: &str = "MUNDUSX_GRAPH_NODE_LEASE_SECONDS";
 const QUEUED_JOB_TIMEOUT_SECONDS_ENV: &str = "MUNDUSX_QUEUED_JOB_TIMEOUT_SECONDS";
 const CRITICAL_ROLE_WAIT_SECONDS_ENV: &str = "MUNDUSX_CRITICAL_ROLE_WAIT_SECONDS";
 const NODE_HEARTBEAT_STALE_SECONDS_ENV: &str = "MUNDUSX_NODE_HEARTBEAT_STALE_SECONDS";
+pub(crate) const CONTEXT_SAFETY_TOKENS: u32 = 512;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReducerProfile {
@@ -48,6 +49,14 @@ struct ModelSelection {
     capabilities: Vec<String>,
     score: i32,
     reasons: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ContextDemand {
+    pub estimated_input_tokens: u32,
+    pub requested_output_tokens: u32,
+    pub safety_tokens: u32,
+    pub required_context_tokens: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, Default)]
@@ -67,6 +76,46 @@ pub struct MaintenanceResult {
 }
 
 impl ControlPlaneState {
+    pub(crate) fn context_demand_for_job(
+        job: &JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) -> ContextDemand {
+        let prompt_chars = job.prompt.chars().count()
+            + job
+                .system_prompt
+                .as_deref()
+                .map(|value| value.chars().count())
+                .unwrap_or_default();
+        let estimated_input_tokens =
+            u32::try_from(estimate_tokens_from_chars(prompt_chars)).unwrap_or(u32::MAX);
+        let workload = Self::graph_workload(job, active_graph_node_id);
+        let requested_output_tokens = workload
+            .and_then(|_| {
+                active_graph_node_id.and_then(|id| {
+                    job.graph
+                        .nodes
+                        .iter()
+                        .find(|node| node.id == id)
+                        .and_then(|node| node.minimum_max_tokens)
+                })
+            })
+            .or(job.max_tokens)
+            .unwrap_or_default();
+        let calculated = estimated_input_tokens
+            .saturating_add(requested_output_tokens)
+            .saturating_add(CONTEXT_SAFETY_TOKENS);
+        let required_context_tokens = workload
+            .map(|value| value.context_budget_tokens)
+            .filter(|value| *value > 0)
+            .map_or(calculated, |budget| budget.max(calculated));
+        ContextDemand {
+            estimated_input_tokens,
+            requested_output_tokens,
+            safety_tokens: CONTEXT_SAFETY_TOKENS,
+            required_context_tokens,
+        }
+    }
+
     fn apply_policy_override(node: &mut NodeRecord) {
         node.state = node.reported_state;
         node.policy_allowed = node.computed_policy_allowed;
@@ -1204,33 +1253,32 @@ impl ControlPlaneState {
             }
         }
         let workload = Self::graph_workload(job, active_graph_node_id);
-        let required_context = workload
-            .map(|value| value.context_budget_tokens)
-            .filter(|value| *value > 0)
-            .unwrap_or(match job.scheduling_requirements.context_size {
-                ContextSize::Small => 4_096,
-                ContextSize::Medium => 8_192,
-                ContextSize::Large => 16_384,
-            });
+        let context_bound_output = model.output_capacity_mode.as_deref() == Some("context_window");
+        let demand = Self::context_demand_for_job(job, active_graph_node_id);
+        let required_context = if context_bound_output {
+            demand.required_context_tokens
+        } else {
+            workload
+                .map(|value| value.context_budget_tokens)
+                .filter(|value| *value > 0)
+                .unwrap_or(match job.scheduling_requirements.context_size {
+                    ContextSize::Small => 4_096,
+                    ContextSize::Medium => 8_192,
+                    ContextSize::Large => 16_384,
+                })
+        };
+        if context_bound_output && model.context_tokens.is_none() {
+            return false;
+        }
         if model
             .context_tokens
             .is_some_and(|available| available < required_context)
         {
             return false;
         }
-        let required_output = workload
-            .and_then(|_| {
-                active_graph_node_id.and_then(|id| {
-                    job.graph
-                        .nodes
-                        .iter()
-                        .find(|node| node.id == id)
-                        .and_then(|node| node.minimum_max_tokens)
-                })
-            })
-            .or(job.max_tokens)
-            .unwrap_or_default();
-        if required_output > 0
+        let required_output = demand.requested_output_tokens;
+        if !context_bound_output
+            && required_output > 0
             && model
                 .max_output_tokens
                 .is_some_and(|available| available < required_output)
@@ -1280,6 +1328,18 @@ impl ControlPlaneState {
             .map(|model| {
                 let mut score = 0;
                 let mut reasons = vec![format!("model_capability_required:{required}")];
+                if model.output_capacity_mode.as_deref() == Some("context_window") {
+                    let demand = Self::context_demand_for_job(job, active_graph_node_id);
+                    let available = model.context_tokens.unwrap_or_default();
+                    reasons.push(format!(
+                        "context_fit:{}/{};estimated_input:{};requested_output:{};safety:{}",
+                        demand.required_context_tokens,
+                        available,
+                        demand.estimated_input_tokens,
+                        demand.requested_output_tokens,
+                        demand.safety_tokens
+                    ));
+                }
                 if model
                     .task_capabilities
                     .iter()
@@ -1690,6 +1750,21 @@ impl ControlPlaneState {
             .graph_execution_enabled
             .then(|| next_ready_graph_node_id(&job.graph))
             .flatten();
+        let context_demand = Self::context_demand_for_job(job, active_graph_node_id.as_deref());
+        let best_advertised_context = self
+            .nodes
+            .values()
+            .filter_map(|node| node.worker_health.as_ref())
+            .flat_map(|health| {
+                health
+                    .capabilities
+                    .models
+                    .iter()
+                    .filter_map(|model| model.context_tokens)
+                    .chain(health.capabilities.max_context_tokens)
+            })
+            .max()
+            .unwrap_or_default();
         let (ready_m_exists, ready_cuda_exists, ready_vllm_exists) =
             self.available_backend_flags_for_job(job, active_graph_node_id.as_deref());
 
@@ -1749,10 +1824,12 @@ impl ControlPlaneState {
                     score: 0,
                     reasons: vec![role_reason.unwrap_or_else(|| {
                         format!(
-                            "queued: no compatible node slot available for backend {:?}, runtime {:?}, model {}",
+                            "queued: no compatible node slot available for backend {:?}, runtime {:?}, model {}; context_required:{}; best_advertised_context:{}",
                             job.preferred_backend,
                             job.runtime_mode,
-                            job.model.as_deref().unwrap_or("any")
+                            job.model.as_deref().unwrap_or("any"),
+                            context_demand.required_context_tokens,
+                            best_advertised_context,
                         )
                     })],
                 }
@@ -12575,6 +12652,71 @@ mod tests {
         )
         .expect("large model selection");
         assert_eq!(selection.name, "Qwen/Qwen3-Coder-32B");
+    }
+
+    #[test]
+    fn context_bound_cluster_admits_output_from_served_context_instead_of_static_ceiling() {
+        let mut state = ready_state();
+        let health = state
+            .nodes
+            .get_mut("node-1")
+            .and_then(|node| node.worker_health.as_mut())
+            .expect("node health");
+        health.capabilities.models = vec![ModelCapability {
+            name: "Qwen/Qwen3-Coder-32B".to_string(),
+            context_tokens: Some(131_072),
+            max_output_tokens: Some(2_048),
+            output_capacity_mode: Some("context_window".to_string()),
+            roles: vec![NodeRole::Chat, NodeRole::Coding],
+            task_capabilities: vec![
+                "chat".to_string(),
+                "small_coding".to_string(),
+                "medium_coding".to_string(),
+                "large_coding".to_string(),
+            ],
+            ..ModelCapability::default()
+        }];
+        state.submit_job(
+            JobRequest {
+                request_id: "job-dynamic-context".to_string(),
+                prompt: "Write a Java magic square example.".to_string(),
+                preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(4_096),
+                max_tokens_source: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        let mut job = state.jobs.get("job-dynamic-context").expect("job").clone();
+        job.scheduling_requirements.model = None;
+        job.scheduling_requirements.task_type = RequestTaskType::Chat;
+        job.scheduling_requirements.context_size = ContextSize::Small;
+        let node = state.nodes.get("node-1").expect("node");
+        let selection = ControlPlaneState::select_model_for_job(node, &job, None)
+            .expect("large served context admits the job");
+        assert!(selection
+            .reasons
+            .iter()
+            .any(|reason| reason.starts_with("context_fit:4617/131072")));
+
+        let mut small_node = node.clone();
+        small_node
+            .worker_health
+            .as_mut()
+            .expect("health")
+            .capabilities
+            .models[0]
+            .context_tokens = Some(4_096);
+        assert!(ControlPlaneState::select_model_for_job(&small_node, &job, None).is_none());
     }
 
     #[test]
