@@ -102,6 +102,7 @@ test("renders a usable chat page", () => {
   assert.doesNotMatch(html, /Auto voice/);
   assert.match(html, /id="history-list"/);
   assert.match(html, /id="network-state"/);
+  assert.match(html, /slots free/);
   assert.match(html, /\.work-trace/);
   assert.match(html, /Completed work sections/);
   assert.match(html, /function formatTokenUsageSummary/);
@@ -299,6 +300,10 @@ test("summarizes live control-plane network counts", async () => {
       assigned_job_count: 5,
       completed_job_count: 6,
       failed_job_count: 1,
+      total_parallel_slots: 8,
+      active_parallel_slots: 3,
+      available_parallel_slots: 5,
+      saturated_node_count: 1,
     });
   };
 
@@ -310,6 +315,10 @@ test("summarizes live control-plane network counts", async () => {
   assert.equal(result.status, "ok");
   assert.equal(result.online_count, 3);
   assert.equal(result.queued_job_count, 4);
+  assert.equal(result.total_parallel_slots, 8);
+  assert.equal(result.active_parallel_slots, 3);
+  assert.equal(result.available_parallel_slots, 5);
+  assert.equal(result.saturated_node_count, 1);
   assert.equal(result.model_routing, "control-plane");
 });
 

@@ -129,6 +129,27 @@ impl ControlPlaneState {
             .iter()
             .filter(|job| job.status == JobStatus::Failed)
             .count();
+        let (active_parallel_slots, total_parallel_slots, available_parallel_slots) = self
+            .nodes
+            .values()
+            .filter(|node| Self::node_is_schedulable_state(node) && node.policy_allowed)
+            .map(|node| self.node_slot_occupancy(&node.node_id))
+            .fold((0_usize, 0_usize, 0_usize), |totals, occupancy| {
+                (
+                    totals.0.saturating_add(occupancy.0),
+                    totals.1.saturating_add(occupancy.1),
+                    totals.2.saturating_add(occupancy.2),
+                )
+            });
+        let saturated_node_count = self
+            .nodes
+            .values()
+            .filter(|node| Self::node_is_schedulable_state(node) && node.policy_allowed)
+            .filter(|node| {
+                let (active, total, available) = self.node_slot_occupancy(&node.node_id);
+                total > 0 && active > 0 && available == 0
+            })
+            .count();
 
         serde_json::to_value(ControlPlaneSnapshot {
             nodes,
@@ -148,6 +169,10 @@ impl ControlPlaneState {
             assigned_job_count,
             completed_job_count,
             failed_job_count,
+            total_parallel_slots,
+            active_parallel_slots,
+            available_parallel_slots,
+            saturated_node_count,
         })
         .expect("snapshot json")
     }
@@ -888,6 +913,27 @@ impl ControlPlaneState {
                 }
             })
             .sum()
+    }
+
+    pub fn node_slot_occupancy(&self, node_id: &str) -> (usize, usize, usize) {
+        let Some(node) = self.nodes.get(node_id) else {
+            return (0, 0, 0);
+        };
+        let total = node
+            .worker_health
+            .as_ref()
+            .map(|health| {
+                usize::from(health.parallel_slots.max(1))
+                    .min(health.capabilities.max_parallel_jobs.max(1) as usize)
+            })
+            .unwrap_or(1);
+        let active = self.active_assignment_count_for_node(node_id);
+        let available = if Self::node_is_schedulable_state(node) && node.policy_allowed {
+            total.saturating_sub(active)
+        } else {
+            0
+        };
+        (active, total, available)
     }
 
     fn node_parallel_capacity_for_job(node: &NodeRecord, job: &JobRecord) -> usize {
@@ -7415,6 +7461,42 @@ mod tests {
         let claim = state.claim_job("node-vllm", "3".to_string()).job;
 
         assert!(claim.is_some());
+    }
+
+    #[test]
+    fn snapshot_reports_active_and_available_parallel_slots() {
+        let mut state = ControlPlaneState::default();
+        state.register(vllm_registration("node-vllm"));
+        let mut heartbeat = ready_vllm_heartbeat("node-vllm", "1");
+        heartbeat.worker_health.capabilities.max_parallel_jobs = 4;
+        state.heartbeat(heartbeat, "1".to_string());
+        let mut request = classification_request("hello world");
+        request.model = None;
+        state.submit_job(request, "2".to_string());
+
+        assert!(state.claim_job("node-vllm", "3".to_string()).job.is_some());
+
+        assert_eq!(state.node_slot_occupancy("node-vllm"), (1, 4, 3));
+        let snapshot = state.snapshot("test");
+        assert_eq!(snapshot["active_parallel_slots"], 1);
+        assert_eq!(snapshot["total_parallel_slots"], 4);
+        assert_eq!(snapshot["available_parallel_slots"], 3);
+        assert_eq!(snapshot["saturated_node_count"], 0);
+    }
+
+    #[test]
+    fn snapshot_marks_a_single_slot_busy_node_as_saturated() {
+        let mut state = ready_state();
+        let mut request = classification_request("hello world");
+        request.model = None;
+        state.submit_job(request, "2".to_string());
+        assert!(state.claim_job("node-1", "3".to_string()).job.is_some());
+
+        let snapshot = state.snapshot("test");
+        assert_eq!(snapshot["active_parallel_slots"], 1);
+        assert_eq!(snapshot["total_parallel_slots"], 1);
+        assert_eq!(snapshot["available_parallel_slots"], 0);
+        assert_eq!(snapshot["saturated_node_count"], 1);
     }
 
     #[test]
