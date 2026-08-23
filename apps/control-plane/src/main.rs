@@ -20,6 +20,7 @@ use migrations::apply_migrations;
 use planner_client::planner_service_status_from_env;
 use postgres_store::PostgresStore;
 use serde::Serialize;
+use sha2::{Digest, Sha256};
 use state::{load_state, save_state, ControlPlaneState};
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
@@ -427,19 +428,6 @@ fn write_chat_error(stream: &mut TcpStream, status: &str, message: &str) {
     write_json_and_finish(stream, status, openai_error(message));
 }
 
-fn write_chat_overloaded(stream: &mut TcpStream) {
-    let response = json_response_with_retry_after(
-        "429 Too Many Requests",
-        openai_error(
-            "MundusX is processing the maximum number of parent chat requests; retry shortly or use streaming delivery to wait in the admission queue",
-        ),
-        15,
-    );
-    if let Err(error) = stream.write_all(response.as_bytes()) {
-        eprintln!("failed to write overloaded chat response: {error}");
-    }
-}
-
 fn text_response(status: &str, body: &str) -> String {
     format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -474,6 +462,93 @@ fn png_response(status: &str, body: &[u8]) -> Vec<u8> {
 
 fn job_status_path(job_id: &str) -> String {
     format!("/v1/jobs/{job_id}")
+}
+
+fn chat_completion_status_path(job_id: &str) -> String {
+    format!("/v1/chat/completions/{job_id}")
+}
+
+fn parse_chat_completion_status_path(path: &str) -> Option<&str> {
+    let job_id = path.strip_prefix("/v1/chat/completions/")?.trim();
+    (!job_id.is_empty() && !job_id.contains('/')).then_some(job_id)
+}
+
+fn resume_token_sha256(token: &str) -> String {
+    hex::encode(Sha256::digest(token.as_bytes()))
+}
+
+fn resume_token_matches(expected_sha256: &str, provided: &str) -> bool {
+    let actual = resume_token_sha256(provided);
+    expected_sha256.as_bytes().ct_eq(actual.as_bytes()).into()
+}
+
+fn pending_chat_completion_payload(
+    record: &JobRecord,
+    public_model: &str,
+    admission_weight: usize,
+    resume_token: Option<&str>,
+) -> serde_json::Value {
+    let mut resume = serde_json::json!({
+        "status": record.status,
+        "job_id": record.job_id,
+        "status_url": chat_completion_status_path(&record.job_id),
+        "admission_weight": admission_weight,
+        "recommended_poll_seconds": 2,
+    });
+    if let (Some(token), Some(fields)) = (resume_token, resume.as_object_mut()) {
+        fields.insert("resume_token".to_string(), serde_json::json!(token));
+        fields.insert(
+            "resume_token_header".to_string(),
+            serde_json::json!("X-MundusX-Resume-Token"),
+        );
+    }
+    serde_json::json!({
+        "id": record.request_id,
+        "object": "chat.completion.pending",
+        "created": record.submitted_at.parse::<u64>().unwrap_or_else(|_| now_unix_seconds_u64()),
+        "model": public_model,
+        "choices": [{
+            "index": 0,
+            "message": {
+                "role": "assistant",
+                "content": "This request is still running. Resume it with the status URL and token returned in mundusx."
+            },
+            "finish_reason": "pending"
+        }],
+        "mundusx": resume,
+    })
+}
+
+fn activate_held_chat_job(
+    admission: Arc<chat_gateway::ChatAdmissionController>,
+    state: Arc<Mutex<ControlPlaneState>>,
+    job_id: String,
+    weight: usize,
+) {
+    thread::spawn(move || {
+        let permit = match admission.acquire_weighted(weight, || Ok(())) {
+            Ok(permit) => permit,
+            Err(error) => {
+                if let Ok(mut guard) = state.lock() {
+                    if let Some(job) = guard.jobs.get_mut(&job_id) {
+                        job.status = JobStatus::Failed;
+                        job.admission_held = false;
+                        job.error = Some(format!("chat admission failed: {error}"));
+                        job.completed_at = Some(now_unix_seconds());
+                    }
+                    let _ = save_state(&guard);
+                }
+                return;
+            }
+        };
+        if let Ok(mut guard) = state.lock() {
+            let _ = guard.set_job_admission(&job_id, false, None);
+            if let Err(error) = save_state(&guard) {
+                eprintln!("failed to persist admitted chat job: {error}");
+            }
+        }
+        chat_gateway::release_permit_after_job_terminal(permit, state, job_id);
+    });
 }
 
 fn job_artifacts_path(job_id: &str) -> String {
@@ -5785,6 +5860,9 @@ fn handle_connection_with_streams(
                         "active_parent_requests": chat_admission.active,
                         "queued_parent_requests": chat_admission.queued,
                         "max_active_parent_requests": chat_admission.max_active,
+                        "active_admission_weight": chat_admission.active_weight,
+                        "queued_admission_weight": chat_admission.queued_weight,
+                        "max_admission_weight": chat_admission.max_weight,
                     },
                     "snapshot": snapshot,
                 }),
@@ -5815,6 +5893,9 @@ fn handle_connection_with_streams(
                         "active_parent_requests": chat_admission.active,
                         "queued_parent_requests": chat_admission.queued,
                         "max_active_parent_requests": chat_admission.max_active,
+                        "active_admission_weight": chat_admission.active_weight,
+                        "queued_admission_weight": chat_admission.queued_weight,
+                        "max_admission_weight": chat_admission.max_weight,
                     }),
                 );
             }
@@ -6331,6 +6412,73 @@ fn handle_connection_with_streams(
                 ),
             }
         }
+        ("GET", path) if parse_chat_completion_status_path(path).is_some() => {
+            let job_id = parse_chat_completion_status_path(path).expect("checked");
+            let provided_token = header_value(&request.headers, "x-mundusx-resume-token");
+            let record = state.lock().expect("state lock").jobs.get(job_id).cloned();
+            match record {
+                None => json_response(
+                    "404 Not Found",
+                    openai_error("chat completion was not found"),
+                ),
+                Some(record)
+                    if record
+                        .chat_resume_token_sha256
+                        .as_deref()
+                        .zip(provided_token)
+                        .is_none_or(|(expected, provided)| {
+                            !resume_token_matches(expected, provided)
+                        }) =>
+                {
+                    json_response(
+                        "401 Unauthorized",
+                        openai_error("a valid X-MundusX-Resume-Token header is required"),
+                    )
+                }
+                Some(record) => {
+                    let environment = control_plane_environment_from_env(
+                        std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
+                    );
+                    let public_model = chat_gateway::public_model_id(Some(&environment));
+                    match record.status {
+                        JobStatus::Queued | JobStatus::Assigned => json_response(
+                            "202 Accepted",
+                            pending_chat_completion_payload(
+                                &record,
+                                public_model,
+                                chat_gateway::graph_admission_weight(&record),
+                                None,
+                            ),
+                        ),
+                        JobStatus::Completed => {
+                            let raw_content = record.output.as_deref().unwrap_or_default();
+                            let finish_reason = chat_gateway::finish_reason_for_job(&record);
+                            json_response(
+                                "200 OK",
+                                chat_gateway::completion_response(
+                                    &record.request_id,
+                                    record
+                                        .submitted_at
+                                        .parse::<u64>()
+                                        .unwrap_or_else(|_| now_unix_seconds_u64()),
+                                    public_model,
+                                    chat_gateway::strip_generation_limit_marker(raw_content),
+                                    finish_reason,
+                                    Some(&record),
+                                    None,
+                                ),
+                            )
+                        }
+                        JobStatus::Failed => json_response(
+                            "502 Bad Gateway",
+                            openai_error(
+                                record.error.as_deref().unwrap_or("chat completion failed"),
+                            ),
+                        ),
+                    }
+                }
+            }
+        }
         ("POST", "/v1/chat/completions") => {
             match serde_json::from_str::<ChatCompletionRequest>(&request.body) {
                 Ok(request_body) => {
@@ -6433,19 +6581,9 @@ fn handle_connection_with_streams(
                             return write_chat_error(&mut stream, "502 Bad Gateway", &error);
                         }
                     }
-                    let streaming_node_available = state
-                        .lock()
-                        .expect("state lock")
-                        .nodes
-                        .values()
-                        .any(|node| {
-                            node.policy_allowed
-                                && node.worker_health.as_ref().is_some_and(|health| {
-                                    health.healthy && health.streaming_supported
-                                })
-                        });
-                    let live_stream_job =
-                        wants_stream && mode.is_none() && streaming_node_available;
+                    // Auto planning remains authoritative for chunking. Streaming clients receive
+                    // keep-alives while graph work is validated and buffered.
+                    let live_stream_job = false;
                     if wants_stream {
                         if let Err(error) = stream.write_all(
                             chat_gateway::sse_start(
@@ -6461,49 +6599,13 @@ fn handle_connection_with_streams(
                         }
                         let _ = stream.flush();
                     }
-                    let permit_result = if wants_stream {
-                        chat_admission.acquire(|| {
-                            stream
-                                .write_all(chat_gateway::sse_keep_alive().as_bytes())
-                                .and_then(|_| stream.flush())
-                                .map_err(|error| {
-                                    format!("chat stream disconnected while queued: {error}")
-                                })
-                        })
-                    } else {
-                        match chat_admission.try_acquire() {
-                            Ok(Some(permit)) => Ok(permit),
-                            Ok(None) => {
-                                write_chat_overloaded(&mut stream);
-                                return;
-                            }
-                            Err(error) => Err(error),
-                        }
-                    };
-                    let mut admission_permit = match permit_result {
-                        Ok(permit) => Some(permit),
-                        Err(error) => {
-                            if !wants_stream {
-                                return write_chat_error(
-                                    &mut stream,
-                                    "503 Service Unavailable",
-                                    &error,
-                                );
-                            }
-                            return;
-                        }
-                    };
                     let job_request = JobRequest {
                         request_id: completion_id.clone(),
                         prompt,
                         preferred_backend: crate::contracts::Backend::Auto,
                         routing_mode: RoutingMode::Normal,
                         runtime_mode: RuntimeMode::Local,
-                        execution_mode: if live_stream_job
-                            || mode.is_some()
-                            || metadata_request
-                            || sensitive_history
-                        {
+                        execution_mode: if mode.is_some() || metadata_request || sensitive_history {
                             JobExecutionMode::Single
                         } else {
                             JobExecutionMode::Auto
@@ -6525,8 +6627,14 @@ fn handle_connection_with_streams(
                         seed: request_body.seed,
                     };
 
+                    let resume_token = Uuid::new_v4().simple().to_string();
+                    let resume_token_hash = resume_token_sha256(&resume_token);
                     let mut guard = state.lock().expect("state lock");
-                    let record = guard.submit_job_with_mode(job_request, mode, now_unix_seconds());
+                    let submitted =
+                        guard.submit_job_with_mode(job_request, mode, now_unix_seconds());
+                    let record = guard
+                        .set_job_admission(&submitted.job_id, true, Some(resume_token_hash))
+                        .expect("submitted chat job is stored");
                     let event = guard.record_job_event(
                         None,
                         Some(record.job_id.clone()),
@@ -6554,6 +6662,78 @@ fn handle_connection_with_streams(
                             .register(&record.job_id);
                     }
                     drop(guard);
+
+                    let admission_weight = chat_gateway::graph_admission_weight(&record);
+                    if !wants_stream && record.graph_execution_enabled {
+                        activate_held_chat_job(
+                            Arc::clone(&chat_admission),
+                            Arc::clone(&state),
+                            record.job_id.clone(),
+                            admission_weight,
+                        );
+                        write_json_and_finish(
+                            &mut stream,
+                            "202 Accepted",
+                            pending_chat_completion_payload(
+                                &record,
+                                public_model,
+                                admission_weight,
+                                Some(&resume_token),
+                            ),
+                        );
+                        return;
+                    }
+
+                    let permit_result = if wants_stream {
+                        chat_admission.acquire_weighted(admission_weight, || {
+                            stream
+                                .write_all(chat_gateway::sse_keep_alive().as_bytes())
+                                .and_then(|_| stream.flush())
+                                .map_err(|error| {
+                                    format!("chat stream disconnected while queued: {error}")
+                                })
+                        })
+                    } else {
+                        match chat_admission.try_acquire_weighted(admission_weight) {
+                            Ok(Some(permit)) => Ok(permit),
+                            Ok(None) => {
+                                activate_held_chat_job(
+                                    Arc::clone(&chat_admission),
+                                    Arc::clone(&state),
+                                    record.job_id.clone(),
+                                    admission_weight,
+                                );
+                                write_json_and_finish(
+                                    &mut stream,
+                                    "202 Accepted",
+                                    pending_chat_completion_payload(
+                                        &record,
+                                        public_model,
+                                        admission_weight,
+                                        Some(&resume_token),
+                                    ),
+                                );
+                                return;
+                            }
+                            Err(error) => Err(error),
+                        }
+                    };
+                    let mut admission_permit = match permit_result {
+                        Ok(permit) => Some(permit),
+                        Err(error) => {
+                            return write_chat_error(
+                                &mut stream,
+                                "503 Service Unavailable",
+                                &error,
+                            );
+                        }
+                    };
+                    if let Ok(mut guard) = state.lock() {
+                        let _ = guard.set_job_admission(&record.job_id, false, None);
+                        if let Err(error) = save_state(&guard) {
+                            eprintln!("failed to persist admitted chat job: {error}");
+                        }
+                    }
 
                     let mut streamed_content = String::new();
                     let completed_result = if live_stream_job {
@@ -6639,11 +6819,7 @@ fn handle_connection_with_streams(
                         }
                     };
                     let raw_content = completed.output.as_deref().unwrap_or_default();
-                    let finish_reason = if chat_gateway::output_hit_generation_limit(raw_content) {
-                        "length"
-                    } else {
-                        "stop"
-                    };
+                    let finish_reason = chat_gateway::finish_reason_for_job(&completed);
                     let content = chat_gateway::strip_generation_limit_marker(raw_content);
                     let completion = chat_gateway::completion_response(
                         &completion_id,
@@ -7076,8 +7252,9 @@ mod tests {
         json_response_with_retry_after, legacy_supabase_enabled_from_value,
         migration_database_url_from_values, now_unix_seconds, operator_auth_mode_from_env,
         operator_auth_startup_config_error, operator_auth_token_from_env,
-        parse_conversation_messages_path, parse_conversation_path, parse_request,
-        read_http_request, requires_device_signature, requires_operator_auth,
+        parse_chat_completion_status_path, parse_conversation_messages_path,
+        parse_conversation_path, parse_request, read_http_request, requires_device_signature,
+        requires_operator_auth, resume_token_matches, resume_token_sha256,
         status_snapshot_with_deploy_fingerprint, trust_grade, trust_grade_badge,
         HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource, SupabaseSyncStatus,
         AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, CONTROL_PLANE_LOGO_PATH,
@@ -7094,6 +7271,21 @@ mod tests {
         );
         assert!(response.starts_with("HTTP/1.1 429 Too Many Requests\r\n"));
         assert!(response.contains("\r\nRetry-After: 15\r\n"));
+    }
+
+    #[test]
+    fn resumable_chat_paths_and_tokens_are_strict() {
+        assert_eq!(
+            parse_chat_completion_status_path("/v1/chat/completions/job-1"),
+            Some("job-1")
+        );
+        assert_eq!(
+            parse_chat_completion_status_path("/v1/chat/completions/job-1/extra"),
+            None
+        );
+        let digest = resume_token_sha256("secret-token");
+        assert!(resume_token_matches(&digest, "secret-token"));
+        assert!(!resume_token_matches(&digest, "wrong-token"));
     }
 
     use crate::contracts::{
@@ -7405,6 +7597,102 @@ mod tests {
         assert_eq!(job.model, None);
         assert_eq!(job.scheduling_requirements.runtime_mode, RuntimeMode::Local);
         assert_eq!(job.prompt, "Explain dependency injection.");
+    }
+
+    #[test]
+    fn graph_chat_returns_resumable_202_and_requires_its_token() {
+        let mut initial_state = ControlPlaneState::default();
+        register_ready_node(&mut initial_state, "node-1", "host-1", "1");
+        register_ready_node(&mut initial_state, "node-2", "host-2", "1");
+        let state = Arc::new(Mutex::new(initial_state));
+        let sync_status = Arc::new(Mutex::new(SupabaseSyncStatus::disabled(
+            StorageSource::LocalJsonOnly,
+        )));
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind test listener");
+        let address = listener.local_addr().expect("listener address");
+        let handler_state = Arc::clone(&state);
+        let handler_sync = Arc::clone(&sync_status);
+        let handler = thread::spawn(move || {
+            for _ in 0..3 {
+                let (stream, _) = listener.accept().expect("accept request");
+                handle_connection(
+                    stream,
+                    Arc::clone(&handler_state),
+                    Arc::clone(&handler_sync),
+                    None,
+                    StorageSource::LocalJsonOnly,
+                );
+            }
+        });
+
+        let body = serde_json::json!({
+            "messages": [{
+                "role": "user",
+                "content": "Design and implement a backend API plus frontend dashboard, tests, documentation, review, and security analysis."
+            }]
+        })
+        .to_string();
+        let request = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nHost: localhost\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(), body
+        );
+        let mut client = TcpStream::connect(address).expect("connect post");
+        client.write_all(request.as_bytes()).expect("write post");
+        let mut response = String::new();
+        client.read_to_string(&mut response).expect("read post");
+        assert!(response.starts_with("HTTP/1.1 202 Accepted"));
+        let payload: serde_json::Value = serde_json::from_str(
+            response
+                .split_once("\r\n\r\n")
+                .expect("HTTP response body")
+                .1,
+        )
+        .expect("pending payload");
+        let job_id = payload["mundusx"]["job_id"]
+            .as_str()
+            .expect("job id")
+            .to_string();
+        let token = payload["mundusx"]["resume_token"]
+            .as_str()
+            .expect("resume token")
+            .to_string();
+        assert!(payload["mundusx"]["admission_weight"].as_u64().unwrap_or(0) > 1);
+
+        {
+            let mut guard = state.lock().expect("state lock");
+            let job = guard.jobs.get_mut(&job_id).expect("submitted graph job");
+            assert!(job.graph_execution_enabled);
+            job.admission_held = false;
+            job.status = JobStatus::Completed;
+            job.output = Some("Validated graph result.".to_string());
+        }
+
+        let poll_path = format!("/v1/chat/completions/{job_id}");
+        let unauthorized = format!("GET {poll_path} HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let mut client = TcpStream::connect(address).expect("connect unauthorized poll");
+        client
+            .write_all(unauthorized.as_bytes())
+            .expect("write unauthorized poll");
+        let mut unauthorized_response = String::new();
+        client
+            .read_to_string(&mut unauthorized_response)
+            .expect("read unauthorized poll");
+        assert!(unauthorized_response.starts_with("HTTP/1.1 401 Unauthorized"));
+
+        let authorized = format!(
+            "GET {poll_path} HTTP/1.1\r\nHost: localhost\r\nX-MundusX-Resume-Token: {token}\r\n\r\n"
+        );
+        let mut client = TcpStream::connect(address).expect("connect authorized poll");
+        client
+            .write_all(authorized.as_bytes())
+            .expect("write authorized poll");
+        let mut authorized_response = String::new();
+        client
+            .read_to_string(&mut authorized_response)
+            .expect("read authorized poll");
+        assert!(authorized_response.starts_with("HTTP/1.1 200 OK"));
+        assert!(authorized_response.contains("Validated graph result."));
+        handler.join().expect("handler completes");
     }
 
     #[test]
