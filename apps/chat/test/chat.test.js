@@ -193,6 +193,11 @@ test("renders a usable chat page", () => {
   assert.match(html, /function scrollChatToLatest/);
   assert.match(html, /remaining <= 120/);
   assert.match(html, /if \(event\.deltaY < 0\) followLatestMessage = false/);
+  assert.match(html, /else if \(draggingChatScrollbar\)/);
+  assert.match(html, /nextTouchY > lastChatTouchY/);
+  assert.match(html, /\["PageUp", "Home", "ArrowUp"\]/);
+  assert.match(html, /new ResizeObserver\(\(\) => scrollChatToLatest\(\)\)/);
+  assert.doesNotMatch(html, /followLatestMessage = isChatNearBottom\(\)/);
   assert.doesNotMatch(html, /messagesEl\.scrollTop = messagesEl\.scrollHeight/);
   assert.match(html, /await loadHistoryItem\(item\)/);
   assert.match(html, /conversationCachePrefix/);
