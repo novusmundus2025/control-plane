@@ -7,11 +7,11 @@ use crate::contracts::{
     JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest, JobResultRecord,
     JobResultVerificationStatus, JobSchedulingRequirements, JobStatus, ModelCapability,
     NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeRole,
-    NodeTrustRecord, OrchestrationTimelineEvent, PlannedJob, PrivacyLevel, RequestClassification,
-    QualityGateCheck, QualityGateReport, QualityGateStatus, RequestComplexity, RequestTaskType,
-    ResultArtifact, ResultArtifactKind, RoutingMode, RuntimeMode, SchedulerDecision,
-    StepWorkloadRequirements, SynthesisManifest, SynthesisStatus, ToolRewardRequest,
-    ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
+    NodeTrustRecord, OrchestrationTimelineEvent, PlannedJob, PrivacyLevel, QualityGateCheck,
+    QualityGateReport, QualityGateStatus, RequestClassification, RequestComplexity,
+    RequestTaskType, ResultArtifact, ResultArtifactKind, RoutingMode, RuntimeMode,
+    SchedulerDecision, StepWorkloadRequirements, SynthesisManifest, SynthesisStatus,
+    ToolRewardRequest, ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -643,6 +643,49 @@ impl ControlPlaneState {
             self.reevaluate_queued_jobs();
         }
         Some(record)
+    }
+
+    pub fn enable_direct_job_streaming(&mut self, job_id: &str) -> Result<JobRecord, String> {
+        {
+            let job = self
+                .jobs
+                .get_mut(job_id)
+                .ok_or_else(|| "unknown job".to_string())?;
+            if job.graph_execution_enabled {
+                return Err("graph jobs must retain validated-buffered delivery".to_string());
+            }
+            if job.status != JobStatus::Queued {
+                return Err("only queued jobs can enable live streaming".to_string());
+            }
+            job.stream = true;
+            job.scheduling_requirements.stream = true;
+            if !job
+                .scheduling_requirements
+                .constraints
+                .iter()
+                .any(|value| value == "requires_streaming")
+            {
+                job.scheduling_requirements
+                    .constraints
+                    .push("requires_streaming".to_string());
+            }
+            if !job
+                .classification
+                .execution_constraints
+                .iter()
+                .any(|value| value == "requires_streaming")
+            {
+                job.classification
+                    .execution_constraints
+                    .push("requires_streaming".to_string());
+            }
+            job.fallback_decision = fallback_decision_for(&job.scheduling_requirements);
+        }
+        self.reevaluate_queued_jobs();
+        self.jobs
+            .get(job_id)
+            .cloned()
+            .ok_or_else(|| "unknown job".to_string())
     }
 
     pub fn set_operator_contribution_percent(
@@ -2378,8 +2421,7 @@ impl ControlPlaneState {
                         .map(failed_quality_checks)
                         .unwrap_or_default();
                     if !failed_checks.is_empty()
-                        && job.quality_gate.repair_attempts
-                            < job.quality_gate.max_repair_attempts
+                        && job.quality_gate.repair_attempts < job.quality_gate.max_repair_attempts
                     {
                         let mut report = quality_report.expect("failed quality report");
                         report.repair_attempts = report.repair_attempts.saturating_add(1);
@@ -3685,8 +3727,8 @@ fn complete_graph_execution_job(
                                 graph_node.effective_max_tokens.unwrap_or(2_048),
                             )
                         });
-                    let final_quality_report = (is_final_synthesis && quality_gate_enabled)
-                        .then(|| {
+                    let final_quality_report =
+                        (is_final_synthesis && quality_gate_enabled).then(|| {
                             code_quality_gate_report(
                                 &job.prompt,
                                 accepted_output.as_deref().unwrap_or_default(),
@@ -4102,7 +4144,10 @@ fn code_quality_gate_report(
         .collect::<Vec<_>>()
         .join("\n");
     let source_lower = source.to_ascii_lowercase();
-    let compact_source = source.chars().filter(|value| !value.is_whitespace()).collect::<String>();
+    let compact_source = source
+        .chars()
+        .filter(|value| !value.is_whitespace())
+        .collect::<String>();
     let compact_source_lower = compact_source.to_ascii_lowercase();
     let prompt_lower = prompt.to_ascii_lowercase();
 
@@ -4121,9 +4166,7 @@ fn code_quality_gate_report(
             "java_public_class_filename",
             true,
             source.contains(&expected) && public_class_count == 1,
-            format!(
-                "Expected exactly one public class `{class_name}` matching `{filename}`."
-            ),
+            format!("Expected exactly one public class `{class_name}` matching `{filename}`."),
         );
     }
 
@@ -4185,15 +4228,53 @@ fn code_quality_gate_report(
     }
 
     let component_checks = [
-        ("spring_entity", "entity", ["@entity", "jakarta.persistence.entity"].as_slice()),
-        ("spring_repository", "repository", ["repository", "jparepository"].as_slice()),
-        ("spring_service", "service", ["@service", "class vehicleservice"].as_slice()),
-        ("spring_rest_controller", "rest controller", ["@restcontroller"].as_slice()),
-        ("spring_exception_handling", "exception handling", ["@controlleradvice", "@exceptionhandler"].as_slice()),
+        (
+            "spring_entity",
+            "entity",
+            ["@entity", "jakarta.persistence.entity"].as_slice(),
+        ),
+        (
+            "spring_repository",
+            "repository",
+            ["repository", "jparepository"].as_slice(),
+        ),
+        (
+            "spring_service",
+            "service",
+            ["@service", "class vehicleservice"].as_slice(),
+        ),
+        (
+            "spring_rest_controller",
+            "rest controller",
+            ["@restcontroller"].as_slice(),
+        ),
+        (
+            "spring_exception_handling",
+            "exception handling",
+            ["@controlleradvice", "@exceptionhandler"].as_slice(),
+        ),
         ("readme", "readme", ["readme.md", "# readme"].as_slice()),
-        ("javafx_client", "javafx", ["javafx.", "extends application"].as_slice()),
-        ("database_migration", "database migration", ["v1__", "db/migration", "liquibase"].as_slice()),
-        ("docker_setup", "docker", ["dockerfile", "from eclipse", "from openjdk", "from amazoncorretto"].as_slice()),
+        (
+            "javafx_client",
+            "javafx",
+            ["javafx.", "extends application"].as_slice(),
+        ),
+        (
+            "database_migration",
+            "database migration",
+            ["v1__", "db/migration", "liquibase"].as_slice(),
+        ),
+        (
+            "docker_setup",
+            "docker",
+            [
+                "dockerfile",
+                "from eclipse",
+                "from openjdk",
+                "from amazoncorretto",
+            ]
+            .as_slice(),
+        ),
     ];
     for (check_id, requested_phrase, evidence) in component_checks {
         if prompt_lower.contains(requested_phrase) {
@@ -4230,7 +4311,8 @@ fn code_quality_gate_report(
             true,
             source_lower.contains("securityfilterchain")
                 && source_lower.contains("authorizehttprequests"),
-            "Authentication and authorization require concrete Spring Security configuration.".to_string(),
+            "Authentication and authorization require concrete Spring Security configuration."
+                .to_string(),
         );
     }
     if prompt_lower.contains("unit and integration tests") || prompt_lower.contains("with tests") {
@@ -4292,7 +4374,15 @@ fn quality_code_structure_failure_reason(
             .to_ascii_lowercase();
         saw_source_fence |= !matches!(
             language.as_str(),
-            "" | "markdown" | "md" | "json" | "jsonc" | "text" | "plaintext" | "bash" | "sh" | "shell"
+            "" | "markdown"
+                | "md"
+                | "json"
+                | "jsonc"
+                | "text"
+                | "plaintext"
+                | "bash"
+                | "sh"
+                | "shell"
         );
         fence_open = true;
     }
@@ -8286,6 +8376,39 @@ mod tests {
     }
 
     #[test]
+    fn upgrades_only_direct_queued_jobs_to_live_streaming() {
+        let mut state = ControlPlaneState::default();
+        let direct = state.submit_job(
+            classification_request("Explain dependency injection."),
+            "1".to_string(),
+        );
+
+        let streamed = state
+            .enable_direct_job_streaming(&direct.job_id)
+            .expect("direct queued job can stream");
+        assert!(streamed.stream);
+        assert!(streamed.scheduling_requirements.stream);
+        assert!(streamed
+            .scheduling_requirements
+            .constraints
+            .contains(&"requires_streaming".to_string()));
+
+        let graph = state.submit_job(
+            classification_request("Prepare implementation, tests, documentation, and review."),
+            "2".to_string(),
+        );
+        state
+            .jobs
+            .get_mut(&graph.job_id)
+            .expect("graph fixture")
+            .graph_execution_enabled = true;
+        let error = state
+            .enable_direct_job_streaming(&graph.job_id)
+            .expect_err("graph delivery remains buffered");
+        assert!(error.contains("validated-buffered"));
+    }
+
+    #[test]
     fn classifies_interactive_chat_requests() {
         let mut request = classification_request("Reply to the user in a short conversation.");
         request.runtime_mode = RuntimeMode::Interactive;
@@ -9222,9 +9345,7 @@ mod tests {
             .claim_job("node-1", "4".to_string())
             .job
             .expect("quality retry claim");
-        assert!(retry_claim
-            .prompt
-            .contains("exact_n_value_output_format"));
+        assert!(retry_claim.prompt.contains("exact_n_value_output_format"));
 
         let partial = state
             .complete_job(
@@ -9247,7 +9368,10 @@ mod tests {
             QualityGateStatus::CompletedPartial
         );
         assert!(partial.output.is_some());
-        assert_eq!(crate::chat_gateway::finish_reason_for_job(&partial), "length");
+        assert_eq!(
+            crate::chat_gateway::finish_reason_for_job(&partial),
+            "length"
+        );
         assert!(partial
             .error
             .as_deref()
@@ -9302,7 +9426,10 @@ mod tests {
         assert_eq!(completed.status, JobStatus::Completed);
         assert_eq!(completed.quality_gate.status, QualityGateStatus::Passed);
         assert_eq!(completed.quality_gate.repair_attempts, 1);
-        assert_eq!(crate::chat_gateway::finish_reason_for_job(&completed), "stop");
+        assert_eq!(
+            crate::chat_gateway::finish_reason_for_job(&completed),
+            "stop"
+        );
         assert_eq!(
             crate::chat_gateway::semantic_status_for_job(&completed),
             "structurally_valid_unverified"
