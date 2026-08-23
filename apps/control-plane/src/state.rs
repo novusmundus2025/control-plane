@@ -23,6 +23,8 @@ use std::path::PathBuf;
 const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_GRAPH_NODE_LEASE_SECONDS: u64 = 600;
 const CODING_GRAPH_NODE_LEASE_SECONDS: u64 = 1_800;
+const DEFAULT_DIRECT_JOB_LEASE_SECONDS: u64 = 600;
+const CODING_DIRECT_JOB_LEASE_SECONDS: u64 = 1_800;
 const DEFAULT_QUEUED_JOB_TIMEOUT_SECONDS: u64 = 600;
 const DEFAULT_CRITICAL_ROLE_WAIT_SECONDS: u64 = 60;
 const DEFAULT_NODE_HEARTBEAT_STALE_SECONDS: u64 = 60;
@@ -33,6 +35,7 @@ const REDUCER_SECTION_CHARS_STRONG: usize = 6_000;
 const ARTIFACT_BATCH_MAX_BYTES: usize = 64 * 1024;
 const ARTIFACT_BATCH_MAX_ITEMS: usize = 20;
 const GRAPH_NODE_LEASE_SECONDS_ENV: &str = "MUNDUSX_GRAPH_NODE_LEASE_SECONDS";
+const DIRECT_JOB_LEASE_SECONDS_ENV: &str = "MUNDUSX_DIRECT_JOB_LEASE_SECONDS";
 const QUEUED_JOB_TIMEOUT_SECONDS_ENV: &str = "MUNDUSX_QUEUED_JOB_TIMEOUT_SECONDS";
 const CRITICAL_ROLE_WAIT_SECONDS_ENV: &str = "MUNDUSX_CRITICAL_ROLE_WAIT_SECONDS";
 const NODE_HEARTBEAT_STALE_SECONDS_ENV: &str = "MUNDUSX_NODE_HEARTBEAT_STALE_SECONDS";
@@ -75,6 +78,7 @@ pub struct ControlPlaneState {
 pub struct MaintenanceResult {
     pub changed_jobs: Vec<JobRecord>,
     pub changed_nodes: Vec<NodeRecord>,
+    pub changed_events: Vec<JobEventRecord>,
 }
 
 impl ControlPlaneState {
@@ -2327,10 +2331,13 @@ impl ControlPlaneState {
     pub fn run_maintenance_with_nodes(&mut self, now: &str) -> MaintenanceResult {
         let changed_nodes = self.mark_stale_nodes_stopped(now);
         let mut changed_jobs = self.release_expired_queued_jobs(now);
+        let (expired_direct_jobs, changed_events) = self.release_stale_direct_claims(now);
+        changed_jobs.extend(expired_direct_jobs);
         changed_jobs.extend(self.release_stale_graph_claims(now));
         MaintenanceResult {
             changed_jobs,
             changed_nodes,
+            changed_events,
         }
     }
 
@@ -2648,6 +2655,88 @@ impl ControlPlaneState {
             self.reevaluate_queued_jobs();
         }
         changed_nodes
+    }
+
+    fn release_stale_direct_claims(&mut self, now: &str) -> (Vec<JobRecord>, Vec<JobEventRecord>) {
+        let Some(now_seconds) = parse_unix_seconds(now) else {
+            return (Vec::new(), Vec::new());
+        };
+        let mut expired = Vec::new();
+
+        for job in self.jobs.values_mut() {
+            if job.graph_execution_enabled || job.status != JobStatus::Assigned {
+                continue;
+            }
+            let Some(assigned_at) = job.assigned_at.clone() else {
+                continue;
+            };
+            let Some(assigned_at_seconds) = parse_unix_seconds(&assigned_at) else {
+                continue;
+            };
+            let lease_seconds = direct_job_lease_seconds_for(job.scheduling_requirements.task_type);
+            if now_seconds.saturating_sub(assigned_at_seconds) < lease_seconds {
+                continue;
+            }
+
+            let node_id = job
+                .assigned_node_id
+                .clone()
+                .unwrap_or_else(|| "unknown node".to_string());
+            let error = format!(
+                "direct assignment timed out after {lease_seconds}s on {node_id}; the worker did not return a terminal result"
+            );
+            job.status = JobStatus::Failed;
+            job.completed_at = Some(now.to_string());
+            job.assigned_node_id = None;
+            job.assigned_at = None;
+            job.worker_id = None;
+            job.backend = None;
+            job.output = None;
+            job.error = Some(error.clone());
+            job.active_graph_node_id = None;
+            job.graph.updated_at = now.to_string();
+            job.graph.merge_error = Some(error.clone());
+            expired.push((job.clone(), node_id, assigned_at, lease_seconds, error));
+        }
+
+        let released_nodes = expired
+            .iter()
+            .map(|(_, node_id, _, _, _)| node_id.clone())
+            .collect::<Vec<_>>();
+        for node_id in released_nodes {
+            let remaining_assignments = self.active_assignment_count_for_node(&node_id);
+            if let Some(node) = self.nodes.get_mut(&node_id) {
+                if node.reported_state == AgentState::Busy && remaining_assignments == 0 {
+                    node.reported_state = AgentState::Ready;
+                }
+                Self::apply_policy_override(node);
+            }
+        }
+
+        let mut changed_events = Vec::new();
+        for (job, node_id, assigned_at, lease_seconds, error) in &expired {
+            changed_events.push(self.record_job_event(
+                Some(node_id.clone()),
+                Some(job.job_id.clone()),
+                "job_assignment_expired",
+                serde_json::json!({
+                    "status": JobStatus::Failed,
+                    "assigned_at": assigned_at,
+                    "completed_at": now,
+                    "lease_seconds": lease_seconds,
+                    "error": error,
+                }),
+                now.to_string(),
+            ));
+        }
+
+        if !expired.is_empty() {
+            self.reevaluate_queued_jobs();
+        }
+        (
+            expired.into_iter().map(|(job, _, _, _, _)| job).collect(),
+            changed_events,
+        )
     }
 
     fn release_stale_graph_claims(&mut self, now: &str) -> Vec<JobRecord> {
@@ -3148,6 +3237,22 @@ fn minimum_graph_node_lease_seconds(task_type: RequestTaskType) -> u64 {
 
 fn graph_node_lease_seconds_for(task_type: RequestTaskType) -> u64 {
     graph_node_lease_seconds().max(minimum_graph_node_lease_seconds(task_type))
+}
+
+fn direct_job_lease_seconds() -> u64 {
+    std::env::var(DIRECT_JOB_LEASE_SECONDS_ENV)
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(DEFAULT_DIRECT_JOB_LEASE_SECONDS)
+}
+
+fn direct_job_lease_seconds_for(task_type: RequestTaskType) -> u64 {
+    let minimum = match task_type {
+        RequestTaskType::Coding => CODING_DIRECT_JOB_LEASE_SECONDS,
+        _ => DEFAULT_DIRECT_JOB_LEASE_SECONDS,
+    };
+    direct_job_lease_seconds().max(minimum)
 }
 
 fn queued_job_timeout_seconds() -> u64 {
@@ -9480,6 +9585,94 @@ mod tests {
             .as_deref()
             .expect("stale reason")
             .contains("heartbeat stale"));
+    }
+
+    #[test]
+    fn stale_direct_assignment_fails_and_releases_its_slot() {
+        let mut state = ready_state();
+        state.submit_job(
+            classification_request("Explain dependency injection."),
+            "2".to_string(),
+        );
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("direct claim");
+
+        state.heartbeat(ready_heartbeat("node-1", "602"), "602".to_string());
+        let still_running = state.run_maintenance_with_nodes("602");
+        assert!(still_running.changed_jobs.is_empty());
+        assert!(still_running.changed_events.is_empty());
+        assert_eq!(state.jobs["job-1"].status, JobStatus::Assigned);
+
+        state.heartbeat(ready_heartbeat("node-1", "603"), "603".to_string());
+        let expired = state.run_maintenance_with_nodes("603");
+        assert_eq!(expired.changed_jobs.len(), 1);
+        assert_eq!(expired.changed_events.len(), 1);
+        assert_eq!(
+            expired.changed_events[0].event_type,
+            "job_assignment_expired"
+        );
+
+        let job = state.jobs.get("job-1").expect("expired direct job");
+        assert_eq!(job.status, JobStatus::Failed);
+        assert_eq!(job.completed_at.as_deref(), Some("603"));
+        assert_eq!(job.assigned_node_id, None);
+        assert_eq!(job.assigned_at, None);
+        assert!(job
+            .error
+            .as_deref()
+            .expect("timeout reason")
+            .contains("direct assignment timed out after 600s on node-1"));
+        assert_eq!(state.node_slot_occupancy("node-1"), (0, 1, 1));
+
+        let late = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "late-worker".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some("late output".to_string()),
+                    error: None,
+                    latency_ms: Some(601_000),
+                },
+                "604".to_string(),
+            )
+            .expect("late completion returns the terminal job");
+        assert_eq!(late.status, JobStatus::Failed);
+        assert_eq!(late.output, None);
+    }
+
+    #[test]
+    fn direct_coding_assignment_keeps_a_thirty_minute_lease() {
+        let mut state = ready_state();
+        state.submit_job(
+            classification_request(fibonacci_quality_prompt()),
+            "2".to_string(),
+        );
+        let coding_job = state.jobs.get_mut("job-1").expect("coding job");
+        coding_job.classification.task_type = RequestTaskType::Coding;
+        coding_job.scheduling_requirements.task_type = RequestTaskType::Coding;
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("direct coding claim");
+
+        state.heartbeat(ready_heartbeat("node-1", "604"), "604".to_string());
+        state.run_maintenance("604");
+        assert_eq!(state.jobs["job-1"].status, JobStatus::Assigned);
+
+        state.heartbeat(ready_heartbeat("node-1", "1803"), "1803".to_string());
+        state.run_maintenance("1803");
+        let job = state.jobs.get("job-1").expect("expired coding job");
+        assert_eq!(job.status, JobStatus::Failed);
+        assert!(job
+            .error
+            .as_deref()
+            .expect("coding timeout")
+            .contains("direct assignment timed out after 1800s on node-1"));
     }
 
     #[test]

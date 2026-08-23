@@ -5976,7 +5976,10 @@ fn handle_connection_with_streams(
             .lock()
             .expect("state lock")
             .run_maintenance_with_nodes(&now_unix_seconds());
-        if !maintenance.changed_jobs.is_empty() || !maintenance.changed_nodes.is_empty() {
+        if !maintenance.changed_jobs.is_empty()
+            || !maintenance.changed_nodes.is_empty()
+            || !maintenance.changed_events.is_empty()
+        {
             if let Ok(guard) = state.lock() {
                 if let Err(error) = save_state(&guard) {
                     eprintln!("failed to save control-plane state: {error}");
@@ -5992,6 +5995,12 @@ fn handle_connection_with_streams(
                 for job in &maintenance.changed_jobs {
                     if let Err(error) = db.record_job(job) {
                         eprintln!("database maintenance job sync skipped: {error}");
+                        note_supabase_failure(&sync_status, error);
+                    }
+                }
+                for event in &maintenance.changed_events {
+                    if let Err(error) = db.record_job_event(event) {
+                        eprintln!("database maintenance event sync skipped: {error}");
                         note_supabase_failure(&sync_status, error);
                     }
                 }
