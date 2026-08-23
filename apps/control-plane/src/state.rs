@@ -4079,7 +4079,7 @@ fn code_quality_gate_report(
         });
     };
 
-    let structural_failure = compact_code_output_failure_reason(output, effective_max_tokens);
+    let structural_failure = quality_code_structure_failure_reason(output, effective_max_tokens);
     check(
         "code_structure",
         true,
@@ -4162,7 +4162,10 @@ fn code_quality_gate_report(
         check(
             "input_validation",
             true,
-            source.contains("IllegalArgumentException") && source_lower.contains("throw "),
+            source_lower.contains("if (")
+                && (source.contains("IllegalArgumentException")
+                    || source_lower.contains("invalid")
+                    || source_lower.contains("error")),
             "The implementation must reject invalid input with explicit validation.".to_string(),
         );
     }
@@ -4174,7 +4177,9 @@ fn code_quality_gate_report(
         check(
             "exact_n_value_output_format",
             true,
-            compact_source_lower.contains("system.out.println(n+\"=\"+"),
+            Regex::new(r#"(?i)system\.out\.println\([A-Za-z_$][A-Za-z0-9_$]*\+\"=\"\+"#)
+                .expect("static Java output expression regex")
+                .is_match(&compact_source),
             "Exact `n=value` output requires printing the numeric `n`, then `=`, then its value; a literal `n=` prefix does not satisfy the contract.".to_string(),
         );
     }
@@ -4256,6 +4261,53 @@ fn code_quality_gate_report(
         execution_verified: false,
         checks,
     }
+}
+
+fn quality_code_structure_failure_reason(
+    output: &str,
+    effective_max_tokens: u32,
+) -> Option<String> {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        return Some("did not include output".to_string());
+    }
+    let mut fence_open = false;
+    let mut saw_source_fence = false;
+    for line in trimmed.lines() {
+        let Some(suffix) = line.trim_start().strip_prefix("```") else {
+            continue;
+        };
+        if fence_open {
+            if !suffix.trim().is_empty() {
+                return Some("has a nested Markdown code fence".to_string());
+            }
+            fence_open = false;
+            continue;
+        }
+        let language = suffix
+            .trim()
+            .split_ascii_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        saw_source_fence |= !matches!(
+            language.as_str(),
+            "" | "markdown" | "md" | "json" | "jsonc" | "text" | "plaintext" | "bash" | "sh" | "shell"
+        );
+        fence_open = true;
+    }
+    if fence_open {
+        return Some("has an unmatched Markdown code fence".to_string());
+    }
+    if !saw_source_fence {
+        return Some("is missing a fenced source file".to_string());
+    }
+    if output_appears_token_limited(trimmed, effective_max_tokens) {
+        return Some(format!(
+            "reached its {effective_max_tokens} token budget and appears incomplete"
+        ));
+    }
+    None
 }
 
 fn failed_quality_checks(report: &QualityGateReport) -> Vec<String> {
@@ -9124,6 +9176,15 @@ mod tests {
         assert!(report.checks.iter().any(|check| {
             check.check_id == "sandbox_execution" && !check.mandatory && !check.passed
         }));
+    }
+
+    #[test]
+    fn deterministic_code_gate_accepts_equivalent_loop_variable_and_validation() {
+        let answer = "```java\nimport java.util.Scanner;\npublic class FibonacciApp {\n public static void main(String[] args) {\n  Scanner scanner = new Scanner(System.in);\n  if (!scanner.hasNextInt()) { System.out.println(\"Invalid input\"); return; }\n  for (int i = 0; i <= 20; i++) System.out.println(i + \"=\" + fibonacci(i));\n }\n public static long fibonacci(int n) {\n  if (n < 0 || n > 20) throw new IllegalArgumentException(\"range\");\n  if (n <= 1) return n;\n  return fibonacci(n - 1) + fibonacci(n - 2);\n }\n}\n```\n\nRun:\n```\njavac FibonacciApp.java && java FibonacciApp\n```";
+        let report = code_quality_gate_report(fibonacci_quality_prompt(), answer, 2_048, 1);
+
+        assert_eq!(report.status, QualityGateStatus::Passed);
+        assert!(failed_quality_checks(&report).is_empty());
     }
 
     #[test]
