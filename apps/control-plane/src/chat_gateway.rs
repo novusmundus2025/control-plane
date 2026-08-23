@@ -1,4 +1,6 @@
-use crate::contracts::{ChatCompletionRequest, JobRecord, JobStatus, SynthesisStatus};
+use crate::contracts::{
+    ChatCompletionRequest, JobRecord, JobStatus, QualityGateStatus, SynthesisStatus,
+};
 use crate::state::ControlPlaneState;
 use crate::tools::ToolAnswer;
 use serde_json::{json, Value};
@@ -369,6 +371,7 @@ pub fn finish_reason_for_job(job: &JobRecord) -> &'static str {
         .as_deref()
         .is_some_and(output_hit_generation_limit)
         || job.graph.synthesis_status == SynthesisStatus::CompletedPartial
+        || job.quality_gate.status == QualityGateStatus::CompletedPartial
     {
         "length"
     } else {
@@ -451,6 +454,15 @@ pub fn completion_response(
         mundusx.insert("job_id".to_string(), json!(job.job_id));
         mundusx.insert("request_id".to_string(), json!(job.request_id));
         mundusx.insert("status".to_string(), json!(job.status));
+        mundusx.insert("quality_gate".to_string(), json!(job.quality_gate));
+        mundusx.insert(
+            "semantic_status".to_string(),
+            json!(if job.quality_gate.status == QualityGateStatus::CompletedPartial {
+                "completed_partial"
+            } else {
+                "completed"
+            }),
+        );
     }
     if let Some(tool) = tool {
         mundusx.insert("tool".to_string(), json!(tool.name));
