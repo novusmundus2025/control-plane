@@ -918,6 +918,51 @@ pub struct ChatCompletionRequest {
     pub stream: Option<bool>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum QualityGateStatus {
+    NotApplicable,
+    Passed,
+    Repairing,
+    CompletedPartial,
+}
+
+impl Default for QualityGateStatus {
+    fn default() -> Self {
+        Self::NotApplicable
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct QualityGateCheck {
+    pub check_id: String,
+    pub mandatory: bool,
+    pub passed: bool,
+    pub detail: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct QualityGateReport {
+    pub status: QualityGateStatus,
+    pub repair_attempts: u8,
+    pub max_repair_attempts: u8,
+    pub execution_verified: bool,
+    pub checks: Vec<QualityGateCheck>,
+}
+
+impl Default for QualityGateReport {
+    fn default() -> Self {
+        Self {
+            status: QualityGateStatus::NotApplicable,
+            repair_attempts: 0,
+            max_repair_attempts: 1,
+            execution_verified: false,
+            checks: Vec::new(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct JobRecord {
     pub job_id: String,
@@ -960,6 +1005,10 @@ pub struct JobRecord {
     pub admission_held: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_resume_token_sha256: Option<String>,
+    #[serde(default)]
+    pub quality_gate: QualityGateReport,
+    #[serde(default, skip_serializing)]
+    pub quality_repair_feedback: Vec<String>,
     #[serde(default)]
     pub active_graph_node_id: Option<String>,
     #[serde(default)]

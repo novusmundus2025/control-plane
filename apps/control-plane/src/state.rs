@@ -8,10 +8,12 @@ use crate::contracts::{
     JobResultVerificationStatus, JobSchedulingRequirements, JobStatus, ModelCapability,
     NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeRole,
     NodeTrustRecord, OrchestrationTimelineEvent, PlannedJob, PrivacyLevel, RequestClassification,
-    RequestComplexity, RequestTaskType, ResultArtifact, ResultArtifactKind, RoutingMode,
-    RuntimeMode, SchedulerDecision, StepWorkloadRequirements, SynthesisManifest, SynthesisStatus,
-    ToolRewardRequest, ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
+    QualityGateCheck, QualityGateReport, QualityGateStatus, RequestComplexity, RequestTaskType,
+    ResultArtifact, ResultArtifactKind, RoutingMode, RuntimeMode, SchedulerDecision,
+    StepWorkloadRequirements, SynthesisManifest, SynthesisStatus, ToolRewardRequest,
+    ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
 };
+use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -602,6 +604,8 @@ impl ControlPlaneState {
             graph_execution_enabled,
             admission_held: false,
             chat_resume_token_sha256: None,
+            quality_gate: QualityGateReport::default(),
+            quality_repair_feedback: Vec::new(),
             active_graph_node_id: None,
             last_completed_graph_node_id: None,
             status: JobStatus::Queued,
@@ -2355,15 +2359,69 @@ impl ControlPlaneState {
                     job.graph.updated_at = completed_at.clone();
                     job.clone()
                 } else {
-                    job.status = completion.status;
-                    job.worker_id = Some(completion.worker_id.clone());
-                    job.backend = Some(completion.backend);
-                    job.output = output;
-                    job.error = completion.error.clone();
-                    job.completed_at = Some(completed_at.clone());
-                    apply_job_completion_to_graph(job, &completion);
-                    job.graph.updated_at = completed_at.clone();
-                    job.clone()
+                    let quality_report = if completion.status == JobStatus::Completed
+                        && code_quality_gate_applies(job)
+                    {
+                        output.as_deref().map(|output| {
+                            code_quality_gate_report(
+                                &job.prompt,
+                                output,
+                                job.max_tokens.unwrap_or(2_048),
+                                job.quality_gate.repair_attempts,
+                            )
+                        })
+                    } else {
+                        None
+                    };
+                    let failed_checks = quality_report
+                        .as_ref()
+                        .map(failed_quality_checks)
+                        .unwrap_or_default();
+                    if !failed_checks.is_empty()
+                        && job.quality_gate.repair_attempts
+                            < job.quality_gate.max_repair_attempts
+                    {
+                        let mut report = quality_report.expect("failed quality report");
+                        report.repair_attempts = report.repair_attempts.saturating_add(1);
+                        report.status = QualityGateStatus::Repairing;
+                        job.quality_gate = report;
+                        job.quality_repair_feedback = failed_checks.clone();
+                        job.status = JobStatus::Queued;
+                        job.assigned_node_id = None;
+                        job.assigned_at = None;
+                        job.worker_id = None;
+                        job.backend = None;
+                        job.output = None;
+                        job.error = Some(format!(
+                            "automatic quality repair: {}",
+                            failed_checks.join("; ")
+                        ));
+                        job.completed_at = None;
+                        job.scheduler_decision = None;
+                        job.graph.updated_at = completed_at.clone();
+                        job.clone()
+                    } else {
+                        job.status = completion.status;
+                        job.worker_id = Some(completion.worker_id.clone());
+                        job.backend = Some(completion.backend);
+                        job.output = output;
+                        job.error = if failed_checks.is_empty() {
+                            completion.error.clone()
+                        } else {
+                            Some(format!(
+                                "quality gate remained incomplete after one bounded repair: {}",
+                                failed_checks.join("; ")
+                            ))
+                        };
+                        job.completed_at = Some(completed_at.clone());
+                        if let Some(report) = quality_report {
+                            job.quality_gate = report;
+                        }
+                        job.quality_repair_feedback.clear();
+                        apply_job_completion_to_graph(job, &completion);
+                        job.graph.updated_at = completed_at.clone();
+                        job.clone()
+                    }
                 }
             }
         };
@@ -2379,7 +2437,11 @@ impl ControlPlaneState {
             }
             node.backend = completion.backend;
             node.updated_at = completed_at;
-            if !completion_was_auto_truncated {
+            let quality_rejected = matches!(
+                updated_job.quality_gate.status,
+                QualityGateStatus::Repairing | QualityGateStatus::CompletedPartial
+            );
+            if !completion_was_auto_truncated && !quality_rejected {
                 update_node_trust(&mut node.trust, &completion, node.updated_at.clone());
             }
             Self::apply_policy_override(node);
@@ -3550,6 +3612,7 @@ fn complete_graph_execution_job(
         .map(strip_worker_transport_envelope);
     let automatic_budget = !job_has_explicit_max_tokens(job);
     let compact_reviewed_code = job.plan.strategy == "compact_reviewed_code_delivery";
+    let quality_gate_enabled = code_quality_gate_applies(job);
     let compact_source_language = job
         .scheduling_requirements
         .language
@@ -3622,6 +3685,19 @@ fn complete_graph_execution_job(
                                 graph_node.effective_max_tokens.unwrap_or(2_048),
                             )
                         });
+                    let final_quality_report = (is_final_synthesis && quality_gate_enabled)
+                        .then(|| {
+                            code_quality_gate_report(
+                                &job.prompt,
+                                accepted_output.as_deref().unwrap_or_default(),
+                                graph_node.effective_max_tokens.unwrap_or(2_048),
+                                graph_node.attempt_count.saturating_sub(1) as u8,
+                            )
+                        });
+                    let final_quality_failures = final_quality_report
+                        .as_ref()
+                        .map(failed_quality_checks)
+                        .unwrap_or_default();
                     if hit_generation_limit && automatic_budget {
                         graph_node.output = None;
                         if graph_node.attempt_count >= graph_node.max_attempts {
@@ -3686,6 +3762,27 @@ fn complete_graph_execution_job(
                             "synthesis remained structurally incomplete after {} bounded attempts",
                             graph_node.attempt_count
                         ));
+                    } else if !final_quality_failures.is_empty() {
+                        let mut report = final_quality_report.expect("failed final quality report");
+                        if graph_node.attempt_count < graph_node.max_attempts {
+                            report.status = QualityGateStatus::Repairing;
+                            report.repair_attempts = report.repair_attempts.saturating_add(1);
+                            graph_node.status = JobGraphNodeStatus::Ready;
+                            graph_node.output = None;
+                            graph_node.error = Some(format!(
+                                "automatic quality repair: {}",
+                                final_quality_failures.join("; ")
+                            ));
+                        } else {
+                            report.status = QualityGateStatus::CompletedPartial;
+                            graph_node.status = JobGraphNodeStatus::Failed;
+                            graph_node.output = accepted_output;
+                            graph_node.error = Some(format!(
+                                "quality gate remained incomplete after bounded synthesis repair: {}",
+                                final_quality_failures.join("; ")
+                            ));
+                        }
+                        job.quality_gate = report;
                     } else if unusable_section_output {
                         if !graph_node
                             .failed_node_ids
@@ -3707,6 +3804,9 @@ fn complete_graph_execution_job(
                         graph_node.status = JobGraphNodeStatus::Completed;
                         graph_node.output = accepted_output;
                         graph_node.error = None;
+                        if let Some(report) = final_quality_report {
+                            job.quality_gate = report;
+                        }
                     }
                 }
                 JobStatus::Failed => {
@@ -3940,6 +4040,233 @@ fn compact_code_output_failure_reason(output: &str, effective_max_tokens: u32) -
     None
 }
 
+fn code_quality_gate_applies(job: &JobRecord) -> bool {
+    if job.classification.task_type != RequestTaskType::Coding
+        || job.classification.output_format != ExpectedOutputFormat::Code
+    {
+        return false;
+    }
+    let prompt = job.prompt.to_ascii_lowercase();
+    looks_like_complete_code_prompt(&prompt)
+        || contains_any(
+            &prompt,
+            &[
+                "spring boot",
+                "crud service",
+                "javafx",
+                "return all required files",
+                "do not omit imports",
+                "compilable code",
+                "runnable code",
+                "working code",
+            ],
+        )
+}
+
+fn code_quality_gate_report(
+    prompt: &str,
+    output: &str,
+    effective_max_tokens: u32,
+    repair_attempts: u8,
+) -> QualityGateReport {
+    let mut checks = Vec::new();
+    let mut check = |check_id: &str, mandatory: bool, passed: bool, detail: String| {
+        checks.push(QualityGateCheck {
+            check_id: check_id.to_string(),
+            mandatory,
+            passed,
+            detail,
+        });
+    };
+
+    let structural_failure = compact_code_output_failure_reason(output, effective_max_tokens);
+    check(
+        "code_structure",
+        true,
+        structural_failure.is_none(),
+        structural_failure
+            .map(|reason| format!("Generated code {reason}."))
+            .unwrap_or_else(|| "Code fences and completion structure are valid.".to_string()),
+    );
+
+    let blocks = fenced_output_blocks(output);
+    let source = blocks
+        .iter()
+        .filter(|(language, _)| {
+            !matches!(
+                language.as_str(),
+                "" | "text" | "txt" | "markdown" | "md" | "bash" | "sh" | "shell"
+            )
+        })
+        .map(|(_, content)| content.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    let source_lower = source.to_ascii_lowercase();
+    let compact_source = source.chars().filter(|value| !value.is_whitespace()).collect::<String>();
+    let compact_source_lower = compact_source.to_ascii_lowercase();
+    let prompt_lower = prompt.to_ascii_lowercase();
+
+    let java_filename = Regex::new(
+        r"(?i)(?:one\s+file\s+named|file\s+named|named)\s+([A-Za-z_$][A-Za-z0-9_$]*\.java)",
+    )
+    .expect("static Java filename regex")
+    .captures(prompt)
+    .and_then(|captures| captures.get(1))
+    .map(|value| value.as_str().to_string());
+    if let Some(filename) = java_filename {
+        let class_name = filename.trim_end_matches(".java");
+        let expected = format!("public class {class_name}");
+        let public_class_count = source.matches("public class ").count();
+        check(
+            "java_public_class_filename",
+            true,
+            source.contains(&expected) && public_class_count == 1,
+            format!(
+                "Expected exactly one public class `{class_name}` matching `{filename}`."
+            ),
+        );
+    }
+
+    if prompt_lower.contains("main method") {
+        check(
+            "java_main_method",
+            true,
+            compact_source_lower.contains("staticvoidmain(string[]args)")
+                || compact_source_lower.contains("staticvoidmain(string...args)"),
+            "A Java `static void main(String[] args)` entrypoint is required.".to_string(),
+        );
+    }
+
+    let requested_method = Regex::new(
+        r"(?i)([A-Za-z_$][A-Za-z0-9_$]*)\s*\(\s*int\s+[A-Za-z_$][A-Za-z0-9_$]*\s*\)\s+method",
+    )
+    .expect("static Java method regex")
+    .captures(prompt)
+    .and_then(|captures| captures.get(1))
+    .map(|value| value.as_str().to_ascii_lowercase());
+    if prompt_lower.contains("recursive") {
+        if let Some(method) = requested_method {
+            let calls = source_lower.matches(&format!("{method}(")).count();
+            check(
+                "requested_recursive_method",
+                true,
+                calls >= 3,
+                format!(
+                    "The requested recursive `{method}(int ...)` method must contain recursive calls."
+                ),
+            );
+        }
+    }
+
+    if prompt_lower.contains("input validation") {
+        check(
+            "input_validation",
+            true,
+            source.contains("IllegalArgumentException") && source_lower.contains("throw "),
+            "The implementation must reject invalid input with explicit validation.".to_string(),
+        );
+    }
+
+    let exact_n_value_format = Regex::new(r#"(?i)(?:format|formatted as)\s+[`'\"]?n=value"#)
+        .expect("static output format regex")
+        .is_match(prompt);
+    if exact_n_value_format {
+        check(
+            "exact_n_value_output_format",
+            true,
+            compact_source_lower.contains("system.out.println(n+\"=\"+"),
+            "Exact `n=value` output requires printing the numeric `n`, then `=`, then its value; a literal `n=` prefix does not satisfy the contract.".to_string(),
+        );
+    }
+
+    let component_checks = [
+        ("spring_entity", "entity", ["@entity", "jakarta.persistence.entity"].as_slice()),
+        ("spring_repository", "repository", ["repository", "jparepository"].as_slice()),
+        ("spring_service", "service", ["@service", "class vehicleservice"].as_slice()),
+        ("spring_rest_controller", "rest controller", ["@restcontroller"].as_slice()),
+        ("spring_exception_handling", "exception handling", ["@controlleradvice", "@exceptionhandler"].as_slice()),
+        ("readme", "readme", ["readme.md", "# readme"].as_slice()),
+        ("javafx_client", "javafx", ["javafx.", "extends application"].as_slice()),
+        ("database_migration", "database migration", ["v1__", "db/migration", "liquibase"].as_slice()),
+        ("docker_setup", "docker", ["dockerfile", "from eclipse", "from openjdk", "from amazoncorretto"].as_slice()),
+    ];
+    for (check_id, requested_phrase, evidence) in component_checks {
+        if prompt_lower.contains(requested_phrase) {
+            check(
+                check_id,
+                true,
+                evidence.iter().any(|marker| source_lower.contains(marker) || output.to_ascii_lowercase().contains(marker)),
+                format!("The requested `{requested_phrase}` component must be present in the returned artifacts."),
+            );
+        }
+    }
+    if prompt_lower.contains("dto validation") {
+        check(
+            "dto_validation",
+            true,
+            source_lower.contains("@valid")
+                && (source_lower.contains("jakarta.validation")
+                    || source_lower.contains("@notnull")
+                    || source_lower.contains("@notblank")),
+            "DTO validation requires request validation plus validation constraints.".to_string(),
+        );
+    }
+    if prompt_lower.contains("do not omit imports") || prompt_lower.contains("with imports") {
+        check(
+            "required_imports",
+            true,
+            source_lower.contains("import "),
+            "The returned source must include its imports.".to_string(),
+        );
+    }
+    if prompt_lower.contains("authentication and authorization") {
+        check(
+            "authentication_authorization",
+            true,
+            source_lower.contains("securityfilterchain")
+                && source_lower.contains("authorizehttprequests"),
+            "Authentication and authorization require concrete Spring Security configuration.".to_string(),
+        );
+    }
+    if prompt_lower.contains("unit and integration tests") || prompt_lower.contains("with tests") {
+        check(
+            "automated_tests",
+            true,
+            source_lower.contains("@test"),
+            "The returned artifacts must include executable automated tests.".to_string(),
+        );
+    }
+
+    check(
+        "sandbox_execution",
+        false,
+        false,
+        "Compilation and execution were not performed; untrusted generated code requires an isolated verifier worker.".to_string(),
+    );
+
+    let mandatory_failed = checks.iter().any(|item| item.mandatory && !item.passed);
+    QualityGateReport {
+        status: if mandatory_failed {
+            QualityGateStatus::CompletedPartial
+        } else {
+            QualityGateStatus::Passed
+        },
+        repair_attempts,
+        max_repair_attempts: 1,
+        execution_verified: false,
+        checks,
+    }
+}
+
+fn failed_quality_checks(report: &QualityGateReport) -> Vec<String> {
+    report
+        .checks
+        .iter()
+        .filter(|item| item.mandatory && !item.passed)
+        .map(|item| format!("{}: {}", item.check_id, item.detail))
+        .collect()
+}
+
 fn normalize_compact_code_output(output: &str, source_language: &str) -> String {
     let mut normalized = Vec::new();
     let mut fence_open = false;
@@ -4031,7 +4358,15 @@ fn direct_job_execution_prompt(job: &JobRecord) -> String {
         );
     }
 
-    job.prompt.clone()
+    if job.quality_repair_feedback.is_empty() {
+        return job.prompt.clone();
+    }
+
+    format!(
+        "Original user request:\n{}\n\nThe previous answer failed deterministic mandatory quality checks:\n- {}\n\nReturn one corrected answer that satisfies every original requirement and every failed check. Do not discuss the failed attempt or these instructions. Preserve all requirements that already passed.",
+        job.prompt,
+        job.quality_repair_feedback.join("\n- ")
+    )
 }
 
 fn graph_node_execution_prompt(
@@ -4109,9 +4444,20 @@ fn graph_node_execution_prompt(
             .join("\n\n");
 
         if job.classification.task_type == RequestTaskType::Coding {
+            let quality_repair_guidance = node
+                .error
+                .as_deref()
+                .filter(|error| error.starts_with("automatic quality repair:"))
+                .map(|error| {
+                    format!(
+                        "\n\nThis is a bounded quality-repair attempt. Correct every failed mandatory check: {}",
+                        error.trim_start_matches("automatic quality repair:").trim()
+                    )
+                })
+                .unwrap_or_default();
             return format!(
-                "Original user request:\n{}\n\nCompleted section notes and accepted dependency artifacts, in required order:\n{}\n\nWrite one accurate, coherent final answer as a complete implementation result. Preserve every required accepted artifact and reconcile names and interfaces across work units. Return explanatory text only when needed, then return each file change as its own fenced unified diff block using workspace-relative a/path and b/path headers. Return shell commands only in separate fenced shell blocks. Never combine two target files into an unlabeled code block, never silently choose between conflicting edits, never truncate a file or patch, and never claim completion when a required artifact is missing. If two accepted artifacts conflict, state the conflict explicitly before the affected patch blocks.",
-                job.prompt, sections
+                "Original user request:\n{}\n\nCompleted section notes and accepted dependency artifacts, in required order:\n{}\n\nWrite one accurate, coherent final answer as a complete implementation result. Preserve every required accepted artifact and reconcile names and interfaces across work units. Return explanatory text only when needed, then return each file change as its own fenced unified diff block using workspace-relative a/path and b/path headers. Return shell commands only in separate fenced shell blocks. Never combine two target files into an unlabeled code block, never silently choose between conflicting edits, never truncate a file or patch, and never claim completion when a required artifact is missing. If two accepted artifacts conflict, state the conflict explicitly before the affected patch blocks.{}",
+                job.prompt, sections, quality_repair_guidance
             );
         }
 
@@ -7826,6 +8172,8 @@ mod tests {
             graph_execution_enabled: true,
             admission_held: false,
             chat_resume_token_sha256: None,
+            quality_gate: QualityGateReport::default(),
+            quality_repair_feedback: Vec::new(),
             active_graph_node_id: None,
             last_completed_graph_node_id: None,
             status: if status == JobGraphNodeStatus::Completed {
@@ -8742,6 +9090,159 @@ mod tests {
         let normalized = normalize_compact_code_output(unlabeled, "javascript");
         assert!(normalized.starts_with("```javascript\n"));
         assert_eq!(compact_code_output_failure_reason(&normalized, 2_048), None);
+    }
+
+    fn fibonacci_quality_prompt() -> &'static str {
+        "Write a complete Java program in one file named FibonacciApp.java. It must have exactly one public class FibonacciApp, a main method, a recursive non-iterative fibonacci(int n) method, input validation, and print exactly 21 lines in the format n=value for n=0 through 20. Return compilable code and a short run command."
+    }
+
+    fn fibonacci_answer(exact_format: bool) -> String {
+        let print = if exact_format {
+            "System.out.println(n + \"=\" + fibonacci(n));"
+        } else {
+            "System.out.println(\"n=\" + n + \": \" + fibonacci(n));"
+        };
+        format!(
+            "```java\npublic class FibonacciApp {{\n    public static void main(String[] args) {{\n        for (int n = 0; n <= 20; n++) {{\n            {print}\n        }}\n    }}\n    public static long fibonacci(int n) {{\n        if (n < 0 || n > 20) throw new IllegalArgumentException(\"range\");\n        if (n <= 1) return n;\n        return fibonacci(n - 1) + fibonacci(n - 2);\n    }}\n}}\n```\n\n```bash\njavac FibonacciApp.java && java FibonacciApp\n```"
+        )
+    }
+
+    #[test]
+    fn deterministic_code_gate_detects_exact_output_contract_failure() {
+        let report = code_quality_gate_report(
+            fibonacci_quality_prompt(),
+            &fibonacci_answer(false),
+            2_048,
+            0,
+        );
+
+        assert_eq!(report.status, QualityGateStatus::CompletedPartial);
+        assert!(!report.execution_verified);
+        assert!(report.checks.iter().any(|check| {
+            check.check_id == "exact_n_value_output_format" && check.mandatory && !check.passed
+        }));
+        assert!(report.checks.iter().any(|check| {
+            check.check_id == "sandbox_execution" && !check.mandatory && !check.passed
+        }));
+    }
+
+    #[test]
+    fn direct_code_quality_gate_repairs_once_then_marks_partial() {
+        let mut state = ready_state();
+        let mut request = classification_request(fibonacci_quality_prompt());
+        request.execution_mode = JobExecutionMode::Single;
+        state.submit_job(request, "1".to_string());
+        state
+            .claim_job("node-1", "2".to_string())
+            .job
+            .expect("first direct claim");
+
+        let repair = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some(fibonacci_answer(false)),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "3".to_string(),
+            )
+            .expect("quality repair");
+        assert_eq!(repair.status, JobStatus::Queued);
+        assert_eq!(repair.quality_gate.status, QualityGateStatus::Repairing);
+        assert_eq!(repair.quality_gate.repair_attempts, 1);
+        assert!(repair.output.is_none());
+
+        let retry_claim = state
+            .claim_job("node-1", "4".to_string())
+            .job
+            .expect("quality retry claim");
+        assert!(retry_claim
+            .prompt
+            .contains("exact_n_value_output_format"));
+
+        let partial = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-2".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some(fibonacci_answer(false)),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "5".to_string(),
+            )
+            .expect("quality partial");
+        assert_eq!(partial.status, JobStatus::Completed);
+        assert_eq!(
+            partial.quality_gate.status,
+            QualityGateStatus::CompletedPartial
+        );
+        assert!(partial.output.is_some());
+        assert_eq!(crate::chat_gateway::finish_reason_for_job(&partial), "length");
+        assert!(partial
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("quality gate remained incomplete")));
+    }
+
+    #[test]
+    fn corrected_direct_code_passes_after_one_quality_repair() {
+        let mut state = ready_state();
+        let mut request = classification_request(fibonacci_quality_prompt());
+        request.execution_mode = JobExecutionMode::Single;
+        state.submit_job(request, "1".to_string());
+        state
+            .claim_job("node-1", "2".to_string())
+            .job
+            .expect("first direct claim");
+        state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some(fibonacci_answer(false)),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "3".to_string(),
+            )
+            .expect("quality repair");
+        state
+            .claim_job("node-1", "4".to_string())
+            .job
+            .expect("quality retry claim");
+
+        let completed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-2".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some(fibonacci_answer(true)),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "5".to_string(),
+            )
+            .expect("corrected completion");
+        assert_eq!(completed.status, JobStatus::Completed);
+        assert_eq!(completed.quality_gate.status, QualityGateStatus::Passed);
+        assert_eq!(completed.quality_gate.repair_attempts, 1);
+        assert_eq!(crate::chat_gateway::finish_reason_for_job(&completed), "stop");
+        assert_eq!(completed.error, None);
     }
 
     #[test]
