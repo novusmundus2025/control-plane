@@ -8155,7 +8155,6 @@ mod tests {
                     output: Some("BMW history output".to_string()),
                     error: None,
                     latency_ms: Some(50),
-                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -8424,7 +8423,6 @@ mod tests {
                     output: Some("Tesla output".to_string()),
                     error: None,
                     latency_ms: Some(50),
-                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -8514,7 +8512,6 @@ mod tests {
                     output: Some("Atlas introduction".to_string()),
                     error: None,
                     latency_ms: Some(50),
-                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -8687,7 +8684,6 @@ mod tests {
                     output: None,
                     error: Some("local runtime failed".to_string()),
                     latency_ms: Some(10),
-                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -8711,7 +8707,6 @@ mod tests {
                     output: Some("BMW chunk output".to_string()),
                     error: None,
                     latency_ms: Some(25),
-                    verification: None,
                 },
                 "6".to_string(),
             )
@@ -8919,7 +8914,6 @@ mod tests {
                     output: Some("Tesla summary output".to_string()),
                     error: None,
                     latency_ms: Some(50),
-                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -8991,7 +8985,6 @@ mod tests {
                     output: Some("Atlas introduction".to_string()),
                     error: None,
                     latency_ms: Some(50),
-                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -9267,7 +9260,6 @@ mod tests {
                     output: None,
                     error: Some("llama-cli exited 1".to_string()),
                     latency_ms: Some(10),
-                    verification: None,
                 },
                 "6".to_string(),
             )
