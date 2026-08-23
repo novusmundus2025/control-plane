@@ -196,6 +196,13 @@ test("renders a usable chat page", () => {
   assert.match(html, /\/api\/chat\/stream/);
   assert.match(html, /response\.body\.getReader/);
   assert.match(html, /renderStreamingJob/);
+  assert.match(html, /const messagesViewportEl = document\.getElementById\("messages"\)/);
+  assert.match(html, /function isChatNearBottom/);
+  assert.match(html, /function scrollChatToLatest/);
+  assert.match(html, /remaining <= 120/);
+  assert.match(html, /if \(event\.deltaY < 0\) followLatestMessage = false/);
+  assert.match(html, /setStatus\("working", "Streaming"\);\s*scrollChatToLatest\(\)/);
+  assert.doesNotMatch(html, /messagesEl\.scrollTop = messagesEl\.scrollHeight/);
   const embeddedScripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
   assert.equal(embeddedScripts.length, 1);
   assert.doesNotThrow(() => new Function(embeddedScripts[0]));
