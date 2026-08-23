@@ -6034,7 +6034,7 @@ fn refresh_graph_results(
     graph.final_output = merge_completed_graph_outputs(graph);
     graph.merge_error = merge_graph_error(graph);
     if graph.merge_error.is_some() {
-        if reducer_failed_with_section_fallback(graph) {
+        if critical_stage_failed_with_section_fallback(graph) {
             graph.status = JobGraphStatus::Completed;
         } else {
             graph.status = JobGraphStatus::Failed;
@@ -6550,21 +6550,28 @@ fn merge_completed_graph_outputs(graph: &JobGraph) -> Option<String> {
     }
 }
 
-fn reducer_failed_with_section_fallback(graph: &JobGraph) -> bool {
+fn critical_stage_failed_with_section_fallback(graph: &JobGraph) -> bool {
     let Some(final_node_id) = graph.final_node_id.as_deref() else {
         return false;
     };
 
-    let final_node_failed = graph
+    let failed_nodes = graph
         .nodes
         .iter()
-        .any(|node| node.id == final_node_id && node.status == JobGraphNodeStatus::Failed);
-    let non_final_failed = graph
-        .nodes
-        .iter()
-        .any(|node| node.id != final_node_id && node.status == JobGraphNodeStatus::Failed);
+        .filter(|node| node.status == JobGraphNodeStatus::Failed)
+        .collect::<Vec<_>>();
+    if failed_nodes.is_empty() {
+        return false;
+    }
+    let only_delivery_stages_failed = failed_nodes.iter().all(|node| {
+        node.id == final_node_id
+            || matches!(
+                node.responsibility.as_str(),
+                "reduce" | "merge" | "synthesize"
+            )
+    });
 
-    final_node_failed && !non_final_failed && graph.final_output.is_some()
+    only_delivery_stages_failed && graph.final_output.is_some()
 }
 
 fn merge_graph_error(graph: &JobGraph) -> Option<String> {
@@ -11897,6 +11904,57 @@ mod tests {
             .error
             .as_deref()
             .is_some_and(|error| error.contains("structurally incomplete")));
+    }
+
+    #[test]
+    fn exhausted_reduction_preserves_validated_sections_as_partial() {
+        let mut state = ready_state();
+        let mut request = reducer_fixture_request();
+        request.execution_mode = JobExecutionMode::Decompose;
+        let mut job = state.submit_job(request, "1".to_string());
+        let final_node_id = job.graph.final_node_id.clone().expect("final node");
+
+        for node in &mut job.graph.nodes {
+            if node.id == final_node_id {
+                node.status = JobGraphNodeStatus::Waiting;
+                node.output = None;
+            } else if node.id == "job.backend" {
+                node.responsibility = "reduce".to_string();
+                node.status = JobGraphNodeStatus::Failed;
+                node.output = None;
+                node.error =
+                    Some("stage output reached the generation limit after 3 attempts".to_string());
+            } else {
+                node.status = JobGraphNodeStatus::Completed;
+                node.output = Some(format!("Validated section from {}.", node.name));
+                node.error = None;
+            }
+        }
+
+        refresh_job_graph(&mut job.graph);
+        refresh_graph_results(
+            &mut job.graph,
+            job.classification.output_format,
+            None,
+            None,
+            None,
+        );
+
+        assert_eq!(job.graph.status, JobGraphStatus::Completed);
+        assert_eq!(
+            job.graph.synthesis_status,
+            SynthesisStatus::CompletedPartial
+        );
+        assert!(job
+            .graph
+            .final_output
+            .as_deref()
+            .is_some_and(|output| output.contains("Validated section")));
+        let manifest = job.graph.final_manifest.expect("partial manifest");
+        assert!(!manifest.complete);
+        assert!(manifest
+            .omitted_dependency_ids
+            .contains(&"job.backend".to_string()));
     }
 
     #[test]
