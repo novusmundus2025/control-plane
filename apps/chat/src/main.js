@@ -1540,6 +1540,7 @@ export function page(config = configFromEnv()) {
     const mainEl = document.getElementById("chat-main");
     const promptEl = document.getElementById("prompt");
     const sendEl = document.getElementById("send");
+    const messagesViewportEl = document.getElementById("messages");
     const messagesEl = document.getElementById("conversation");
     const statusEl = document.getElementById("runtime-status");
     const statusTextEl = document.getElementById("runtime-status-text");
@@ -1573,6 +1574,32 @@ export function page(config = configFromEnv()) {
     let activeHistoryId = localStorage.getItem(conversationIdKey);
     let activeHistoryLoadToken = 0;
     let readyNodeCount = null;
+    let followLatestMessage = true;
+    let chatScrollFrame = null;
+
+    function isChatNearBottom() {
+      if (!messagesViewportEl) return true;
+      const remaining = messagesViewportEl.scrollHeight - messagesViewportEl.scrollTop - messagesViewportEl.clientHeight;
+      return remaining <= 120;
+    }
+
+    function scrollChatToLatest(force = false) {
+      if (!messagesViewportEl) return;
+      if (force) followLatestMessage = true;
+      if (!followLatestMessage || chatScrollFrame !== null) return;
+      chatScrollFrame = window.requestAnimationFrame(() => {
+        chatScrollFrame = null;
+        if (!followLatestMessage) return;
+        messagesViewportEl.scrollTop = messagesViewportEl.scrollHeight;
+      });
+    }
+
+    messagesViewportEl?.addEventListener("scroll", () => {
+      followLatestMessage = isChatNearBottom();
+    }, { passive: true });
+    messagesViewportEl?.addEventListener("wheel", (event) => {
+      if (event.deltaY < 0) followLatestMessage = false;
+    }, { passive: true });
 
     function setEmptyChatMode(isEmpty) {
       mainEl?.classList.toggle("is-empty-chat", Boolean(isEmpty));
@@ -1658,7 +1685,7 @@ export function page(config = configFromEnv()) {
       }
       node.appendChild(body);
       messagesEl.appendChild(node);
-      document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
+      scrollChatToLatest();
       return node;
     }
 
@@ -1935,6 +1962,7 @@ export function page(config = configFromEnv()) {
 
     newChatEl?.addEventListener("click", () => {
       activeHistoryLoadToken += 1;
+      followLatestMessage = true;
       localStorage.setItem(conversationIdKey, crypto.randomUUID());
       activeHistoryId = localStorage.getItem(conversationIdKey);
       messagesEl.querySelectorAll(".message").forEach((node) => node.remove());
@@ -1952,6 +1980,7 @@ export function page(config = configFromEnv()) {
       if (!message) return;
 
       activeHistoryLoadToken += 1;
+      followLatestMessage = true;
       const conversationId = getConversationId();
       saveHistory(message, conversationId);
       addMessage(message, "user");
@@ -2078,6 +2107,7 @@ export function page(config = configFromEnv()) {
       meta.className = "meta";
       meta.textContent = formatJobMeta(payload);
       body.appendChild(meta);
+      scrollChatToLatest();
     }
 
     function createPartialResponse(payload) {
@@ -2121,6 +2151,7 @@ export function page(config = configFromEnv()) {
         meta.appendChild(badge);
       }
       body.appendChild(meta);
+      scrollChatToLatest();
       if (conversationId) {
         appendCachedConversationTurn(conversationId, {
           role: "assistant",
@@ -3044,7 +3075,7 @@ export function page(config = configFromEnv()) {
         addMessage("This conversation was not saved in the backend yet. Shallow tool results and older local-only items can only restore from this browser cache.", "assistant");
       }
       syncNetworkRuntimeStatus(true);
-      document.getElementById("messages").scrollTop = document.getElementById("messages").scrollHeight;
+      scrollChatToLatest(true);
     }
 
     function clearConversation() {

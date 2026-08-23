@@ -188,6 +188,12 @@ test("renders a usable chat page", () => {
   assert.match(html, /function fetchConversationMessages/);
   assert.match(html, /function appendCachedConversationTurn/);
   assert.match(html, /function readCachedConversation/);
+  assert.match(html, /const messagesViewportEl = document\.getElementById\("messages"\)/);
+  assert.match(html, /function isChatNearBottom/);
+  assert.match(html, /function scrollChatToLatest/);
+  assert.match(html, /remaining <= 120/);
+  assert.match(html, /if \(event\.deltaY < 0\) followLatestMessage = false/);
+  assert.doesNotMatch(html, /messagesEl\.scrollTop = messagesEl\.scrollHeight/);
   assert.match(html, /await loadHistoryItem\(item\)/);
   assert.match(html, /conversationCachePrefix/);
   assert.match(html, /\/api\/conversations\//);
