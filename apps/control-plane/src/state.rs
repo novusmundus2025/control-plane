@@ -9303,6 +9303,10 @@ mod tests {
         assert_eq!(completed.quality_gate.status, QualityGateStatus::Passed);
         assert_eq!(completed.quality_gate.repair_attempts, 1);
         assert_eq!(crate::chat_gateway::finish_reason_for_job(&completed), "stop");
+        assert_eq!(
+            crate::chat_gateway::semantic_status_for_job(&completed),
+            "structurally_valid_unverified"
+        );
         assert_eq!(completed.error, None);
     }
 
