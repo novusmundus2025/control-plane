@@ -379,6 +379,20 @@ pub fn finish_reason_for_job(job: &JobRecord) -> &'static str {
     }
 }
 
+pub fn semantic_status_for_job(job: &JobRecord) -> &'static str {
+    if job.graph.synthesis_status == SynthesisStatus::CompletedPartial
+        || job.quality_gate.status == QualityGateStatus::CompletedPartial
+    {
+        "completed_partial"
+    } else if job.quality_gate.status == QualityGateStatus::Passed
+        && !job.quality_gate.execution_verified
+    {
+        "structurally_valid_unverified"
+    } else {
+        "completed"
+    }
+}
+
 pub fn public_model_id(_environment: Option<&str>) -> &'static str {
     "ehda-agnostic"
 }
@@ -457,11 +471,7 @@ pub fn completion_response(
         mundusx.insert("quality_gate".to_string(), json!(job.quality_gate));
         mundusx.insert(
             "semantic_status".to_string(),
-            json!(if job.quality_gate.status == QualityGateStatus::CompletedPartial {
-                "completed_partial"
-            } else {
-                "completed"
-            }),
+            json!(semantic_status_for_job(job)),
         );
     }
     if let Some(tool) = tool {
