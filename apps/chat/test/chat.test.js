@@ -201,6 +201,11 @@ test("renders a usable chat page", () => {
   assert.match(html, /function scrollChatToLatest/);
   assert.match(html, /remaining <= 120/);
   assert.match(html, /if \(event\.deltaY < 0\) followLatestMessage = false/);
+  assert.match(html, /else if \(draggingChatScrollbar\)/);
+  assert.match(html, /nextTouchY > lastChatTouchY/);
+  assert.match(html, /\["PageUp", "Home", "ArrowUp"\]/);
+  assert.match(html, /new ResizeObserver\(\(\) => scrollChatToLatest\(\)\)/);
+  assert.doesNotMatch(html, /followLatestMessage = isChatNearBottom\(\)/);
   assert.match(html, /setStatus\("working", "Streaming"\);\s*scrollChatToLatest\(\)/);
   assert.doesNotMatch(html, /messagesEl\.scrollTop = messagesEl\.scrollHeight/);
   const embeddedScripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
