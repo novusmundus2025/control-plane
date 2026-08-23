@@ -12,6 +12,16 @@ pub fn requires_live_data(messages: &[ChatMessage]) -> bool {
     )
     .expect("freshness time regex")
     .is_match(&normalized);
+    let time_sensitive_subject = Regex::new(
+        r"\b(weather|forecast|temperature|news|headline|price|worth|exchange rate|score|result|version|release|status|ranking|standings|schedule|stock|market|crypto|traffic|flight|outage|availability)\b",
+    )
+    .expect("freshness subject regex")
+    .is_match(&normalized);
+    let explicit_web_request = Regex::new(
+        r"\b(search|browse|look up|lookup|find)\b.{0,24}\b(web|internet|online)\b|\b(web|internet|online)\b.{0,24}\b(search|lookup|results?)\b",
+    )
+    .expect("explicit web request regex")
+    .is_match(&normalized);
     let changing_role = Regex::new(
         r"\b(who (?:is|are) (?:the )?(?:current )?(?:president|prime minister|chancellor|ceo|head coach|manager)|current (?:president|prime minister|chancellor|ceo|leader|office holder))\b",
     )
@@ -23,7 +33,10 @@ pub fn requires_live_data(messages: &[ChatMessage]) -> bool {
     .expect("changing value regex")
     .is_match(&normalized);
 
-    explicit_time || changing_role || changing_value
+    explicit_web_request
+        || (explicit_time && time_sensitive_subject)
+        || changing_role
+        || changing_value
 }
 
 #[cfg(test)]
@@ -47,6 +60,15 @@ mod tests {
             "What was the Liverpool match result today?"
         )));
         assert!(requires_live_data(&messages("What is Bitcoin worth now?")));
+        assert!(requires_live_data(&messages(
+            "Search the web for the latest Rust release"
+        )));
+        assert!(!requires_live_data(&messages(
+            "ok, now the enrollment is connected, now we need to prepare this application for university enrollment system"
+        )));
+        assert!(!requires_live_data(&messages(
+            "Now update the enrollment service implementation"
+        )));
         assert!(!requires_live_data(&messages(
             "Explain electric current in simple terms."
         )));

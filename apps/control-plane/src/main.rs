@@ -551,6 +551,15 @@ fn activate_held_chat_job(
     });
 }
 
+fn should_enable_live_stream(
+    wants_stream: bool,
+    mode: Option<&str>,
+    record: &JobRecord,
+    streaming_node_available: bool,
+) -> bool {
+    wants_stream && mode.is_none() && !record.graph_execution_enabled && streaming_node_available
+}
+
 fn job_artifacts_path(job_id: &str) -> String {
     format!("/v1/jobs/{job_id}/artifacts")
 }
@@ -6581,24 +6590,6 @@ fn handle_connection_with_streams(
                             return write_chat_error(&mut stream, "502 Bad Gateway", &error);
                         }
                     }
-                    // Auto planning remains authoritative for chunking. Streaming clients receive
-                    // keep-alives while graph work is validated and buffered.
-                    let live_stream_job = false;
-                    if wants_stream {
-                        if let Err(error) = stream.write_all(
-                            chat_gateway::sse_start(
-                                &completion_id,
-                                created,
-                                public_model,
-                                live_stream_job,
-                            )
-                            .as_bytes(),
-                        ) {
-                            eprintln!("failed to start chat stream: {error}");
-                            return;
-                        }
-                        let _ = stream.flush();
-                    }
                     let job_request = JobRequest {
                         request_id: completion_id.clone(),
                         prompt,
@@ -6610,7 +6601,9 @@ fn handle_connection_with_streams(
                         } else {
                             JobExecutionMode::Auto
                         },
-                        stream: live_stream_job,
+                        // Plan without forcing single execution; eligible direct jobs are
+                        // upgraded to live streaming after the graph decision is known.
+                        stream: false,
                         model: None,
                         system_prompt,
                         max_tokens,
@@ -6631,7 +6624,26 @@ fn handle_connection_with_streams(
                     let resume_token_hash = resume_token_sha256(&resume_token);
                     let mut guard = state.lock().expect("state lock");
                     let submitted =
-                        guard.submit_job_with_mode(job_request, mode, now_unix_seconds());
+                        guard.submit_job_with_mode(job_request, mode.clone(), now_unix_seconds());
+                    let streaming_node_available = guard.nodes.values().any(|node| {
+                        node.policy_allowed
+                            && node.worker_health.as_ref().is_some_and(|health| {
+                                health.healthy && health.runtime_ready && health.streaming_supported
+                            })
+                    });
+                    // Plan first with buffered delivery so the graph remains authoritative.
+                    // Only direct jobs are upgraded to live worker deltas.
+                    let live_stream_job = should_enable_live_stream(
+                        wants_stream,
+                        mode.as_deref(),
+                        &submitted,
+                        streaming_node_available,
+                    );
+                    if live_stream_job {
+                        guard
+                            .enable_direct_job_streaming(&submitted.job_id)
+                            .expect("direct queued chat job can enable streaming");
+                    }
                     let record = guard
                         .set_job_admission(&submitted.job_id, true, Some(resume_token_hash))
                         .expect("submitted chat job is stored");
@@ -6655,15 +6667,36 @@ fn handle_connection_with_streams(
                             note_supabase_failure(&sync_status, error);
                         }
                     }
+                    drop(guard);
+
+                    let admission_weight = chat_gateway::graph_admission_weight(&record);
+                    if wants_stream {
+                        if let Err(error) = stream.write_all(
+                            chat_gateway::sse_start(
+                                &completion_id,
+                                created,
+                                public_model,
+                                live_stream_job,
+                            )
+                            .as_bytes(),
+                        ) {
+                            eprintln!("failed to start chat stream: {error}");
+                            activate_held_chat_job(
+                                Arc::clone(&chat_admission),
+                                Arc::clone(&state),
+                                record.job_id.clone(),
+                                admission_weight,
+                            );
+                            return;
+                        }
+                        let _ = stream.flush();
+                    }
                     if live_stream_job {
                         live_streams
                             .lock()
                             .expect("live stream registry lock")
                             .register(&record.job_id);
                     }
-                    drop(guard);
-
-                    let admission_weight = chat_gateway::graph_admission_weight(&record);
                     if !wants_stream && record.graph_execution_enabled {
                         activate_held_chat_job(
                             Arc::clone(&chat_admission),
@@ -7255,11 +7288,11 @@ mod tests {
         parse_chat_completion_status_path, parse_conversation_messages_path,
         parse_conversation_path, parse_request, read_http_request, requires_device_signature,
         requires_operator_auth, resume_token_matches, resume_token_sha256,
-        status_snapshot_with_deploy_fingerprint, trust_grade, trust_grade_badge,
-        HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource, SupabaseSyncStatus,
-        AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, CONTROL_PLANE_LOGO_PATH,
-        DATABASE_DIRECT_URL_ENV, DATABASE_POOL_URL_ENV, LEGACY_DATABASE_URL_ENV,
-        LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
+        should_enable_live_stream, status_snapshot_with_deploy_fingerprint, trust_grade,
+        trust_grade_badge, HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource,
+        SupabaseSyncStatus, AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV,
+        CONTROL_PLANE_LOGO_PATH, DATABASE_DIRECT_URL_ENV, DATABASE_POOL_URL_ENV,
+        LEGACY_DATABASE_URL_ENV, LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
 
     #[test]
@@ -7299,6 +7332,42 @@ mod tests {
     use std::net::{TcpListener, TcpStream};
     use std::sync::{Arc, Mutex};
     use std::thread;
+
+    #[test]
+    fn live_streaming_requires_a_direct_plan_and_streaming_node() {
+        let mut state = ControlPlaneState::default();
+        let direct = state.submit_job(
+            JobRequest {
+                request_id: "chat-stream-policy".to_string(),
+                prompt: "Explain dependency injection.".to_string(),
+                preferred_backend: Backend::Auto,
+                routing_mode: RoutingMode::Normal,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(512),
+                max_tokens_source: Some("explicit".to_string()),
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "1".to_string(),
+        );
+        assert!(should_enable_live_stream(true, None, &direct, true));
+        assert!(!should_enable_live_stream(true, None, &direct, false));
+        assert!(!should_enable_live_stream(
+            true,
+            Some("speakai"),
+            &direct,
+            true
+        ));
+
+        let mut graph = direct;
+        graph.graph_execution_enabled = true;
+        assert!(!should_enable_live_stream(true, None, &graph, true));
+    }
 
     fn chat_message(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
