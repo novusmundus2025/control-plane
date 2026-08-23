@@ -1576,6 +1576,8 @@ export function page(config = configFromEnv()) {
     let readyNodeCount = null;
     let followLatestMessage = true;
     let chatScrollFrame = null;
+    let draggingChatScrollbar = false;
+    let lastChatTouchY = null;
 
     function isChatNearBottom() {
       if (!messagesViewportEl) return true;
@@ -1595,11 +1597,44 @@ export function page(config = configFromEnv()) {
     }
 
     messagesViewportEl?.addEventListener("scroll", () => {
-      followLatestMessage = isChatNearBottom();
+      if (isChatNearBottom()) {
+        followLatestMessage = true;
+      } else if (draggingChatScrollbar) {
+        followLatestMessage = false;
+      }
     }, { passive: true });
     messagesViewportEl?.addEventListener("wheel", (event) => {
       if (event.deltaY < 0) followLatestMessage = false;
     }, { passive: true });
+    messagesViewportEl?.addEventListener("pointerdown", (event) => {
+      const bounds = messagesViewportEl.getBoundingClientRect();
+      const scrollbarWidth = Math.max(16, messagesViewportEl.offsetWidth - messagesViewportEl.clientWidth);
+      draggingChatScrollbar = event.clientX >= bounds.right - scrollbarWidth;
+    });
+    window.addEventListener("pointerup", () => {
+      draggingChatScrollbar = false;
+    });
+    messagesViewportEl?.addEventListener("touchstart", (event) => {
+      lastChatTouchY = event.touches[0]?.clientY ?? null;
+    }, { passive: true });
+    messagesViewportEl?.addEventListener("touchmove", (event) => {
+      const nextTouchY = event.touches[0]?.clientY ?? null;
+      if (nextTouchY !== null && lastChatTouchY !== null && nextTouchY > lastChatTouchY) {
+        followLatestMessage = false;
+      }
+      lastChatTouchY = nextTouchY;
+    }, { passive: true });
+    messagesViewportEl?.addEventListener("touchend", () => {
+      lastChatTouchY = null;
+    }, { passive: true });
+    document.addEventListener("keydown", (event) => {
+      if (event.target.closest("textarea, input")) return;
+      if (["PageUp", "Home", "ArrowUp"].includes(event.key)) followLatestMessage = false;
+    });
+    const chatResizeObserver = "ResizeObserver" in window
+      ? new ResizeObserver(() => scrollChatToLatest())
+      : null;
+    chatResizeObserver?.observe(messagesEl);
 
     function setEmptyChatMode(isEmpty) {
       mainEl?.classList.toggle("is-empty-chat", Boolean(isEmpty));
