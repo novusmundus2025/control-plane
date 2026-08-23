@@ -600,6 +600,8 @@ impl ControlPlaneState {
             plan,
             graph,
             graph_execution_enabled,
+            admission_held: false,
+            chat_resume_token_sha256: None,
             active_graph_node_id: None,
             last_completed_graph_node_id: None,
             status: JobStatus::Queued,
@@ -619,6 +621,24 @@ impl ControlPlaneState {
             .get(&job_id)
             .cloned()
             .expect("submitted job is stored")
+    }
+
+    pub fn set_job_admission(
+        &mut self,
+        job_id: &str,
+        held: bool,
+        resume_token_sha256: Option<String>,
+    ) -> Option<JobRecord> {
+        let job = self.jobs.get_mut(job_id)?;
+        job.admission_held = held;
+        if resume_token_sha256.is_some() {
+            job.chat_resume_token_sha256 = resume_token_sha256;
+        }
+        let record = job.clone();
+        if !held {
+            self.reevaluate_queued_jobs();
+        }
+        Some(record)
     }
 
     pub fn set_operator_contribution_percent(
@@ -2370,6 +2390,9 @@ impl ControlPlaneState {
     }
 
     fn job_can_be_claimed(&self, job: &JobRecord) -> bool {
+        if job.admission_held {
+            return false;
+        }
         if !job.graph_execution_enabled {
             return job.status == JobStatus::Queued;
         }
@@ -2386,6 +2409,9 @@ impl ControlPlaneState {
 
         for job in self.jobs.values_mut() {
             if job.status != JobStatus::Queued {
+                continue;
+            }
+            if job.admission_held {
                 continue;
             }
 
@@ -3578,14 +3604,15 @@ fn complete_graph_execution_job(
                         && (stage_hint.contains("synth")
                             || stage_hint.contains("merge")
                             || stage_hint.contains("final"));
-                    let truncated_synthesis = automatic_budget
+                    let incomplete_synthesis = automatic_budget
                         && is_final_synthesis
                         && cleaned_completion_output
                             .as_deref()
                             .zip(graph_node.effective_max_tokens)
                             .map(|(output, budget)| output_appears_token_limited(output, budget))
-                            .unwrap_or(false)
-                        && graph_node.attempt_count < graph_node.max_attempts;
+                            .unwrap_or(false);
+                    let truncated_synthesis =
+                        incomplete_synthesis && graph_node.attempt_count < graph_node.max_attempts;
                     let invalid_compact_implementation = compact_reviewed_code
                         .then(|| graph_node.id == "job.backend")
                         .filter(|is_backend| *is_backend)
@@ -3651,6 +3678,13 @@ fn complete_graph_execution_job(
                         graph_node.error = Some(format!(
                             "automatic retry: synthesis output reached its {} token budget and appears incomplete",
                             previous_budget
+                        ));
+                    } else if incomplete_synthesis {
+                        graph_node.status = JobGraphNodeStatus::Failed;
+                        graph_node.output = accepted_output;
+                        graph_node.error = Some(format!(
+                            "synthesis remained structurally incomplete after {} bounded attempts",
+                            graph_node.attempt_count
                         ));
                     } else if unusable_section_output {
                         if !graph_node
@@ -6002,9 +6036,9 @@ fn refresh_graph_results(
     if graph.merge_error.is_some() {
         if reducer_failed_with_section_fallback(graph) {
             graph.status = JobGraphStatus::Completed;
-            return;
+        } else {
+            graph.status = JobGraphStatus::Failed;
         }
-        graph.status = JobGraphStatus::Failed;
     }
     graph.synthesis_status = synthesis_status_for_graph(graph);
     graph.final_manifest = Some(build_synthesis_manifest(graph));
@@ -7783,6 +7817,8 @@ mod tests {
             },
             execution_mode: JobExecutionMode::Decompose,
             graph_execution_enabled: true,
+            admission_held: false,
+            chat_resume_token_sha256: None,
             active_graph_node_id: None,
             last_completed_graph_node_id: None,
             status: if status == JobGraphNodeStatus::Completed {
@@ -11759,6 +11795,108 @@ mod tests {
         assert!(state
             .award_job_reward(&completed, "8".to_string())
             .is_none());
+    }
+
+    #[test]
+    fn exhausted_incomplete_synthesis_is_not_reported_as_complete() {
+        let mut state = ready_state();
+        let mut request =
+            classification_request("Give me a detailed history of BMW from its origins to today.");
+        request.execution_mode = JobExecutionMode::Decompose;
+        state.submit_job(request, "1".to_string());
+        make_reducer_ready(&mut state, "job-1");
+        let final_node_id = state
+            .jobs
+            .get("job-1")
+            .and_then(|job| job.graph.final_node_id.clone())
+            .expect("final node");
+        let final_node = state
+            .jobs
+            .get_mut("job-1")
+            .and_then(|job| {
+                job.graph
+                    .nodes
+                    .iter_mut()
+                    .find(|node| node.id == final_node_id)
+            })
+            .expect("final graph node");
+        final_node.attempt_count = final_node.max_attempts.saturating_sub(1);
+
+        let claim = state
+            .claim_job("node-1", "2".to_string())
+            .job
+            .expect("final synthesis claim");
+        assert!(claim.graph_execution_enabled);
+        assert_eq!(
+            claim.active_graph_node_id.as_deref(),
+            Some(final_node_id.as_str())
+        );
+        assert!(!job_has_explicit_max_tokens(&claim));
+        let final_claim_node = claim
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == final_node_id)
+            .expect("claimed final node");
+        let stage_hint = format!(
+            "{} {} {}",
+            final_claim_node.id, final_claim_node.name, final_claim_node.responsibility
+        )
+        .to_ascii_lowercase();
+        assert!(
+            stage_hint.contains("synth")
+                || stage_hint.contains("merge")
+                || stage_hint.contains("final")
+        );
+        let budget = claim
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == final_node_id)
+            .and_then(|node| node.effective_max_tokens)
+            .expect("effective synthesis budget");
+        let incomplete = "unfinished ".repeat((budget as usize * 4 / 10).max(400));
+        assert!(output_appears_token_limited(&incomplete, budget));
+        let failed = state
+            .complete_job(
+                JobCompletion {
+                    job_id: "job-1".to_string(),
+                    node_id: "node-1".to_string(),
+                    worker_id: "worker-1".to_string(),
+                    backend: Backend::M,
+                    status: JobStatus::Completed,
+                    output: Some(incomplete),
+                    error: None,
+                    latency_ms: Some(10),
+                },
+                "3".to_string(),
+            )
+            .expect("validated synthesis completion");
+
+        let completed_final_node = failed
+            .graph
+            .nodes
+            .iter()
+            .find(|node| node.id == final_node_id)
+            .expect("completed final node");
+        assert_eq!(completed_final_node.status, JobGraphNodeStatus::Failed);
+        assert_eq!(failed.status, JobStatus::Completed);
+        assert_eq!(
+            failed.graph.synthesis_status,
+            SynthesisStatus::CompletedPartial
+        );
+        assert!(
+            !failed
+                .graph
+                .final_manifest
+                .as_ref()
+                .expect("partial synthesis manifest")
+                .complete
+        );
+        assert!(failed
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("structurally incomplete")));
     }
 
     #[test]

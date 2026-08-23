@@ -956,6 +956,10 @@ pub struct JobRecord {
     pub execution_mode: JobExecutionMode,
     #[serde(default)]
     pub graph_execution_enabled: bool,
+    #[serde(default, skip_serializing)]
+    pub admission_held: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_resume_token_sha256: Option<String>,
     #[serde(default)]
     pub active_graph_node_id: Option<String>,
     #[serde(default)]

@@ -1,4 +1,4 @@
-use crate::contracts::{ChatCompletionRequest, JobRecord, JobStatus};
+use crate::contracts::{ChatCompletionRequest, JobRecord, JobStatus, SynthesisStatus};
 use crate::state::ControlPlaneState;
 use crate::tools::ToolAnswer;
 use serde_json::{json, Value};
@@ -10,7 +10,7 @@ use std::time::{Duration, Instant};
 pub const GENERATION_LIMIT_MARKER: &str = "[truncated: hit the generation limit]";
 const MAX_STREAM_DELTA_BYTES: usize = 64 * 1024;
 const MAX_STREAM_BUFFER_BYTES: usize = 256 * 1024;
-const DEFAULT_MAX_ACTIVE_CHAT_REQUESTS: usize = 7;
+const DEFAULT_MAX_ACTIVE_CHAT_WEIGHT: usize = 14;
 const CHAT_ADMISSION_KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(10);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -18,26 +18,36 @@ pub struct ChatAdmissionSnapshot {
     pub active: usize,
     pub queued: usize,
     pub max_active: usize,
+    pub active_weight: usize,
+    pub queued_weight: usize,
+    pub max_weight: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AdmissionTicket {
+    id: u64,
+    weight: usize,
 }
 
 #[derive(Debug, Default)]
 struct ChatAdmissionState {
     active: usize,
+    active_weight: usize,
     next_ticket: u64,
-    queue: VecDeque<u64>,
+    queue: VecDeque<AdmissionTicket>,
 }
 
 #[derive(Debug)]
 pub struct ChatAdmissionController {
-    max_active: usize,
+    max_weight: usize,
     state: Mutex<ChatAdmissionState>,
     changed: Condvar,
 }
 
 impl ChatAdmissionController {
-    pub fn new(max_active: usize) -> Self {
+    pub fn new(max_weight: usize) -> Self {
         Self {
-            max_active: max_active.max(1),
+            max_weight: max_weight.max(1),
             state: Mutex::new(ChatAdmissionState::default()),
             changed: Condvar::new(),
         }
@@ -52,7 +62,10 @@ impl ChatAdmissionController {
         ChatAdmissionSnapshot {
             active: state.active,
             queued: state.queue.len(),
-            max_active: self.max_active,
+            max_active: self.max_weight,
+            active_weight: state.active_weight,
+            queued_weight: state.queue.iter().map(|ticket| ticket.weight).sum(),
+            max_weight: self.max_weight,
         }
     }
 
@@ -60,20 +73,41 @@ impl ChatAdmissionController {
     where
         F: FnMut() -> Result<(), String>,
     {
-        self.acquire_with_interval(keep_alive, CHAT_ADMISSION_KEEP_ALIVE_INTERVAL)
+        self.acquire_weighted(1, keep_alive)
+    }
+
+    pub fn acquire_weighted<F>(
+        self: &Arc<Self>,
+        weight: usize,
+        keep_alive: F,
+    ) -> Result<ChatAdmissionPermit, String>
+    where
+        F: FnMut() -> Result<(), String>,
+    {
+        self.acquire_weighted_with_interval(weight, keep_alive, CHAT_ADMISSION_KEEP_ALIVE_INTERVAL)
     }
 
     pub fn try_acquire(self: &Arc<Self>) -> Result<Option<ChatAdmissionPermit>, String> {
+        self.try_acquire_weighted(1)
+    }
+
+    pub fn try_acquire_weighted(
+        self: &Arc<Self>,
+        weight: usize,
+    ) -> Result<Option<ChatAdmissionPermit>, String> {
+        let weight = self.normalize_weight(weight);
         let mut state = self
             .state
             .lock()
             .map_err(|_| "chat admission state lock poisoned".to_string())?;
-        if state.active >= self.max_active || !state.queue.is_empty() {
+        if state.active_weight.saturating_add(weight) > self.max_weight || !state.queue.is_empty() {
             return Ok(None);
         }
         state.active += 1;
+        state.active_weight += weight;
         Ok(Some(ChatAdmissionPermit {
             controller: Arc::clone(self),
+            weight,
         }))
     }
 
@@ -85,12 +119,28 @@ impl ChatAdmissionController {
     where
         F: FnMut() -> Result<(), String>,
     {
+        self.acquire_weighted_with_interval(1, &mut keep_alive, keep_alive_interval)
+    }
+
+    fn acquire_weighted_with_interval<F>(
+        self: &Arc<Self>,
+        weight: usize,
+        mut keep_alive: F,
+        keep_alive_interval: Duration,
+    ) -> Result<ChatAdmissionPermit, String>
+    where
+        F: FnMut() -> Result<(), String>,
+    {
+        let weight = self.normalize_weight(weight);
         let ticket = {
             let mut state = self
                 .state
                 .lock()
                 .map_err(|_| "chat admission state lock poisoned".to_string())?;
-            let ticket = state.next_ticket;
+            let ticket = AdmissionTicket {
+                id: state.next_ticket,
+                weight,
+            };
             state.next_ticket = state.next_ticket.wrapping_add(1);
             state.queue.push_back(ticket);
             ticket
@@ -102,12 +152,19 @@ impl ChatAdmissionController {
                 .state
                 .lock()
                 .map_err(|_| "chat admission state lock poisoned".to_string())?;
-            if state.active < self.max_active && state.queue.front() == Some(&ticket) {
+            if state.active_weight.saturating_add(weight) <= self.max_weight
+                && state
+                    .queue
+                    .front()
+                    .is_some_and(|queued| queued.id == ticket.id)
+            {
                 state.queue.pop_front();
                 state.active += 1;
+                state.active_weight += weight;
                 self.changed.notify_all();
                 return Ok(ChatAdmissionPermit {
                     controller: Arc::clone(self),
+                    weight,
                 });
             }
 
@@ -122,7 +179,7 @@ impl ChatAdmissionController {
 
             if last_keep_alive.elapsed() >= keep_alive_interval {
                 if let Err(error) = keep_alive() {
-                    self.remove_queued_ticket(ticket);
+                    self.remove_queued_ticket(ticket.id);
                     return Err(error);
                 }
                 last_keep_alive = Instant::now();
@@ -132,22 +189,28 @@ impl ChatAdmissionController {
 
     fn remove_queued_ticket(&self, ticket: u64) {
         if let Ok(mut state) = self.state.lock() {
-            if let Some(index) = state.queue.iter().position(|queued| *queued == ticket) {
+            if let Some(index) = state.queue.iter().position(|queued| queued.id == ticket) {
                 state.queue.remove(index);
                 self.changed.notify_all();
             }
         }
     }
+
+    fn normalize_weight(&self, weight: usize) -> usize {
+        weight.max(1).min(self.max_weight)
+    }
 }
 
 pub struct ChatAdmissionPermit {
     controller: Arc<ChatAdmissionController>,
+    weight: usize,
 }
 
 impl Drop for ChatAdmissionPermit {
     fn drop(&mut self) {
         if let Ok(mut state) = self.controller.state.lock() {
             state.active = state.active.saturating_sub(1);
+            state.active_weight = state.active_weight.saturating_sub(self.weight);
             self.controller.changed.notify_all();
         }
     }
@@ -297,6 +360,19 @@ pub fn strip_generation_limit_marker(output: &str) -> &str {
         }
     } else {
         output
+    }
+}
+
+pub fn finish_reason_for_job(job: &JobRecord) -> &'static str {
+    if job
+        .output
+        .as_deref()
+        .is_some_and(output_hit_generation_limit)
+        || job.graph.synthesis_status == SynthesisStatus::CompletedPartial
+    {
+        "length"
+    } else {
+        "stop"
     }
 }
 
@@ -610,11 +686,45 @@ pub fn timeout_from_env() -> Duration {
 }
 
 pub fn max_active_chat_requests_from_env() -> usize {
-    std::env::var("MUNDUSX_CHAT_MAX_ACTIVE_REQUESTS")
+    std::env::var("MUNDUSX_CHAT_MAX_ACTIVE_WEIGHT")
+        .or_else(|_| std::env::var("MUNDUSX_CHAT_MAX_ACTIVE_REQUESTS"))
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_MAX_ACTIVE_CHAT_REQUESTS)
+        .unwrap_or(DEFAULT_MAX_ACTIVE_CHAT_WEIGHT)
         .clamp(1, 64)
+}
+
+pub fn graph_admission_weight(job: &JobRecord) -> usize {
+    if !job.graph_execution_enabled || job.graph.nodes.is_empty() {
+        return 1;
+    }
+
+    let mut depths = BTreeMap::<String, usize>::new();
+    for _ in 0..job.graph.nodes.len() {
+        let mut changed = false;
+        for node in &job.graph.nodes {
+            let depth = node
+                .depends_on
+                .iter()
+                .map(|dependency| depths.get(dependency).copied().unwrap_or(0) + 1)
+                .max()
+                .unwrap_or(0);
+            if depths.get(&node.id).copied() != Some(depth) {
+                depths.insert(node.id.clone(), depth);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    let mut width_by_depth = BTreeMap::<usize, usize>::new();
+    for node in &job.graph.nodes {
+        let depth = depths.get(&node.id).copied().unwrap_or(0);
+        *width_by_depth.entry(depth).or_default() += 1;
+    }
+    width_by_depth.values().copied().max().unwrap_or(1).max(1)
 }
 
 pub fn validate_request(request: &ChatCompletionRequest) -> Result<(), String> {
@@ -722,6 +832,43 @@ mod tests {
         assert_eq!(admission.snapshot().active, 1);
         assert_eq!(admission.snapshot().queued, 0);
         drop(active);
+    }
+
+    #[test]
+    fn weighted_admission_accounts_for_graph_width_and_preserves_fifo() {
+        let admission = Arc::new(ChatAdmissionController::new(5));
+        let wide = admission
+            .try_acquire_weighted(4)
+            .unwrap()
+            .expect("wide graph admitted");
+        assert_eq!(admission.snapshot().active, 1);
+        assert_eq!(admission.snapshot().active_weight, 4);
+        assert!(admission.try_acquire_weighted(2).unwrap().is_none());
+
+        let direct = admission
+            .try_acquire_weighted(1)
+            .unwrap()
+            .expect("one remaining unit admits direct work");
+        assert_eq!(admission.snapshot().active_weight, 5);
+        drop(direct);
+
+        let waiting_admission = Arc::clone(&admission);
+        let waiter = thread::spawn(move || {
+            waiting_admission
+                .acquire_weighted(2, || Ok(()))
+                .expect("queued graph admitted")
+        });
+        for _ in 0..100 {
+            if admission.snapshot().queued == 1 {
+                break;
+            }
+            thread::sleep(Duration::from_millis(2));
+        }
+        assert_eq!(admission.snapshot().queued_weight, 2);
+        drop(wide);
+        let queued = waiter.join().unwrap();
+        assert_eq!(admission.snapshot().active_weight, 2);
+        drop(queued);
     }
 
     #[test]
