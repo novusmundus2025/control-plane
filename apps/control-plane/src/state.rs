@@ -7,11 +7,11 @@ use crate::contracts::{
     JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest, JobResultRecord,
     JobResultVerificationStatus, JobSchedulingRequirements, JobStatus, ModelCapability,
     NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeRole,
-    NodeTrustRecord, OrchestrationTimelineEvent, PlannedJob, PrivacyLevel, RequestClassification,
-    QualityGateCheck, QualityGateReport, QualityGateStatus, RequestComplexity, RequestTaskType,
-    ResultArtifact, ResultArtifactKind, RoutingMode, RuntimeMode, SchedulerDecision,
-    StepWorkloadRequirements, SynthesisManifest, SynthesisStatus, ToolRewardRequest,
-    ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
+    NodeTrustRecord, OrchestrationTimelineEvent, PlannedJob, PrivacyLevel, QualityGateCheck,
+    QualityGateReport, QualityGateStatus, RequestClassification, RequestComplexity,
+    RequestTaskType, ResultArtifact, ResultArtifactKind, RoutingMode, RuntimeMode,
+    SchedulerDecision, StepWorkloadRequirements, SynthesisManifest, SynthesisStatus,
+    ToolRewardRequest, ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -2363,12 +2363,17 @@ impl ControlPlaneState {
                         && code_quality_gate_applies(job)
                     {
                         output.as_deref().map(|output| {
-                            code_quality_gate_report(
+                            let mut report = code_quality_gate_report(
                                 &job.prompt,
                                 output,
                                 job.max_tokens.unwrap_or(2_048),
                                 job.quality_gate.repair_attempts,
-                            )
+                            );
+                            merge_code_verification_evidence(
+                                &mut report,
+                                completion.verification.as_ref(),
+                            );
+                            report
                         })
                     } else {
                         None
@@ -2378,8 +2383,7 @@ impl ControlPlaneState {
                         .map(failed_quality_checks)
                         .unwrap_or_default();
                     if !failed_checks.is_empty()
-                        && job.quality_gate.repair_attempts
-                            < job.quality_gate.max_repair_attempts
+                        && job.quality_gate.repair_attempts < job.quality_gate.max_repair_attempts
                     {
                         let mut report = quality_report.expect("failed quality report");
                         report.repair_attempts = report.repair_attempts.saturating_add(1);
@@ -3685,14 +3689,19 @@ fn complete_graph_execution_job(
                                 graph_node.effective_max_tokens.unwrap_or(2_048),
                             )
                         });
-                    let final_quality_report = (is_final_synthesis && quality_gate_enabled)
-                        .then(|| {
-                            code_quality_gate_report(
+                    let final_quality_report =
+                        (is_final_synthesis && quality_gate_enabled).then(|| {
+                            let mut report = code_quality_gate_report(
                                 &job.prompt,
                                 accepted_output.as_deref().unwrap_or_default(),
                                 graph_node.effective_max_tokens.unwrap_or(2_048),
                                 graph_node.attempt_count.saturating_sub(1) as u8,
-                            )
+                            );
+                            merge_code_verification_evidence(
+                                &mut report,
+                                completion.verification.as_ref(),
+                            );
+                            report
                         });
                     let final_quality_failures = final_quality_report
                         .as_ref()
@@ -4102,7 +4111,10 @@ fn code_quality_gate_report(
         .collect::<Vec<_>>()
         .join("\n");
     let source_lower = source.to_ascii_lowercase();
-    let compact_source = source.chars().filter(|value| !value.is_whitespace()).collect::<String>();
+    let compact_source = source
+        .chars()
+        .filter(|value| !value.is_whitespace())
+        .collect::<String>();
     let compact_source_lower = compact_source.to_ascii_lowercase();
     let prompt_lower = prompt.to_ascii_lowercase();
 
@@ -4121,9 +4133,7 @@ fn code_quality_gate_report(
             "java_public_class_filename",
             true,
             source.contains(&expected) && public_class_count == 1,
-            format!(
-                "Expected exactly one public class `{class_name}` matching `{filename}`."
-            ),
+            format!("Expected exactly one public class `{class_name}` matching `{filename}`."),
         );
     }
 
@@ -4185,15 +4195,53 @@ fn code_quality_gate_report(
     }
 
     let component_checks = [
-        ("spring_entity", "entity", ["@entity", "jakarta.persistence.entity"].as_slice()),
-        ("spring_repository", "repository", ["repository", "jparepository"].as_slice()),
-        ("spring_service", "service", ["@service", "class vehicleservice"].as_slice()),
-        ("spring_rest_controller", "rest controller", ["@restcontroller"].as_slice()),
-        ("spring_exception_handling", "exception handling", ["@controlleradvice", "@exceptionhandler"].as_slice()),
+        (
+            "spring_entity",
+            "entity",
+            ["@entity", "jakarta.persistence.entity"].as_slice(),
+        ),
+        (
+            "spring_repository",
+            "repository",
+            ["repository", "jparepository"].as_slice(),
+        ),
+        (
+            "spring_service",
+            "service",
+            ["@service", "class vehicleservice"].as_slice(),
+        ),
+        (
+            "spring_rest_controller",
+            "rest controller",
+            ["@restcontroller"].as_slice(),
+        ),
+        (
+            "spring_exception_handling",
+            "exception handling",
+            ["@controlleradvice", "@exceptionhandler"].as_slice(),
+        ),
         ("readme", "readme", ["readme.md", "# readme"].as_slice()),
-        ("javafx_client", "javafx", ["javafx.", "extends application"].as_slice()),
-        ("database_migration", "database migration", ["v1__", "db/migration", "liquibase"].as_slice()),
-        ("docker_setup", "docker", ["dockerfile", "from eclipse", "from openjdk", "from amazoncorretto"].as_slice()),
+        (
+            "javafx_client",
+            "javafx",
+            ["javafx.", "extends application"].as_slice(),
+        ),
+        (
+            "database_migration",
+            "database migration",
+            ["v1__", "db/migration", "liquibase"].as_slice(),
+        ),
+        (
+            "docker_setup",
+            "docker",
+            [
+                "dockerfile",
+                "from eclipse",
+                "from openjdk",
+                "from amazoncorretto",
+            ]
+            .as_slice(),
+        ),
     ];
     for (check_id, requested_phrase, evidence) in component_checks {
         if prompt_lower.contains(requested_phrase) {
@@ -4230,7 +4278,8 @@ fn code_quality_gate_report(
             true,
             source_lower.contains("securityfilterchain")
                 && source_lower.contains("authorizehttprequests"),
-            "Authentication and authorization require concrete Spring Security configuration.".to_string(),
+            "Authentication and authorization require concrete Spring Security configuration."
+                .to_string(),
         );
     }
     if prompt_lower.contains("unit and integration tests") || prompt_lower.contains("with tests") {
@@ -4292,7 +4341,15 @@ fn quality_code_structure_failure_reason(
             .to_ascii_lowercase();
         saw_source_fence |= !matches!(
             language.as_str(),
-            "" | "markdown" | "md" | "json" | "jsonc" | "text" | "plaintext" | "bash" | "sh" | "shell"
+            "" | "markdown"
+                | "md"
+                | "json"
+                | "jsonc"
+                | "text"
+                | "plaintext"
+                | "bash"
+                | "sh"
+                | "shell"
         );
         fence_open = true;
     }
@@ -4317,6 +4374,46 @@ fn failed_quality_checks(report: &QualityGateReport) -> Vec<String> {
         .filter(|item| item.mandatory && !item.passed)
         .map(|item| format!("{}: {}", item.check_id, item.detail))
         .collect()
+}
+
+fn merge_code_verification_evidence(
+    report: &mut QualityGateReport,
+    evidence: Option<&crate::contracts::CodeVerificationEvidence>,
+) {
+    let Some(evidence) = evidence else {
+        return;
+    };
+    report
+        .checks
+        .retain(|check| check.check_id != "sandbox_execution");
+    report.execution_verified = evidence.execution_verified;
+    for check in &evidence.checks {
+        let mandatory = match check.check_id.as_str() {
+            "java_compile" | "java_runtime" => true,
+            "runtime_output_contract" => evidence.status == "failed",
+            _ => false,
+        };
+        report.checks.push(QualityGateCheck {
+            check_id: check.check_id.clone(),
+            mandatory,
+            passed: check.passed,
+            detail: format!("{} ({})", check.detail, evidence.verifier),
+        });
+    }
+    if report
+        .checks
+        .iter()
+        .any(|check| check.mandatory && !check.passed)
+    {
+        report.status = QualityGateStatus::CompletedPartial;
+    } else if report.status == QualityGateStatus::Passed && !evidence.execution_verified {
+        report.checks.push(QualityGateCheck {
+            check_id: "sandbox_execution".to_string(),
+            mandatory: false,
+            passed: false,
+            detail: "Contributor compilation/runtime passed, but this request has no deterministic semantic oracle.".to_string(),
+        });
+    }
 }
 
 fn normalize_compact_code_output(output: &str, source_language: &str) -> String {
@@ -8968,6 +9065,7 @@ mod tests {
                     ),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -8992,6 +9090,7 @@ mod tests {
                     output: Some("[truncated: hit the generation limit] still partial".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "5".to_string(),
             )
@@ -9040,6 +9139,7 @@ mod tests {
                     ),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -9187,6 +9287,83 @@ mod tests {
         assert!(failed_quality_checks(&report).is_empty());
     }
 
+    fn java_verification_evidence(
+        status: &str,
+        execution_verified: bool,
+        compiler_passed: bool,
+        runtime_passed: bool,
+        semantic_passed: bool,
+    ) -> crate::contracts::CodeVerificationEvidence {
+        crate::contracts::CodeVerificationEvidence {
+            verifier: "rootless-podman-java-v1".to_string(),
+            language: "java".to_string(),
+            status: status.to_string(),
+            execution_verified,
+            compiler_passed,
+            runtime_passed,
+            semantic_passed,
+            duration_ms: 42,
+            checks: vec![
+                crate::contracts::CodeVerificationCheck {
+                    check_id: "java_compile".to_string(),
+                    passed: compiler_passed,
+                    detail: "compile check".to_string(),
+                },
+                crate::contracts::CodeVerificationCheck {
+                    check_id: "java_runtime".to_string(),
+                    passed: runtime_passed,
+                    detail: "runtime check".to_string(),
+                },
+                crate::contracts::CodeVerificationCheck {
+                    check_id: "runtime_output_contract".to_string(),
+                    passed: semantic_passed,
+                    detail: "semantic check".to_string(),
+                },
+            ],
+            diagnostics: None,
+        }
+    }
+
+    #[test]
+    fn contributor_verification_marks_deterministic_code_execution_verified() {
+        let mut report = code_quality_gate_report(
+            fibonacci_quality_prompt(),
+            &fibonacci_answer(true),
+            2_048,
+            0,
+        );
+        let evidence = java_verification_evidence("passed", true, true, true, true);
+
+        merge_code_verification_evidence(&mut report, Some(&evidence));
+
+        assert_eq!(report.status, QualityGateStatus::Passed);
+        assert!(report.execution_verified);
+        assert!(failed_quality_checks(&report).is_empty());
+        assert!(!report
+            .checks
+            .iter()
+            .any(|check| check.check_id == "sandbox_execution"));
+    }
+
+    #[test]
+    fn contributor_compile_failure_is_mandatory_and_repairable() {
+        let mut report = code_quality_gate_report(
+            fibonacci_quality_prompt(),
+            &fibonacci_answer(true),
+            2_048,
+            0,
+        );
+        let evidence = java_verification_evidence("failed", false, false, false, false);
+
+        merge_code_verification_evidence(&mut report, Some(&evidence));
+
+        assert_eq!(report.status, QualityGateStatus::CompletedPartial);
+        assert!(!report.execution_verified);
+        assert!(failed_quality_checks(&report)
+            .iter()
+            .any(|failure| failure.starts_with("java_compile:")));
+    }
+
     #[test]
     fn direct_code_quality_gate_repairs_once_then_marks_partial() {
         let mut state = ready_state();
@@ -9209,6 +9386,7 @@ mod tests {
                     output: Some(fibonacci_answer(false)),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -9222,9 +9400,7 @@ mod tests {
             .claim_job("node-1", "4".to_string())
             .job
             .expect("quality retry claim");
-        assert!(retry_claim
-            .prompt
-            .contains("exact_n_value_output_format"));
+        assert!(retry_claim.prompt.contains("exact_n_value_output_format"));
 
         let partial = state
             .complete_job(
@@ -9237,6 +9413,7 @@ mod tests {
                     output: Some(fibonacci_answer(false)),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "5".to_string(),
             )
@@ -9247,7 +9424,10 @@ mod tests {
             QualityGateStatus::CompletedPartial
         );
         assert!(partial.output.is_some());
-        assert_eq!(crate::chat_gateway::finish_reason_for_job(&partial), "length");
+        assert_eq!(
+            crate::chat_gateway::finish_reason_for_job(&partial),
+            "length"
+        );
         assert!(partial
             .error
             .as_deref()
@@ -9275,6 +9455,7 @@ mod tests {
                     output: Some(fibonacci_answer(false)),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -9295,6 +9476,9 @@ mod tests {
                     output: Some(fibonacci_answer(true)),
                     error: None,
                     latency_ms: Some(10),
+                    verification: Some(java_verification_evidence(
+                        "passed", true, true, true, true,
+                    )),
                 },
                 "5".to_string(),
             )
@@ -9302,10 +9486,13 @@ mod tests {
         assert_eq!(completed.status, JobStatus::Completed);
         assert_eq!(completed.quality_gate.status, QualityGateStatus::Passed);
         assert_eq!(completed.quality_gate.repair_attempts, 1);
-        assert_eq!(crate::chat_gateway::finish_reason_for_job(&completed), "stop");
+        assert_eq!(
+            crate::chat_gateway::finish_reason_for_job(&completed),
+            "stop"
+        );
         assert_eq!(
             crate::chat_gateway::semantic_status_for_job(&completed),
-            "structurally_valid_unverified"
+            "completed"
         );
         assert_eq!(completed.error, None);
     }
@@ -9684,6 +9871,7 @@ mod tests {
                     output: Some("```javascript\nfunction createCustomer() {".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -10126,6 +10314,7 @@ mod tests {
                     ),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -10160,6 +10349,7 @@ mod tests {
                     output: Some("mlx-lm mode=persistent-warm-mlx; model=mlx-community/Qwen2.5-3B-Instruct-4bit; max_tokens=96; response=The capital of the Philippines is Manila. [end of text]".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -10194,6 +10384,7 @@ mod tests {
                     output: Some("contributed-cluster kind=vllm; endpoint=http://127.0.0.1:8000; model=Qwen/Qwen3-Coder-Next-FP8; max_tokens=3072; temperature=0.2; top_p=0.9; seed=42; response=Here's a clean Java program. [end of text]".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -10230,6 +10421,7 @@ mod tests {
                     output: Some("contributed-cluster kind=vllm; endpoint=http://127.0.0.1:8000; model=Qwen/Qwen3-Coder-Next-FP8; max_tokens=2048; temperature=0.2; top_p=0.9; seed=42; response=Tesla was founded in 2003. [end of text]".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -10282,6 +10474,7 @@ mod tests {
                     output: Some(source.to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -10335,6 +10528,7 @@ mod tests {
                     output: Some("single answer".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -10389,6 +10583,7 @@ mod tests {
                     output: Some("scope complete".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -10481,6 +10676,7 @@ mod tests {
                     output: Some("origins complete".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -10708,6 +10904,7 @@ mod tests {
                     output: Some("origins complete".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -10739,6 +10936,7 @@ mod tests {
                             output: Some((*section_output).to_string()),
                             error: None,
                             latency_ms: Some(10),
+                            verification: None,
                         },
                         (index + 8).to_string(),
                     )
@@ -10775,6 +10973,7 @@ mod tests {
                     output: Some("Final synthesized answer.".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "13".to_string(),
             )
@@ -10816,6 +11015,7 @@ mod tests {
                     output: Some("origins output".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -10845,6 +11045,7 @@ mod tests {
                         output: Some((*section_output).to_string()),
                         error: None,
                         latency_ms: Some(10),
+                        verification: None,
                     },
                     (index + 8).to_string(),
                 )
@@ -10901,6 +11102,7 @@ mod tests {
                     output: Some("contract complete".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -10927,6 +11129,7 @@ mod tests {
                     output: Some("types complete".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "6".to_string(),
             )
@@ -10991,6 +11194,7 @@ mod tests {
                     output: None,
                     error: Some("local runtime failed".to_string()),
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -11076,6 +11280,7 @@ mod tests {
                             .to_string(),
                     ),
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -11450,6 +11655,7 @@ mod tests {
                         output: None,
                         error: Some(format!("attempt {} failed", attempt + 1)),
                         latency_ms: Some(10),
+                        verification: None,
                     },
                     (attempt + 6).to_string(),
                 )
@@ -11531,6 +11737,7 @@ mod tests {
                     output: Some("node one output".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -11553,6 +11760,7 @@ mod tests {
                     output: Some("node two output".to_string()),
                     error: None,
                     latency_ms: Some(25),
+                    verification: None,
                 },
                 "5".to_string(),
             )
@@ -11725,6 +11933,7 @@ mod tests {
                     output: Some("first chunk output".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -11744,6 +11953,7 @@ mod tests {
                     output: Some("second chunk output".to_string()),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "5".to_string(),
             )
@@ -11825,6 +12035,7 @@ mod tests {
                     output: Some("x".repeat(835)),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -12012,6 +12223,7 @@ mod tests {
                     ),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -12071,6 +12283,7 @@ mod tests {
                         output: Some(noisy_output.clone()),
                         error: None,
                         latency_ms: Some(10),
+                        verification: None,
                     },
                     updated_at.to_string(),
                 )
@@ -12158,6 +12371,7 @@ mod tests {
                     output: None,
                     error: Some("llama-cli exited 1".to_string()),
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "7".to_string(),
             )
@@ -12214,6 +12428,7 @@ mod tests {
                         output: Some("section complete".to_string()),
                         error: None,
                         latency_ms: Some(10),
+                        verification: None,
                     },
                     updated_at.to_string(),
                 )
@@ -12317,6 +12532,7 @@ mod tests {
                         output: Some(format!("llama.cpp mode=cuda; response={output}")),
                         error: None,
                         latency_ms: Some(10),
+                        verification: None,
                     },
                     updated_at.to_string(),
                 )
@@ -12343,6 +12559,7 @@ mod tests {
                     output: None,
                     error: Some("llama-cli exited 1".to_string()),
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "7".to_string(),
             )
@@ -12441,6 +12658,7 @@ mod tests {
                     output: Some(incomplete),
                     error: None,
                     latency_ms: Some(10),
+                    verification: None,
                 },
                 "3".to_string(),
             )
@@ -12830,6 +13048,7 @@ mod tests {
                     output: Some("done".to_string()),
                     error: None,
                     latency_ms: Some(125),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -13177,6 +13396,7 @@ mod tests {
                     output: Some("done".to_string()),
                     error: None,
                     latency_ms: Some(125),
+                    verification: None,
                 },
                 "4".to_string(),
             )
@@ -13224,6 +13444,7 @@ mod tests {
                     output: None,
                     error: Some("runtime failed".to_string()),
                     latency_ms: Some(75),
+                    verification: None,
                 },
                 "7".to_string(),
             )
@@ -14752,6 +14973,7 @@ mod tests {
                 output: Some("done".to_string()),
                 error: None,
                 latency_ms: Some(100),
+                verification: None,
             },
             "6".to_string(),
         );
@@ -14796,6 +15018,7 @@ mod tests {
                     output: Some("done".to_string()),
                     error: None,
                     latency_ms: Some(125),
+                    verification: None,
                 },
                 "4".to_string(),
             )
