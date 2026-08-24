@@ -2271,9 +2271,31 @@ export function page(config = configFromEnv()) {
       const decoder = new TextDecoder();
       let buffer = "";
       let output = "";
-      let completionId = null;
+      let completionId = response.headers.get("x-mundusx-completion-id") || null;
       let finishReason = null;
       let sawDone = false;
+      const firstTokenDeadline = Date.now() + 60000;
+
+      const readStreamChunk = async () => {
+        if (output) return reader.read();
+        const remaining = firstTokenDeadline - Date.now();
+        if (remaining <= 0) {
+          throw new Error("MundusX did not produce a first token within 60 seconds");
+        }
+        let timeoutId;
+        try {
+          return await Promise.race([
+            reader.read(),
+            new Promise((_, reject) => {
+              timeoutId = window.setTimeout(() => {
+                reject(new Error("MundusX did not produce a first token within 60 seconds"));
+              }, remaining);
+            }),
+          ]);
+        } finally {
+          window.clearTimeout(timeoutId);
+        }
+      };
 
       const recoverCompletedJob = async (streamError) => {
         if (!completionId) throw streamError;
@@ -2308,6 +2330,9 @@ export function page(config = configFromEnv()) {
             if (!["completed", "failed"].includes(payload.status)) {
               streamState.payload = payload;
               renderConversationStreamState(streamState);
+              if (Date.now() >= recoveryDeadline) {
+                throw new Error("MundusX job did not complete during stream recovery");
+              }
               await sleep(1500);
             }
           }
@@ -2352,7 +2377,7 @@ export function page(config = configFromEnv()) {
 
       try {
         while (true) {
-          const next = await reader.read();
+          const next = await readStreamChunk();
           if (next.done) break;
           buffer += decoder.decode(next.value, { stream: true });
           const events = buffer.split(/\\r?\\n\\r?\\n/);
@@ -4260,7 +4285,8 @@ export async function relayControlPlaneOpenAiStream(
   }
 
   const upstreamMode = upstream.headers?.get?.("x-mundusx-stream-mode") || "live-delta";
-  startOpenAiStream(response, upstreamMode);
+  const upstreamCompletionId = upstream.headers?.get?.("x-mundusx-completion-id") || null;
+  startOpenAiStream(response, upstreamMode, upstreamCompletionId);
   const reader = upstream.body.getReader();
   const decoder = new TextDecoder();
   let parseBuffer = "";
@@ -10108,7 +10134,7 @@ function sendOpenAiStream(response, completion) {
   response.end(openAiSseBody(completion));
 }
 
-function startOpenAiStream(response, mode) {
+function startOpenAiStream(response, mode, completionId = null) {
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
@@ -10117,7 +10143,9 @@ function startOpenAiStream(response, mode) {
     "X-Accel-Buffering": "no",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Expose-Headers": "X-MundusX-Stream-Mode, X-MundusX-Completion-Id",
     "X-MundusX-Stream-Mode": mode,
+    ...(completionId ? { "X-MundusX-Completion-Id": completionId } : {}),
   });
   response.flushHeaders?.();
 }
