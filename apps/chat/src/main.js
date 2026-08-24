@@ -2226,6 +2226,7 @@ export function page(config = configFromEnv()) {
         error: null,
       };
       conversationStreamStates.set(conversationId, streamState);
+      renderConversationStreamState(streamState);
       const historyMessages = readCachedConversation(conversationId)
         .slice(0, -1)
         .map((turn) => ({ role: turn.role, content: turn.content }))
@@ -2253,6 +2254,8 @@ export function page(config = configFromEnv()) {
       if (!response.body?.getReader) {
         throw new Error("This browser cannot read the MundusX response stream");
       }
+      streamState.status = "waiting";
+      renderConversationStreamState(streamState);
 
       const reader = response.body.getReader();
       const decoder = new TextDecoder();
@@ -2405,6 +2408,17 @@ export function page(config = configFromEnv()) {
       }
       if (state.status === "recovering" && state.payload) {
         renderPendingJob(node, state.payload);
+        return;
+      }
+      if (state.status === "waiting") {
+        const body = node.querySelector(".message-body");
+        body.textContent = "Connected to MundusX...";
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = "Streaming - waiting for first token";
+        body.appendChild(meta);
+        setStatus("working", "Streaming");
+        scrollChatToLatest();
         return;
       }
       if (state.output) {
