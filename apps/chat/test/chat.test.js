@@ -151,6 +151,17 @@ test("renders a usable chat page", () => {
   assert.match(html, /createCodeAction\("Copy"/);
   assert.match(html, /function normalizeAssistantDisplayText/);
   assert.match(html, /function appendInlineMarkdown/);
+  assert.match(html, /function isMarkdownTableStart/);
+  assert.match(html, /function createMarkdownTable/);
+  assert.match(html, /className = "markdown-table-wrap"/);
+  assert.match(html, /className = "markdown-table"/);
+  assert.match(html, /aria-label", "Scrollable comparison table"/);
+  assert.match(html, /document\.createElement\("h" \+ heading\[1\]\.length\)/);
+  assert.match(html, /document\.createElement\("hr"\)/);
+  assert.match(html, /document\.createElement\("blockquote"\)/);
+  assert.match(html, /node\.rel = "noopener noreferrer"/);
+  assert.match(html, /\.markdown-table-wrap \{/);
+  assert.match(html, /overflow-x: auto/);
   assert.match(html, /function formatCodeForDisplay/);
   assert.match(html, /function shouldShowSourceSections/);
   assert.match(html, /function shouldOpenSourceSections/);

@@ -886,6 +886,8 @@ export function page(config = configFromEnv()) {
     .message.assistant .message-body {
       width: 100%;
       max-width: 100%;
+      white-space: normal;
+      font-size: 15px;
     }
     .message.error .message-body {
       color: #b3231f;
@@ -938,6 +940,80 @@ export function page(config = configFromEnv()) {
     }
     .message-body strong {
       font-weight: 800;
+    }
+    .message-body h1,
+    .message-body h2,
+    .message-body h3,
+    .message-body h4,
+    .message-body h5,
+    .message-body h6 {
+      margin: 24px 0 10px;
+      color: var(--text);
+      font-weight: 800;
+      line-height: 1.3;
+      letter-spacing: -0.015em;
+    }
+    .message-body h1:first-child,
+    .message-body h2:first-child,
+    .message-body h3:first-child { margin-top: 0; }
+    .message-body h1 { font-size: 1.45rem; }
+    .message-body h2 { font-size: 1.28rem; }
+    .message-body h3 { font-size: 1.12rem; }
+    .message-body h4,
+    .message-body h5,
+    .message-body h6 { font-size: 1rem; }
+    .message-body hr {
+      border: 0;
+      border-top: 1px solid var(--line);
+      margin: 22px 0;
+    }
+    .message-body blockquote {
+      margin: 14px 0;
+      padding: 2px 0 2px 14px;
+      border-left: 3px solid rgba(124, 108, 246, 0.45);
+      color: var(--muted);
+    }
+    .message-body a {
+      color: var(--purple);
+      text-decoration: underline;
+      text-decoration-thickness: 1px;
+      text-underline-offset: 3px;
+    }
+    .markdown-table-wrap {
+      width: 100%;
+      max-width: 100%;
+      margin: 14px 0 20px;
+      overflow-x: auto;
+      border-bottom: 1px solid var(--line);
+      scrollbar-width: thin;
+    }
+    .markdown-table {
+      width: 100%;
+      min-width: 560px;
+      border-collapse: collapse;
+      table-layout: auto;
+      font-size: 0.94em;
+      line-height: 1.45;
+    }
+    .markdown-table th,
+    .markdown-table td {
+      padding: 11px 14px;
+      border-top: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+      overflow-wrap: normal;
+      word-break: normal;
+    }
+    .markdown-table thead th {
+      border-top: 0;
+      color: var(--text);
+      font-size: 0.82em;
+      font-weight: 800;
+      letter-spacing: 0.035em;
+      text-transform: uppercase;
+    }
+    .markdown-table tbody tr:hover {
+      background: rgba(124, 108, 246, 0.035);
     }
     .message-body code:not(.code-block code) {
       background: rgba(0,0,0,0.06);
@@ -1463,6 +1539,9 @@ export function page(config = configFromEnv()) {
       .conversation { padding: 24px 14px 20px; }
       main.is-empty-chat { grid-template-rows: 58px minmax(0, 0.9fr) minmax(0, 1.1fr); }
       form { padding: 12px 14px 18px; }
+      .message.assistant .message-body { font-size: 14.5px; }
+      .markdown-table th,
+      .markdown-table td { padding: 9px 11px; }
     }
   </style>
 </head>
@@ -2616,17 +2695,81 @@ export function page(config = configFromEnv()) {
     }
 
     function appendTextParagraphs(container, text) {
-      const blocks = normalizeAssistantDisplayText(text).split(/\\n{2,}/).filter(Boolean);
-      for (const block of blocks) {
-        const list = createListBlock(block);
-        if (list) {
-          container.appendChild(list);
+      const lines = normalizeAssistantDisplayText(text).split("\\n");
+      let index = 0;
+      let paragraph = [];
+      const flushParagraph = () => {
+        const value = paragraph.join(" ").trim();
+        paragraph = [];
+        if (!value) return;
+        const node = document.createElement("p");
+        appendInlineMarkdown(node, value);
+        container.appendChild(node);
+      };
+      while (index < lines.length) {
+        const line = lines[index];
+        const trimmed = line.trim();
+        if (!trimmed) {
+          flushParagraph();
+          index += 1;
           continue;
         }
-        const node = document.createElement("p");
-        appendInlineMarkdown(node, block.trim());
-        container.appendChild(node);
+        if (isMarkdownTableStart(lines, index)) {
+          flushParagraph();
+          const tableLines = [line, lines[index + 1]];
+          index += 2;
+          while (index < lines.length && lines[index].includes("|") && lines[index].trim()) {
+            tableLines.push(lines[index]);
+            index += 1;
+          }
+          container.appendChild(createMarkdownTable(tableLines));
+          continue;
+        }
+        const heading = trimmed.match(/^(#{1,6})\\s+(.+)$/);
+        if (heading) {
+          flushParagraph();
+          const node = document.createElement("h" + heading[1].length);
+          appendInlineMarkdown(node, heading[2]);
+          container.appendChild(node);
+          index += 1;
+          continue;
+        }
+        if (/^([-*_])(?:\\s*\\1){2,}$/.test(trimmed)) {
+          flushParagraph();
+          container.appendChild(document.createElement("hr"));
+          index += 1;
+          continue;
+        }
+        if (/^>\\s?/.test(trimmed)) {
+          flushParagraph();
+          const quoteLines = [];
+          while (index < lines.length && /^>\\s?/.test(lines[index].trim())) {
+            quoteLines.push(lines[index].trim().replace(/^>\\s?/, ""));
+            index += 1;
+          }
+          const quote = document.createElement("blockquote");
+          appendInlineMarkdown(quote, quoteLines.join(" "));
+          container.appendChild(quote);
+          continue;
+        }
+        if (/^(?:\\d+\\.|[-*+])\\s+/.test(trimmed)) {
+          flushParagraph();
+          const listLines = [];
+          const ordered = /^\\d+\\.\\s+/.test(trimmed);
+          while (index < lines.length) {
+            const candidate = lines[index].trim();
+            const matches = ordered ? /^\\d+\\.\\s+/.test(candidate) : /^[-*+]\\s+/.test(candidate);
+            if (!matches) break;
+            listLines.push(candidate);
+            index += 1;
+          }
+          container.appendChild(createListBlock(listLines.join("\\n")));
+          continue;
+        }
+        paragraph.push(trimmed);
+        index += 1;
       }
+      flushParagraph();
     }
 
     function normalizeAssistantDisplayText(text) {
@@ -2640,31 +2783,95 @@ export function page(config = configFromEnv()) {
 
     function createListBlock(block) {
       const lines = String(block || "").split("\\n").map((line) => line.trim()).filter(Boolean);
-      if (lines.length < 2) return null;
       const ordered = lines.every((line) => /^\\d+\\.\\s+/.test(line));
-      const unordered = lines.every((line) => /^[-*]\\s+/.test(line));
+      const unordered = lines.every((line) => /^[-*+]\\s+/.test(line));
       if (!ordered && !unordered) return null;
       const list = document.createElement(ordered ? "ol" : "ul");
       for (const line of lines) {
         const item = document.createElement("li");
-        appendInlineMarkdown(item, line.replace(ordered ? /^\\d+\\.\\s+/ : /^[-*]\\s+/, ""));
+        appendInlineMarkdown(item, line.replace(ordered ? /^\\d+\\.\\s+/ : /^[-*+]\\s+/, ""));
         list.appendChild(item);
       }
       return list;
     }
 
+    function splitMarkdownTableRow(line) {
+      let value = String(line || "").trim();
+      if (value.startsWith("|")) value = value.slice(1);
+      if (value.endsWith("|")) value = value.slice(0, -1);
+      return value.split("|").map((cell) => cell.trim());
+    }
+
+    function isMarkdownTableStart(lines, index) {
+      if (index + 1 >= lines.length || !lines[index].includes("|")) return false;
+      const headers = splitMarkdownTableRow(lines[index]);
+      const separators = splitMarkdownTableRow(lines[index + 1]);
+      return headers.length > 1
+        && headers.length === separators.length
+        && separators.every((cell) => /^:?-{3,}:?$/.test(cell));
+    }
+
+    function createMarkdownTable(lines) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "markdown-table-wrap";
+      wrapper.tabIndex = 0;
+      wrapper.setAttribute("role", "region");
+      wrapper.setAttribute("aria-label", "Scrollable comparison table");
+      const table = document.createElement("table");
+      table.className = "markdown-table";
+      const head = document.createElement("thead");
+      const headRow = document.createElement("tr");
+      for (const cell of splitMarkdownTableRow(lines[0])) {
+        const node = document.createElement("th");
+        node.scope = "col";
+        appendInlineMarkdown(node, cell);
+        headRow.appendChild(node);
+      }
+      head.appendChild(headRow);
+      table.appendChild(head);
+      const body = document.createElement("tbody");
+      for (const line of lines.slice(2)) {
+        const row = document.createElement("tr");
+        for (const cell of splitMarkdownTableRow(line)) {
+          const node = document.createElement("td");
+          appendInlineMarkdown(node, cell);
+          row.appendChild(node);
+        }
+        body.appendChild(row);
+      }
+      table.appendChild(body);
+      wrapper.appendChild(table);
+      return wrapper;
+    }
+
     function appendInlineMarkdown(parent, text) {
       const value = String(text || "");
       const tick = String.fromCharCode(96);
-      const pattern = new RegExp("(\\\\*\\\\*[^*]+\\\\*\\\\*|" + tick + "[^" + tick + "]+" + tick + ")", "g");
+      const pattern = new RegExp("(\\\\[[^\\\\]]+\\\\]\\\\(https?:\\\\/\\\\/[^\\\\s)]+\\\\)|\\\\*\\\\*[^*]+\\\\*\\\\*|__[^_]+__|(?<!\\\\*)\\\\*[^*]+\\\\*(?!\\\\*)|(?<!_)_[^_]+_(?!_)|" + tick + "[^" + tick + "]+" + tick + ")", "g");
       let index = 0;
       for (const match of value.matchAll(pattern)) {
         if (match.index > index) {
           parent.appendChild(document.createTextNode(value.slice(index, match.index)));
         }
         const token = match[0];
-        const node = document.createElement(token.startsWith("**") ? "strong" : "code");
-        node.textContent = token.startsWith("**") ? token.slice(2, -2) : token.slice(1, -1);
+        let node;
+        if (token.startsWith("[")) {
+          const link = token.match(/^\\[([^\\]]+)\\]\\((https?:\\/\\/[^\\s)]+)\\)$/);
+          node = document.createElement("a");
+          node.textContent = link[1];
+          node.href = link[2];
+          node.target = "_blank";
+          node.rel = "noopener noreferrer";
+        } else if (token.startsWith("**") || token.startsWith("__")) {
+          node = document.createElement("strong");
+          node.textContent = token.slice(2, -2);
+        } else if (token.startsWith(tick)) {
+          node = document.createElement("code");
+          node.textContent = token.slice(1, -1);
+        } else {
+          node = document.createElement("em");
+          node.textContent = token.slice(1, -1);
+        }
         parent.appendChild(node);
         index = match.index + token.length;
       }
