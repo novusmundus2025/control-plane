@@ -221,6 +221,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /loadingHistoryConversationId === state\.conversationId/);
   assert.match(html, /state\.node\?\.isConnected/);
   assert.match(html, /conversationStreamStates\.get\(state\.conversationId\) === state/);
+  assert.match(html, /streamState\.status = "waiting"/);
+  assert.match(html, /Streaming - waiting for first token/);
   assert.match(html, /\/api\/chat\/stream/);
   assert.match(html, /response\.body\.getReader/);
   assert.match(html, /renderStreamingJob/);
