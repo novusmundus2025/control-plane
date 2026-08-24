@@ -145,8 +145,8 @@ export function normalizeAssistantDisplayText(text) {
     .replace(/\u00a0/g, " ")
     .replace(/(?:^|[^\S\n]+)---[^\S\n]+(?=#{1,6}(?:[^\S\n]+|(?=[^#\s])))/g, "\n\n---\n\n")
     .replace(/(^|[^\S\n]+)(#{1,6})(?:[^\S\n]+|(?=[^#\s]))(?=\S)/gm, "$1\n\n$2 ")
-    .replace(/[^\S\n]+(\d+)\.[^\S\n]+(?=\*\*|[A-Z0-9])/g, "\n$1. ")
-    .replace(/[^\S\n]+([-*+])[^\S\n]+(?=\*\*|[A-Z0-9])/g, "\n$1 ")
+    .replace(/(?<=[^\s*])[^\S\n]+(\d+)\.[^\S\n]+(?=\*\*|[A-Z0-9])/g, "\n$1. ")
+    .replace(/(?<=[^\s*])[^\S\n]+([-*+])[^\S\n]+(?=\*\*|[A-Z0-9])/g, "\n$1 ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 }
@@ -949,6 +949,11 @@ export function page(config = configFromEnv()) {
     .message-body li {
       margin: 8px 0;
       padding-left: 4px;
+    }
+    .message-body li > ol,
+    .message-body li > ul {
+      margin: 6px 0 4px;
+      padding-left: 22px;
     }
     .message-body strong {
       font-weight: 800;
@@ -2907,11 +2912,16 @@ export function page(config = configFromEnv()) {
           flushParagraph();
           const listLines = [];
           const ordered = /^\\d+\\.\\s+/.test(trimmed);
+          const initialIndent = lines[index].match(/^\\s*/)[0].replace(/\\t/g, "  ").length;
           while (index < lines.length) {
+            const rawLine = lines[index];
             const candidate = lines[index].trim();
-            const matches = ordered ? /^\\d+\\.\\s+/.test(candidate) : /^[-*+]\\s+/.test(candidate);
-            if (!matches) break;
-            listLines.push(candidate);
+            const marker = candidate.match(/^(\\d+\\.|[-*+])\\s+/);
+            if (!marker) break;
+            const indent = rawLine.match(/^\\s*/)[0].replace(/\\t/g, "  ").length;
+            const candidateOrdered = /^\\d+\\.$/.test(marker[1]);
+            if (indent <= initialIndent && candidateOrdered !== ordered) break;
+            listLines.push(rawLine);
             index += 1;
           }
           container.appendChild(createListBlock(listLines.join("\\n")));
@@ -2926,15 +2936,35 @@ export function page(config = configFromEnv()) {
     ${normalizeAssistantDisplayText.toString()}
 
     function createListBlock(block) {
-      const lines = String(block || "").split("\\n").map((line) => line.trim()).filter(Boolean);
-      const ordered = lines.every((line) => /^\\d+\\.\\s+/.test(line));
-      const unordered = lines.every((line) => /^[-*+]\\s+/.test(line));
-      if (!ordered && !unordered) return null;
-      const list = document.createElement(ordered ? "ol" : "ul");
-      for (const line of lines) {
+      const entries = String(block || "").split("\\n").map((rawLine) => {
+        const match = rawLine.match(/^(\\s*)(\\d+\\.|[-*+])\\s+(.+)$/);
+        if (!match) return null;
+        return {
+          indent: match[1].replace(/\\t/g, "  ").length,
+          ordered: /^\\d+\\.$/.test(match[2]),
+          content: match[3],
+        };
+      }).filter(Boolean);
+      if (!entries.length) return null;
+      const list = document.createElement(entries[0].ordered ? "ol" : "ul");
+      const stack = [{ indent: entries[0].indent, list, ordered: entries[0].ordered }];
+      for (const entry of entries) {
+        while (stack.length > 1 && entry.indent < stack[stack.length - 1].indent) {
+          stack.pop();
+        }
+        let current = stack[stack.length - 1];
+        if (entry.indent > current.indent) {
+          const parentItem = current.list.lastElementChild;
+          if (parentItem) {
+            const nested = document.createElement(entry.ordered ? "ol" : "ul");
+            parentItem.appendChild(nested);
+            current = { indent: entry.indent, list: nested, ordered: entry.ordered };
+            stack.push(current);
+          }
+        }
         const item = document.createElement("li");
-        appendInlineMarkdown(item, line.replace(ordered ? /^\\d+\\.\\s+/ : /^[-*+]\\s+/, ""));
-        list.appendChild(item);
+        appendInlineMarkdown(item, entry.content);
+        current.list.appendChild(item);
       }
       return list;
     }
