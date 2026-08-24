@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { marked } from "marked";
 
 import {
   buildHistoryContext,
@@ -162,6 +163,11 @@ test("renders a usable chat page", () => {
   assert.match(html, /function createMarkdownTable/);
   assert.match(html, /className = "markdown-table-wrap"/);
   assert.match(html, /className = "markdown-table"/);
+  assert.match(html, /appendStandardMarkdown\(container, text\)/);
+  assert.match(html, /window\.DOMPurify\.sanitize/);
+  assert.match(html, /gfm: true/);
+  assert.match(html, /<script src="\/assets\/vendor\/marked\.umd\.js"><\/script>/);
+  assert.match(html, /<script src="\/assets\/vendor\/purify\.min\.js"><\/script>/);
   assert.match(html, /aria-label", "Scrollable comparison table"/);
   assert.match(html, /document\.createElement\("h" \+ heading\[1\]\.length\)/);
   assert.match(html, /parentItem\.appendChild\(nested\)/);
@@ -318,6 +324,17 @@ test("preserves nested list indentation and inline bold-label separators", () =>
     "  - Supports L2 rollups.",
     "- **Solana** - High-throughput L1.",
   ]);
+});
+
+test("standard markdown engine renders nested lists and GFM tables", () => {
+  const html = marked.parse(
+    "- **Ethereum (L1)**\n  - Monolithic L1\n  - Supports rollups\n- **Solana**\n  - High throughput\n\n| Metric | Value |\n|---|---|\n| TPS | 30 |",
+    { gfm: true, breaks: false },
+  );
+
+  assert.equal((html.match(/<ul>/g) || []).length, 3);
+  assert.match(html, /<strong>Ethereum \(L1\)<\/strong>/);
+  assert.match(html, /<table>/);
 });
 
 test("normalizes chat app environment", () => {
