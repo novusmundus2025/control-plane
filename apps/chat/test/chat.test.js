@@ -29,6 +29,7 @@ import {
   fetchNetworkSummary,
   needsGrounding,
   normalizeAssistantDisplayText,
+  normalizePublicOpenAiStreamEvent,
   openAiModelsResponse,
   openAiSseBody,
   openAiSseFrames,
@@ -3280,6 +3281,68 @@ test("Open WebUI stream starts with a standard stable assistant identity chunk",
   assert.equal(chunk.choices[0].delta.role, "assistant");
   assert.equal(chunk.choices[0].delta.content, "");
   assert.equal(chunk.choices[0].finish_reason, null);
+});
+
+test("public OpenAI stream suppresses empty pre-token chunks and rewrites the model alias", () => {
+  assert.equal(normalizePublicOpenAiStreamEvent(
+    'data: {"id":"chatcmpl-test","model":"ehda-agnostic","choices":[{"delta":{"role":"assistant","content":""},"finish_reason":null}]}',
+  ), null);
+  const contentEvent = normalizePublicOpenAiStreamEvent(
+    'data: {"id":"chatcmpl-test","model":"ehda-agnostic","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}',
+  );
+  assert.match(contentEvent, /"model":"mundusx-agnostic"/);
+  assert.match(contentEvent, /"content":"Hi"/);
+  assert.equal(normalizePublicOpenAiStreamEvent("data: [DONE]"), "data: [DONE]");
+});
+
+test("ordinary public streaming omits the public model alias upstream and starts with content", async () => {
+  const encoder = new TextEncoder();
+  const upstreamBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        'data: {"id":"chatcmpl-public-live","model":"ehda-agnostic","choices":[{"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n' +
+        'data: {"id":"chatcmpl-public-live","model":"ehda-agnostic","choices":[{"delta":{"content":"Hi"},"finish_reason":null}]}\n\n' +
+        'data: {"id":"chatcmpl-public-live","model":"ehda-agnostic","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+        'data: [DONE]\n\n',
+      ));
+      controller.close();
+    },
+  });
+  const events = [];
+  const response = {
+    writableEnded: false,
+    writeHead: (status, headers) => events.push({ type: "headers", status, headers }),
+    flushHeaders: () => events.push({ type: "flush" }),
+    write: (value) => events.push({ type: "write", value }),
+    end(value) {
+      this.writableEnded = true;
+      events.push({ type: "end", value });
+    },
+  };
+  let submitted = null;
+  await streamOpenAiChatCompletion(
+    response,
+    {
+      model: "mundusx-agnostic",
+      messages: [{ role: "user", content: "Hi" }],
+      max_tokens: 5,
+      stream: true,
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (_url, init) => {
+      submitted = JSON.parse(init.body);
+      return new Response(upstreamBody, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream", "X-MundusX-Stream-Mode": "live-delta" },
+      });
+    },
+  );
+  assert.equal("model" in submitted, false);
+  const writes = events.filter((event) => event.type === "write").map((event) => event.value);
+  assert.match(writes[0], /"content":"Hi"/);
+  assert.doesNotMatch(writes.join(""), /"content":""/);
+  assert.match(writes.join(""), /"model":"mundusx-agnostic"/);
+  assert.match(writes.join(""), /data: \[DONE\]/);
 });
 
 test("hybrid streaming buffers structured requests and chunks ordinary prose", () => {
