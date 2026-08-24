@@ -216,6 +216,11 @@ test("renders a usable chat page", () => {
   assert.match(html, /function fetchConversationMessages/);
   assert.match(html, /function appendCachedConversationTurn/);
   assert.match(html, /function readCachedConversation/);
+  assert.match(html, /const conversationStreamStates = new Map\(\)/);
+  assert.match(html, /function reattachConversationStream/);
+  assert.match(html, /loadingHistoryConversationId === state\.conversationId/);
+  assert.match(html, /state\.node\?\.isConnected/);
+  assert.match(html, /conversationStreamStates\.get\(state\.conversationId\) === state/);
   assert.match(html, /\/api\/chat\/stream/);
   assert.match(html, /response\.body\.getReader/);
   assert.match(html, /renderStreamingJob/);
