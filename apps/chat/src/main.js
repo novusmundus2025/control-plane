@@ -747,13 +747,13 @@ export function page(config = configFromEnv()) {
     .welcome-inner {
       width: min(680px, 100%);
       display: grid;
-      gap: 16px;
+      gap: 12px;
       justify-items: center;
     }
     h1 {
       margin: 0;
       color: var(--text);
-      font-size: clamp(28px, 4.4vw, 40px);
+      font-size: clamp(26px, 3.6vw, 34px);
       line-height: 1.1;
       font-weight: 800;
     }
@@ -1280,35 +1280,35 @@ export function page(config = configFromEnv()) {
     }
     .composer {
       border: 1px solid var(--line);
-      border-radius: 16px;
+      border-radius: 28px;
       background: #fff;
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      grid-template-rows: auto auto;
-      gap: 8px 10px;
-      padding: 14px 16px;
-      box-shadow: 0 16px 40px rgba(15, 23, 42, 0.08);
+      grid-template-columns: auto minmax(0, 1fr) auto auto;
+      grid-template-rows: minmax(42px, auto);
+      align-items: end;
+      gap: 6px;
+      min-height: 54px;
+      padding: 5px 7px 5px 12px;
+      box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
     }
     textarea {
-      grid-column: 1;
-      min-height: 52px;
-      max-height: 180px;
+      grid-column: 2;
+      grid-row: 1;
+      min-height: 22px;
+      max-height: 140px;
       resize: none;
       border: 0;
-      padding: 6px 4px;
+      padding: 10px 6px;
       color: var(--text);
       background: transparent;
       font: inherit;
       font-size: 14px;
+      line-height: 22px;
       outline: none;
     }
     textarea::placeholder { color: var(--muted-2); }
     .composer-actions {
-      grid-column: 1;
-      display: flex;
-      align-items: center;
-      flex-wrap: wrap;
-      gap: 16px;
+      display: contents;
       color: var(--muted-2);
       font-size: 12px;
     }
@@ -1318,12 +1318,18 @@ export function page(config = configFromEnv()) {
       color: var(--muted-2);
       display: inline-flex;
       align-items: center;
-      gap: 6px;
-      padding: 0;
+      gap: 5px;
+      padding: 8px 4px;
       font: inherit;
       font-size: 12px;
       cursor: pointer;
     }
+    #web-search-toggle {
+      grid-column: 1;
+      grid-row: 1;
+      align-self: center;
+    }
+    #enter-to-send-toggle { display: none; }
     .tool-toggle:hover,
     .tool-toggle:focus-visible {
       color: var(--blue);
@@ -1338,14 +1344,11 @@ export function page(config = configFromEnv()) {
       color: var(--green);
     }
     .voice-controls {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      margin-left: auto;
+      display: contents;
     }
     .voice-button {
-      width: 32px;
-      height: 32px;
+      width: 36px;
+      height: 36px;
       border: 1px solid var(--line-strong);
       border-radius: 999px;
       background: #f8f9ff;
@@ -1386,11 +1389,22 @@ export function page(config = configFromEnv()) {
       cursor: not-allowed;
     }
     .voice-status {
-      min-width: 92px;
-      color: var(--muted-2);
-      font-size: 11px;
+      position: absolute;
+      width: 1px;
+      height: 1px;
+      padding: 0;
+      margin: -1px;
+      overflow: hidden;
+      clip: rect(0, 0, 0, 0);
       white-space: nowrap;
+      border: 0;
     }
+    #voice-mic {
+      grid-column: 3;
+      grid-row: 1;
+      align-self: center;
+    }
+    #voice-speak { display: none; }
     @keyframes mx-pulse {
       0%, 100% { box-shadow: 0 0 0 0 rgba(229, 72, 77, 0.36); }
       50% { box-shadow: 0 0 0 8px rgba(229, 72, 77, 0); }
@@ -1402,7 +1416,7 @@ export function page(config = configFromEnv()) {
       min-width: 20px;
       height: 20px;
       padding: 0 6px;
-      margin-right: 6px;
+      margin-right: 0;
       border: 1px solid var(--line-strong);
       border-radius: 6px;
       background: #f4f5f9;
@@ -1411,11 +1425,11 @@ export function page(config = configFromEnv()) {
       font-size: 11px;
     }
     .send {
-      grid-column: 2;
-      grid-row: 1 / span 2;
-      align-self: end;
-      width: 44px;
-      height: 44px;
+      grid-column: 4;
+      grid-row: 1;
+      align-self: center;
+      width: 38px;
+      height: 38px;
       border: 0;
       border-radius: 50%;
       color: #fff;
@@ -1423,7 +1437,7 @@ export function page(config = configFromEnv()) {
       font-weight: 700;
       display: grid;
       place-items: center;
-      box-shadow: 0 10px 22px rgba(90, 90, 240, 0.3);
+      box-shadow: 0 7px 18px rgba(90, 90, 240, 0.26);
       transition: transform var(--motion-medium), box-shadow var(--motion-medium);
     }
     .send svg { width: 18px; height: 18px; }
@@ -1519,7 +1533,7 @@ export function page(config = configFromEnv()) {
       </section>
       <form id="chat-form">
         <div class="composer">
-          <textarea id="prompt" name="prompt" placeholder="Ask everyone..." autocomplete="off" required></textarea>
+          <textarea id="prompt" name="prompt" rows="1" placeholder="Ask everyone..." autocomplete="off" required></textarea>
           <div class="composer-actions">
             <button class="tool-toggle" id="web-search-toggle" type="button" aria-pressed="false" title="Use grounded tools when available"><span class="kbd">@</span><span id="web-search-label">Web Search</span></button>
             <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
@@ -1567,9 +1581,9 @@ export function page(config = configFromEnv()) {
     let voiceSilenceTimer = null;
     let voiceHardStopTimer = null;
     let voiceMicStream = null;
-    let speakReplies = localStorage.getItem("mundusx.chat.voice.speakReplies") === "true";
+    let speakReplies = false;
     let webSearchEnabled = localStorage.getItem("mundusx.chat.toolMode") === "true";
-    let enterToSendEnabled = localStorage.getItem("mundusx.chat.enterToSend") !== "false";
+    let enterToSendEnabled = true;
     let activeHistoryMenuId = null;
     let activeHistoryId = localStorage.getItem(conversationIdKey);
     let activeHistoryLoadToken = 0;
