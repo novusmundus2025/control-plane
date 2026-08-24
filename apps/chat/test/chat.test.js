@@ -232,6 +232,10 @@ test("renders a usable chat page", () => {
   assert.match(html, /conversationStreamStates\.get\(state\.conversationId\) === state/);
   assert.match(html, /streamState\.status = "waiting"/);
   assert.match(html, /Streaming - waiting for first token/);
+  assert.match(html, /response\.headers\.get\("x-mundusx-completion-id"\)/);
+  assert.match(html, /const firstTokenDeadline = Date\.now\(\) \+ 60000/);
+  assert.match(html, /MundusX did not produce a first token within 60 seconds/);
+  assert.match(html, /MundusX job did not complete during stream recovery/);
   assert.match(html, /\/api\/chat\/stream/);
   assert.match(html, /response\.body\.getReader/);
   assert.match(html, /renderStreamingJob/);
@@ -3713,12 +3717,17 @@ test("streaming relay exposes the first upstream delta before completion", async
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     async () => new Response(upstreamBody, {
       status: 200,
-      headers: { "Content-Type": "text/event-stream", "X-MundusX-Stream-Mode": "live-delta" },
+      headers: {
+        "Content-Type": "text/event-stream",
+        "X-MundusX-Stream-Mode": "live-delta",
+        "X-MundusX-Completion-Id": "chatcmpl-live",
+      },
     }),
   );
   await new Promise((resolve) => setImmediate(resolve));
   assert.equal(events[0].type, "headers");
   assert.equal(events[0].headers["X-MundusX-Stream-Mode"], "live-delta");
+  assert.equal(events[0].headers["X-MundusX-Completion-Id"], "chatcmpl-live");
   assert.equal(events[0].headers["X-Accel-Buffering"], "no");
   assert.equal(events[1].type, "flush");
   assert.equal(events[2].type, "write");
