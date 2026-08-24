@@ -140,11 +140,14 @@ test("renders a usable chat page", () => {
   assert.match(html, /\.code-block/);
   assert.match(html, /function stripEchoedPrompt/);
   assert.match(html, /function appendRichMessage/);
+  assert.match(html, /function codeBlockDisplayName/);
   assert.match(html, /function appendHighlightedCode/);
   assert.match(html, /function appendHighlightedLine/);
   assert.match(html, /function syntaxTokenClass/);
   assert.match(html, /function copyCodeToClipboard/);
   assert.match(html, /function saveCodeFile/);
+  assert.match(html, /className = "code-filename"/);
+  assert.match(html, /saveCodeFile\(code, normalizedLanguage, safeDisplayName\)/);
   assert.match(html, /className = "code-actions"/);
   assert.match(html, /createCodeAction\("Collapse"/);
   assert.match(html, /createCodeAction\("Save"/);
@@ -791,15 +794,37 @@ test("uses word-only CRUD deliverables to select coherent or parallel code execu
   );
 
   assert.equal(calls[0].execution_mode, "single");
-  assert.equal(calls[0].max_tokens, 4096);
+  assert.equal(calls[0].max_tokens, 6144);
   assert.equal(calls[1].execution_mode, "decompose");
-  assert.equal(calls[1].max_tokens, 4096);
-  assert.match(calls[1].system_prompt, /complete compilable source file/i);
-  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90), 90);
+  assert.equal(calls[1].max_tokens, 6144);
+  assert.match(calls[1].system_prompt, /Project Structure/i);
+  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90), 300);
   assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90), 900);
   assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, 120, 90), 120);
   assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90, "decompose"), 900);
-  assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90, "single"), 90);
+  assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90, "single"), 300);
+});
+
+test("treats a complete Node CRUD API as a production multi-file project", async () => {
+  const calls = [];
+  await submitChatJob(
+    { message: "give me a complete programs for nodejs, to have a complete CRUD API for school and students" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (_url, init) => {
+      calls.push(JSON.parse(init.body));
+      return jsonResponse({
+        job_id: "job-school-project",
+        job: { job_id: "job-school-project", status: "queued", graph: { nodes: [] } },
+      });
+    },
+  );
+
+  assert.equal(calls[0].max_tokens, 6144);
+  assert.equal(calls[0].execution_mode, "single");
+  assert.match(calls[0].system_prompt, /production-oriented application project/i);
+  assert.match(calls[0].system_prompt, /Project Structure/i);
+  assert.match(calls[0].system_prompt, /persistent database configuration/i);
+  assert.equal(inferChatRequestTimeoutSeconds("give me a complete programs for nodejs, to have a complete CRUD API for school and students", null, 90), 300);
 });
 
 test("returns a complete deterministic Node Express MySQL customer CRUD project", async () => {
@@ -3255,6 +3280,55 @@ test("validates requested JSON before a structured response can complete", () =>
   assert.equal(detectStructuredOutputQualityFlags("ordinary prose", false).length, 0);
 });
 
+test("rejects one-file in-memory demos for production code-project requests", () => {
+  const prompt = "Give me a complete Node.js CRUD API for schools and students.";
+  const demo = "```javascript\nconst express = require('express');\nconst app = express();\nconst rows = [];\napp.get('/schools', (_req, res) => res.json(rows));\napp.post('/schools', (req, res) => res.json(req.body));\napp.put('/schools/:id', (req, res) => res.json(req.body));\napp.delete('/schools/:id', (_req, res) => res.status(204).end());\n```";
+  const flags = detectCompleteCodeQualityFlags(demo, prompt);
+  assert.equal(flags[0].code, "invalid_complete_code");
+  assert.match(flags[0].message, /project structure/);
+  assert.match(flags[0].message, /persistent database layer/);
+});
+
+test("accepts a structured persistent Node project contract", () => {
+  const prompt = "Give me a complete Node.js CRUD API for schools and students.";
+  const project = [
+    "## Project Structure",
+    "```text",
+    "school-api/",
+    "├── package.json",
+    "└── src/app.js",
+    "```",
+    "### package.json",
+    "```json",
+    '{"dependencies":{"express":"latest","mongoose":"latest","zod":"latest"}}',
+    "```",
+    "### src/app.js",
+    "```javascript",
+    "const express = require('express');",
+    "const mongoose = require('mongoose');",
+    "const { z } = require('zod');",
+    "const app = express();",
+    "const validate = z.object({ name: z.string() });",
+    "app.get('/schools', handler);",
+    "app.post('/schools', handler);",
+    "app.put('/schools/:id', handler);",
+    "app.delete('/schools/:id', handler);",
+    "function handler(req, res) { res.json({ ok: true }); }",
+    "function errorHandler(err, req, res, next) { res.status(500).json({ error: err.message }); }",
+    "app.use(errorHandler);",
+    "mongoose.connect(process.env.DATABASE_URL);",
+    "```",
+  ].join("\n");
+  assert.deepEqual(detectCompleteCodeQualityFlags(project, prompt), []);
+  const malformedProject = project.replace(
+    "### src/app.js",
+    "### prisma/schema.prisma\n```prisma\nmodel School {\n  id String @id @default(uuid()\n}\n```\n### src/app.js",
+  );
+  const malformedFlags = detectCompleteCodeQualityFlags(malformedProject, prompt);
+  assert.equal(malformedFlags[0].code, "invalid_complete_code");
+  assert.match(malformedFlags[0].message, /unbalanced delimiters.*prisma/i);
+});
+
 test("OpenAI adapter preserves an upstream length finish reason", async () => {
   const result = await submitOpenAiChatCompletion(
     { messages: [{ role: "user", content: "Tell me a short story." }] },
@@ -3367,6 +3441,83 @@ test("generative Chat-U requests stream while deterministic and tool routes fall
   assert.equal(canLiveStreamChatTurn({ message: "Weather in Warsaw?", toolMode: false }), false);
   assert.equal(canLiveStreamChatTurn({ message: "Who is Ada Lovelace?", toolMode: false }), false);
   assert.equal(canLiveStreamChatTurn({ message: "Latest NVIDIA news", toolMode: true }), false);
+});
+
+test("native Chat-U routes complete projects through the validated buffered path", async () => {
+  const prompt = "Give me a complete Node.js CRUD API for schools and students.";
+  const requests = [];
+  const responseEvents = [];
+  const response = {
+    writableEnded: false,
+    writeHead: (status, headers) => responseEvents.push({ type: "headers", status, headers }),
+    flushHeaders: () => {},
+    write: (value) => responseEvents.push({ type: "write", value }),
+    end(value) {
+      this.writableEnded = true;
+      responseEvents.push({ type: "end", value });
+    },
+  };
+  const output = [
+    "## Project Structure",
+    "```text",
+    "school-api/",
+    "├── package.json",
+    "└── src/app.js",
+    "```",
+    "### package.json",
+    "```json",
+    '{"dependencies":{"express":"latest","mongoose":"latest","zod":"latest"}}',
+    "```",
+    "### src/app.js",
+    "```javascript",
+    "const express = require('express');",
+    "const mongoose = require('mongoose');",
+    "const { z } = require('zod');",
+    "const app = express();",
+    "const validate = z.object({ name: z.string() });",
+    "app.get('/schools', handler);",
+    "app.post('/schools', handler);",
+    "app.put('/schools/:id', handler);",
+    "app.delete('/schools/:id', handler);",
+    "function handler(req, res) { res.json({ ok: true }); }",
+    "function errorHandler(err, req, res, next) { res.status(500).json({ error: err.message }); }",
+    "app.use(errorHandler);",
+    "mongoose.connect(process.env.DATABASE_URL);",
+    "```",
+  ].join("\n");
+
+  await streamChatTurn(
+    response,
+    { message: prompt, toolMode: false, executionMode: "auto", voicePersona: "marie" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url, init = {}) => {
+      requests.push({ url, init });
+      if (url.endsWith("/v1/nodes?page=1&page_size=25")) return jsonResponse({ items: [] });
+      if (url.endsWith("/v1/jobs") && init.method === "POST") {
+        const submitted = JSON.parse(init.body);
+        return jsonResponse({
+          job_id: "chatcmpl-native-validated",
+          job: {
+            job_id: "chatcmpl-native-validated",
+            status: "completed",
+            output,
+            max_tokens: submitted.max_tokens,
+            max_tokens_source: submitted.max_tokens_source,
+            graph: { nodes: [] },
+          },
+        }, true, 202);
+      }
+      throw new Error(`unexpected URL ${url}`);
+    },
+  );
+
+  const submitted = JSON.parse(requests.find((entry) => entry.url.endsWith("/v1/jobs")).init.body);
+  assert.equal(submitted.max_tokens, 6144);
+  assert.match(submitted.system_prompt, /Project Structure/i);
+  assert.match(submitted.system_prompt, /You are Marie/);
+  assert.equal(requests.some((entry) => entry.url.endsWith("/v1/chat/completions")), false);
+  assert.equal(responseEvents[0].headers["X-MundusX-Stream-Mode"], "validated");
+  assert.match(responseEvents.at(-1).value, /data: \[DONE\]/);
 });
 
 test("streaming relay exposes the first upstream delta before completion", async () => {
@@ -4493,7 +4644,7 @@ test("keeps JavaScript spread syntax in complete source artifacts", () => {
 });
 
 test("accepts URL template literals in complete JavaScript source", () => {
-  const prompt = "Create a Node.js Express CRUD API for customers.";
+  const prompt = "Create a single-file Node.js Express CRUD API demo for customers.";
   const output = "```javascript\nconst express = require('express');\nconst app = express();\napp.get('/customers', (_req, res) => res.json([]));\napp.post('/customers', (req, res) => res.status(201).json(req.body));\napp.put('/customers/:id', (req, res) => res.json(req.body));\napp.delete('/customers/:id', (_req, res) => res.status(204).end());\nconst port = 3000;\napp.listen(port, () => console.log(`Server running at http://localhost:${port}`));\n```";
 
   assert.deepEqual(detectCompleteCodeQualityFlags(output, prompt), []);
@@ -4517,6 +4668,15 @@ test("removes instruction-like pre-code narration while keeping the fenced progr
   assert.match(output, /public class MagicSquare/);
   assert.match(output, /This code reads input/);
   assert.doesNotMatch(output, /^The program should/i);
+});
+
+test("removes orphaned leading punctuation from a cleaned code introduction", () => {
+  const output = cleanChatOutput(
+    ", production-oriented Node.js project.\n```javascript\nconsole.log('ready');\n```",
+  );
+
+  assert.match(output, /^production-oriented Node\.js project\./);
+  assert.doesNotMatch(output, /^[,;:\-\u2013\u2014]/);
 });
 
 test("removes plain response labels before rendering chat output", () => {
