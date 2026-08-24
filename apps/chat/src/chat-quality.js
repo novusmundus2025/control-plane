@@ -154,9 +154,13 @@ function formatJavaSource(sourceValue) {
     const next = source[index + 1] ?? "";
     if (quote) {
       line += character;
-      if (escaped) escaped = false;
-      else if (character === "\\") escaped = true;
-      else if (character === quote) quote = "";
+      if (escaped) {
+        escaped = false;
+      } else if (character === "\\") {
+        escaped = true;
+      } else if (character === quote) {
+        quote = "";
+      }
       continue;
     }
     if (character === '"' || character === "'") {
@@ -190,12 +194,17 @@ function formatJavaSource(sourceValue) {
       indent = Math.max(0, indent - 1);
       line = "}";
       const remainder = source.slice(index + 1);
-      if (!/^\s*(?:;|else\b|catch\b|finally\b)/.test(remainder)) flush();
+      if (!/^\s*(?:;|else\b|catch\b|finally\b)/.test(remainder)) {
+        flush();
+      }
       continue;
     }
     line += character;
-    if (character === ";" && parentheses === 0) flush();
-    else if (character === "\n") flush();
+    if (character === ";" && parentheses === 0) {
+      flush();
+    } else if (character === "\n") {
+      flush();
+    }
   }
   flush();
   return lines.join("\n").replace(/\n(import\s)/g, "\n\n$1");
@@ -422,7 +431,9 @@ function requestedJavaMethods(promptValue) {
   ]) {
     for (const match of prompt.matchAll(pattern)) {
       const name = String(match[1] ?? "").trim();
-      if (name && name.toLowerCase() !== "main" && !names.some((item) => item.toLowerCase() === name.toLowerCase())) names.push(name);
+      if (name && name.toLowerCase() !== "main" && !names.some((item) => item.toLowerCase() === name.toLowerCase())) {
+        names.push(name);
+      }
     }
   }
   return names;

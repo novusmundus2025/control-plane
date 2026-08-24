@@ -6,6 +6,7 @@ import {
   buildCompressedHistoryContext,
   buildRelevantHistoryContext,
   buildChatSystemPrompt,
+  canLiveStreamChatTurn,
   cleanChatOutput,
   configFromEnv,
   deleteChatConversation,
@@ -36,10 +37,12 @@ import {
   redactSensitiveText,
   selectChatSkills,
   requiresValidatedStreaming,
+  relayControlPlaneOpenAiStream,
   submitChatJob,
   submitChatTurn,
   submitOpenAiChatCompletion,
   streamOpenAiChatCompletion,
+  streamChatTurn,
   waitForChatJob,
 } from "../src/main.js";
 import {
@@ -171,8 +174,10 @@ test("renders a usable chat page", () => {
   assert.match(html, /shouldShowSourceSections\(payload, output\)/);
   assert.match(html, /function appendRetryAction/);
   assert.match(html, /pollRecoveryDeadline \|\|= Date\.now\(\) \+ 120000/);
+  assert.match(html, /const recoverCompletedJob = async/);
   assert.match(html, /setStatus\("working", "Recovering"\)/);
-  assert.match(html, /\[408, 425, 429, 500, 502, 503, 504\]/);
+  assert.match(html, /chat recovery poll failed/);
+  assert.match(html, /return recoverCompletedJob\(streamError\)/);
   assert.match(html, /message-retry-button/);
   assert.match(html, /function progressUnit/);
   assert.match(html, /\.message-body ol/);
@@ -208,6 +213,9 @@ test("renders a usable chat page", () => {
   assert.match(html, /function fetchConversationMessages/);
   assert.match(html, /function appendCachedConversationTurn/);
   assert.match(html, /function readCachedConversation/);
+  assert.match(html, /\/api\/chat\/stream/);
+  assert.match(html, /response\.body\.getReader/);
+  assert.match(html, /renderStreamingJob/);
   assert.match(html, /const messagesViewportEl = document\.getElementById\("messages"\)/);
   assert.match(html, /function isChatNearBottom/);
   assert.match(html, /function scrollChatToLatest/);
@@ -218,7 +226,11 @@ test("renders a usable chat page", () => {
   assert.match(html, /\["PageUp", "Home", "ArrowUp"\]/);
   assert.match(html, /new ResizeObserver\(\(\) => scrollChatToLatest\(\)\)/);
   assert.doesNotMatch(html, /followLatestMessage = isChatNearBottom\(\)/);
+  assert.match(html, /setStatus\("working", "Streaming"\);\s*scrollChatToLatest\(\)/);
   assert.doesNotMatch(html, /messagesEl\.scrollTop = messagesEl\.scrollHeight/);
+  const embeddedScripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((match) => match[1]);
+  assert.equal(embeddedScripts.length, 1);
+  assert.doesNotThrow(() => new Function(embeddedScripts[0]));
   assert.match(html, /await loadHistoryItem\(item\)/);
   assert.match(html, /conversationCachePrefix/);
   assert.match(html, /\/api\/conversations\//);
@@ -3046,7 +3058,7 @@ test("returns immediate weather turns without polling the control plane", async 
 test("adapts a Hermes OpenAI weather request to an immediate Chat-U tool response", async () => {
   const result = await submitOpenAiChatCompletion(
     {
-      model: "ehda-agnostic",
+      model: "mundusx-agnostic",
       messages: [{ role: "user", content: "What is the weather in Warsaw?" }],
     },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
@@ -3070,7 +3082,7 @@ test("adapts a Hermes OpenAI weather request to an immediate Chat-U tool respons
   assert.equal(result.object, "chat.completion");
   assert.equal(result.choices[0].finish_reason, "stop");
   assert.match(result.choices[0].message.content, /Weather for Warsaw, Poland/);
-  assert.equal(result.model, "ehda-agnostic");
+  assert.equal(result.model, "mundusx-agnostic");
   assert.equal(result.mundusx.tool, "weather");
   assert.equal("assigned_node_id" in result.mundusx, false);
 });
@@ -3164,7 +3176,7 @@ test("adapts Hermes message history into Chat-U model context", async () => {
   assert.match(submittedJob.system_prompt, /User: My preferred language is German\./);
   assert.match(submittedJob.system_prompt, /Assistant: Understood\./);
   assert.equal(result.choices[0].message.content, "Hallo!");
-  assert.equal(result.model, "ehda-agnostic");
+  assert.equal(result.model, "mundusx-agnostic");
   assert.equal(result.mundusx.job_id, "job-hermes");
   assert.equal("assigned_node_id" in result.mundusx, false);
 });
@@ -3220,11 +3232,11 @@ test("does not isolate an ordinary history-dependent explanation follow-up", () 
 });
 
 test("Open WebUI adapter exposes a discoverable model and buffered SSE completion", () => {
-  assert.deepEqual(openAiModelsResponse(configFromEnv({})).data.map((model) => model.id), ["ehda-agnostic"]);
+  assert.deepEqual(openAiModelsResponse(configFromEnv({})).data.map((model) => model.id), ["mundusx-agnostic"]);
   const body = openAiSseBody({
     id: "chatcmpl-test",
     created: 123,
-    model: "ehda-agnostic",
+    model: "mundusx-agnostic",
     choices: [{ message: { role: "assistant", content: "Validated answer" }, finish_reason: "stop" }],
   });
   assert.match(body, /"object":"chat\.completion\.chunk"/);
@@ -3422,56 +3434,240 @@ test("OpenAI adapter correlates its stable id and OpenWebUI chat id", async () =
   assert.deepEqual(conversationWrites.map((entry) => entry.role), ["user", "assistant"]);
 });
 
-test("streaming adapter opens SSE before the upstream answer is ready", async () => {
-  let releaseWeather;
-  const pendingWeather = new Promise((resolve) => { releaseWeather = resolve; });
+test("generative Chat-U requests stream while deterministic and tool routes fall back", () => {
+  assert.equal(canLiveStreamChatTurn({ message: "Explain distributed systems.", toolMode: false }), true);
+  assert.equal(canLiveStreamChatTurn({ message: "Create a complete Java program", toolMode: false }), true);
+  assert.equal(canLiveStreamChatTurn({ message: "Return a JSON schema for a customer record", toolMode: false }), true);
+  assert.equal(canLiveStreamChatTurn({ message: "Weather in Warsaw?", toolMode: false }), false);
+  assert.equal(canLiveStreamChatTurn({ message: "Who is Ada Lovelace?", toolMode: false }), false);
+  assert.equal(canLiveStreamChatTurn({ message: "Latest NVIDIA news", toolMode: true }), false);
+});
+
+test("native Chat-U streams complete projects as upstream deltas arrive", async () => {
+  const prompt = "Give me a complete Node.js CRUD API for schools and students.";
+  const requests = [];
+  const responseEvents = [];
+  const encoder = new TextEncoder();
+  let releaseStream;
+  const response = {
+    writableEnded: false,
+    writeHead: (status, headers) => responseEvents.push({ type: "headers", status, headers }),
+    flushHeaders: () => {},
+    write: (value) => responseEvents.push({ type: "write", value }),
+    end(value) {
+      this.writableEnded = true;
+      responseEvents.push({ type: "end", value });
+    },
+  };
+  const output = [
+    "## Project Structure",
+    "```text",
+    "school-api/",
+    "├── package.json",
+    "└── src/app.js",
+    "```",
+    "### package.json",
+    "```json",
+    '{"dependencies":{"express":"latest","mongoose":"latest","zod":"latest"}}',
+    "```",
+    "### src/app.js",
+    "```javascript",
+    "const express = require('express');",
+    "const mongoose = require('mongoose');",
+    "const { z } = require('zod');",
+    "const app = express();",
+    "const validate = z.object({ name: z.string() });",
+    "app.get('/schools', handler);",
+    "app.post('/schools', handler);",
+    "app.put('/schools/:id', handler);",
+    "app.delete('/schools/:id', handler);",
+    "function handler(req, res) { res.json({ ok: true }); }",
+    "function errorHandler(err, req, res, next) { res.status(500).json({ error: err.message }); }",
+    "app.use(errorHandler);",
+    "mongoose.connect(process.env.DATABASE_URL);",
+    "```",
+  ].join("\n");
+  const splitAt = Math.floor(output.length / 2);
+  const upstreamBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        `data: ${JSON.stringify({ id: "chatcmpl-native-live", choices: [{ delta: { role: "assistant", content: output.slice(0, splitAt) }, finish_reason: null }] })}\n\n`,
+      ));
+      releaseStream = () => {
+        controller.enqueue(encoder.encode(
+          `data: ${JSON.stringify({ id: "chatcmpl-native-live", choices: [{ delta: { content: output.slice(splitAt) }, finish_reason: null }] })}\n\n` +
+          `data: ${JSON.stringify({ id: "chatcmpl-native-live", choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n` +
+          "data: [DONE]\n\n",
+        ));
+        controller.close();
+      };
+    },
+  });
+
+  const streaming = streamChatTurn(
+    response,
+    { message: prompt, toolMode: false, executionMode: "auto", voicePersona: "marie" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url, init = {}) => {
+      requests.push({ url, init });
+      if (url.endsWith("/v1/chat/completions")) return new Response(upstreamBody, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream", "X-MundusX-Stream-Mode": "live-delta" },
+      });
+      throw new Error(`unexpected URL ${url}`);
+    },
+  );
+
+  await new Promise((resolve) => setImmediate(resolve));
+  const submitted = JSON.parse(requests[0].init.body);
+  assert.equal(submitted.max_tokens, 6144);
+  assert.match(submitted.messages[0].content, /Project Structure/i);
+  assert.match(submitted.messages[0].content, /You are Marie/);
+  assert.equal(requests[0].url.endsWith("/v1/chat/completions"), true);
+  assert.equal(responseEvents[0].headers["X-MundusX-Stream-Mode"], "live-delta");
+  assert.match(responseEvents[1].value, /"content":"## Project Structure\\n/);
+  assert.equal(response.writableEnded, false);
+  releaseStream();
+  const result = await streaming;
+  assert.equal(result.content, output);
+  assert.equal(responseEvents.at(-1).type, "end");
+});
+
+test("streaming relay exposes the first upstream delta before completion", async () => {
+  const encoder = new TextEncoder();
+  let releaseStream;
+  const upstreamBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        'data: {"id":"chatcmpl-live","choices":[{"delta":{"role":"assistant","content":""},"finish_reason":null}]}\n\n' +
+        'data: {"id":"chatcmpl-live","choices":[{"delta":{"content":"Alpha "},"finish_reason":null}]}\n\n',
+      ));
+      releaseStream = () => {
+        controller.enqueue(encoder.encode(
+          'data: {"id":"chatcmpl-live","choices":[{"delta":{"content":"Beta"},"finish_reason":null}]}\n\n' +
+          'data: {"id":"chatcmpl-live","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+          'data: [DONE]\n\n',
+        ));
+        controller.close();
+      };
+    },
+  });
   const events = [];
   const response = {
     writableEnded: false,
     writeHead: (status, headers) => events.push({ type: "headers", status, headers }),
     flushHeaders: () => events.push({ type: "flush" }),
-    write: (value) => events.push({ type: "write", value }),
+    write: (value) => {
+      events.push({ type: "write", value });
+      return true;
+    },
     end(value) {
       this.writableEnded = true;
       events.push({ type: "end", value });
     },
   };
-  const streaming = streamOpenAiChatCompletion(
+  const streaming = relayControlPlaneOpenAiStream(
     response,
-    { stream: true, messages: [{ role: "user", content: "Weather in Warsaw?" }] },
+    { stream: true, messages: [{ role: "user", content: "Explain this." }] },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
-    async () => pendingWeather,
+    async () => new Response(upstreamBody, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream", "X-MundusX-Stream-Mode": "live-delta" },
+    }),
   );
+  await new Promise((resolve) => setImmediate(resolve));
   assert.equal(events[0].type, "headers");
-  assert.equal(events[0].headers["X-MundusX-Stream-Mode"], "ordinary");
+  assert.equal(events[0].headers["X-MundusX-Stream-Mode"], "live-delta");
   assert.equal(events[0].headers["X-Accel-Buffering"], "no");
   assert.equal(events[1].type, "flush");
   assert.equal(events[2].type, "write");
-  const startChunk = JSON.parse(events[2].value.replace(/^data: /, "").trim());
-  assert.match(startChunk.id, /^chatcmpl-/);
-  assert.equal(startChunk.choices[0].delta.role, "assistant");
-  assert.equal(startChunk.choices[0].delta.content, "");
-  releaseWeather(jsonResponse({
-    nearest_area: [{ areaName: [{ value: "Warsaw" }], country: [{ value: "Poland" }] }],
-    current_condition: [{
-      weatherDesc: [{ value: "Sunny" }], temp_C: "24", temp_F: "75", FeelsLikeC: "23", FeelsLikeF: "73", humidity: "40", windspeedKmph: "8",
-    }],
-  }));
-  await streaming;
-  assert.match(events.at(-1).value, /data: \[DONE\]/);
-  const finalFrames = events
-    .filter((event) => event.type === "write" && event.value.startsWith("data: "))
-    .flatMap((event) => event.value.trim().split("\n\n"))
-    .filter((frame) => frame.startsWith("data: {") )
-    .map((frame) => JSON.parse(frame.slice(6)));
-  assert.ok(finalFrames.length >= 2);
-  assert.ok(finalFrames.every((frame) => frame.id === startChunk.id));
+  assert.match(events[2].value, /"content":"Alpha "/);
+  assert.equal(response.writableEnded, false);
+  releaseStream();
+  const result = await streaming;
+  assert.equal(result.content, "Alpha Beta");
+  assert.equal(result.completionId, "chatcmpl-live");
+  assert.equal(result.finishReason, "stop");
+  assert.equal(events.at(-1).type, "end");
+});
+
+test("deterministic Chat-U requests return an explicit polling fallback without upstream work", async () => {
+  const events = [];
+  const response = {
+    writeHead: (status, headers) => events.push({ status, headers }),
+    end: (value) => events.push({ value }),
+  };
+  let fetchCalled = false;
+  await streamChatTurn(
+    response,
+    { message: "Weather in Warsaw?", toolMode: false },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => {
+      fetchCalled = true;
+      throw new Error("unexpected fetch");
+    },
+  );
+  assert.equal(fetchCalled, false);
+  assert.equal(events[0].status, 409);
+  assert.deepEqual(JSON.parse(events[1].value), { fallback: true, reason: "deterministic_or_tool_routed" });
+});
+
+test("live Chat-U stream preserves history and persists one user and assistant turn", async () => {
+  const encoder = new TextEncoder();
+  const writes = [];
+  let upstreamRequest = null;
+  const response = {
+    writableEnded: false,
+    writeHead: () => {},
+    flushHeaders: () => {},
+    write: () => true,
+    end() { this.writableEnded = true; },
+  };
+  const fetchImpl = async (url, init = {}) => {
+    if (url.includes("/v1/conversations/conversation-live/messages")) {
+      writes.push(JSON.parse(init.body));
+      return jsonResponse({ stored: true });
+    }
+    if (url.endsWith("/v1/chat/completions")) {
+      upstreamRequest = JSON.parse(init.body);
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(
+            'data: {"id":"chatcmpl-browser","choices":[{"delta":{"content":"Streamed answer."},"finish_reason":null}]}\n\n' +
+            'data: {"id":"chatcmpl-browser","choices":[{"delta":{},"finish_reason":"stop"}]}\n\n' +
+            'data: [DONE]\n\n',
+          ));
+          controller.close();
+        },
+      }), { status: 200, headers: { "X-MundusX-Stream-Mode": "live-delta" } });
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+
+  const result = await streamChatTurn(
+    response,
+    {
+      message: "Explain distributed systems briefly.",
+      historyMessages: [{ role: "user", content: "Earlier question" }, { role: "assistant", content: "Earlier answer" }],
+      conversationId: "conversation-live",
+      toolMode: false,
+      voicePersona: "atlas",
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    fetchImpl,
+  );
+
+  assert.equal(result.content, "Streamed answer.");
+  assert.equal(upstreamRequest.stream, true);
+  assert.deepEqual(upstreamRequest.messages.map((entry) => entry.role), ["system", "user", "assistant", "user"]);
+  assert.deepEqual(writes.map((entry) => entry.role), ["user", "assistant"]);
+  assert.equal(writes[1].jobId, "chatcmpl-browser");
 });
 
 test("Hermes model discovery intentionally hides heterogeneous implementation details", () => {
   const result = openAiModelsResponse(configFromEnv({ MUNDUSX_CHAT_MODEL: "physical/private-model" }));
   assert.deepEqual(result.data, [{
-    id: "ehda-agnostic",
+    id: "mundusx-agnostic",
     object: "model",
     created: 0,
     owned_by: "mundusx-router",
@@ -3850,10 +4046,19 @@ test("keeps concise final answers instead of exposing internal graph node headin
         status: "completed",
         output: "The capital of the Philippines is Manila.",
         graph_execution_enabled: true,
-        graph: { nodes: [{ id: "execute", name: "Execute request", status: "completed", responsibility: "section", output: "The capital of the Philippines is Manila." }] },
+        graph: {
+          nodes: [{
+            id: "execute",
+            name: "Execute request",
+            status: "completed",
+            responsibility: "section",
+            output: "The capital of the Philippines is Manila.",
+          }],
+        },
       },
     }),
   );
+
   assert.equal(result.output, "The capital of the Philippines is Manila.");
   assert.doesNotMatch(result.output, /Execute request/);
 });
@@ -5137,13 +5342,16 @@ test("pollChatJob rejects Java when main omits the requested Fibonacci method co
   const result = await pollChatJob(
     "job-java-semantic-invalid",
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
-    async () => jsonResponse({ job: {
-      job_id: "job-java-semantic-invalid",
-      status: "completed",
-      output: "```java\npublic class FibonacciProgram { public static void main(String[] args) { int a = 0; int b = 1; System.out.println(a + b); } }\n```",
-    } }),
+    async () => jsonResponse({
+      job: {
+        job_id: "job-java-semantic-invalid",
+        status: "completed",
+        output: "```java\npublic class FibonacciProgram { public static void main(String[] args) { int a = 0; int b = 1; System.out.println(a + b); } }\n```",
+      },
+    }),
     { message: prompt },
   );
+
   assert.equal(result.status, "failed");
   assert.match(result.error, /does not define the requested Fibonacci method/);
 });
@@ -5151,7 +5359,9 @@ test("pollChatJob rejects Java when main omits the requested Fibonacci method co
 test("submitChatTurn retries one invalid complete-code result with stricter validation instructions", async () => {
   const prompts = [];
   const fetchImpl = async (url, init = {}) => {
-    if (url.startsWith("https://uat.mundusx.ai/v1/nodes")) return jsonResponse({ items: [] });
+    if (url.startsWith("https://uat.mundusx.ai/v1/nodes")) {
+      return jsonResponse({ items: [] });
+    }
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
     const body = JSON.parse(init.body);
     prompts.push(body.system_prompt);
@@ -5167,11 +5377,13 @@ test("submitChatTurn retries one invalid complete-code result with stricter vali
       },
     });
   };
+
   const result = await submitChatTurn(
     { message: "Create a Java program with a main method that calls the Fibonacci function." },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     fetchImpl,
   );
+
   assert.equal(prompts.length, 2);
   assert.doesNotMatch(prompts[0], /internal validation retry/i);
   assert.match(prompts[1], /internal validation retry/i);
