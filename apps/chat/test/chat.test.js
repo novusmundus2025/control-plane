@@ -28,6 +28,7 @@ import {
   fetchChatConversation,
   fetchNetworkSummary,
   needsGrounding,
+  normalizeAssistantDisplayText,
   openAiModelsResponse,
   openAiSseBody,
   openAiSseFrames,
@@ -153,6 +154,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /createCodeAction\("Save"/);
   assert.match(html, /createCodeAction\("Copy"/);
   assert.match(html, /function normalizeAssistantDisplayText/);
+  assert.ok(html.includes("(#{1,6})"));
+  assert.ok(html.includes(".replace(/\\u00a0/g"));
   assert.match(html, /function appendInlineMarkdown/);
   assert.match(html, /function isMarkdownTableStart/);
   assert.match(html, /function createMarkdownTable/);
@@ -256,6 +259,22 @@ test("renders a usable chat page", () => {
   assert.doesNotMatch(html, /Qwen\/Test/);
   assert.doesNotMatch(html, /Honda history draft|Dave Batalla|57 nodes/);
   assert.match(html, /MundusX may produce inaccurate information/);
+});
+
+test("normalizes streamed emoji headings and list boundaries", () => {
+  const output = normalizeAssistantDisplayText(
+    "Intro. --- ### ✅ Features - Concurrent requests - Configurable concurrency --- ### 📁 Project Structure",
+  );
+
+  assert.deepEqual(output.split("\n").filter(Boolean), [
+    "Intro.",
+    "---",
+    "### ✅ Features",
+    "- Concurrent requests",
+    "- Configurable concurrency",
+    "---",
+    "### 📁 Project Structure",
+  ]);
 });
 
 test("normalizes chat app environment", () => {
