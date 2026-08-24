@@ -96,10 +96,10 @@ Streaming is not enabled yet; the first version uses polling because the control
 New integrations should use the control plane directly:
 
 ```text
-Benz EHDA base URL: https://mundusx.ai/v1
+UAT base URL: https://uat.mundusx.ai/v1
 Chat completions: POST /chat/completions
 Models: GET /models
-Model: ehda-agnostic (EHDA model-agnostic interface over heterogeneous routing)
+Model: mundusx-agnostic (model-agnostic interface over heterogeneous routing)
 API key: use `not-required` if the client requires a value
 Streaming: accepted as buffered SSE after final validation
 ```
@@ -107,12 +107,12 @@ Streaming: accepted as buffered SSE after final validation
 Example:
 
 ```bash
-curl https://mundusx.ai/v1/chat/completions \
+curl https://uat.mundusx.ai/v1/chat/completions \
   -H "Content-Type: application/json" \
-  -d '{"model":"ehda-agnostic","messages":[{"role":"user","content":"What is the weather in Warsaw?"}]}'
+  -d '{"model":"mundusx-agnostic","messages":[{"role":"user","content":"What is the weather in Warsaw?"}]}'
 ```
 
-`GET /models` intentionally exposes only `ehda-agnostic` on the Benz/EHDA branch. It is a stable model-agnostic service
+`GET /models` intentionally exposes only `mundusx-agnostic`. It is a stable model-agnostic service
 identity, not a physical model. Behind it, the heterogeneous MundusX network lets the planner
 privately choose the best eligible contributor node,
 runtime, and model for every request. Requested model names, selected physical models, and node
@@ -124,9 +124,9 @@ For Open WebUI, go to **Admin Settings → Connections → OpenAI → Add Connec
 
 ```text
 Connection type: External / OpenAI-compatible
-URL: https://mundusx.ai/v1
+URL: https://uat.mundusx.ai/v1
 API key: not-required
-Model IDs filter: leave empty (auto-discovers ehda-agnostic)
+Model IDs filter: leave empty (auto-discovers mundusx-agnostic)
 ```
 
 The control plane accepts Open WebUI's default `stream=true`. When a streaming-capable node is available, ordinary text is automatically relayed as live OpenAI-compatible SSE. Structured modes and tool responses remain validated-buffered, and every stream ends with `[DONE]`.
