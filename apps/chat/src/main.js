@@ -2387,6 +2387,9 @@ export function page(config = configFromEnv()) {
         buffer += decoder.decode();
         if (buffer.trim()) consumeEvent(buffer);
         if (!sawDone) throw new Error("MundusX stream ended before completion");
+        if (finishReason === "error") {
+          throw new Error("MundusX replaced an invalid streamed draft with a validated result");
+        }
         if (!output.trim()) throw new Error("MundusX completed without assistant output");
       } catch (streamError) {
         await reader.cancel().catch(() => {});
