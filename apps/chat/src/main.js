@@ -10268,20 +10268,18 @@ function isIncompletePlaceholderCode(value) {
   if (!text || !looksLikeCodeOutput(text)) {
     return false;
   }
-  const placeholderMatches = text.match(
-    /(?:\/\/\s*(?:\.\.\.|todo|add .* here|implement .* here|save\.\.\.|load\.\.\.|delete .* here)|\/\*\s*(?:\.\.\.|todo|implement|placeholder)[\s\S]*?\*\/|\b(?:TODO|TBD)\b|(?<![\w$])\.{3,}(?![\w$]))/gi,
-  ) ?? [];
-  if (placeholderMatches.length < 2) {
-    return false;
-  }
-  const substantiveLines = text
-    .split("\n")
+  const fencedSources = [...text.matchAll(/```[^\n]*\n([\s\S]*?)```/g)].map((match) => match[1]);
+  const sources = fencedSources.length ? fencedSources : [text];
+  const placeholderLineCount = sources
+    .flatMap((source) => source.split("\n"))
     .map((line) => line.trim())
-    .filter((line) => line && !/^```/.test(line));
-  const placeholderLineCount = substantiveLines.filter((line) =>
-    /(?:\/\/\s*(?:\.\.\.|todo|add .* here|implement .* here|save\.\.\.|load\.\.\.|delete .* here)|\/\*|\b(?:TODO|TBD)\b|(?<![\w$])\.{3,}(?![\w$]))/i.test(line),
-  ).length;
-  return placeholderLineCount >= 2 || placeholderMatches.length >= 2;
+    .filter(Boolean)
+    .filter((line) =>
+      /^\.{3,}$/.test(line) ||
+      /^(?:pass|raise\s+NotImplementedError(?:\([^)]*\))?)\s*$/i.test(line) ||
+      /^(?:\/\/|#|\/\*|\*)[\s\S]*?(?:\b(?:TODO|TBD)\b|\.{3,}|\b(?:add|implement|save|load|delete)\b[\s\S]*?\bhere\b)/i.test(line),
+    ).length;
+  return placeholderLineCount >= 2;
 }
 
 function isIncompleteCodeFallback(value) {
