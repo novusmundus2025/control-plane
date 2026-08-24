@@ -3903,7 +3903,7 @@ export function createServerApp(config = configFromEnv()) {
       if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
         const body = await readJsonBody(request);
         if (body?.stream === true) {
-          return streamOpenAiChatCompletion(response, body, config);
+          return await streamOpenAiChatCompletion(response, body, config);
         }
         const result = await submitOpenAiChatCompletion(body, config);
         return sendOpenAiJson(response, 200, result);
@@ -3932,7 +3932,7 @@ export function createServerApp(config = configFromEnv()) {
       }
       if (request.method === "POST" && url.pathname === "/api/chat/stream") {
         const body = await readJsonBody(request);
-        return streamChatTurn(response, body, config);
+        return await streamChatTurn(response, body, config);
       }
       if (request.method === "POST" && url.pathname === "/api/chat/jobs") {
         const body = await readJsonBody(request);
@@ -4129,12 +4129,15 @@ export async function streamOpenAiChatCompletion(response, body, config, fetchIm
   const message = openAiMessageText(lastUserMessage?.content);
   const buffered = requiresValidatedStreaming(message, body);
   if (!buffered) {
-    return relayControlPlaneOpenAiStream(response, body, config, fetchImpl);
+    const upstreamBody = { ...body };
+    if (config.modelOverride) upstreamBody.model = config.modelOverride;
+    else delete upstreamBody.model;
+    return relayControlPlaneOpenAiStream(response, upstreamBody, config, fetchImpl, {
+      publicOpenAi: true,
+    });
   }
   const completionId = normalizeOpenAiCompletionId(body?.request_id);
-  const created = Math.floor(Date.now() / 1000);
   startOpenAiStream(response, buffered ? "validated" : "ordinary");
-  response.write(openAiSseStartFrame(completionId, created));
   const heartbeat = setInterval(() => {
     if (!response.writableEnded) response.write(": keep-alive\n\n");
   }, 10_000);
@@ -4145,7 +4148,7 @@ export async function streamOpenAiChatCompletion(response, body, config, fetchIm
       config,
       fetchImpl,
     );
-    for (const frame of openAiSseFrames(completion, { buffered, roleAlreadySent: true })) {
+    for (const frame of openAiSseFrames(completion, { buffered, roleAlreadySent: false })) {
       response.write(frame);
     }
     response.end("data: [DONE]\n\n");
@@ -4216,6 +4219,13 @@ export async function relayControlPlaneOpenAiStream(
       // Preserve and relay unknown upstream events without treating them as content.
     }
   };
+  const relayEvent = (eventText) => {
+    inspectEvent(eventText);
+    if (hooks.publicOpenAi === true) {
+      const normalized = normalizePublicOpenAiStreamEvent(eventText);
+      if (normalized) response.write(`${normalized}\n\n`);
+    }
+  };
 
   try {
     while (true) {
@@ -4223,18 +4233,24 @@ export async function relayControlPlaneOpenAiStream(
       if (done) break;
       const text = decoder.decode(value, { stream: true });
       if (!text) continue;
-      response.write(text);
       parseBuffer += text;
       const events = parseBuffer.split(/\r?\n\r?\n/);
       parseBuffer = events.pop() ?? "";
-      events.forEach(inspectEvent);
+      if (hooks.publicOpenAi === true) events.forEach(relayEvent);
+      else {
+        response.write(text);
+        events.forEach(inspectEvent);
+      }
     }
     const tail = decoder.decode();
     if (tail) {
-      response.write(tail);
       parseBuffer += tail;
+      if (hooks.publicOpenAi !== true) response.write(tail);
     }
-    if (parseBuffer.trim()) inspectEvent(parseBuffer);
+    if (parseBuffer.trim()) {
+      if (hooks.publicOpenAi === true) relayEvent(parseBuffer);
+      else inspectEvent(parseBuffer);
+    }
     if (!sawDone) {
       throw new Error("control-plane stream ended before [DONE]");
     }
@@ -4249,6 +4265,30 @@ export async function relayControlPlaneOpenAiStream(
     return { content, completionId, finishReason: "error", error: error.message ?? "stream failed" };
   } finally {
     reader.releaseLock?.();
+  }
+}
+
+export function normalizePublicOpenAiStreamEvent(eventText) {
+  const event = String(eventText ?? "").trim();
+  if (!event || event.startsWith(":")) return event;
+  const data = event
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n")
+    .trim();
+  if (!data || data === "[DONE]") return data === "[DONE]" ? "data: [DONE]" : event;
+  try {
+    const payload = JSON.parse(data);
+    const choice = payload?.choices?.[0];
+    const content = choice?.delta?.content;
+    const hasContent = typeof content === "string" && content.length > 0;
+    const terminal = choice?.finish_reason != null || payload?.usage != null || payload?.error != null;
+    if (!hasContent && !terminal) return null;
+    if (payload && typeof payload === "object" && !payload.error) payload.model = PUBLIC_MODEL_ID;
+    return `data: ${JSON.stringify(payload)}`;
+  } catch {
+    return event;
   }
 }
 
@@ -4295,6 +4335,7 @@ export function openAiSseFrames(completion, { buffered = true, roleAlreadySent =
   const finalChunk = {
     ...base,
     choices: [{ index: 0, delta: {}, finish_reason: choice?.finish_reason ?? "stop" }],
+    ...(completion?.usage ? { usage: completion.usage } : {}),
   };
   return [...contentChunks, finalChunk].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`);
 }
