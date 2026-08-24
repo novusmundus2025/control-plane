@@ -500,14 +500,14 @@ pub fn completion_response(
     })
 }
 
-pub fn sse_start(_id: &str, _created: u64, _model: &str, live: bool) -> String {
+pub fn sse_start(id: &str, _created: u64, _model: &str, live: bool) -> String {
     let mode = if live {
         "live-delta"
     } else {
         "validated-buffered"
     };
     format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nX-MundusX-Stream-Mode: {mode}\r\nConnection: close\r\n\r\n: stream opened\n\n"
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nX-MundusX-Stream-Mode: {mode}\r\nX-MundusX-Completion-Id: {id}\r\nConnection: close\r\n\r\n: stream opened\n\n"
     )
 }
 
@@ -942,6 +942,7 @@ mod tests {
     fn live_sse_advertises_delta_mode() {
         let start = sse_start("chatcmpl-live", 1, "mundusx-agnostic", true);
         assert!(start.contains("X-MundusX-Stream-Mode: live-delta"));
+        assert!(start.contains("X-MundusX-Completion-Id: chatcmpl-live"));
     }
 
     #[test]
