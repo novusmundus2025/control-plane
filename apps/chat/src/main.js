@@ -1696,6 +1696,8 @@ export function page(config = configFromEnv()) {
     let activeHistoryMenuId = null;
     let activeHistoryId = localStorage.getItem(conversationIdKey);
     let activeHistoryLoadToken = 0;
+    let loadingHistoryConversationId = null;
+    const conversationStreamStates = new Map();
     let readyNodeCount = null;
     let followLatestMessage = true;
     let chatScrollFrame = null;
@@ -2120,6 +2122,7 @@ export function page(config = configFromEnv()) {
 
     newChatEl?.addEventListener("click", () => {
       activeHistoryLoadToken += 1;
+      loadingHistoryConversationId = null;
       followLatestMessage = true;
       localStorage.setItem(conversationIdKey, crypto.randomUUID());
       activeHistoryId = localStorage.getItem(conversationIdKey);
@@ -2155,11 +2158,7 @@ export function page(config = configFromEnv()) {
         }
         syncNetworkRuntimeStatus(true);
       } catch (error) {
-        pending.className = "message error";
-        const body = pending.querySelector(".message-body");
-        body.textContent = error.message;
-        appendRetryAction(body, message);
-        setStatus("error", "Error");
+        failConversationStream(conversationId, pending, message, error);
       } finally {
         sendEl.disabled = false;
         promptEl.focus();
@@ -2216,6 +2215,17 @@ export function page(config = configFromEnv()) {
     }
 
     async function tryLiveChatTurn(pending, message, conversationId) {
+      const streamState = {
+        conversationId,
+        message,
+        node: pending,
+        status: "connecting",
+        output: "",
+        completionId: null,
+        payload: null,
+        error: null,
+      };
+      conversationStreamStates.set(conversationId, streamState);
       const historyMessages = readCachedConversation(conversationId)
         .slice(0, -1)
         .map((turn) => ({ role: turn.role, content: turn.content }))
@@ -2232,7 +2242,10 @@ export function page(config = configFromEnv()) {
           conversationId,
         }),
       });
-      if (response.status === 409) return false;
+      if (response.status === 409) {
+        conversationStreamStates.delete(conversationId);
+        return false;
+      }
       if (!response.ok) {
         const payload = await readApiPayload(response, "chat stream failed");
         throw new Error(payload.error || "chat stream failed");
@@ -2252,7 +2265,9 @@ export function page(config = configFromEnv()) {
       const recoverCompletedJob = async (streamError) => {
         if (!completionId) throw streamError;
         try {
-          setStatus("working", "Recovering");
+          streamState.status = "recovering";
+          streamState.completionId = completionId;
+          if (activeHistoryId === conversationId) setStatus("working", "Recovering");
           const pollParams = new URLSearchParams({
             conversationId,
             prompt: message,
@@ -2278,14 +2293,15 @@ export function page(config = configFromEnv()) {
               continue;
             }
             if (!["completed", "failed"].includes(payload.status)) {
-              renderPendingJob(pending, payload);
+              streamState.payload = payload;
+              renderConversationStreamState(streamState);
               await sleep(1500);
             }
           }
           if (payload.status === "failed") {
             throw new Error(payload.error || "MundusX job failed");
           }
-          renderCompletedJob(pending, payload, conversationId);
+          completeConversationStream(streamState, payload);
           return true;
         } catch (recoveryError) {
           throw new Error(
@@ -2313,7 +2329,10 @@ export function page(config = configFromEnv()) {
         const delta = String(choice?.delta?.content || "");
         if (delta) {
           output += delta;
-          renderStreamingJob(pending, output, completionId);
+          streamState.status = "streaming";
+          streamState.output = output;
+          streamState.completionId = completionId;
+          renderConversationStreamState(streamState);
         }
         if (choice?.finish_reason) finishReason = choice.finish_reason;
       };
@@ -2336,14 +2355,14 @@ export function page(config = configFromEnv()) {
         return recoverCompletedJob(streamError);
       }
 
-      renderCompletedJob(pending, {
+      completeConversationStream(streamState, {
         status: "completed",
         output,
         job_id: completionId,
         execution_mode: "single",
         finish_reason: finishReason || "stop",
         stream_mode: response.headers.get("x-mundusx-stream-mode") || "live-delta",
-      }, conversationId);
+      });
       return true;
     }
 
@@ -2361,6 +2380,80 @@ export function page(config = configFromEnv()) {
       body.appendChild(meta);
       setStatus("working", "Streaming");
       scrollChatToLatest();
+    }
+
+    function ensureConversationStreamNode(state) {
+      if (state.node?.isConnected) return state.node;
+      state.node = addMessage("", "assistant");
+      return state.node;
+    }
+
+    function renderConversationStreamState(state) {
+      if (!state || activeHistoryId !== state.conversationId || loadingHistoryConversationId === state.conversationId) return;
+      const node = ensureConversationStreamNode(state);
+      if (state.status === "completed" && state.payload) {
+        renderCompletedJob(node, state.payload, null, { cache: false, speak: false });
+        return;
+      }
+      if (state.status === "failed") {
+        node.className = "message error";
+        const body = node.querySelector(".message-body");
+        body.textContent = state.error || "MundusX stream failed";
+        appendRetryAction(body, state.message);
+        setStatus("error", "Error");
+        return;
+      }
+      if (state.status === "recovering" && state.payload) {
+        renderPendingJob(node, state.payload);
+        return;
+      }
+      if (state.output) {
+        renderStreamingJob(node, state.output, state.completionId);
+        return;
+      }
+      const body = node.querySelector(".message-body");
+      body.textContent = "Connecting to MundusX...";
+      const meta = document.createElement("div");
+      meta.className = "meta";
+      meta.textContent = "Stream starting";
+      body.appendChild(meta);
+      setStatus("working", "Connecting");
+    }
+
+    function completeConversationStream(state, payload) {
+      state.status = "completed";
+      state.output = String(payload?.output || state.output || "");
+      state.completionId = payload?.job_id || state.completionId;
+      state.payload = { ...payload, output: state.output, job_id: state.completionId };
+      if (activeHistoryId === state.conversationId) {
+        const node = ensureConversationStreamNode(state);
+        renderCompletedJob(node, state.payload, state.conversationId);
+      } else {
+        state.node = null;
+        appendCachedConversationTurn(state.conversationId, {
+          role: "assistant",
+          content: state.output,
+          payload: state.payload,
+          jobId: state.completionId,
+        });
+      }
+      window.setTimeout(() => {
+        if (conversationStreamStates.get(state.conversationId) === state) {
+          conversationStreamStates.delete(state.conversationId);
+        }
+      }, 120000);
+    }
+
+    function failConversationStream(conversationId, fallbackNode, message, error) {
+      const state = conversationStreamStates.get(conversationId) || {
+        conversationId,
+        message,
+        node: fallbackNode,
+      };
+      state.status = "failed";
+      state.error = error?.message || "MundusX stream failed";
+      conversationStreamStates.set(conversationId, state);
+      renderConversationStreamState(state);
     }
 
     async function readApiPayload(response, fallbackMessage) {
@@ -2440,7 +2533,7 @@ export function page(config = configFromEnv()) {
       return wrapper;
     }
 
-    function renderCompletedJob(node, payload, conversationId = null) {
+    function renderCompletedJob(node, payload, conversationId = null, options = {}) {
       const body = node.querySelector(".message-body");
       const userPrompt = findPreviousUserMessage(node);
       const output = stripEchoedPrompt(payload.output || "(empty response)", userPrompt);
@@ -2465,14 +2558,15 @@ export function page(config = configFromEnv()) {
       }
       body.appendChild(meta);
       scrollChatToLatest();
-      if (conversationId) {
+      if (conversationId && options.cache !== false) {
         appendCachedConversationTurn(conversationId, {
           role: "assistant",
           content: displayTextForCachedPayload(payload, output),
           payload,
+          jobId: payload.job_id,
         });
       }
-      speakAssistantReply(spokenTextForPayload(payload, output));
+      if (options.speak !== false) speakAssistantReply(spokenTextForPayload(payload, output));
     }
 
     function createCitationSources(sources) {
@@ -3517,6 +3611,7 @@ export function page(config = configFromEnv()) {
       if (!conversationId) return;
       const loadToken = ++activeHistoryLoadToken;
       activeHistoryId = conversationId;
+      loadingHistoryConversationId = conversationId;
       localStorage.setItem(conversationIdKey, conversationId);
       renderHistory();
       promptEl.value = "";
@@ -3544,8 +3639,27 @@ export function page(config = configFromEnv()) {
         addMessage(item.title || "Untitled conversation", "user");
         addMessage("This conversation was not saved in the backend yet. Shallow tool results and older local-only items can only restore from this browser cache.", "assistant");
       }
+      loadingHistoryConversationId = null;
       syncNetworkRuntimeStatus(true);
+      reattachConversationStream(conversationId, turns);
       scrollChatToLatest(true);
+    }
+
+    function reattachConversationStream(conversationId, turns = []) {
+      const state = conversationStreamStates.get(conversationId);
+      if (!state) return;
+      const alreadyRendered = state.status === "completed" && turns.some((turn) => {
+        if (turn.role !== "assistant") return false;
+        const turnJobId = turn.job_id || turn.payload?.job_id;
+        if (state.completionId && turnJobId === state.completionId) return true;
+        return state.output && String(turn.content || "").trim() === state.output.trim();
+      });
+      if (alreadyRendered) {
+        conversationStreamStates.delete(conversationId);
+        return;
+      }
+      state.node = null;
+      renderConversationStreamState(state);
     }
 
     function clearConversation() {
@@ -3584,12 +3698,18 @@ export function page(config = configFromEnv()) {
     function appendCachedConversationTurn(conversationId, turn) {
       if (!conversationId || !turn?.content) return;
       const turns = readCachedConversation(conversationId);
+      const jobId = turn.jobId || turn.payload?.job_id || null;
+      const withoutDuplicate = turns.filter((entry) => {
+        if (jobId && (entry.job_id === jobId || entry.payload?.job_id === jobId)) return false;
+        return !(turn.role === "assistant" && entry.role === "assistant" && entry.content === turn.content);
+      });
       const next = [
-        ...turns,
+        ...withoutDuplicate,
         {
           role: turn.role === "user" ? "user" : "assistant",
           content: turn.content,
           payload: turn.payload || null,
+          job_id: jobId,
           createdAt: Date.now(),
         },
       ].slice(-80);
