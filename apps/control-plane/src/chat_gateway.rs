@@ -500,21 +500,14 @@ pub fn completion_response(
     })
 }
 
-pub fn sse_start(id: &str, created: u64, model: &str, live: bool) -> String {
-    let start = json!({
-        "id": id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": model,
-        "choices": [{"index": 0, "delta": {"role": "assistant", "content": ""}, "finish_reason": Value::Null}]
-    });
+pub fn sse_start(_id: &str, _created: u64, _model: &str, live: bool) -> String {
     let mode = if live {
         "live-delta"
     } else {
         "validated-buffered"
     };
     format!(
-        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nX-MundusX-Stream-Mode: {mode}\r\nConnection: close\r\n\r\ndata: {start}\n\n"
+        "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-cache\r\nX-Accel-Buffering: no\r\nX-MundusX-Stream-Mode: {mode}\r\nConnection: close\r\n\r\n: stream opened\n\n"
     )
 }
 
@@ -524,7 +517,7 @@ pub fn sse_delta(id: &str, created: u64, model: &str, content: &str) -> String {
         "object": "chat.completion.chunk",
         "created": created,
         "model": model,
-        "choices": [{"index": 0, "delta": {"content": content}, "finish_reason": Value::Null}]
+        "choices": [{"index": 0, "delta": {"role": "assistant", "content": content}, "finish_reason": Value::Null}]
     });
     format!("data: {chunk}\n\n")
 }
@@ -918,8 +911,9 @@ mod tests {
         let finish = sse_finish(&completion);
         assert!(start.starts_with("HTTP/1.1 200 OK"));
         assert!(start.contains("Content-Type: text/event-stream"));
-        assert!(start.contains("\"role\":\"assistant\""));
-        assert!(finish.contains("\"delta\":{\"content\":\"Done.\"}"));
+        assert!(!start.contains("data:"));
+        assert!(finish.contains("\"role\":\"assistant\""));
+        assert!(finish.contains("\"delta\":{\"content\":\"Done.\",\"role\":\"assistant\"}"));
         assert!(finish.contains("data: [DONE]"));
     }
 
