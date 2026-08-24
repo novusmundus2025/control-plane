@@ -726,7 +726,7 @@ export function page(config = configFromEnv()) {
       overflow: hidden;
     }
     .conversation {
-      width: min(880px, 100%);
+      width: min(1120px, 100%);
       min-width: 0;
       margin: 0 auto;
       padding: 38px 18px 28px;
@@ -877,7 +877,7 @@ export function page(config = configFromEnv()) {
       overflow-wrap: anywhere;
     }
     .message.user .message-body {
-      max-width: min(660px, 74%);
+      max-width: min(880px, 88%);
       background: linear-gradient(90deg, rgba(124, 108, 246, 0.12), rgba(59, 130, 246, 0.08));
       border: 1px solid rgba(124, 108, 246, 0.25);
       border-radius: 16px 16px 4px 16px;
@@ -1067,13 +1067,13 @@ export function page(config = configFromEnv()) {
       color: var(--muted);
     }
     .code-block {
-      margin: 12px 0;
+      margin: 16px 0 20px;
       width: 100%;
       max-width: 100%;
       min-width: 0;
       border: 1px solid #1f2430;
-      background: #12141c;
-      border-radius: 10px;
+      background: #0f1118;
+      border-radius: 14px;
       overflow: hidden;
       box-shadow: 0 10px 26px rgba(18, 20, 28, 0.12);
     }
@@ -1083,12 +1083,28 @@ export function page(config = configFromEnv()) {
       justify-content: space-between;
       gap: 12px;
       border-bottom: 1px solid #1f2430;
-      padding: 7px 8px 7px 12px;
-      background: #0d0f15;
+      min-height: 42px;
+      padding: 7px 10px 7px 14px;
+      background: #0a0c11;
+    }
+    .code-title {
+      min-width: 0;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+    }
+    .code-filename {
+      min-width: 0;
+      overflow: hidden;
+      color: #dbe3f1;
+      font-size: 12px;
+      font-weight: 700;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .code-label {
       color: #8a93a6;
-      font-size: 11px;
+      font-size: 10px;
       letter-spacing: 0.04em;
       text-transform: uppercase;
     }
@@ -1105,7 +1121,7 @@ export function page(config = configFromEnv()) {
       cursor: pointer;
       padding: 5px 7px;
       font: inherit;
-      font-size: 11px;
+      font-size: 12px;
       line-height: 1;
       transition: background var(--motion-fast), color var(--motion-fast);
     }
@@ -1124,8 +1140,8 @@ export function page(config = configFromEnv()) {
       overflow: auto;
       white-space: pre;
       font-family: "SF Mono", Menlo, Consolas, monospace;
-      font-size: 13px;
-      line-height: 1.6;
+      font-size: 13.5px;
+      line-height: 1.65;
       tab-size: 2;
       scrollbar-color: #3a4050 transparent;
     }
@@ -1170,6 +1186,8 @@ export function page(config = configFromEnv()) {
     @media (max-width: 640px) {
       .code-action { padding: 6px; }
       .code-line::before { width: 34px; margin-right: 10px; }
+      .code-label { display: none; }
+      .message.user .message-body { max-width: 94%; }
     }
 
     .work-trace { display: grid; gap: 12px; }
@@ -2657,11 +2675,24 @@ export function page(config = configFromEnv()) {
       }
       for (const part of parts) {
         if (part.type === "code") {
-          container.appendChild(createCodeBlock(part.language, formatCodeForDisplay(part.value)));
+          const displayName = codeBlockDisplayName(container);
+          container.appendChild(createCodeBlock(part.language, formatCodeForDisplay(part.value), displayName));
         } else {
           appendTextParagraphs(container, part.value);
         }
       }
+    }
+
+    function codeBlockDisplayName(container) {
+      const previous = container.lastElementChild;
+      if (!previous || !/^H[1-6]$/.test(previous.tagName)) return "";
+      const value = String(previous.textContent || "")
+        .replace(/^\\d+[.)]\\s*/, "")
+        .replace(/^file\\s*:\\s*/i, "")
+        .replaceAll(String.fromCharCode(96), "")
+        .replace(/[*_]/g, "")
+        .trim();
+      return value.length > 0 && value.length <= 120 ? value : "";
     }
 
     function splitMarkdownCode(text) {
@@ -2774,6 +2805,8 @@ export function page(config = configFromEnv()) {
 
     function normalizeAssistantDisplayText(text) {
       return String(text || "")
+        .replace(/\\s+---\\s+(?=#{1,6}\\s)/g, "\\n\\n---\\n\\n")
+        .replace(/\\s+(#{2,6})\\s+(?=[A-Z0-9.])/g, "\\n\\n$1 ")
         .replace(/\\r\\n/g, "\\n")
         .replace(/\\s+(\\d+)\\.\\s+(?=\\*\\*|[A-Z0-9])/g, "\\n$1. ")
         .replace(/\\s+[-*]\\s+(?=\\*\\*|[A-Z0-9])/g, "\\n- ")
@@ -2880,15 +2913,26 @@ export function page(config = configFromEnv()) {
       }
     }
 
-    function createCodeBlock(language, code) {
+    function createCodeBlock(language, code, displayName = "") {
       const wrapper = document.createElement("div");
       wrapper.className = "code-block";
       const normalizedLanguage = normalizeCodeLanguage(language);
+      const safeDisplayName = sanitizeCodeFilename(displayName);
+      wrapper.setAttribute("aria-label", safeDisplayName ? "Code file " + safeDisplayName : normalizedLanguage + " code");
       const header = document.createElement("div");
       header.className = "code-header";
+      const title = document.createElement("div");
+      title.className = "code-title";
+      if (safeDisplayName) {
+        const filename = document.createElement("div");
+        filename.className = "code-filename";
+        filename.textContent = safeDisplayName;
+        title.appendChild(filename);
+      }
       const label = document.createElement("div");
       label.className = "code-label";
       label.textContent = normalizedLanguage;
+      title.appendChild(label);
       const actions = document.createElement("div");
       actions.className = "code-actions";
       const collapseButton = createCodeAction("Collapse", "Collapse code");
@@ -2901,7 +2945,7 @@ export function page(config = configFromEnv()) {
       });
       const saveButton = createCodeAction("Save", "Save code to a file");
       saveButton.addEventListener("click", () => {
-        saveCodeFile(code, normalizedLanguage);
+        saveCodeFile(code, normalizedLanguage, safeDisplayName);
         saveButton.textContent = "Saved";
         saveButton.dataset.state = "success";
         setTimeout(() => {
@@ -2921,7 +2965,7 @@ export function page(config = configFromEnv()) {
         }, 1600);
       });
       actions.append(collapseButton, saveButton, copyButton);
-      header.append(label, actions);
+      header.append(title, actions);
       const pre = document.createElement("pre");
       const codeNode = document.createElement("code");
       codeNode.dataset.language = normalizedLanguage;
@@ -2929,6 +2973,14 @@ export function page(config = configFromEnv()) {
       pre.appendChild(codeNode);
       wrapper.append(header, pre);
       return wrapper;
+    }
+
+    function sanitizeCodeFilename(value) {
+      const cleaned = String(value || "")
+        .replace(/[\\\\/:*?"<>|]/g, "-")
+        .replace(/\\s+/g, " ")
+        .trim();
+      return cleaned.slice(0, 120);
     }
 
     function createCodeAction(text, ariaLabel) {
@@ -3031,7 +3083,7 @@ export function page(config = configFromEnv()) {
       }
     }
 
-    function saveCodeFile(code, language) {
+    function saveCodeFile(code, language, displayName = "") {
       const extensions = {
         bash: "sh", "c#": "cs", "c++": "cpp", css: "css", go: "go", html: "html",
         java: "java", javascript: "js", json: "json", kotlin: "kt", php: "php",
@@ -3043,7 +3095,11 @@ export function page(config = configFromEnv()) {
       const url = URL.createObjectURL(blob);
       const anchor = document.createElement("a");
       anchor.href = url;
-      anchor.download = "mundusx-code." + extension;
+      const requestedName = sanitizeCodeFilename(displayName);
+      const hasExtension = /\\.[a-z0-9]{1,10}$/i.test(requestedName);
+      anchor.download = requestedName
+        ? requestedName + (hasExtension ? "" : "." + extension)
+        : "mundusx-code." + extension;
       document.body.appendChild(anchor);
       anchor.click();
       anchor.remove();
@@ -3801,6 +3857,7 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
       historyMessages: messages.slice(0, lastUserIndex),
       executionMode: body?.execution_mode ?? "auto",
       toolMode: toolMode !== false,
+      voicePersona: body?.voicePersona ?? body?.voice_persona,
       model: undefined,
       temperature: body?.temperature,
       topP: body?.top_p,
@@ -3898,6 +3955,21 @@ export async function streamChatTurn(response, body, config = configFromEnv(), f
       .filter((entry) => entry.content)
       .slice(-20)
     : [];
+  if (requiresValidatedStreaming(message, body)) {
+    return streamOpenAiChatCompletion(response, {
+      stream: true,
+      messages: [
+        ...historyMessages,
+        { role: "user", content: message },
+      ],
+      execution_mode: body?.executionMode ?? "auto",
+      tool_mode: isToolModeEnabled(body),
+      temperature: body?.temperature,
+      top_p: body?.topP,
+      conversation_id: conversationId,
+      voicePersona: body?.voicePersona,
+    }, config, fetchImpl);
+  }
   if (conversationId) {
     await appendConversationMessage(conversationId, "user", message, config, fetchImpl).catch((error) => {
       console.warn(`[conversation] failed to persist streaming user message: ${error.message}`);
@@ -4599,6 +4671,9 @@ function shouldUseSingleCodeExecution(message) {
   const lower = String(message ?? "").toLowerCase();
   if (!looksLikeCompleteProgramRequest(lower)) {
     return false;
+  }
+  if (looksLikeProductionCodeProjectRequest(lower) && !looksLikeMultiDeliverableRequest(lower)) {
+    return true;
   }
   if (looksLikeNaturalCodeProjectRequest(lower) && !looksLikeMultiDeliverableRequest(lower)) {
     return true;
@@ -8788,6 +8863,9 @@ function inferMaxTokens(message, explicitValue, capacityProfile = null, codeTran
     return adaptiveTokenBudget("codeSmall", 1536, capacityProfile);
   }
   if (looksLikeCompleteProgramRequest(lower)) {
+    if (looksLikeProductionCodeProjectRequest(lower)) {
+      return adaptiveTokenBudget("codeProject", 6144, capacityProfile);
+    }
     if (looksLikeSmallCompleteProgramRequest(message)) {
       return adaptiveTokenBudget("codeSmall", 1536, capacityProfile);
     }
@@ -8850,10 +8928,10 @@ function inferMaxTokens(message, explicitValue, capacityProfile = null, codeTran
 function adaptiveTokenBudget(kind, fallback, capacityProfile) {
   const tier = capacityProfile?.tier ?? "small";
   const budgets = {
-    small: { normal: 512, long: 768, detailed: 1024, research: 2048, codeSmall: 1536, code: 4096 },
-    medium: { normal: 768, long: 1024, detailed: 1536, research: 3072, codeSmall: 2048, code: 4096 },
-    large: { normal: 1024, long: 1536, detailed: 2048, research: 4096, codeSmall: 3072, code: 4096 },
-    xlarge: { normal: 2048, long: 3072, detailed: 4096, research: 6144, codeSmall: 4096, code: 6144 },
+    small: { normal: 512, long: 768, detailed: 1024, research: 2048, codeSmall: 1536, code: 4096, codeProject: 6144 },
+    medium: { normal: 768, long: 1024, detailed: 1536, research: 3072, codeSmall: 2048, code: 4096, codeProject: 6144 },
+    large: { normal: 1024, long: 1536, detailed: 2048, research: 4096, codeSmall: 3072, code: 4096, codeProject: 8192 },
+    xlarge: { normal: 2048, long: 3072, detailed: 4096, research: 6144, codeSmall: 4096, code: 6144, codeProject: 8192 },
   };
   return budgets[tier]?.[kind] ?? fallback;
 }
@@ -9093,7 +9171,11 @@ export function inferChatRequestTimeoutSeconds(
   const explicit = positiveInteger(requestedSeconds, 0);
   if (explicit > 0) return explicit;
   const baseline = positiveInteger(defaultSeconds, DEFAULT_TIMEOUT_SECONDS);
-  return chooseChatExecutionMode(message, requestedMode) === "decompose"
+  const executionMode = chooseChatExecutionMode(message, requestedMode);
+  if (looksLikeProductionCodeProjectRequest(String(message ?? "").toLowerCase()) && executionMode === "single") {
+    return Math.max(baseline, 300);
+  }
+  return executionMode === "decompose"
     ? Math.max(baseline, 900)
     : baseline;
 }
@@ -9123,6 +9205,13 @@ function looksLikeNaturalCodeProjectRequest(lower) {
   return naturalRequest && hasRuntime && hasProjectScope;
 }
 
+function looksLikeProductionCodeProjectRequest(lower) {
+  const text = String(lower ?? "");
+  const isProject = looksLikeCodeProjectRequest(text) || looksLikeNaturalCodeProjectRequest(text);
+  const explicitlySmall = /\b(?:simple|example|demo|prototype|minimal|single[- ]file|in[- ]memory)\b/i.test(text);
+  return isProject && !explicitlySmall;
+}
+
 function looksLikeMathRequest(lower) {
   return /\b(?:solve|equation|derivative|differentiate|integral|integrate|compute|calculate|simplify|factor|evaluate)\b/i.test(lower) ||
     /\bfind\s+[a-z]\b/i.test(lower) ||
@@ -9147,6 +9236,7 @@ export function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
   const selectedSkills = selectChatSkills(message);
   const includePersona = selectedSkills.some((skill) => skill.name === "persona-atlas.md") || persona === "marie";
   const lower = String(message).toLowerCase();
+  const productionCodeProject = looksLikeProductionCodeProjectRequest(lower);
   const rules = [
     `You are ${personaName}, the MundusX assistant.`,
     includePersona ? personaText : "",
@@ -9169,13 +9259,24 @@ export function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
     rules.push(
       "For complete code requests, begin with a brief useful introduction of one to three short sentences or a compact list explaining what the solution does, its key approach, and any important assumption.",
       "Keep that introduction specific and informative; do not use greetings, praise, generic filler, or rewrite the user's request.",
-      "After the introduction, provide the complete compilable source file in a fenced code block.",
-      "Put longer explanation, compile notes, or usage notes after the code.",
       "Do not use ellipses, TODO comments, placeholder bodies, omitted implementation notes, or pseudo-code.",
       "Include all imports, classes, methods, file operations, menu/input handling, and error handling needed for the requested program.",
       "Format source code as readable multiline code with conventional indentation; do not compress an entire program onto one line.",
       "If the user requests a named function or method and says main must call it, define that method and invoke it from main exactly as requested.",
     );
+    if (productionCodeProject) {
+      rules.push(
+        "Treat this as a production-oriented application project, not an in-memory or single-file demonstration.",
+        "After the introduction, add a Project Structure section with a fenced text tree, then give every required file under its own Markdown heading using the exact relative filename and its own correctly labeled fenced code block.",
+        "Include the dependency manifest, environment example without secrets, persistent database configuration, data models, controllers or services, routes, request validation, centralized error handling, application entrypoint, and concise setup or seed instructions when relevant.",
+        "Keep imports, exports, paths, dependency versions, model relationships, route mounting, and scripts coherent across files so the project can be copied and run.",
+      );
+    } else {
+      rules.push(
+        "After the introduction, provide the complete compilable source file in a fenced code block.",
+        "Put longer explanation, compile notes, or usage notes after the code.",
+      );
+    }
   }
   if (looksLikeMathRequest(lower)) {
     rules.push(
@@ -10046,7 +10147,9 @@ function cleanPreCodeIntroduction(value) {
   introduction = stripPromptInstructionLeak(introduction);
   introduction = stripSkillPromptLeak(introduction);
   introduction = stripSystemPromptLeak(introduction);
-  introduction = collapseRepeatedOpeningClause(introduction).trim();
+  introduction = collapseRepeatedOpeningClause(introduction)
+    .replace(/^[,;:\-\u2013\u2014\s]+/, "")
+    .trim();
   if (
     /\b(?:i (?:also )?want|can you|please provide|the program should|this program should|the explanation is below)\b/i.test(introduction)
   ) {
