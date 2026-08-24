@@ -143,8 +143,8 @@ export function normalizeAssistantDisplayText(text) {
   return String(text || "")
     .replace(/\r\n/g, "\n")
     .replace(/\u00a0/g, " ")
-    .replace(/(?:^|[^\S\n]+)---[^\S\n]+(?=#{1,6}[^\S\n])/g, "\n\n---\n\n")
-    .replace(/(^|[^\S\n]+)(#{1,6})[^\S\n]+(?=\S)/g, "$1\n\n$2 ")
+    .replace(/(?:^|[^\S\n]+)---[^\S\n]+(?=#{1,6}(?:[^\S\n]+|(?=[^#\s])))/g, "\n\n---\n\n")
+    .replace(/(^|[^\S\n]+)(#{1,6})(?:[^\S\n]+|(?=[^#\s]))(?=\S)/gm, "$1\n\n$2 ")
     .replace(/[^\S\n]+(\d+)\.[^\S\n]+(?=\*\*|[A-Z0-9])/g, "\n$1. ")
     .replace(/[^\S\n]+([-*+])[^\S\n]+(?=\*\*|[A-Z0-9])/g, "\n$1 ")
     .replace(/\n{3,}/g, "\n\n")
@@ -2876,7 +2876,7 @@ export function page(config = configFromEnv()) {
           container.appendChild(createMarkdownTable(tableLines));
           continue;
         }
-        const heading = trimmed.match(/^(#{1,6})\\s+(.+)$/);
+        const heading = trimmed.match(/^(#{1,6})(?:\\s+|(?=[^#\\s]))(.+)$/);
         if (heading) {
           flushParagraph();
           const node = document.createElement("h" + heading[1].length);

@@ -285,6 +285,26 @@ test("normalizes streamed emoji headings and list boundaries", () => {
   ]);
 });
 
+test("normalizes compact model headings without losing comparison tables", () => {
+  const output = normalizeAssistantDisplayText(
+    "Intro. --- ###1.Architecture\n- **Ethereum:**\n- Layer 1 blockchain.\n---\n###2.Performance\n| Metric | Ethereum | Solana | Polygon |\n|---|---|---|---|\n| TPS | 15–30 | 65,000 | 7,000 |\n*Note: Values are approximate.*",
+  );
+
+  assert.deepEqual(output.split("\n").filter(Boolean), [
+    "Intro.",
+    "---",
+    "### 1.Architecture",
+    "- **Ethereum:**",
+    "- Layer 1 blockchain.",
+    "---",
+    "### 2.Performance",
+    "| Metric | Ethereum | Solana | Polygon |",
+    "|---|---|---|---|",
+    "| TPS | 15–30 | 65,000 | 7,000 |",
+    "*Note: Values are approximate.*",
+  ]);
+});
+
 test("normalizes chat app environment", () => {
   const config = configFromEnv({
     PORT: "3010",
