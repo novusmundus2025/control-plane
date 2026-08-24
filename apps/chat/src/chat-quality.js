@@ -290,7 +290,47 @@ function projectContractProblems(outputValue, promptValue) {
   if (/\b(?:mysql|database)\b/i.test(prompt) && !/\b(?:createConnection|createPool|connect\s*\(|DATABASE_URL|DB_HOST|mysql|postgres|mongodb)\b/i.test(output)) {
     problems.push("is missing database connection code");
   }
+  if (isProductionCodeProjectRequest(prompt)) {
+    const fencedBlocks = [...output.matchAll(/```[a-z0-9+#._-]*\s*[\s\S]*?```/gi)];
+    const sourceBlocks = [...output.matchAll(/```([a-z0-9+#._-]*)\s*([\s\S]*?)```/gi)]
+      .map((match) => ({ label: String(match[1] ?? "").toLowerCase(), source: String(match[2] ?? "").trim() }))
+      .filter((block) => !/^(?:text|txt|plaintext|bash|sh|shell|console|env|dotenv)$/.test(block.label));
+    if (!/\bproject structure\b/i.test(output) || !/```(?:text|txt|plaintext)?\s*[\s\S]*?(?:[├└│]|\|--|\/)[\s\S]*?```/i.test(output)) {
+      problems.push("is missing a fenced project structure");
+    }
+    if (fencedBlocks.length < 3) {
+      problems.push("does not provide the required files as separate fenced blocks");
+    }
+    sourceBlocks.forEach((block, index) => {
+      const language = inferCodeLanguage(prompt, block.source, block.label);
+      if (!hasBalancedCodeDelimiters(block.source, language)) {
+        problems.push(`has unbalanced delimiters in source block ${index + 1}${block.label ? ` (${block.label})` : ""}`);
+      }
+    });
+    if (/\b(?:node(?:\.?js)?|express|javascript|typescript)\b/i.test(prompt) && !/\bpackage\.json\b/i.test(output)) {
+      problems.push("is missing package.json");
+    }
+    if (!/\b(?:mongoose|mongodb|mysql|postgres(?:ql)?|sequelize|prisma|typeorm|knex|sqlite|DATABASE_URL|DB_HOST)\b/i.test(output)) {
+      problems.push("uses no persistent database layer");
+    }
+    if (!/\b(?:zod|joi|express-validator|validation|validate|validator)\b/i.test(output)) {
+      problems.push("is missing request validation");
+    }
+    if (!/\b(?:errorHandler|error handler|centralized error|app\.use\s*\(\s*\([^)]*err)\b/i.test(output)) {
+      problems.push("is missing centralized error handling");
+    }
+  }
   return problems;
+}
+
+function isProductionCodeProjectRequest(promptValue) {
+  const prompt = String(promptValue ?? "");
+  const isProject = /\b(?:create|write|generate|build|give|show|provide|implement)\b/i.test(prompt) &&
+    /\b(?:code|api|backend|server|service|application|app|program)\b/i.test(prompt) &&
+    /\b(?:node(?:\.?js)?|express|javascript|typescript|python|java|spring|flask|fastapi|go|rust|c#|\.net)\b/i.test(prompt) &&
+    /\b(?:crud|database|mysql|postgres(?:ql)?|mongodb|rest(?:ful)?|endpoint|route|api)\b/i.test(prompt);
+  const explicitlySmall = /\b(?:simple|example|demo|prototype|minimal|single[- ]file|in[- ]memory)\b/i.test(prompt);
+  return isProject && !explicitlySmall;
 }
 
 function inferCodeLanguage(promptValue, outputValue, fenceLabel = "") {
