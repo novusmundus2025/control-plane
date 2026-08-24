@@ -29,6 +29,9 @@ const CONTEXT_SAFETY_TOKENS = 256;
 const MAX_HISTORY_CONTEXT_TOKENS = 2048;
 const RECENT_HISTORY_MESSAGES = 6;
 const PUBLIC_MODEL_ID = "mundusx-agnostic";
+const CHAT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
+const MARKED_BROWSER_PATH = resolve(CHAT_ROOT, "node_modules/marked/lib/marked.umd.js");
+const DOMPURIFY_BROWSER_PATH = resolve(CHAT_ROOT, "node_modules/dompurify/dist/purify.min.js");
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
 // Temporarily disabled by product decision. Keep the implementation available so it can
@@ -1663,6 +1666,8 @@ export function page(config = configFromEnv()) {
       </form>
     </main>
   </div>
+  <script src="/assets/vendor/marked.umd.js"></script>
+  <script src="/assets/vendor/purify.min.js"></script>
   <script>
     const form = document.getElementById("chat-form");
     const mainEl = document.getElementById("chat-main");
@@ -2851,6 +2856,7 @@ export function page(config = configFromEnv()) {
     }
 
     function appendTextParagraphs(container, text) {
+      if (appendStandardMarkdown(container, text)) return;
       const lines = normalizeAssistantDisplayText(text).split("\\n");
       let index = 0;
       let paragraph = [];
@@ -2934,6 +2940,38 @@ export function page(config = configFromEnv()) {
     }
 
     ${normalizeAssistantDisplayText.toString()}
+
+    function appendStandardMarkdown(container, text) {
+      if (typeof window.marked?.parse !== "function" || !window.DOMPurify?.isSupported) return false;
+      const rendered = window.marked.parse(normalizeAssistantDisplayText(text), {
+        gfm: true,
+        breaks: false,
+        async: false,
+      });
+      const clean = window.DOMPurify.sanitize(rendered, {
+        USE_PROFILES: { html: true },
+        FORBID_TAGS: ["style"],
+        FORBID_ATTR: ["style"],
+      });
+      const template = document.createElement("template");
+      template.innerHTML = clean;
+      for (const link of template.content.querySelectorAll("a[href]")) {
+        link.target = "_blank";
+        link.rel = "noopener noreferrer";
+      }
+      for (const table of template.content.querySelectorAll("table")) {
+        table.className = "markdown-table";
+        const wrapper = document.createElement("div");
+        wrapper.className = "markdown-table-wrap";
+        wrapper.tabIndex = 0;
+        wrapper.setAttribute("role", "region");
+        wrapper.setAttribute("aria-label", "Scrollable comparison table");
+        table.parentNode.insertBefore(wrapper, table);
+        wrapper.appendChild(table);
+      }
+      container.appendChild(template.content);
+      return true;
+    }
 
     function createListBlock(block) {
       const entries = String(block || "").split("\\n").map((rawLine) => {
@@ -3915,6 +3953,12 @@ export function createServerApp(config = configFromEnv()) {
       }
       if (request.method === "GET" && url.pathname === "/assets/mundusx-logo.png") {
         return sendPng(response, await readFile(LOGO_PATH));
+      }
+      if (request.method === "GET" && url.pathname === "/assets/vendor/marked.umd.js") {
+        return sendJavaScript(response, await readFile(MARKED_BROWSER_PATH));
+      }
+      if (request.method === "GET" && url.pathname === "/assets/vendor/purify.min.js") {
+        return sendJavaScript(response, await readFile(DOMPURIFY_BROWSER_PATH));
       }
       if (request.method === "GET" && url.pathname === "/health") {
         return sendJson(response, 200, {
@@ -10031,6 +10075,15 @@ function sendPng(response, bytes) {
   response.writeHead(200, {
     "Content-Type": "image/png",
     "Cache-Control": "public, max-age=86400",
+  });
+  response.end(bytes);
+}
+
+function sendJavaScript(response, bytes) {
+  response.writeHead(200, {
+    "Content-Type": "text/javascript; charset=utf-8",
+    "Cache-Control": "public, max-age=86400, immutable",
+    "X-Content-Type-Options": "nosniff",
   });
   response.end(bytes);
 }
