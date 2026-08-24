@@ -3443,10 +3443,12 @@ test("generative Chat-U requests stream while deterministic and tool routes fall
   assert.equal(canLiveStreamChatTurn({ message: "Latest NVIDIA news", toolMode: true }), false);
 });
 
-test("native Chat-U routes complete projects through the validated buffered path", async () => {
+test("native Chat-U streams complete projects as upstream deltas arrive", async () => {
   const prompt = "Give me a complete Node.js CRUD API for schools and students.";
   const requests = [];
   const responseEvents = [];
+  const encoder = new TextEncoder();
+  let releaseStream;
   const response = {
     writableEnded: false,
     writeHead: (status, headers) => responseEvents.push({ type: "headers", status, headers }),
@@ -3485,39 +3487,50 @@ test("native Chat-U routes complete projects through the validated buffered path
     "mongoose.connect(process.env.DATABASE_URL);",
     "```",
   ].join("\n");
+  const splitAt = Math.floor(output.length / 2);
+  const upstreamBody = new ReadableStream({
+    start(controller) {
+      controller.enqueue(encoder.encode(
+        `data: ${JSON.stringify({ id: "chatcmpl-native-live", choices: [{ delta: { role: "assistant", content: output.slice(0, splitAt) }, finish_reason: null }] })}\n\n`,
+      ));
+      releaseStream = () => {
+        controller.enqueue(encoder.encode(
+          `data: ${JSON.stringify({ id: "chatcmpl-native-live", choices: [{ delta: { content: output.slice(splitAt) }, finish_reason: null }] })}\n\n` +
+          `data: ${JSON.stringify({ id: "chatcmpl-native-live", choices: [{ delta: {}, finish_reason: "stop" }] })}\n\n` +
+          "data: [DONE]\n\n",
+        ));
+        controller.close();
+      };
+    },
+  });
 
-  await streamChatTurn(
+  const streaming = streamChatTurn(
     response,
     { message: prompt, toolMode: false, executionMode: "auto", voicePersona: "marie" },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     async (url, init = {}) => {
       requests.push({ url, init });
-      if (url.endsWith("/v1/nodes?page=1&page_size=25")) return jsonResponse({ items: [] });
-      if (url.endsWith("/v1/jobs") && init.method === "POST") {
-        const submitted = JSON.parse(init.body);
-        return jsonResponse({
-          job_id: "chatcmpl-native-validated",
-          job: {
-            job_id: "chatcmpl-native-validated",
-            status: "completed",
-            output,
-            max_tokens: submitted.max_tokens,
-            max_tokens_source: submitted.max_tokens_source,
-            graph: { nodes: [] },
-          },
-        }, true, 202);
-      }
+      if (url.endsWith("/v1/chat/completions")) return new Response(upstreamBody, {
+        status: 200,
+        headers: { "Content-Type": "text/event-stream", "X-MundusX-Stream-Mode": "live-delta" },
+      });
       throw new Error(`unexpected URL ${url}`);
     },
   );
 
-  const submitted = JSON.parse(requests.find((entry) => entry.url.endsWith("/v1/jobs")).init.body);
+  await new Promise((resolve) => setImmediate(resolve));
+  const submitted = JSON.parse(requests[0].init.body);
   assert.equal(submitted.max_tokens, 6144);
-  assert.match(submitted.system_prompt, /Project Structure/i);
-  assert.match(submitted.system_prompt, /You are Marie/);
-  assert.equal(requests.some((entry) => entry.url.endsWith("/v1/chat/completions")), false);
-  assert.equal(responseEvents[0].headers["X-MundusX-Stream-Mode"], "validated");
-  assert.match(responseEvents.at(-1).value, /data: \[DONE\]/);
+  assert.match(submitted.messages[0].content, /Project Structure/i);
+  assert.match(submitted.messages[0].content, /You are Marie/);
+  assert.equal(requests[0].url.endsWith("/v1/chat/completions"), true);
+  assert.equal(responseEvents[0].headers["X-MundusX-Stream-Mode"], "live-delta");
+  assert.match(responseEvents[1].value, /"content":"## Project Structure\\n/);
+  assert.equal(response.writableEnded, false);
+  releaseStream();
+  const result = await streaming;
+  assert.equal(result.content, output);
+  assert.equal(responseEvents.at(-1).type, "end");
 });
 
 test("streaming relay exposes the first upstream delta before completion", async () => {
