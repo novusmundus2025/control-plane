@@ -291,7 +291,7 @@ function projectContractProblems(outputValue, promptValue) {
   const problems = [];
   if (/\bcrud\b|create[\s,/-]+read[\s,/-]+update[\s,/-]+delete/i.test(prompt)) {
     for (const method of ["get", "post", "put", "delete"]) {
-      if (!new RegExp(`\\bapp\\.${method}\\s*\\(`, "i").test(output)) {
+      if (!hasCrudRoute(output, method)) {
         problems.push(`is missing the ${method.toUpperCase()} CRUD route`);
       }
     }
@@ -330,6 +330,19 @@ function projectContractProblems(outputValue, promptValue) {
     }
   }
   return problems;
+}
+
+function hasCrudRoute(outputValue, methodValue) {
+  const output = String(outputValue ?? "");
+  const method = String(methodValue ?? "").toLowerCase();
+  const decorator = `${method[0]?.toUpperCase() ?? ""}${method.slice(1)}Mapping`;
+  return [
+    new RegExp(`\\b(?:app|router)\\s*\\.\\s*${method}\\s*\\(`, "i"),
+    new RegExp(`\\b(?:app|router)\\s*\\.\\s*route\\s*\\([^)]*\\)\\s*\\.\\s*${method}\\s*\\(`, "i"),
+    new RegExp(`@(?:app\\.)?${method}\\s*\\(`, "i"),
+    new RegExp(`@${decorator}\\b`, "i"),
+    new RegExp(`\\bMethods?\\s*\\(\\s*["']${method.toUpperCase()}["']`, "i"),
+  ].some((pattern) => pattern.test(output));
 }
 
 function isProductionCodeProjectRequest(promptValue) {
