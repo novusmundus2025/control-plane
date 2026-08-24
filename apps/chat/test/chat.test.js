@@ -236,6 +236,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /const firstTokenDeadline = Date\.now\(\) \+ 60000/);
   assert.match(html, /MundusX did not produce a first token within 60 seconds/);
   assert.match(html, /MundusX job did not complete during stream recovery/);
+  assert.match(html, /finishReason === "error"/);
+  assert.match(html, /replaced an invalid streamed draft with a validated result/);
   assert.match(html, /\/api\/chat\/stream/);
   assert.match(html, /response\.body\.getReader/);
   assert.match(html, /renderStreamingJob/);
