@@ -4954,6 +4954,23 @@ test("rejects placeholder-only code as incomplete", () => {
   assert.doesNotMatch(output, /public class StudentManager/);
 });
 
+test("preserves complete Python benchmark code with legitimate ellipses", () => {
+  const output = cleanChatOutput(
+    "It supports batch sizes (1, 2, 4, 8, ..., up to 256).\n```python\n" +
+    "def run_batch(size):\n" +
+    "    headers = {\"Authorization\": None}  # e.g., \"Bearer sk-...\"\n" +
+    "    result = {\"size\": size, \"errors\": []}\n" +
+    "    print('...' if result['errors'] else 'OK')\n" +
+    "    return result\n" +
+    "\nif __name__ == \"__main__\":\n" +
+    "    run_batch(256)\n```",
+  );
+
+  assert.match(output, /def run_batch\(size\):/);
+  assert.match(output, /Bearer sk-\.\.\./);
+  assert.doesNotMatch(output, /incomplete placeholder code/i);
+});
+
 function jsonResponse(payload, ok = true, status = 200) {
   return {
     ok,
