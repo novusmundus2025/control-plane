@@ -139,6 +139,18 @@ export function configFromEnv(env = process.env) {
   };
 }
 
+export function normalizeAssistantDisplayText(text) {
+  return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\u00a0/g, " ")
+    .replace(/(?:^|[^\S\n]+)---[^\S\n]+(?=#{1,6}[^\S\n])/g, "\n\n---\n\n")
+    .replace(/(^|[^\S\n]+)(#{1,6})[^\S\n]+(?=\S)/g, "$1\n\n$2 ")
+    .replace(/[^\S\n]+(\d+)\.[^\S\n]+(?=\*\*|[A-Z0-9])/g, "\n$1. ")
+    .replace(/[^\S\n]+([-*+])[^\S\n]+(?=\*\*|[A-Z0-9])/g, "\n$1 ")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
 export function page(config = configFromEnv()) {
   return `<!doctype html>
 <html lang="en">
@@ -2803,16 +2815,7 @@ export function page(config = configFromEnv()) {
       flushParagraph();
     }
 
-    function normalizeAssistantDisplayText(text) {
-      return String(text || "")
-        .replace(/\\s+---\\s+(?=#{1,6}\\s)/g, "\\n\\n---\\n\\n")
-        .replace(/\\s+(#{2,6})\\s+(?=[A-Z0-9.])/g, "\\n\\n$1 ")
-        .replace(/\\r\\n/g, "\\n")
-        .replace(/\\s+(\\d+)\\.\\s+(?=\\*\\*|[A-Z0-9])/g, "\\n$1. ")
-        .replace(/\\s+[-*]\\s+(?=\\*\\*|[A-Z0-9])/g, "\\n- ")
-        .replace(/\\n{3,}/g, "\\n\\n")
-        .trim();
-    }
+    ${normalizeAssistantDisplayText.toString()}
 
     function createListBlock(block) {
       const lines = String(block || "").split("\\n").map((line) => line.trim()).filter(Boolean);
