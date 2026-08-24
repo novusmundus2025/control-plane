@@ -164,6 +164,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /className = "markdown-table"/);
   assert.match(html, /aria-label", "Scrollable comparison table"/);
   assert.match(html, /document\.createElement\("h" \+ heading\[1\]\.length\)/);
+  assert.match(html, /parentItem\.appendChild\(nested\)/);
+  assert.match(html, /\.message-body li > ul \{/);
   assert.match(html, /document\.createElement\("hr"\)/);
   assert.match(html, /document\.createElement\("blockquote"\)/);
   assert.match(html, /node\.rel = "noopener noreferrer"/);
@@ -302,6 +304,19 @@ test("normalizes compact model headings without losing comparison tables", () =>
     "|---|---|---|---|",
     "| TPS | 15–30 | 65,000 | 7,000 |",
     "*Note: Values are approximate.*",
+  ]);
+});
+
+test("preserves nested list indentation and inline bold-label separators", () => {
+  const output = normalizeAssistantDisplayText(
+    "- **Ethereum (L1)**\n  - Monolithic L1; now proof-of-stake.\n  - Supports L2 rollups.\n- **Solana** - High-throughput L1.",
+  );
+
+  assert.deepEqual(output.split("\n"), [
+    "- **Ethereum (L1)**",
+    "  - Monolithic L1; now proof-of-stake.",
+    "  - Supports L2 rollups.",
+    "- **Solana** - High-throughput L1.",
   ]);
 });
 
