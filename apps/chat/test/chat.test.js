@@ -76,6 +76,12 @@ test("renders a usable chat page", () => {
   assert.doesNotMatch(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
   assert.doesNotMatch(html, /Example Questions/);
   assert.match(html, /id="chat-form"/);
+  assert.match(html, /<textarea id="prompt" name="prompt" rows="1"/);
+  assert.match(html, /grid-template-columns: auto minmax\(0, 1fr\) auto auto/);
+  assert.match(html, /#enter-to-send-toggle \{ display: none; \}/);
+  assert.match(html, /#voice-speak \{ display: none; \}/);
+  assert.match(html, /let speakReplies = false;/);
+  assert.match(html, /let enterToSendEnabled = true;/);
   assert.match(html, /id="voice-mic"/);
   assert.match(html, /id="voice-speak"/);
   assert.match(html, /id="voice-status"/);
