@@ -3955,21 +3955,6 @@ export async function streamChatTurn(response, body, config = configFromEnv(), f
       .filter((entry) => entry.content)
       .slice(-20)
     : [];
-  if (requiresValidatedStreaming(message, body)) {
-    return streamOpenAiChatCompletion(response, {
-      stream: true,
-      messages: [
-        ...historyMessages,
-        { role: "user", content: message },
-      ],
-      execution_mode: body?.executionMode ?? "auto",
-      tool_mode: isToolModeEnabled(body),
-      temperature: body?.temperature,
-      top_p: body?.topP,
-      conversation_id: conversationId,
-      voicePersona: body?.voicePersona,
-    }, config, fetchImpl);
-  }
   if (conversationId) {
     await appendConversationMessage(conversationId, "user", message, config, fetchImpl).catch((error) => {
       console.warn(`[conversation] failed to persist streaming user message: ${error.message}`);
