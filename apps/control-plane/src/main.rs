@@ -8130,7 +8130,7 @@ mod tests {
             .expect("stream opens promptly");
         let first = String::from_utf8_lossy(&first_bytes[..first_count]);
         assert!(first.contains("Content-Type: text/event-stream"));
-        assert!(first.contains(r#""role":"assistant""#));
+        assert!(!first.contains("data:"));
         assert!(!first.contains("Planner result."));
 
         client
