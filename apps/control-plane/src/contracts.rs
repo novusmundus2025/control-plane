@@ -311,6 +311,10 @@ pub struct StepWorkloadRequirements {
     pub reducer_credibility: String,
     #[serde(default)]
     pub synthesizer_credibility: String,
+    /// Weighted abilities needed by this execution step. Scores use an auditable
+    /// integer 0-100 scale; an empty list preserves legacy single-label routing.
+    #[serde(default)]
+    pub capability_requirements: Vec<CapabilityRequirement>,
 }
 fn default_step_parallelism() -> u32 {
     1
@@ -331,7 +335,32 @@ pub struct RequestClassification {
     pub output_format: ExpectedOutputFormat,
     pub context_size: ContextSize,
     pub execution_constraints: Vec<String>,
+    pub capability_requirements: Vec<CapabilityRequirement>,
+    pub classification_confidence: u8,
     pub reason: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct CapabilityRequirement {
+    pub capability: String,
+    /// Relative contribution to model fit, from 0 to 100.
+    pub weight: u8,
+    /// Minimum acceptable model score, from 0 to 100.
+    pub minimum_score: u8,
+    /// Required capabilities are eligibility gates; preferred capabilities only rank.
+    pub required: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct ModelCapabilityScore {
+    pub capability: String,
+    /// Evidence-backed ability score, from 0 to 100.
+    pub score: u8,
+    /// Confidence in the score, from 0 to 100.
+    pub confidence: u8,
+    pub sample_count: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -347,6 +376,8 @@ pub struct JobSchedulingRequirements {
     pub language: Option<String>,
     #[serde(default)]
     pub preferred_roles: Vec<NodeRole>,
+    #[serde(default)]
+    pub capability_requirements: Vec<CapabilityRequirement>,
     pub constraints: Vec<String>,
 }
 
@@ -362,6 +393,7 @@ impl Default for JobSchedulingRequirements {
             model: None,
             language: None,
             preferred_roles: Vec::new(),
+            capability_requirements: Vec::new(),
             constraints: Vec::new(),
         }
     }
@@ -1158,6 +1190,10 @@ pub struct ModelCapability {
     pub roles: Vec<NodeRole>,
     #[serde(default)]
     pub task_capabilities: Vec<String>,
+    /// Optional evaluated capability scorecard. Legacy workers may continue to
+    /// advertise only `task_capabilities` during the compatibility window.
+    #[serde(default)]
+    pub capability_scores: Vec<ModelCapabilityScore>,
     #[serde(default)]
     pub supports_vision: bool,
     #[serde(default)]

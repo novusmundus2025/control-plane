@@ -78,10 +78,37 @@ verification, final result, events, trust, and credits
 For each ready graph node, the scheduler:
 
 1. excludes stale, paused, unhealthy, policy-blocked, or capacity-exhausted nodes;
-2. checks backend, runtime mode, requested model, streaming, and graph-stage role;
-3. scores memory, GPU availability, model tier, trust, load, and role match;
+2. checks backend, runtime mode, requested model, streaming, graph-stage role,
+   context/output limits, and every required capability threshold;
+3. scores the weighted capability profile, memory, GPU availability, model tier,
+   trust, live load, free parallel slots, and recent latency/failures;
 4. awards a lease to the best eligible claimant;
 5. reassigns work after retryable failure or lease expiry.
+
+The classifier describes each request with multiple weighted abilities such as
+`coding`, `reasoning`, `logic`, `math`, `research`, `historical_research`,
+`factual_retrieval`, `translation`, `long_context`, and `synthesis`. The planner
+may refine this profile per graph step, but it never binds work to a physical
+model. Exact node and model selection remains scheduler-owned because only the
+scheduler has authoritative live availability.
+
+Workers may add evaluated `capability_scores` to each model inventory entry:
+
+```json
+{
+  "capability": "reasoning",
+  "score": 88,
+  "confidence": 92,
+  "sample_count": 240
+}
+```
+
+All values use an integer 0-100 scale. Low-confidence measurements are pulled
+toward a neutral score so small samples do not dominate routing. During the
+rolling upgrade, legacy `task_capabilities` labels map to a conservative score,
+and workers with neither field retain the older compatibility path. A model's
+quality never overrides eligibility: a saturated specialist with no free slot
+cannot beat a qualified model that is currently available.
 
 Reduction and synthesis prompts contain accepted dependency outputs. A
 synthesizer does not need to run on the control-plane machine; the control
