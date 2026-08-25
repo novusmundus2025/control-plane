@@ -1,6 +1,6 @@
 use crate::contracts::{
-    CapacityClass, JobPlan, JobRequest, JobSchedulingRequirements, NodeRole, PlannedJob,
-    RequestClassification, RequestTaskType, StepWorkloadRequirements,
+    CapabilityRequirement, CapacityClass, JobPlan, JobRequest, JobSchedulingRequirements, NodeRole,
+    PlannedJob, RequestClassification, RequestTaskType, StepWorkloadRequirements,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -100,6 +100,8 @@ struct PlanStepWire {
     reducer_credibility: String,
     #[serde(default)]
     synthesizer_credibility: String,
+    #[serde(default)]
+    capability_requirements: Vec<CapabilityRequirement>,
 }
 fn default_allowed_parallelism() -> u32 {
     1
@@ -401,6 +403,7 @@ fn response_to_plan(
                     allowed_parallelism: step.allowed_parallelism,
                     reducer_credibility: step.reducer_credibility,
                     synthesizer_credibility: step.synthesizer_credibility,
+                    capability_requirements: step.capability_requirements,
                 },
             })
         })
@@ -448,6 +451,13 @@ fn merge_requirements(
             .filter_map(Value::as_str)
             .filter_map(parse_node_role)
             .collect();
+    }
+    if let Some(capabilities) = value.get("capability_requirements") {
+        if let Ok(parsed) =
+            serde_json::from_value::<Vec<CapabilityRequirement>>(capabilities.clone())
+        {
+            requirements.capability_requirements = parsed;
+        }
     }
     requirements
 }
@@ -653,6 +663,35 @@ mod tests {
         };
 
         assert!(validate_external_plan(&plan).is_ok());
+    }
+
+    #[test]
+    fn planner_can_refine_weighted_capability_requirements() {
+        let base = JobSchedulingRequirements::default();
+        let requirements = merge_requirements(
+            &base,
+            Some(json!({
+                "capability_requirements": [
+                    {
+                        "capability": "coding",
+                        "weight": 95,
+                        "minimum_score": 70,
+                        "required": true
+                    },
+                    {
+                        "capability": "logic",
+                        "weight": 75,
+                        "minimum_score": 50,
+                        "required": false
+                    }
+                ]
+            })),
+        );
+
+        assert_eq!(requirements.capability_requirements.len(), 2);
+        assert_eq!(requirements.capability_requirements[0].capability, "coding");
+        assert!(requirements.capability_requirements[0].required);
+        assert_eq!(requirements.capability_requirements[1].weight, 75);
     }
 
     #[test]
