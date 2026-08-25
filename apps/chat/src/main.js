@@ -32,6 +32,11 @@ const PUBLIC_MODEL_ID = "mundusx-agnostic";
 const CHAT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MARKED_BROWSER_PATH = resolve(CHAT_ROOT, "node_modules/marked/lib/marked.umd.js");
 const DOMPURIFY_BROWSER_PATH = resolve(CHAT_ROOT, "node_modules/dompurify/dist/purify.min.js");
+// Vendor responses are immutable, so the HTML URL must change whenever the
+// bundled version changes. Reusing an unversioned URL can leave browsers with
+// a stale pre-bundle response and silently force the legacy renderer.
+const MARKED_BROWSER_VERSION = "18.0.11";
+const DOMPURIFY_BROWSER_VERSION = "3.4.14";
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
 // Temporarily disabled by product decision. Keep the implementation available so it can
@@ -1666,8 +1671,8 @@ export function page(config = configFromEnv()) {
       </form>
     </main>
   </div>
-  <script src="/assets/vendor/marked.umd.js"></script>
-  <script src="/assets/vendor/purify.min.js"></script>
+  <script src="/assets/vendor/marked.umd.js?v=${MARKED_BROWSER_VERSION}"></script>
+  <script src="/assets/vendor/purify.min.js?v=${DOMPURIFY_BROWSER_VERSION}"></script>
   <script>
     const form = document.getElementById("chat-form");
     const mainEl = document.getElementById("chat-main");
