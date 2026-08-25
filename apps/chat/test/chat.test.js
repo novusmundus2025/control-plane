@@ -166,8 +166,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /appendStandardMarkdown\(container, text\)/);
   assert.match(html, /window\.DOMPurify\.sanitize/);
   assert.match(html, /gfm: true/);
-  assert.match(html, /<script src="\/assets\/vendor\/marked\.umd\.js"><\/script>/);
-  assert.match(html, /<script src="\/assets\/vendor\/purify\.min\.js"><\/script>/);
+  assert.match(html, /<script src="\/assets\/vendor\/marked\.umd\.js\?v=18\.0\.11"><\/script>/);
+  assert.match(html, /<script src="\/assets\/vendor\/purify\.min\.js\?v=3\.4\.14"><\/script>/);
   assert.match(html, /aria-label", "Scrollable comparison table"/);
   assert.match(html, /document\.createElement\("h" \+ heading\[1\]\.length\)/);
   assert.match(html, /parentItem\.appendChild\(nested\)/);
@@ -341,6 +341,18 @@ test("standard markdown engine renders nested lists and GFM tables", () => {
   assert.equal((html.match(/<ul>/g) || []).length, 3);
   assert.match(html, /<strong>Ethereum \(L1\)<\/strong>/);
   assert.match(html, /<table>/);
+});
+
+test("standard markdown engine renders headings after fenced code", () => {
+  const html = marked.parse(
+    "```rust\nfn main() {}\n```\n\n### How it works:\n- Uses the **Siamese method**.\n\n### To run:\n1. Save as `main.rs`",
+    { gfm: true, breaks: false },
+  );
+
+  assert.match(html, /<\/code><\/pre>\s*<h3>How it works:<\/h3>/);
+  assert.match(html, /<ul>[\s\S]*<strong>Siamese method<\/strong>/);
+  assert.match(html, /<h3>To run:<\/h3>\s*<ol>/);
+  assert.doesNotMatch(html, />### (?:How it works|To run)/);
 });
 
 test("normalizes chat app environment", () => {
