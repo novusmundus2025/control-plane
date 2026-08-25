@@ -14,6 +14,8 @@ Apple Silicon job routing now uses an explicit runtime contract between submitte
 - Heartbeats report `runtime_ready`, `supported_runtime_modes`, `streaming_supported`, `model_dir`, and `model_path`.
 - The control plane only assigns a queued job when the node backend matches and the latest worker capability report explicitly supports that job's runtime requirements.
 - Chat completions are queued as `interactive` jobs. Eligible `stream:true` requests automatically use the signed live-delta relay when a streaming-capable node is available; otherwise they retain validated-buffered SSE.
+- Request classification now emits weighted `capability_requirements` on a 0-100 scale. The planner can override them globally or per step, while the scheduler retains exact model selection using live free slots and health.
+- Model inventory entries may advertise evidence-backed `capability_scores` (`capability`, `score`, `confidence`, and `sample_count`). Legacy `task_capabilities` remain supported with conservative compatibility scoring.
 
 ## Planner Service Status
 
