@@ -1,22 +1,22 @@
 use crate::contracts::{
     is_trusted_identity_path, AdmissionPolicy, AdmissionPolicyUpdate, AgentRegistration,
     AgentState, ArtifactBatch, ArtifactConflict, ArtifactRepairPlan, ArtifactValidationEvidence,
-    Backend, CapacityClass, ContextSize, ControlPlaneSnapshot, CreditsLedgerRecord,
-    ExpectedOutputFormat, FallbackDecision, FallbackDecisionStatus, FallbackPolicy, Heartbeat,
-    JobClaimResponse, JobCompletion, JobEventRecord, JobExecutionMode, JobGraph, JobGraphNode,
-    JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest, JobResultRecord,
-    JobResultVerificationStatus, JobSchedulingRequirements, JobStatus, ModelCapability,
-    NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeRole,
-    NodeTrustRecord, OrchestrationTimelineEvent, PlannedJob, PrivacyLevel, QualityGateCheck,
-    QualityGateReport, QualityGateStatus, RequestClassification, RequestComplexity,
-    RequestTaskType, ResultArtifact, ResultArtifactKind, RoutingMode, RuntimeMode,
-    SchedulerDecision, StepWorkloadRequirements, SynthesisManifest, SynthesisStatus,
+    Backend, CapabilityRequirement, CapacityClass, ContextSize, ControlPlaneSnapshot,
+    CreditsLedgerRecord, ExpectedOutputFormat, FallbackDecision, FallbackDecisionStatus,
+    FallbackPolicy, Heartbeat, JobClaimResponse, JobCompletion, JobEventRecord, JobExecutionMode,
+    JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest,
+    JobResultRecord, JobResultVerificationStatus, JobSchedulingRequirements, JobStatus,
+    ModelCapability, NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget,
+    NodeRecord, NodeRole, NodeTrustRecord, OrchestrationTimelineEvent, PlannedJob, PrivacyLevel,
+    QualityGateCheck, QualityGateReport, QualityGateStatus, RequestClassification,
+    RequestComplexity, RequestTaskType, ResultArtifact, ResultArtifactKind, RoutingMode,
+    RuntimeMode, SchedulerDecision, StepWorkloadRequirements, SynthesisManifest, SynthesisStatus,
     ToolRewardRequest, ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
 };
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 
@@ -894,6 +894,7 @@ impl ControlPlaneState {
         let mut role_counts = BTreeMap::<String, u32>::new();
         let mut tool_counts = BTreeMap::<String, u32>::new();
         let mut model_capability_counts = BTreeMap::<String, u32>::new();
+        let mut available_model_capability_counts = BTreeMap::<String, u32>::new();
         let mut eligible_nodes = 0_u32;
         let mut eligible_parallel_slots = 0_u32;
         let mut servable_models = 0_u32;
@@ -908,6 +909,10 @@ impl ControlPlaneState {
             let Some(health) = node.worker_health.as_ref() else {
                 continue;
             };
+            let reported_slots = u32::from(health.parallel_slots.max(1))
+                .min(health.capabilities.max_parallel_jobs.max(1));
+            let active = self.active_assignment_count_for_node(&node.node_id) as u32;
+            let free_slots = reported_slots.saturating_sub(active);
             eligible_nodes += 1;
             *backend_counts
                 .entry(node.backend.as_str().to_string())
@@ -926,20 +931,37 @@ impl ControlPlaneState {
             }
             for model in &health.capabilities.models {
                 servable_models = servable_models.saturating_add(1);
+                let mut available_capabilities = BTreeSet::<String>::new();
                 for capability in &model.task_capabilities {
                     let normalized = capability.trim().to_ascii_lowercase();
                     if !normalized.is_empty() && normalized.len() <= 64 {
-                        *model_capability_counts.entry(normalized).or_default() += 1;
+                        *model_capability_counts
+                            .entry(normalized.clone())
+                            .or_default() += 1;
+                        if free_slots > 0 {
+                            available_capabilities.insert(normalized);
+                        }
                     }
+                }
+                for capability in &model.capability_scores {
+                    let normalized = capability.capability.trim().to_ascii_lowercase();
+                    if free_slots > 0
+                        && capability.score >= 50
+                        && !normalized.is_empty()
+                        && normalized.len() <= 64
+                    {
+                        available_capabilities.insert(normalized);
+                    }
+                }
+                for capability in available_capabilities {
+                    *available_model_capability_counts
+                        .entry(capability)
+                        .or_default() += 1;
                 }
             }
             max_context_tokens =
                 max_context_tokens.max(health.capabilities.max_context_tokens.unwrap_or_default());
-            let reported_slots = u32::from(health.parallel_slots.max(1))
-                .min(health.capabilities.max_parallel_jobs.max(1));
-            let active = self.active_assignment_count_for_node(&node.node_id) as u32;
-            eligible_parallel_slots =
-                eligible_parallel_slots.saturating_add(reported_slots.saturating_sub(active));
+            eligible_parallel_slots = eligible_parallel_slots.saturating_add(free_slots);
         }
 
         serde_json::json!({
@@ -953,6 +975,7 @@ impl ControlPlaneState {
             "role_counts": role_counts,
             "tool_counts": tool_counts,
             "model_capability_counts": model_capability_counts,
+            "available_model_capability_counts": available_model_capability_counts,
             "privacy": "aggregate_only_no_node_or_model_identifiers"
         })
     }
@@ -1300,6 +1323,112 @@ impl ControlPlaneState {
         }
     }
 
+    fn effective_capability_requirements(
+        job: &JobRecord,
+        active_graph_node_id: Option<&str>,
+    ) -> Vec<CapabilityRequirement> {
+        let step_requirements = Self::graph_workload(job, active_graph_node_id)
+            .map(|workload| workload.capability_requirements.clone())
+            .filter(|values| !values.is_empty());
+        let graph_role = Self::graph_node_role(job, active_graph_node_id);
+        let mut requirements = step_requirements.unwrap_or_else(|| {
+            let all = job.scheduling_requirements.capability_requirements.clone();
+            let Some(role) = graph_role else {
+                return all;
+            };
+            all.into_iter()
+                .filter(|requirement| {
+                    let capability = requirement.capability.as_str();
+                    match role {
+                        NodeRole::Coding => {
+                            matches!(capability, "coding" | "logic" | "math" | "long_context")
+                        }
+                        NodeRole::ChunkAnalysis => matches!(
+                            capability,
+                            "research"
+                                | "historical_research"
+                                | "factual_retrieval"
+                                | "long_context"
+                        ),
+                        NodeRole::Reducer | NodeRole::Synthesizer => matches!(
+                            capability,
+                            "synthesis" | "reasoning" | "summarization" | "long_context"
+                        ),
+                        NodeRole::ToolUse => {
+                            matches!(capability, "tool_use" | "math" | "factual_retrieval")
+                        }
+                        NodeRole::Vision => capability == "vision",
+                        NodeRole::Embedding => capability == "embedding",
+                        NodeRole::Chat | NodeRole::Batch => true,
+                    }
+                })
+                .collect()
+        });
+        let primary = Self::required_model_capability(job, active_graph_node_id);
+        if !requirements
+            .iter()
+            .any(|value| value.capability.eq_ignore_ascii_case(primary))
+        {
+            requirements.push(CapabilityRequirement {
+                capability: primary.to_string(),
+                weight: 100,
+                minimum_score: 60,
+                required: true,
+            });
+        }
+        requirements
+    }
+
+    fn model_capability_score(model: &ModelCapability, capability: &str, primary: &str) -> u8 {
+        let normalized = capability.trim().to_ascii_lowercase();
+        let aliases: Vec<&str> = match normalized.as_str() {
+            "coding" => vec![primary, "large_coding", "medium_coding", "small_coding"],
+            "logic" => vec!["reasoning"],
+            "historical_research" | "factual_retrieval" => vec!["research"],
+            "summarization" => vec!["synthesizer", "research", "chat"],
+            "synthesis" => vec!["synthesizer", "reasoning"],
+            "translation" => vec!["translation", "chat"],
+            _ => Vec::new(),
+        };
+        if let Some(value) = model.capability_scores.iter().find(|value| {
+            value.capability.eq_ignore_ascii_case(&normalized)
+                || aliases
+                    .iter()
+                    .any(|alias| value.capability.eq_ignore_ascii_case(alias))
+        }) {
+            let score = value.score.min(100);
+            let confidence = value.confidence.min(100);
+            if confidence == 0 {
+                return score;
+            }
+            // Pull low-confidence measurements toward a neutral 50 instead of
+            // letting a tiny sample dominate routing.
+            return ((u16::from(score) * u16::from(confidence) + 50 * u16::from(100 - confidence))
+                / 100) as u8;
+        }
+        if normalized == "long_context" {
+            return match model.context_tokens.unwrap_or_default() {
+                0..=8_191 => 35,
+                8_192..=16_383 => 60,
+                16_384..=32_767 => 75,
+                _ => 90,
+            };
+        }
+        if model.task_capabilities.iter().any(|value| {
+            value.eq_ignore_ascii_case(&normalized)
+                || aliases
+                    .iter()
+                    .any(|alias| value.eq_ignore_ascii_case(alias))
+        }) {
+            return 70;
+        }
+        if model.task_capabilities.is_empty() && model.capability_scores.is_empty() {
+            // Conservative compatibility score for schema-v3 and older workers.
+            return 60;
+        }
+        0
+    }
+
     fn model_can_run_job(
         node: &NodeRecord,
         model: &ModelCapability,
@@ -1373,14 +1502,15 @@ impl ControlPlaneState {
                 return false;
             }
         }
-        let required_capability = Self::required_model_capability(job, active_graph_node_id);
-        if !model.task_capabilities.is_empty()
-            && !model
-                .task_capabilities
-                .iter()
-                .any(|value| value.eq_ignore_ascii_case(required_capability))
+        let primary = Self::required_model_capability(job, active_graph_node_id);
+        for requirement in Self::effective_capability_requirements(job, active_graph_node_id)
+            .iter()
+            .filter(|value| value.required)
         {
-            return false;
+            let score = Self::model_capability_score(model, &requirement.capability, primary);
+            if score < requirement.minimum_score.min(100) {
+                return false;
+            }
         }
         if let Some(required_role) = Self::graph_node_role(job, active_graph_node_id) {
             if !model.roles.is_empty()
@@ -1427,6 +1557,34 @@ impl ControlPlaneState {
                     reasons.push(format!("model_capability_match:{required}"));
                 } else {
                     reasons.push("legacy_model_capability_fallback".to_string());
+                }
+                let requirements =
+                    Self::effective_capability_requirements(job, active_graph_node_id);
+                let mut weighted_score = 0_u32;
+                let mut total_weight = 0_u32;
+                for requirement in &requirements {
+                    let capability_score =
+                        Self::model_capability_score(&model, &requirement.capability, required);
+                    let weight = u32::from(requirement.weight.min(100));
+                    weighted_score = weighted_score
+                        .saturating_add(u32::from(capability_score).saturating_mul(weight));
+                    total_weight = total_weight.saturating_add(weight);
+                    reasons.push(format!(
+                        "capability_fit:{}:{};weight:{};minimum:{};required:{}",
+                        requirement.capability,
+                        capability_score,
+                        requirement.weight.min(100),
+                        requirement.minimum_score.min(100),
+                        requirement.required
+                    ));
+                }
+                if total_weight > 0 {
+                    let fit = weighted_score / total_weight;
+                    let fit_delta = ((fit * 30) / 100) as i32;
+                    score += fit_delta;
+                    reasons.push(format!(
+                        "weighted_capability_fit:{fit};score_delta:{fit_delta}"
+                    ));
                 }
                 if model.active || model.warm {
                     score += 10;
@@ -5716,6 +5874,14 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
         output_format,
         context_size,
         execution_constraints,
+        capability_requirements: capability_requirements_for_request(
+            &lower,
+            task_type,
+            complexity,
+            context_size,
+            detailed_research_prompt,
+        ),
+        classification_confidence: 85,
         reason: format!(
             "deterministic classifier matched {} task with {:?} complexity and {:?} context",
             task_type.as_str(),
@@ -5723,6 +5889,87 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
             context_size
         ),
     }
+}
+
+fn capability_requirements_for_request(
+    lower: &str,
+    task_type: RequestTaskType,
+    complexity: RequestComplexity,
+    context_size: ContextSize,
+    detailed_research_prompt: bool,
+) -> Vec<CapabilityRequirement> {
+    let mut requirements = Vec::<CapabilityRequirement>::new();
+    let mut add = |capability: &str, weight: u8, minimum_score: u8, required: bool| {
+        if let Some(existing) = requirements
+            .iter_mut()
+            .find(|value| value.capability == capability)
+        {
+            existing.weight = existing.weight.max(weight);
+            existing.minimum_score = existing.minimum_score.max(minimum_score);
+            existing.required |= required;
+        } else {
+            requirements.push(CapabilityRequirement {
+                capability: capability.to_string(),
+                weight,
+                minimum_score,
+                required,
+            });
+        }
+    };
+
+    match task_type {
+        RequestTaskType::Coding => add("coding", 100, 60, true),
+        RequestTaskType::Document if detailed_research_prompt => add("research", 90, 55, true),
+        RequestTaskType::Document => add("summarization", 75, 45, true),
+        RequestTaskType::Inference if complexity != RequestComplexity::Low => {
+            add("reasoning", 90, 55, true)
+        }
+        RequestTaskType::Inference | RequestTaskType::Chat => add("chat", 70, 45, true),
+    }
+
+    if contains_any(lower, &["logic", "logical", "deduce", "proof", "prove"])
+        || (complexity != RequestComplexity::Low
+            && contains_any(lower, &["analyze", "compare", "why", "tradeoff"]))
+    {
+        add("logic", 75, 50, false);
+    }
+    if contains_any(
+        lower,
+        &[
+            "math",
+            "equation",
+            "calculate",
+            "calculus",
+            "algebra",
+            "probability",
+            "statistics",
+        ],
+    ) {
+        add("math", 90, 60, true);
+    }
+    if contains_any(lower, &["history", "historical", "chronology", "timeline"])
+        || detailed_research_prompt
+    {
+        add("research", 85, 55, true);
+        add("historical_research", 80, 50, false);
+    }
+    if contains_any(
+        lower,
+        &["fact", "current", "latest", "source", "citation", "verify"],
+    ) {
+        add("factual_retrieval", 70, 45, false);
+    }
+    if contains_any(lower, &["translate", "translation"]) {
+        add("translation", 90, 50, false);
+    }
+    if context_size != ContextSize::Small {
+        add("long_context", 55, 45, false);
+    }
+    if complexity == RequestComplexity::High {
+        add("synthesis", 65, 50, false);
+    }
+
+    requirements
 }
 
 pub fn plan_job_request(request: &JobRequest, classification: &RequestClassification) -> JobPlan {
@@ -7606,6 +7853,7 @@ pub fn scheduling_requirements_for(
             RequestTaskType::Coding => vec![NodeRole::Coding],
             RequestTaskType::Document | RequestTaskType::Inference => vec![NodeRole::Batch],
         },
+        capability_requirements: classification.capability_requirements.clone(),
         constraints: classification.execution_constraints.clone(),
     }
 }
@@ -7986,7 +8234,8 @@ pub fn save_state(state: &ControlPlaneState) -> std::io::Result<PathBuf> {
 mod tests {
     use super::*;
     use crate::contracts::{
-        RuntimeMode, WorkerHealthReport, IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
+        ModelCapabilityScore, RuntimeMode, WorkerHealthReport,
+        IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
     };
 
     fn m_series_registration(node_id: &str) -> AgentRegistration {
@@ -13741,6 +13990,207 @@ mod tests {
         )
         .expect("large model selection");
         assert_eq!(selection.name, "Qwen/Qwen3-Coder-32B");
+    }
+
+    #[test]
+    fn classifier_emits_a_weighted_multi_capability_profile() {
+        let request = classification_request(
+            "Compare the historical architecture and logically explain the tradeoffs.",
+        );
+        let classification = classify_job_request(&request);
+
+        assert!(classification.classification_confidence > 0);
+        assert!(classification.capability_requirements.iter().any(|value| {
+            value.capability == "reasoning" && value.required && value.minimum_score >= 55
+        }));
+        assert!(classification
+            .capability_requirements
+            .iter()
+            .any(|value| value.capability == "logic" && value.weight >= 70));
+        assert!(classification
+            .capability_requirements
+            .iter()
+            .any(|value| { value.capability == "historical_research" && !value.required }));
+    }
+
+    #[test]
+    fn graph_steps_receive_role_specific_capability_profiles() {
+        let mut state = ready_state();
+        let mut request = classification_request(
+            "Give a detailed history and chronology of PostgreSQL with sources and synthesis.",
+        );
+        request.model = None;
+        request.execution_mode = JobExecutionMode::Decompose;
+        let job = state.submit_job(request, "2".to_string());
+
+        let analysis_id = job
+            .graph
+            .nodes
+            .iter()
+            .find(|node| {
+                ControlPlaneState::graph_node_role(&job, Some(&node.id))
+                    == Some(NodeRole::ChunkAnalysis)
+            })
+            .map(|node| node.id.as_str())
+            .expect("analysis node");
+        let analysis =
+            ControlPlaneState::effective_capability_requirements(&job, Some(analysis_id));
+        assert!(analysis.iter().any(|value| value.capability == "research"));
+        assert!(!analysis.iter().any(|value| value.capability == "reasoning"));
+
+        if let Some(synthesis_id) = job
+            .graph
+            .nodes
+            .iter()
+            .find(|node| {
+                matches!(
+                    ControlPlaneState::graph_node_role(&job, Some(&node.id)),
+                    Some(NodeRole::Reducer | NodeRole::Synthesizer)
+                )
+            })
+            .map(|node| node.id.as_str())
+        {
+            let synthesis =
+                ControlPlaneState::effective_capability_requirements(&job, Some(synthesis_id));
+            assert!(synthesis
+                .iter()
+                .any(|value| value.capability == "synthesizer"));
+            assert!(!synthesis.iter().any(|value| value.capability == "research"));
+        }
+    }
+
+    #[test]
+    fn scheduler_uses_evaluated_capability_scores_for_specialist_selection() {
+        let mut state = ready_state();
+        let health = state
+            .nodes
+            .get_mut("node-1")
+            .and_then(|node| node.worker_health.as_mut())
+            .expect("node health");
+        health.capabilities.schema_version = 4;
+        health.capabilities.models = vec![
+            ModelCapability {
+                name: "general-model".to_string(),
+                context_tokens: Some(16_384),
+                task_capabilities: vec!["chat".to_string(), "reasoning".to_string()],
+                capability_scores: vec![
+                    ModelCapabilityScore {
+                        capability: "reasoning".to_string(),
+                        score: 62,
+                        confidence: 90,
+                        sample_count: 100,
+                    },
+                    ModelCapabilityScore {
+                        capability: "logic".to_string(),
+                        score: 35,
+                        confidence: 90,
+                        sample_count: 100,
+                    },
+                ],
+                ..ModelCapability::default()
+            },
+            ModelCapability {
+                name: "reasoning-specialist".to_string(),
+                context_tokens: Some(16_384),
+                task_capabilities: vec!["chat".to_string(), "reasoning".to_string()],
+                capability_scores: vec![
+                    ModelCapabilityScore {
+                        capability: "reasoning".to_string(),
+                        score: 92,
+                        confidence: 95,
+                        sample_count: 240,
+                    },
+                    ModelCapabilityScore {
+                        capability: "logic".to_string(),
+                        score: 94,
+                        confidence: 95,
+                        sample_count: 240,
+                    },
+                ],
+                ..ModelCapability::default()
+            },
+        ];
+        state.submit_job(
+            JobRequest {
+                request_id: "job-specialist-fit".to_string(),
+                prompt: "Analyze this logical proof and explain why the conclusion follows."
+                    .to_string(),
+                preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(2_048),
+                max_tokens_source: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "2".to_string(),
+        );
+
+        let decision = state
+            .jobs
+            .get("job-specialist-fit")
+            .and_then(|job| job.scheduler_decision.as_ref())
+            .expect("scheduler decision");
+        assert_eq!(decision.model.as_deref(), Some("reasoning-specialist"));
+        assert!(decision
+            .reasons
+            .iter()
+            .any(|reason| reason.starts_with("weighted_capability_fit:")));
+    }
+
+    #[test]
+    fn unavailable_specialist_cannot_beat_an_available_qualified_model() {
+        let mut state = ready_state();
+        state
+            .nodes
+            .get_mut("node-1")
+            .and_then(|node| node.worker_health.as_mut())
+            .expect("node-1 health")
+            .parallel_slots = 1;
+        let mut occupying_request = classification_request("Answer hello.");
+        occupying_request.request_id = "occupy-specialist".to_string();
+        occupying_request.execution_mode = JobExecutionMode::Single;
+        state.submit_job(occupying_request, "2".to_string());
+        state
+            .claim_job("node-1", "3".to_string())
+            .job
+            .expect("specialist slot is occupied");
+
+        state.register(m_series_registration("node-2"));
+        let mut second_health = ready_heartbeat("node-2", "4");
+        second_health.worker_health.parallel_slots = 1;
+        state.heartbeat(second_health, "4".to_string());
+        state.submit_job(
+            JobRequest {
+                request_id: "availability-wins".to_string(),
+                prompt: "Analyze this logical argument and explain the conclusion.".to_string(),
+                preferred_backend: Backend::M,
+                routing_mode: RoutingMode::Normal,
+                runtime_mode: RuntimeMode::Local,
+                execution_mode: JobExecutionMode::Single,
+                stream: false,
+                model: None,
+                system_prompt: None,
+                max_tokens: Some(1_024),
+                max_tokens_source: None,
+                temperature: None,
+                top_p: None,
+                seed: None,
+            },
+            "5".to_string(),
+        );
+
+        let decision = state
+            .jobs
+            .get("availability-wins")
+            .and_then(|job| job.scheduler_decision.as_ref())
+            .expect("scheduler decision");
+        assert_eq!(decision.node_id, "node-2");
     }
 
     #[test]
