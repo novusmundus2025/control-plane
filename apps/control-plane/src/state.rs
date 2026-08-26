@@ -6,11 +6,12 @@ use crate::contracts::{
     FallbackPolicy, Heartbeat, JobClaimResponse, JobCompletion, JobEventRecord, JobExecutionMode,
     JobGraph, JobGraphNode, JobGraphNodeStatus, JobGraphStatus, JobPlan, JobRecord, JobRequest,
     JobResultRecord, JobResultVerificationStatus, JobSchedulingRequirements, JobStatus,
-    ModelCapability, NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget,
-    NodeRecord, NodeRole, NodeTrustRecord, OrchestrationTimelineEvent, PlannedJob, PrivacyLevel,
-    QualityGateCheck, QualityGateReport, QualityGateStatus, RequestClassification,
-    RequestComplexity, RequestTaskType, ResultArtifact, ResultArtifactKind, RoutingMode,
-    RuntimeMode, SchedulerDecision, StepWorkloadRequirements, SynthesisManifest, SynthesisStatus,
+    LocalSlotLeaseRecord, LocalSlotLeaseRequest, LocalSlotLeaseResponse, ModelCapability,
+    NodePolicyOverride, NodePolicyOverrideInput, NodePolicyOverrideTarget, NodeRecord, NodeRole,
+    NodeTrustRecord, OrchestrationTimelineEvent, PlannedJob, PrivacyLevel, QualityGateCheck,
+    QualityGateReport, QualityGateStatus, RequestClassification, RequestComplexity,
+    RequestTaskType, ResultArtifact, ResultArtifactKind, RoutingMode, RuntimeMode,
+    SchedulerDecision, StepWorkloadRequirements, SynthesisManifest, SynthesisStatus,
     ToolRewardRequest, ValidationEvidenceKind, ValidationEvidenceProvenance, WorkerHealthReport,
 };
 use regex::Regex;
@@ -19,6 +20,7 @@ use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const DEFAULT_GRAPH_NODE_MAX_ATTEMPTS: u32 = 3;
 const DEFAULT_GRAPH_NODE_LEASE_SECONDS: u64 = 600;
@@ -72,6 +74,8 @@ pub struct ControlPlaneState {
     pub jobs: BTreeMap<String, JobRecord>,
     pub job_events: Vec<JobEventRecord>,
     pub credits_ledger: Vec<CreditsLedgerRecord>,
+    #[serde(default)]
+    pub local_slot_leases: BTreeMap<String, LocalSlotLeaseRecord>,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1034,7 +1038,7 @@ impl ControlPlaneState {
         }
     }
 
-    fn active_assignment_count_for_node(&self, node_id: &str) -> usize {
+    fn active_network_assignment_count_for_node(&self, node_id: &str) -> usize {
         self.jobs
             .values()
             .map(|job| {
@@ -1058,9 +1062,178 @@ impl ControlPlaneState {
             .sum()
     }
 
+    fn active_local_slot_count_for_node_at(&self, node_id: &str, now_seconds: u64) -> usize {
+        self.local_slot_leases
+            .values()
+            .filter(|lease| {
+                lease.node_id == node_id
+                    && parse_unix_seconds(&lease.expires_at)
+                        .is_some_and(|expires_at| expires_at > now_seconds)
+            })
+            .map(|lease| usize::from(lease.slots))
+            .sum()
+    }
+
+    fn active_assignment_count_for_node(&self, node_id: &str) -> usize {
+        self.active_network_assignment_count_for_node(node_id)
+            .saturating_add(
+                self.active_local_slot_count_for_node_at(node_id, current_unix_seconds()),
+            )
+    }
+
+    fn prune_expired_local_slot_leases(&mut self, now_seconds: u64) {
+        self.local_slot_leases.retain(|_, lease| {
+            parse_unix_seconds(&lease.expires_at).is_some_and(|expires_at| expires_at > now_seconds)
+        });
+    }
+
+    fn node_total_slots(&self, node_id: &str) -> usize {
+        self.nodes
+            .get(node_id)
+            .and_then(|node| node.worker_health.as_ref())
+            .map(|health| {
+                usize::from(health.parallel_slots.max(1))
+                    .min(health.capabilities.max_parallel_jobs.max(1) as usize)
+            })
+            .unwrap_or(1)
+    }
+
+    fn local_slot_lease_response(
+        &self,
+        node_id: &str,
+        lease: Option<LocalSlotLeaseRecord>,
+        error: Option<String>,
+        now_seconds: u64,
+    ) -> LocalSlotLeaseResponse {
+        let total_slots = self.node_total_slots(node_id);
+        let active_network_slots = self.active_network_assignment_count_for_node(node_id);
+        let active_local_slots = self.active_local_slot_count_for_node_at(node_id, now_seconds);
+        LocalSlotLeaseResponse {
+            granted: lease.is_some() && error.is_none(),
+            lease,
+            error,
+            active_local_slots,
+            active_network_slots,
+            total_slots,
+            available_slots: total_slots
+                .saturating_sub(active_network_slots.saturating_add(active_local_slots)),
+        }
+    }
+
+    pub fn acquire_local_slot_lease(
+        &mut self,
+        node_id: &str,
+        request: LocalSlotLeaseRequest,
+        now: String,
+    ) -> Result<LocalSlotLeaseResponse, String> {
+        let now_seconds =
+            parse_unix_seconds(&now).ok_or_else(|| "invalid lease timestamp".to_string())?;
+        self.prune_expired_local_slot_leases(now_seconds);
+        let node = self
+            .nodes
+            .get(node_id)
+            .ok_or_else(|| "unknown node".to_string())?;
+        if !Self::node_is_schedulable_state(node) || !node.policy_allowed {
+            return Ok(self.local_slot_lease_response(
+                node_id,
+                None,
+                Some("node is not schedulable".to_string()),
+                now_seconds,
+            ));
+        }
+        let request_id = request.request_id.trim();
+        if request_id.is_empty() || request_id.len() > 128 {
+            return Err("request_id must contain 1 to 128 characters".to_string());
+        }
+        let slots = request.slots.clamp(1, 16);
+        if let Some(existing) = self
+            .local_slot_leases
+            .values()
+            .find(|lease| lease.node_id == node_id && lease.request_id == request_id)
+            .cloned()
+        {
+            return Ok(self.local_slot_lease_response(node_id, Some(existing), None, now_seconds));
+        }
+        let total_slots = self.node_total_slots(node_id);
+        let active_network = self.active_network_assignment_count_for_node(node_id);
+        let active_local = self.active_local_slot_count_for_node_at(node_id, now_seconds);
+        if usize::from(slots)
+            > total_slots.saturating_sub(active_network.saturating_add(active_local))
+        {
+            return Ok(self.local_slot_lease_response(
+                node_id,
+                None,
+                Some("local capacity is unavailable".to_string()),
+                now_seconds,
+            ));
+        }
+        let ttl_seconds = request.ttl_seconds.clamp(10, 120);
+        let lease = LocalSlotLeaseRecord {
+            lease_id: format!("local-{}", uuid::Uuid::new_v4().simple()),
+            node_id: node_id.to_string(),
+            request_id: request_id.to_string(),
+            slots,
+            model: request.model,
+            created_at: now,
+            expires_at: now_seconds.saturating_add(ttl_seconds).to_string(),
+        };
+        self.local_slot_leases
+            .insert(lease.lease_id.clone(), lease.clone());
+        Ok(self.local_slot_lease_response(node_id, Some(lease), None, now_seconds))
+    }
+
+    pub fn renew_local_slot_lease(
+        &mut self,
+        node_id: &str,
+        lease_id: &str,
+        ttl_seconds: u64,
+        now: String,
+    ) -> Result<LocalSlotLeaseResponse, String> {
+        let now_seconds =
+            parse_unix_seconds(&now).ok_or_else(|| "invalid lease timestamp".to_string())?;
+        self.prune_expired_local_slot_leases(now_seconds);
+        let lease = self
+            .local_slot_leases
+            .get_mut(lease_id)
+            .filter(|lease| lease.node_id == node_id)
+            .ok_or_else(|| "local lease not found".to_string())?;
+        lease.expires_at = now_seconds
+            .saturating_add(ttl_seconds.clamp(10, 120))
+            .to_string();
+        let lease = lease.clone();
+        Ok(self.local_slot_lease_response(node_id, Some(lease), None, now_seconds))
+    }
+
+    pub fn release_local_slot_lease(
+        &mut self,
+        node_id: &str,
+        lease_id: &str,
+        now: String,
+    ) -> Result<LocalSlotLeaseResponse, String> {
+        let now_seconds =
+            parse_unix_seconds(&now).ok_or_else(|| "invalid lease timestamp".to_string())?;
+        self.prune_expired_local_slot_leases(now_seconds);
+        match self.local_slot_leases.get(lease_id) {
+            Some(lease) if lease.node_id == node_id => {}
+            _ => return Err("local lease not found".to_string()),
+        }
+        self.local_slot_leases.remove(lease_id);
+        Ok(self.local_slot_lease_response(node_id, None, None, now_seconds))
+    }
+
     pub fn node_slot_occupancy(&self, node_id: &str) -> (usize, usize, usize) {
+        let (network_active, local_active, total, available) =
+            self.node_slot_occupancy_breakdown(node_id);
+        (
+            network_active.saturating_add(local_active),
+            total,
+            available,
+        )
+    }
+
+    pub fn node_slot_occupancy_breakdown(&self, node_id: &str) -> (usize, usize, usize, usize) {
         let Some(node) = self.nodes.get(node_id) else {
-            return (0, 0, 0);
+            return (0, 0, 0, 0);
         };
         let total = node
             .worker_health
@@ -1070,13 +1243,16 @@ impl ControlPlaneState {
                     .min(health.capabilities.max_parallel_jobs.max(1) as usize)
             })
             .unwrap_or(1);
-        let active = self.active_assignment_count_for_node(node_id);
+        let network_active = self.active_network_assignment_count_for_node(node_id);
+        let local_active =
+            self.active_local_slot_count_for_node_at(node_id, current_unix_seconds());
+        let active = network_active.saturating_add(local_active);
         let available = if Self::node_is_schedulable_state(node) && node.policy_allowed {
             total.saturating_sub(active)
         } else {
             0
         };
-        (active, total, available)
+        (network_active, local_active, total, available)
     }
 
     fn node_parallel_capacity_for_job(node: &NodeRecord, job: &JobRecord) -> usize {
@@ -1194,7 +1370,9 @@ impl ControlPlaneState {
             });
         }
 
-        capacity.max(1)
+        let advertised_capacity = usize::from(worker_health.parallel_slots.max(1))
+            .min(worker_health.capabilities.max_parallel_jobs.max(1) as usize);
+        capacity.min(advertised_capacity).max(1)
     }
 
     fn node_backend_can_run_request(node_backend: Backend, preferred_backend: Backend) -> bool {
@@ -3059,6 +3237,9 @@ impl ControlPlaneState {
     }
 
     pub fn heartbeat(&mut self, heartbeat: Heartbeat, updated_at: String) -> NodeRecord {
+        if let Some(now_seconds) = parse_unix_seconds(&updated_at) {
+            self.prune_expired_local_slot_leases(now_seconds);
+        }
         let (policy_allowed, policy_reason) = evaluate_policy(
             heartbeat.agent_state,
             heartbeat.power_source.as_str(),
@@ -3171,6 +3352,13 @@ fn graph_execution_allowed(
 
 fn parse_unix_seconds(value: &str) -> Option<u64> {
     value.parse::<u64>().ok()
+}
+
+fn current_unix_seconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .unwrap_or_default()
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -8449,6 +8637,88 @@ mod tests {
         assert_eq!(snapshot["total_parallel_slots"], 4);
         assert_eq!(snapshot["available_parallel_slots"], 3);
         assert_eq!(snapshot["saturated_node_count"], 0);
+    }
+
+    #[test]
+    fn local_lease_reserves_capacity_before_network_claims() {
+        let mut state = ControlPlaneState::default();
+        state.register(vllm_registration("node-vllm"));
+        let now = current_unix_seconds();
+        let mut heartbeat = ready_vllm_heartbeat("node-vllm", &now.to_string());
+        heartbeat.worker_health.model_name = Some("Qwen/Qwen2.5-3B-Instruct".to_string());
+        heartbeat.worker_health.capabilities.max_parallel_jobs = 4;
+        state.heartbeat(heartbeat, now.to_string());
+
+        let lease = state
+            .acquire_local_slot_lease(
+                "node-vllm",
+                LocalSlotLeaseRequest {
+                    request_id: "local-request-1".to_string(),
+                    slots: 1,
+                    model: Some("Qwen/Qwen2.5-32B-Instruct".to_string()),
+                    ttl_seconds: 30,
+                },
+                now.to_string(),
+            )
+            .expect("local lease");
+
+        assert!(lease.granted);
+        assert_eq!(state.node_slot_occupancy("node-vllm"), (1, 4, 3));
+        for index in 0..3 {
+            let mut request = classification_request(&format!("network request {index}"));
+            request.request_id = format!("network-{index}");
+            request.model = None;
+            state.submit_job(request, now.to_string());
+            assert!(
+                state
+                    .claim_job("node-vllm", now.saturating_add(1).to_string())
+                    .job
+                    .is_some(),
+                "network claim {index} should fit beside the local lease"
+            );
+        }
+        let mut request = classification_request("network request blocked by local lease");
+        request.request_id = "network-blocked".to_string();
+        request.model = None;
+        state.submit_job(request, now.to_string());
+        assert!(state
+            .claim_job("node-vllm", now.saturating_add(1).to_string())
+            .job
+            .is_none());
+    }
+
+    #[test]
+    fn local_lease_is_idempotent_and_expiry_releases_capacity() {
+        let mut state = ControlPlaneState::default();
+        state.register(vllm_registration("node-vllm"));
+        let now = current_unix_seconds();
+        let mut heartbeat = ready_vllm_heartbeat("node-vllm", &now.to_string());
+        heartbeat.worker_health.model_name = Some("Qwen/Qwen2.5-3B-Instruct".to_string());
+        heartbeat.worker_health.capabilities.max_parallel_jobs = 4;
+        state.heartbeat(heartbeat, now.to_string());
+        let request = LocalSlotLeaseRequest {
+            request_id: "same-request".to_string(),
+            slots: 1,
+            model: None,
+            ttl_seconds: 30,
+        };
+
+        let first = state
+            .acquire_local_slot_lease("node-vllm", request.clone(), now.to_string())
+            .expect("first lease");
+        let second = state
+            .acquire_local_slot_lease("node-vllm", request, now.to_string())
+            .expect("idempotent lease");
+        assert_eq!(first.lease, second.lease);
+        assert_eq!(state.local_slot_leases.len(), 1);
+
+        let lease_id = first.lease.expect("lease record").lease_id;
+        state
+            .local_slot_leases
+            .get_mut(&lease_id)
+            .expect("stored lease")
+            .expires_at = now.saturating_sub(1).to_string();
+        assert_eq!(state.node_slot_occupancy("node-vllm"), (0, 4, 4));
     }
 
     #[test]

@@ -85,6 +85,12 @@ For each ready graph node, the scheduler:
 4. awards a lease to the best eligible claimant;
 5. reassigns work after retryable failure or lease expiry.
 
+## Contributor local-slot leases
+
+Contributor-local inference and network-assigned inference share the same advertised execution capacity. A signed node may acquire, renew, and release a short-lived local lease through `/v1/local-leases`, `/v1/local-leases/renew`, and `/v1/local-leases/release`. Lease records contain capacity metadata only; prompts and outputs are excluded.
+
+The scheduler atomically counts unexpired local lease slots plus active network assignments before awarding work. This prevents the control plane from assigning a slot already being used locally. Lease acquisition is idempotent per node and request ID, leases expire automatically after missed renewal, and local execution never creates completion credits. Operator node views show local and network occupancy separately while preserving the combined active/free capacity view.
+
 The classifier describes each request with multiple weighted abilities such as
 `coding`, `reasoning`, `logic`, `math`, `research`, `historical_research`,
 `factual_retrieval`, `translation`, `long_context`, and `synthesis`. The planner
