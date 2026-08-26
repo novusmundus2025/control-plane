@@ -11,7 +11,8 @@ use contracts::{
     is_trusted_identity_path, trust_path_label, AdmissionPolicyUpdate, AgentRegistration,
     AgentState, AppendChatMessageRequest, Backend, ChatCompletionRequest, ChatMessagesResponse,
     CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord,
-    JobRequest, JobStatus, JobStreamAck, JobStreamDelta, NodePolicyOverrideInput, NodeRecord,
+    JobRequest, JobStatus, JobStreamAck, JobStreamDelta, LocalSlotLeaseReleaseRequest,
+    LocalSlotLeaseRenewRequest, LocalSlotLeaseRequest, NodePolicyOverrideInput, NodeRecord,
     OperatorContributionPercentUpdate, OperatorNodePolicyOverrideUpdate, RoutingMode, RuntimeMode,
     ToolRewardRequest,
 };
@@ -1050,7 +1051,9 @@ fn render_node_records(state: &ControlPlaneState, nodes: Vec<NodeRecord>) -> Str
     );
 
     for node in nodes {
-        let (active_slots, total_slots, available_slots) = state.node_slot_occupancy(&node.node_id);
+        let (network_slots, local_slots, total_slots, available_slots) =
+            state.node_slot_occupancy_breakdown(&node.node_id);
+        let active_slots = network_slots.saturating_add(local_slots);
         let slot_state = if !node.policy_allowed
             || !matches!(node.state, AgentState::Ready | AgentState::Busy)
         {
@@ -1139,6 +1142,7 @@ fn render_node_records(state: &ControlPlaneState, nodes: Vec<NodeRecord>) -> Str
                 <span class="pill" style="background:{};color:{};">{}</span>
                 <div class="meta" style="margin-top:6px;">reported {}</div>
                 <div class="meta"><strong>{}</strong> &middot; {}/{} active &middot; {} free</div>
+                <div class="meta">{} local &middot; {} network</div>
               </div>
               <div>
                 <div>{}</div>
@@ -1183,6 +1187,8 @@ fn render_node_records(state: &ControlPlaneState, nodes: Vec<NodeRecord>) -> Str
             active_slots,
             total_slots,
             available_slots,
+            local_slots,
+            network_slots,
             escape_html(&power),
             escape_html(&node.public_key_fingerprint),
             worker_health,
@@ -1596,7 +1602,9 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
         .filter(|credit| credit.device_id.as_deref() == Some(node.node_id.as_str()))
         .map(|credit| credit.amount)
         .sum::<f64>();
-    let (active_slots, total_slots, available_slots) = state.node_slot_occupancy(node_id);
+    let (network_slots, local_slots, total_slots, available_slots) =
+        state.node_slot_occupancy_breakdown(node_id);
+    let active_slots = network_slots.saturating_add(local_slots);
     let slot_state =
         if !node.policy_allowed || !matches!(node.state, AgentState::Ready | AgentState::Busy) {
             "Unavailable"
@@ -1758,7 +1766,7 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
             <div class="node-profile-card"><span>Total earned</span><strong>{earned:.2}</strong><div class="meta">credits</div></div>
             <div class="node-profile-card"><span>Contribution</span><strong>{contribution}%</strong><div class="meta">operator effective share</div></div>
             <div class="node-profile-card"><span>Current work</span><strong>{current_work}</strong><div class="meta">active assignment</div></div>
-            <div class="node-profile-card"><span>Execution slots</span><strong>{active_slots}/{total_slots} active</strong><div class="meta">{slot_state} &middot; {available_slots} free</div></div>
+            <div class="node-profile-card"><span>Execution slots</span><strong>{active_slots}/{total_slots} active</strong><div class="meta">{slot_state} &middot; {available_slots} free</div><div class="meta">{local_slots} local &middot; {network_slots} network</div></div>
           </section>
           <section class="profile-sections">
             <div class="node-profile-card">
@@ -1822,6 +1830,8 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
         active_slots = active_slots,
         total_slots = total_slots,
         available_slots = available_slots,
+        local_slots = local_slots,
+        network_slots = network_slots,
         slot_state = slot_state,
         completed = node.trust.completed_jobs,
         failed = node.trust.failed_jobs,
@@ -5158,6 +5168,9 @@ fn requires_device_signature(method: &str, path: &str) -> bool {
             | ("GET", "/v1/jobs/next")
             | ("POST", "/v1/jobs/delta")
             | ("POST", "/v1/jobs/complete")
+            | ("POST", "/v1/local-leases")
+            | ("POST", "/v1/local-leases/renew")
+            | ("POST", "/v1/local-leases/release")
     )
 }
 
@@ -6288,6 +6301,108 @@ fn handle_connection_with_streams(
                         }
                         Err(error) => {
                             json_response("400 Bad Request", serde_json::json!({ "error": error }))
+                        }
+                    }
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+            }
+        }
+        ("POST", "/v1/local-leases") => {
+            let Some(node_id) = header_value(&request.headers, "x-mundusx-node-id") else {
+                return stream
+                    .write_all(
+                        json_response(
+                            "400 Bad Request",
+                            serde_json::json!({ "error": "missing x-mundusx-node-id" }),
+                        )
+                        .as_bytes(),
+                    )
+                    .unwrap_or(());
+            };
+            match serde_json::from_str::<LocalSlotLeaseRequest>(&request.body) {
+                Ok(payload) => {
+                    let mut guard = state.lock().expect("state lock");
+                    match guard.acquire_local_slot_lease(node_id, payload, now_unix_seconds()) {
+                        Ok(response) => {
+                            let status = if response.granted {
+                                "201 Created"
+                            } else {
+                                "409 Conflict"
+                            };
+                            if let Err(error) = save_state(&guard) {
+                                eprintln!("failed to save local lease state: {error}");
+                            }
+                            json_response(
+                                status,
+                                serde_json::to_value(response).expect("lease json"),
+                            )
+                        }
+                        Err(error) => {
+                            json_response("400 Bad Request", serde_json::json!({ "error": error }))
+                        }
+                    }
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+            }
+        }
+        ("POST", "/v1/local-leases/renew") => {
+            let node_id = header_value(&request.headers, "x-mundusx-node-id").unwrap_or_default();
+            match serde_json::from_str::<LocalSlotLeaseRenewRequest>(&request.body) {
+                Ok(payload) => {
+                    let mut guard = state.lock().expect("state lock");
+                    match guard.renew_local_slot_lease(
+                        node_id,
+                        &payload.lease_id,
+                        payload.ttl_seconds,
+                        now_unix_seconds(),
+                    ) {
+                        Ok(response) => {
+                            if let Err(error) = save_state(&guard) {
+                                eprintln!("failed to save renewed local lease: {error}");
+                            }
+                            json_response(
+                                "200 OK",
+                                serde_json::to_value(response).expect("lease json"),
+                            )
+                        }
+                        Err(error) => {
+                            json_response("404 Not Found", serde_json::json!({ "error": error }))
+                        }
+                    }
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string() }),
+                ),
+            }
+        }
+        ("POST", "/v1/local-leases/release") => {
+            let node_id = header_value(&request.headers, "x-mundusx-node-id").unwrap_or_default();
+            match serde_json::from_str::<LocalSlotLeaseReleaseRequest>(&request.body) {
+                Ok(payload) => {
+                    let mut guard = state.lock().expect("state lock");
+                    match guard.release_local_slot_lease(
+                        node_id,
+                        &payload.lease_id,
+                        now_unix_seconds(),
+                    ) {
+                        Ok(response) => {
+                            if let Err(error) = save_state(&guard) {
+                                eprintln!("failed to save released local lease: {error}");
+                            }
+                            json_response(
+                                "200 OK",
+                                serde_json::to_value(response).expect("lease json"),
+                            )
+                        }
+                        Err(error) => {
+                            json_response("404 Not Found", serde_json::json!({ "error": error }))
                         }
                     }
                 }
@@ -9734,6 +9849,17 @@ mod tests {
     fn protects_live_job_deltas_with_device_signatures() {
         assert!(requires_device_signature("POST", "/v1/jobs/delta"));
         assert!(!requires_operator_auth("POST", "/v1/jobs/delta"));
+    }
+
+    #[test]
+    fn protects_local_slot_lease_routes_with_device_signatures() {
+        assert!(requires_device_signature("POST", "/v1/local-leases"));
+        assert!(requires_device_signature("POST", "/v1/local-leases/renew"));
+        assert!(requires_device_signature(
+            "POST",
+            "/v1/local-leases/release"
+        ));
+        assert!(!requires_operator_auth("POST", "/v1/local-leases"));
     }
 
     #[test]
