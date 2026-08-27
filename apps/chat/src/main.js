@@ -267,52 +267,6 @@ export function page(config = configFromEnv()) {
       text-transform: uppercase;
     }
 
-    .network-summary {
-      display: flex;
-      align-items: center;
-      min-height: 48px;
-      padding: 0 16px;
-      border-radius: 10px;
-      border: 1px solid rgba(107, 114, 128, 0.18);
-      background: rgba(107, 114, 128, 0.06);
-      color: var(--muted);
-      font-size: 12px;
-      font-weight: 700;
-      letter-spacing: 0.02em;
-      text-transform: uppercase;
-      width: 100%;
-    }
-    .network-summary.is-online {
-      border-color: rgba(23, 166, 104, 0.28);
-      background: #eafbf2;
-      color: var(--green);
-    }
-    .network-summary.is-waiting {
-      border-color: #f7dfae;
-      background: #fff6e8;
-      color: var(--amber);
-    }
-    .network-summary.is-offline {
-      border-color: rgba(229, 72, 77, 0.28);
-      background: #fdedee;
-      color: var(--red);
-    }
-    .network-signal {
-      display: inline-flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
-    }
-    .online-dot,
-    .network-dot {
-      display: inline-block;
-      width: 7px;
-      height: 7px;
-      border-radius: 50%;
-      background: currentColor;
-      flex: 0 0 auto;
-    }
-
     .new-chat {
       width: 100%;
       min-height: 48px;
@@ -521,31 +475,6 @@ export function page(config = configFromEnv()) {
       color: var(--muted-2);
       font-size: 12px;
     }
-
-    .rail-footer {
-      display: grid;
-      gap: 8px;
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: #fff;
-      padding: 14px;
-      color: var(--muted-2);
-      font-size: 12px;
-      overflow-wrap: anywhere;
-    }
-    .network-line {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 10px;
-      color: var(--text);
-      font-weight: 650;
-      font-size: 13px;
-    }
-    .network-line span:first-child { display: inline-flex; align-items: center; gap: 8px; }
-    .network-line .network-dot { color: var(--green); }
-    .network-line span:last-child { color: var(--cyan); font-size: 12px; font-weight: 700; letter-spacing: 0.03em; }
-    #network-latency { color: var(--green); font-weight: 700; }
 
     .account-widget {
       position: relative;
@@ -1598,20 +1527,12 @@ export function page(config = configFromEnv()) {
           <div class="brand-kicker">Decentralized AI Network</div>
         </div>
       </div>
-      <div class="network-summary">
-        <span class="network-signal"><i class="online-dot"></i><span id="network-state">Checking network</span></span>
-      </div>
       <button class="new-chat" id="new-chat" type="button"><span>+ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
       <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
         <button type="button" data-action="rename" role="menuitem">Rename</button>
         <button type="button" data-action="pin" role="menuitem">Pin chat</button>
         <button class="danger" type="button" data-action="delete" role="menuitem">Delete</button>
-      </div>
-      <div class="rail-footer">
-        <div class="network-line"><span><span class="network-dot"></span>MundusX Network</span><span id="network-card-state">Syncing</span></div>
-        <div id="network-card-metrics">-- nodes - -- queued - routed</div>
-        <div>Latency <span id="network-latency">-- ms</span> - Jobs <span id="network-jobs">--</span></div>
       </div>
       <div class="account-widget">
         <div class="account-menu" id="account-menu">
@@ -3600,33 +3521,14 @@ export function page(config = configFromEnv()) {
     }
 
     async function hydrateNetwork() {
-      const started = performance.now();
       try {
         const response = await fetch("/api/network");
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "network unavailable");
-        const latency = Math.max(1, Math.round(performance.now() - started));
-        const summary = document.querySelector(".network-summary");
-        summary?.classList.toggle("is-online", payload.online_count > 0);
-        summary?.classList.toggle("is-waiting", payload.online_count === 0);
-        summary?.classList.remove("is-offline");
         readyNodeCount = payload.online_count;
-        setText("network-state", payload.online_count > 0 ? "Online - nodes ready" : "Standby - no ready nodes");
-        setText("network-card-state", payload.online_count > 0 ? "ONLINE" : "WAITING");
-        setText("network-card-metrics", payload.online_count + " nodes - " + payload.available_parallel_slots + "/" + payload.total_parallel_slots + " slots free - " + payload.queued_job_count + " queued");
-        setText("network-latency", latency + " ms");
-        setText("network-jobs", payload.completed_job_count + " completed");
         syncNetworkRuntimeStatus(false);
       } catch {
-        const summary = document.querySelector(".network-summary");
-        summary?.classList.remove("is-online", "is-waiting");
-        summary?.classList.add("is-offline");
         readyNodeCount = 0;
-        setText("network-state", "Control plane offline");
-        setText("network-card-state", "OFFLINE");
-        setText("network-card-metrics", "control plane unavailable");
-        setText("network-latency", "-- ms");
-        setText("network-jobs", "--");
         if (isIdleRuntimeStatus()) setStatus("error", "Offline");
       }
     }
