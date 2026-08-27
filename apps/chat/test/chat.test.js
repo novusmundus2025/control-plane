@@ -113,8 +113,13 @@ test("renders a usable chat page", () => {
   assert.doesNotMatch(html, /id="voice-select"/);
   assert.doesNotMatch(html, /Auto voice/);
   assert.match(html, /id="history-list"/);
-  assert.match(html, /id="network-state"/);
-  assert.match(html, /slots free/);
+  assert.doesNotMatch(html, /id="network-state"/);
+  assert.doesNotMatch(html, /id="network-card-state"/);
+  assert.doesNotMatch(html, /id="network-card-metrics"/);
+  assert.doesNotMatch(html, /id="network-latency"/);
+  assert.doesNotMatch(html, /id="network-jobs"/);
+  assert.doesNotMatch(html, />MundusX Network</);
+  assert.doesNotMatch(html, /slots free/);
   assert.match(html, /\.work-trace/);
   assert.match(html, /Completed work sections/);
   assert.match(html, /function formatTokenUsageSummary/);
