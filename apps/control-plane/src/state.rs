@@ -462,6 +462,8 @@ impl ControlPlaneState {
             reported_contribution_percent: registration.contribution_percent,
             operator_contribution_percent: None,
             agent_version: registration.agent_version,
+            capability_fabric_version: registration.capability_fabric_version,
+            capabilities: registration.capabilities,
             state: AgentState::Starting,
             reported_state: AgentState::Starting,
             available_memory_mb: 0,
@@ -3297,6 +3299,14 @@ impl ControlPlaneState {
                 .get(&heartbeat.node_id)
                 .map(|node| node.agent_version.clone())
                 .unwrap_or_else(|| "0.1.0".to_string()),
+            capability_fabric_version: self
+                .nodes
+                .get(&heartbeat.node_id)
+                .and_then(|node| node.capability_fabric_version.clone()),
+            capabilities: self
+                .nodes
+                .get(&heartbeat.node_id)
+                .and_then(|node| node.capabilities.clone()),
             state: heartbeat.agent_state,
             reported_state: heartbeat.agent_state,
             available_memory_mb: heartbeat.available_memory_mb,
@@ -8435,6 +8445,8 @@ mod tests {
             identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
             backend: Backend::M,
             contribution_percent: 50,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         }
     }
@@ -8448,6 +8460,8 @@ mod tests {
             identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
             backend: Backend::Cuda,
             contribution_percent: 50,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         }
     }
@@ -8461,6 +8475,8 @@ mod tests {
             identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
             backend: Backend::Vllm,
             contribution_percent: 65,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         }
     }
@@ -9538,6 +9554,8 @@ mod tests {
             identity_trust_path: IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK.to_string(),
             backend: Backend::Cuda,
             contribution_percent: 50,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         });
         let mut heartbeat = ready_heartbeat("node-cuda", "2");
@@ -13789,6 +13807,8 @@ mod tests {
             identity_trust_path: "local-encrypted-fallback".to_string(),
             backend: Backend::Cuda,
             contribution_percent: 40,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         });
         state.heartbeat(
@@ -15079,6 +15099,8 @@ mod tests {
             identity_trust_path: "local-encrypted-fallback".to_string(),
             backend: Backend::Cuda,
             contribution_percent: 50,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         });
 
@@ -15357,6 +15379,8 @@ mod tests {
             identity_trust_path: "local-encrypted-fallback".to_string(),
             backend: Backend::M,
             contribution_percent: 20,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         });
 
@@ -15422,6 +15446,8 @@ mod tests {
             identity_trust_path: "keychain".to_string(),
             backend: Backend::M,
             contribution_percent: 20,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         });
 

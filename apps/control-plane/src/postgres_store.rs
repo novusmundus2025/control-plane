@@ -55,6 +55,10 @@ impl PostgresStore {
 
     pub fn record_registration(&self, registration: &AgentRegistration) -> Result<(), String> {
         let now = now_epoch();
+        let capability_manifest_json = registration
+            .capabilities
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok());
         let mut client = self.connect()?;
         client
             .execute(
@@ -84,6 +88,8 @@ impl PostgresStore {
                     &Option::<String>::None,
                     &Option::<String>::None,
                     &Option::<String>::None,
+                    &registration.capability_fabric_version,
+                    &capability_manifest_json,
                     &Some(now),
                     &Some(now),
                 ],
@@ -96,6 +102,10 @@ impl PostgresStore {
         let policy_override = node.operator_policy_override.as_ref();
         let worker_health_json = node
             .worker_health
+            .as_ref()
+            .and_then(|value| serde_json::to_string(value).ok());
+        let capability_manifest_json = node
+            .capabilities
             .as_ref()
             .and_then(|value| serde_json::to_string(value).ok());
         let updated_at_epoch = parse_epoch(&node.updated_at);
@@ -128,6 +138,8 @@ impl PostgresStore {
                     &policy_override.map(|value| value.actor.clone()),
                     &policy_override.map(|value| value.updated_at.clone()),
                     &worker_health_json,
+                    &node.capability_fabric_version,
+                    &capability_manifest_json,
                     &updated_at_epoch,
                     &updated_at_epoch,
                 ],
@@ -498,6 +510,8 @@ select coalesce(jsonb_agg(jsonb_build_object(
   'reported_contribution_percent', contribution_percent,
   'operator_contribution_percent', null,
   'agent_version', agent_version,
+  'capability_fabric_version', capability_fabric_version,
+  'capabilities', capability_manifest_json,
   'state', state,
   'reported_state', coalesce(reported_state, state),
   'available_memory_mb', available_memory_mb,
@@ -602,14 +616,15 @@ insert into public.devices (
   available_memory_mb, available_gpu_percent, power_source, on_battery, battery_percent,
   policy_allowed, policy_reason, computed_policy_allowed, computed_policy_reason,
   operator_policy_override_target, operator_policy_override_reason, operator_policy_override_actor,
-  operator_policy_override_updated_at, worker_health_json, last_seen_at_epoch, updated_at_epoch
+  operator_policy_override_updated_at, worker_health_json, capability_fabric_version,
+  capability_manifest_json, last_seen_at_epoch, updated_at_epoch
 ) values (
   $1, $2, $3, $4, $5,
   $6, $7, $8, $9, $10,
   $11, $12, $13, $14, $15,
   $16, $17, $18, $19,
   $20, $21, $22,
-  $23, $24::jsonb, $25, $26
+  $23, $24::jsonb, $25, $26::jsonb, $27, $28
 )
 on conflict (node_id) do update set
   public_key_fingerprint = excluded.public_key_fingerprint,
@@ -635,6 +650,8 @@ on conflict (node_id) do update set
   operator_policy_override_actor = excluded.operator_policy_override_actor,
   operator_policy_override_updated_at = excluded.operator_policy_override_updated_at,
   worker_health_json = excluded.worker_health_json,
+  capability_fabric_version = excluded.capability_fabric_version,
+  capability_manifest_json = excluded.capability_manifest_json,
   last_seen_at_epoch = excluded.last_seen_at_epoch,
   updated_at_epoch = excluded.updated_at_epoch
 "#;

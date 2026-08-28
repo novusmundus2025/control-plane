@@ -858,7 +858,94 @@ pub struct AgentRegistration {
     pub identity_trust_path: String,
     pub backend: Backend,
     pub contribution_percent: u8,
+    /// Version of the control-plane-owned Capability Fabric contract. Missing
+    /// means a legacy Node Agent during the rolling compatibility window.
+    #[serde(default)]
+    pub capability_fabric_version: Option<String>,
+    /// Relatively static registration snapshot. Dynamic utilization continues
+    /// to be reported through heartbeat worker health.
+    #[serde(default)]
+    pub capabilities: Option<NodeCapabilityAdvertisement>,
     pub agent_version: String,
+}
+
+pub const CAPABILITY_FABRIC_V1: &str = "1.0";
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct NodeCapabilityAdvertisement {
+    #[serde(default)]
+    pub schema_version: u32,
+    pub backend: Backend,
+    pub contribution_percent: u8,
+    #[serde(default)]
+    pub physical_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub usable_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub available_memory_mb: Option<u32>,
+    #[serde(default)]
+    pub physical_vram_mb: Option<u32>,
+    #[serde(default)]
+    pub usable_vram_mb: Option<u32>,
+    #[serde(default)]
+    pub runtime_mode: String,
+    #[serde(default = "default_parallel_slots")]
+    pub parallel_slots: u8,
+    #[serde(default)]
+    pub capacity_class: String,
+    #[serde(default)]
+    pub supported_roles: Vec<NodeRole>,
+    #[serde(default)]
+    pub supported_tools: Vec<String>,
+    #[serde(default)]
+    pub active_model: Option<ModelCapability>,
+    #[serde(default)]
+    pub ready_for_jobs: bool,
+    #[serde(default)]
+    pub readiness_reason: Option<String>,
+}
+
+/// Validate only the stable v1 registration boundary. Scheduler eligibility
+/// still evaluates live heartbeat state independently.
+pub fn validate_capability_registration(
+    registration: &AgentRegistration,
+) -> Result<(), &'static str> {
+    let Some(version) = registration.capability_fabric_version.as_deref() else {
+        return Ok(());
+    };
+    if version.trim() != CAPABILITY_FABRIC_V1 {
+        return Err("UNSUPPORTED_CAPABILITY_FABRIC_VERSION");
+    }
+    let Some(manifest) = registration.capabilities.as_ref() else {
+        return Err("CAPABILITY_MANIFEST_REQUIRED");
+    };
+    if manifest.schema_version == 0 {
+        return Err("CAPABILITY_PROFILE_SCHEMA_INVALID");
+    }
+    if manifest.backend != registration.backend {
+        return Err("CAPABILITY_BACKEND_MISMATCH");
+    }
+    if manifest.contribution_percent != registration.contribution_percent {
+        return Err("CAPABILITY_CONTRIBUTION_MISMATCH");
+    }
+    let runtime = manifest.runtime_mode.trim();
+    if runtime.is_empty() || runtime.len() > 64 {
+        return Err("CAPABILITY_RUNTIME_REQUIRED");
+    }
+    if manifest.parallel_slots == 0 {
+        return Err("CAPABILITY_SLOTS_INVALID");
+    }
+    if manifest.ready_for_jobs && manifest.supported_roles.is_empty() {
+        return Err("CAPABILITY_ROLE_INVALID");
+    }
+    if manifest
+        .active_model
+        .as_ref()
+        .is_some_and(|model| model.name.trim().is_empty())
+    {
+        return Err("CAPABILITY_MODEL_INVALID");
+    }
+    Ok(())
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -1496,6 +1583,10 @@ pub struct NodeRecord {
     #[serde(default)]
     pub operator_contribution_percent: Option<u8>,
     pub agent_version: String,
+    #[serde(default)]
+    pub capability_fabric_version: Option<String>,
+    #[serde(default)]
+    pub capabilities: Option<NodeCapabilityAdvertisement>,
     pub state: AgentState,
     #[serde(default)]
     pub reported_state: AgentState,
@@ -1836,5 +1927,73 @@ mod tests {
         }))
         .expect("legacy graph result");
         assert_eq!(result.status, JobGraphNodeStatus::Waiting);
+    }
+
+    fn capability_registration() -> AgentRegistration {
+        AgentRegistration {
+            node_id: "node-1".to_string(),
+            public_key_fingerprint: "fingerprint".to_string(),
+            public_key_hex: "0011".to_string(),
+            hostname: "node-1".to_string(),
+            identity_trust_path: "managed".to_string(),
+            backend: Backend::Vllm,
+            contribution_percent: 100,
+            capability_fabric_version: Some(CAPABILITY_FABRIC_V1.to_string()),
+            capabilities: Some(NodeCapabilityAdvertisement {
+                schema_version: 4,
+                backend: Backend::Vllm,
+                contribution_percent: 100,
+                physical_memory_mb: Some(131_072),
+                usable_memory_mb: Some(122_880),
+                available_memory_mb: Some(100_000),
+                physical_vram_mb: Some(131_072),
+                usable_vram_mb: Some(118_000),
+                runtime_mode: "vllm".to_string(),
+                parallel_slots: 16,
+                capacity_class: "server".to_string(),
+                supported_roles: vec![NodeRole::Chat, NodeRole::Coding],
+                supported_tools: vec!["repository".to_string()],
+                active_model: Some(ModelCapability {
+                    name: "qwen3-coder".to_string(),
+                    active: true,
+                    ..ModelCapability::default()
+                }),
+                ready_for_jobs: true,
+                readiness_reason: None,
+            }),
+            agent_version: "1.0.0".to_string(),
+        }
+    }
+
+    #[test]
+    fn capability_fabric_v1_accepts_consistent_manifest() {
+        assert_eq!(
+            validate_capability_registration(&capability_registration()),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn capability_fabric_v1_rejects_backend_mismatch_with_stable_code() {
+        let mut registration = capability_registration();
+        registration
+            .capabilities
+            .as_mut()
+            .expect("manifest")
+            .backend = Backend::M;
+
+        assert_eq!(
+            validate_capability_registration(&registration),
+            Err("CAPABILITY_BACKEND_MISMATCH")
+        );
+    }
+
+    #[test]
+    fn legacy_registration_remains_accepted_during_rolling_upgrade() {
+        let mut registration = capability_registration();
+        registration.capability_fabric_version = None;
+        registration.capabilities = None;
+
+        assert_eq!(validate_capability_registration(&registration), Ok(()));
     }
 }
