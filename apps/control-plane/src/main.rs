@@ -4413,7 +4413,7 @@ fn control_plane_home(
         <div class="statusline">
           <span class="pill pill-{healthy_tone}">healthy</span>
           <span class="pill pill-{storage_tone}">storage: {storage_source}</span>
-          <span class="pill pill-{supabase_tone}">supabase: {supabase}</span>
+          <span class="pill pill-{supabase_tone}">database sync: {supabase}</span>
           <span class="pill pill-{planner_tone}">planner: {planner_status}</span>
           {deploy_badge}
         </div>
