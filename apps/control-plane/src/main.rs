@@ -368,6 +368,16 @@ impl SupabaseSyncStatus {
         }
     }
 
+    fn dashboard_summary(&self) -> String {
+        if !self.enabled {
+            format!("{} · disabled", self.restore_source)
+        } else if self.degraded {
+            format!("{} · degraded", self.restore_source)
+        } else {
+            format!("{} · healthy", self.restore_source)
+        }
+    }
+
     fn tone(&self) -> &'static str {
         if !self.enabled {
             "red"
@@ -3325,13 +3335,8 @@ fn control_plane_home(
     let completed = snapshot["completed_job_count"].as_u64().unwrap_or(0);
     let failed = snapshot["failed_job_count"].as_u64().unwrap_or(0);
     let healthy_tone = "green";
-    let storage_tone = if storage_source.as_str() == "supabase" {
-        "green"
-    } else {
-        "amber"
-    };
-    let supabase = sync_status.summary();
-    let supabase_tone = sync_status.tone();
+    let database = sync_status.dashboard_summary();
+    let database_tone = sync_status.tone();
     let planner_service = planner_service_status_from_env();
     let planner_tone = if !planner_service.enabled {
         "amber"
@@ -4412,8 +4417,7 @@ fn control_plane_home(
 
         <div class="statusline">
           <span class="pill pill-{healthy_tone}">healthy</span>
-          <span class="pill pill-{storage_tone}">storage: {storage_source}</span>
-          <span class="pill pill-{supabase_tone}">database sync: {supabase}</span>
+          <span class="pill pill-{database_tone}">database: {database}</span>
           <span class="pill pill-{planner_tone}">planner: {planner_status}</span>
           {deploy_badge}
         </div>
@@ -4464,7 +4468,7 @@ fn control_plane_home(
               </div>
               <p class="meta" style="font-size:15px;line-height:1.7;">Credits are accrued through the append-only ledger and exposed at <code>/v1/credits</code>.</p>
               <div class="info-box">
-                <div style="display:flex;gap:12px;align-items:flex-start;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg><div>Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.<br/>Current startup storage source: <code>{storage_source}</code><br/>Supabase sync is <code>{supabase}</code></div></div>
+                <div style="display:flex;gap:12px;align-items:flex-start;"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg><div>Policy-aware nodes stay visible in the registry, but quiet nodes are excluded from scheduling.<br/>Current database status: <code>{database}</code></div></div>
               </div>
               <div class="api-strip links" aria-label="Developer APIs"><span class="meta">Developer APIs</span><a class="api-link" href="/health">health json</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes?page=1&page_size=25">nodes json</a><a class="api-link" href="/v1/jobs?page=1&page_size=25">jobs json</a><a class="api-link" href="/v1/credits?page=1&page_size=25">credits json</a></div>
             </div>
@@ -4494,7 +4498,6 @@ fn control_plane_home(
     </script>
   </body>
 </html>"##,
-        storage_source = escape_html(storage_source.as_str()),
         logo_path = CONTROL_PLANE_LOGO_PATH,
         deploy_badge = deploy_badge,
         planner_tone = planner_tone,
@@ -8245,6 +8248,9 @@ mod tests {
         assert!(html.contains("Credits Overview"));
         assert!(html.contains("Planner Service"));
         assert!(html.contains("planner:"));
+        assert!(html.contains("database: local-json-fallback · healthy"));
+        assert!(!html.contains("storage: local-json-fallback"));
+        assert!(!html.contains("database sync:"));
         assert!(html.contains(r#"href="/v1/planner/status""#));
         assert!(html.contains(r#"href="/nodes""#));
         assert!(html.contains(r#"href="/jobs""#));
@@ -8288,6 +8294,18 @@ mod tests {
         assert!(!html.contains("Node Details"));
         assert!(!html.contains("Signed registry snapshot"));
         assert!(!html.contains("Control Plane</div></div></div>"));
+    }
+
+    #[test]
+    fn database_dashboard_badge_combines_backend_and_health() {
+        let healthy = SupabaseSyncStatus::enabled(StorageSource::Postgres);
+        assert_eq!(healthy.dashboard_summary(), "postgres · healthy");
+        assert_eq!(healthy.tone(), "green");
+
+        let mut degraded = healthy;
+        degraded.note_failure("write failed".to_string());
+        assert_eq!(degraded.dashboard_summary(), "postgres · degraded");
+        assert_eq!(degraded.tone(), "amber");
     }
 
     #[test]
