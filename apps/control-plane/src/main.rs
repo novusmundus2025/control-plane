@@ -369,6 +369,25 @@ impl SupabaseSyncStatus {
             format!("enabled ({})", self.restore_source)
         }
     }
+    fn dashboard_summary(&self) -> String {
+        if !self.enabled {
+            format!("{} · disabled", self.restore_source)
+        } else if self.degraded {
+            format!("{} · degraded", self.restore_source)
+        } else {
+            format!("{} · healthy", self.restore_source)
+        }
+    }
+
+    fn tone(&self) -> &'static str {
+        if !self.enabled {
+            "red"
+        } else if self.degraded {
+            "amber"
+        } else {
+            "green"
+        }
+    }
 }
 
 fn now_unix_seconds() -> String {
@@ -3428,13 +3447,8 @@ fn control_plane_home(
     let completed = snapshot["completed_job_count"].as_u64().unwrap_or(0);
     let failed = snapshot["failed_job_count"].as_u64().unwrap_or(0);
     let healthy_tone = "green";
-    let (storage_label, storage_tone) = match storage_source {
-        StorageSource::Postgres => ("postgres", "green"),
-        StorageSource::Supabase => ("supabase", "green"),
-        StorageSource::LocalJsonFallback => ("json fallback", "amber"),
-        StorageSource::LocalJsonOnly => ("json", "blue"),
-    };
-    let supabase = sync_status.summary();
+    let database = sync_status.dashboard_summary();
+    let database_tone = sync_status.tone();
     let planner_service = planner_service_status_from_env();
     let planner_tone = if !planner_service.enabled {
         "amber"
@@ -4645,7 +4659,7 @@ fn control_plane_home(
 
         <div class="statusline">
           <span class="pill pill-{healthy_tone}">healthy</span>
-          <span class="pill pill-{storage_tone}">storage: {storage_label}</span>
+          <span class="pill pill-{database_tone}">database: {database}</span>
           {deploy_badge}
         </div>
 
@@ -4719,7 +4733,7 @@ fn control_plane_home(
                   <svg viewBox="0 0 180 82" fill="none"><path d="M0 56 C12 14 20 78 35 42 S51 70 64 18 S82 64 96 36 S118 46 130 22 S155 35 180 18" stroke="#248fff" stroke-width="2"/></svg>
                 </div>
                 <div class="credit-periods"><div><span>Today</span><strong>{credits_total:.2}</strong></div><div><span>This Week</span><strong>{credits_total:.2}</strong></div><div><span>This Month</span><strong>{credits_total:.2}</strong></div></div>
-                <div class="info-box">Storage mode: <code>{storage_label}</code><br/>Supabase synchronization: <code>{supabase}</code></div>
+                <div class="info-box">Database status: <code>{database}</code></div>
                 <div class="api-strip links" aria-label="Developer APIs"><span class="meta">Developer APIs</span><a class="api-link" href="/health">health json</a><a class="api-link" href="/v1/status">status json</a><a class="api-link" href="/v1/nodes?page=1&page_size=25">nodes json</a><a class="api-link" href="/v1/jobs?page=1&page_size=25">jobs json</a></div>
               </div>
             </div>
@@ -4749,7 +4763,6 @@ fn control_plane_home(
     </script>
   </body>
 </html>"##,
-        storage_label = escape_html(storage_label),
         logo_path = CONTROL_PLANE_LOGO_PATH,
         vehicle_path = CONTROL_PLANE_VEHICLE_PATH,
         recent_logs = recent_logs,
@@ -8511,7 +8524,9 @@ mod tests {
         assert!(html.contains("Planner Overview"));
         assert!(html.contains("Planner Status"));
         assert!(html.contains("Recent Logs"));
-        assert!(html.contains("storage: json fallback"));
+        assert!(html.contains("database: local-json-fallback · healthy"));
+        assert!(!html.contains("storage: local-json-fallback"));
+        assert!(!html.contains("database sync:"));
         assert!(html.contains(r#"href="/v1/planner/status""#));
         assert!(html.contains(r#"href="/nodes""#));
         assert!(html.contains(r#"href="/jobs""#));
@@ -8558,7 +8573,19 @@ mod tests {
     }
 
     #[test]
-    fn home_page_labels_supabase_and_json_storage_modes() {
+    fn database_dashboard_badge_combines_backend_and_health() {
+        let healthy = SupabaseSyncStatus::enabled(StorageSource::Postgres);
+        assert_eq!(healthy.dashboard_summary(), "postgres · healthy");
+        assert_eq!(healthy.tone(), "green");
+
+        let mut degraded = healthy;
+        degraded.note_failure("write failed".to_string());
+        assert_eq!(degraded.dashboard_summary(), "postgres · degraded");
+        assert_eq!(degraded.tone(), "amber");
+    }
+
+    #[test]
+    fn home_page_labels_database_backend_and_health_modes() {
         let state = ControlPlaneState::default();
         let supabase_html = control_plane_home(
             &state,
@@ -8571,9 +8598,10 @@ mod tests {
             &SupabaseSyncStatus::disabled(StorageSource::LocalJsonOnly),
         );
 
-        assert!(supabase_html.contains("storage: supabase"));
-        assert!(json_html.contains("storage: json"));
-        assert!(json_html.contains("Supabase synchronization: <code>disabled"));
+        assert!(supabase_html.contains("database: supabase · healthy"));
+        assert!(json_html.contains("database: local-json-only · disabled"));
+        assert!(!supabase_html.contains("storage:"));
+        assert!(!json_html.contains("Supabase synchronization:"));
     }
 
     #[test]
