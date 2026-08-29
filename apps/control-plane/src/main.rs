@@ -8,13 +8,13 @@ mod supabase;
 mod tools;
 
 use contracts::{
-    is_trusted_identity_path, trust_path_label, AdmissionPolicyUpdate, AgentRegistration,
-    AgentState, AppendChatMessageRequest, Backend, ChatCompletionRequest, ChatMessagesResponse,
-    CreditsLedgerRecord, Heartbeat, JobCompletion, JobExecutionMode, JobGraphNodeStatus, JobRecord,
-    JobRequest, JobStatus, JobStreamAck, JobStreamDelta, LocalSlotLeaseReleaseRequest,
-    LocalSlotLeaseRenewRequest, LocalSlotLeaseRequest, NodePolicyOverrideInput, NodeRecord,
-    OperatorContributionPercentUpdate, OperatorNodePolicyOverrideUpdate, RoutingMode, RuntimeMode,
-    ToolRewardRequest,
+    is_trusted_identity_path, trust_path_label, validate_capability_registration,
+    AdmissionPolicyUpdate, AgentRegistration, AgentState, AppendChatMessageRequest, Backend,
+    ChatCompletionRequest, ChatMessagesResponse, CreditsLedgerRecord, Heartbeat, JobCompletion,
+    JobExecutionMode, JobGraphNodeStatus, JobRecord, JobRequest, JobStatus, JobStreamAck,
+    JobStreamDelta, LocalSlotLeaseReleaseRequest, LocalSlotLeaseRenewRequest,
+    LocalSlotLeaseRequest, NodePolicyOverrideInput, NodeRecord, OperatorContributionPercentUpdate,
+    OperatorNodePolicyOverrideUpdate, RoutingMode, RuntimeMode, ToolRewardRequest,
 };
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use migrations::apply_migrations;
@@ -6456,6 +6456,20 @@ fn handle_connection_with_streams(
         ("POST", "/v1/register") => {
             match serde_json::from_str::<AgentRegistration>(&request.body) {
                 Ok(registration) => {
+                    if let Err(code) = validate_capability_registration(&registration) {
+                        return stream
+                            .write_all(
+                                json_response(
+                                    "400 Bad Request",
+                                    serde_json::json!({
+                                        "error": "invalid capability manifest",
+                                        "code": code,
+                                    }),
+                                )
+                                .as_bytes(),
+                            )
+                            .unwrap_or(());
+                    }
                     let registration_clone = registration.clone();
                     let mut guard = state.lock().expect("state lock");
                     let record = guard.register(registration);
@@ -7899,6 +7913,8 @@ mod tests {
                 .to_string(),
             backend: Backend::M,
             contribution_percent: 50,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         });
         state.heartbeat(
@@ -8382,6 +8398,8 @@ mod tests {
                 .to_string(),
             backend: Backend::Cuda,
             contribution_percent: 30,
+            capability_fabric_version: None,
+            capabilities: None,
             agent_version: "0.1.0".to_string(),
         });
         let state = Arc::new(Mutex::new(initial_state));

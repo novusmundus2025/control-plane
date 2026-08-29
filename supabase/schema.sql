@@ -32,6 +32,8 @@ create table if not exists public.devices (
   backend text not null,
   contribution_percent integer not null,
   agent_version text not null,
+  capability_fabric_version text,
+  capability_manifest_json jsonb,
   state text not null,
   reported_state text,
   available_memory_mb integer not null default 0,
