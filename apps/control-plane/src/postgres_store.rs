@@ -1,5 +1,5 @@
 use crate::contracts::{
-    AgentRegistration, AppendChatMessageRequest, ChatMessageRecord, CreditsLedgerRecord, Heartbeat,
+    AgentRegistration, AppendChatMessageRequest, ChatMessageRecord, CreditsLedgerRecord,
     JobCompletion, JobEventRecord, JobRecord, NodeRecord,
 };
 use crate::state::ControlPlaneState;
@@ -146,57 +146,6 @@ impl PostgresStore {
             )
             .map(|_| ())
             .map_err(|error| format!("postgres node sync failed: {error}"))
-    }
-
-    pub fn record_heartbeat(&self, heartbeat: &Heartbeat, node: &NodeRecord) -> Result<(), String> {
-        self.record_node_snapshot(node)?;
-        let observed_at = parse_epoch(&heartbeat.updated_at).unwrap_or_else(now_epoch);
-        let source_heartbeat_key = heartbeat_sync_key(
-            heartbeat,
-            observed_at,
-            node.policy_allowed,
-            node.policy_reason.as_deref(),
-        );
-        let policy_override = node.operator_policy_override.as_ref();
-        let worker_health_json = serde_json::to_string(&heartbeat.worker_health)
-            .map_err(|error| format!("failed to serialize worker health: {error}"))?;
-        let mut client = self.connect()?;
-        client
-            .execute(
-                HEARTBEATS_UPSERT_SQL,
-                &[
-                    &source_heartbeat_key,
-                    &heartbeat.node_id,
-                    &heartbeat.backend.to_string(),
-                    &heartbeat.agent_state.to_string(),
-                    &node.reported_state.to_string(),
-                    &(heartbeat.available_memory_mb as i32),
-                    &(heartbeat.available_gpu_percent as i32),
-                    &(heartbeat.contribution_percent as i32),
-                    &heartbeat.hostname,
-                    &heartbeat.identity_trust_path,
-                    &heartbeat.power_source,
-                    &heartbeat.on_battery,
-                    &heartbeat.battery_percent.map(i32::from),
-                    &node.policy_allowed,
-                    &node.policy_reason,
-                    &node.computed_policy_allowed,
-                    &node.computed_policy_reason,
-                    &policy_override.map(|value| value.target.to_string()),
-                    &policy_override.map(|value| value.reason.clone()),
-                    &policy_override.map(|value| value.actor.clone()),
-                    &policy_override.map(|value| value.updated_at.clone()),
-                    &heartbeat.worker_health.healthy,
-                    &heartbeat.worker_health.runtime_ready,
-                    &heartbeat.worker_health.model_name,
-                    &heartbeat.worker_health.runtime_mode,
-                    &heartbeat.worker_health.streaming_supported,
-                    &worker_health_json,
-                    &observed_at,
-                ],
-            )
-            .map(|_| ())
-            .map_err(|error| format!("postgres heartbeat sync failed: {error}"))
     }
 
     pub fn record_job(&self, job: &JobRecord) -> Result<(), String> {
@@ -468,37 +417,6 @@ fn dedupe_credits_ledger(credits_ledger: Vec<CreditsLedgerRecord>) -> Vec<Credit
     deduped
 }
 
-fn heartbeat_sync_key(
-    heartbeat: &Heartbeat,
-    observed_at: i64,
-    policy_allowed: bool,
-    policy_reason: Option<&str>,
-) -> String {
-    let battery_percent = heartbeat
-        .battery_percent
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let policy_reason = policy_reason.unwrap_or_default().replace('|', "/");
-
-    format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        heartbeat.node_id,
-        observed_at,
-        heartbeat.backend,
-        heartbeat.agent_state,
-        heartbeat.available_memory_mb,
-        heartbeat.available_gpu_percent,
-        heartbeat.contribution_percent,
-        heartbeat.hostname,
-        heartbeat.identity_trust_path,
-        heartbeat.power_source,
-        heartbeat.on_battery,
-        battery_percent,
-        policy_allowed,
-        policy_reason
-    )
-}
-
 const DEVICES_RESTORE_SQL: &str = r#"
 select coalesce(jsonb_agg(jsonb_build_object(
   'node_id', node_id,
@@ -656,54 +574,6 @@ on conflict (node_id) do update set
   updated_at_epoch = excluded.updated_at_epoch
 "#;
 
-const HEARTBEATS_UPSERT_SQL: &str = r#"
-insert into public.heartbeats (
-  source_heartbeat_key, node_id, backend, agent_state, reported_state,
-  available_memory_mb, available_gpu_percent, contribution_percent, hostname,
-  identity_trust_path, power_source, on_battery, battery_percent, policy_allowed,
-  policy_reason, computed_policy_allowed, computed_policy_reason,
-  operator_policy_override_target, operator_policy_override_reason, operator_policy_override_actor,
-  operator_policy_override_updated_at, worker_healthy, worker_runtime_ready, worker_model_name,
-  worker_runtime_mode, worker_streaming, worker_health_json, observed_at_epoch
-) values (
-  $1, $2, $3, $4, $5,
-  $6, $7, $8, $9,
-  $10, $11, $12, $13, $14,
-  $15, $16, $17,
-  $18, $19, $20,
-  $21, $22, $23, $24,
-  $25, $26, $27::text::jsonb, $28
-)
-on conflict (source_heartbeat_key) do update set
-  node_id = excluded.node_id,
-  backend = excluded.backend,
-  agent_state = excluded.agent_state,
-  reported_state = excluded.reported_state,
-  available_memory_mb = excluded.available_memory_mb,
-  available_gpu_percent = excluded.available_gpu_percent,
-  contribution_percent = excluded.contribution_percent,
-  hostname = excluded.hostname,
-  identity_trust_path = excluded.identity_trust_path,
-  power_source = excluded.power_source,
-  on_battery = excluded.on_battery,
-  battery_percent = excluded.battery_percent,
-  policy_allowed = excluded.policy_allowed,
-  policy_reason = excluded.policy_reason,
-  computed_policy_allowed = excluded.computed_policy_allowed,
-  computed_policy_reason = excluded.computed_policy_reason,
-  operator_policy_override_target = excluded.operator_policy_override_target,
-  operator_policy_override_reason = excluded.operator_policy_override_reason,
-  operator_policy_override_actor = excluded.operator_policy_override_actor,
-  operator_policy_override_updated_at = excluded.operator_policy_override_updated_at,
-  worker_healthy = excluded.worker_healthy,
-  worker_runtime_ready = excluded.worker_runtime_ready,
-  worker_model_name = excluded.worker_model_name,
-  worker_runtime_mode = excluded.worker_runtime_mode,
-  worker_streaming = excluded.worker_streaming,
-  worker_health_json = excluded.worker_health_json,
-  observed_at_epoch = excluded.observed_at_epoch
-"#;
-
 const JOBS_UPSERT_SQL: &str = r#"
 insert into public.jobs (
   job_id, request_id, prompt, preferred_backend, model, mode, system_prompt, max_tokens,
@@ -816,10 +686,9 @@ from (
 #[cfg(test)]
 mod tests {
     use super::{
-        heartbeat_sync_key, PostgresStore, CHAT_MESSAGE_INSERT_SQL, CREDITS_UPSERT_SQL,
-        DEVICES_UPSERT_SQL, HEARTBEATS_UPSERT_SQL, JOBS_UPSERT_SQL, JOB_EVENTS_UPSERT_SQL,
+        PostgresStore, CHAT_MESSAGE_INSERT_SQL, CREDITS_UPSERT_SQL, DEVICES_UPSERT_SQL,
+        JOBS_UPSERT_SQL, JOB_EVENTS_UPSERT_SQL,
     };
-    use crate::contracts::{AgentState, Backend, Heartbeat, WorkerHealthReport};
 
     #[test]
     fn postgres_store_prefers_pooled_runtime_url() {
@@ -851,7 +720,6 @@ mod tests {
     fn serialized_json_parameters_are_cast_from_text_before_jsonb() {
         for sql in [
             DEVICES_UPSERT_SQL,
-            HEARTBEATS_UPSERT_SQL,
             JOBS_UPSERT_SQL,
             CREDITS_UPSERT_SQL,
             JOB_EVENTS_UPSERT_SQL,
@@ -874,53 +742,5 @@ mod tests {
         assert!(CREDITS_UPSERT_SQL.contains("($11::text)::timestamptz"));
         assert!(JOB_EVENTS_UPSERT_SQL.contains("$6::text"));
         assert!(JOB_EVENTS_UPSERT_SQL.contains("($6::text)::timestamptz"));
-    }
-
-    #[test]
-    fn heartbeat_sync_key_is_stable_for_duplicate_heartbeats() {
-        let heartbeat = Heartbeat {
-            node_id: "node-1".to_string(),
-            backend: Backend::M,
-            agent_state: AgentState::Ready,
-            available_memory_mb: 1024,
-            available_gpu_percent: 50,
-            updated_at: "123".to_string(),
-            contribution_percent: 80,
-            hostname: "host".to_string(),
-            identity_trust_path: "keychain".to_string(),
-            power_source: "ac".to_string(),
-            on_battery: false,
-            battery_percent: None,
-            policy_allowed: true,
-            policy_reason: None,
-            worker_health: WorkerHealthReport {
-                healthy: true,
-                model_dir: String::new(),
-                model_name: None,
-                model_path: None,
-                llama_cli_available: true,
-                blas_device_available: true,
-                cuda_device_available: false,
-                cuda_driver_available: false,
-                cuda_device_name: None,
-                cuda_memory_mb: None,
-                power_source: "ac".to_string(),
-                on_battery: false,
-                battery_percent: None,
-                runtime_ready: true,
-                runtime_mode: "local".to_string(),
-                parallel_slots: 1,
-                supported_runtime_modes: Vec::new(),
-                streaming_supported: false,
-                capabilities: Default::default(),
-                checked_at: "123".to_string(),
-                notes: Vec::new(),
-            },
-        };
-
-        assert_eq!(
-            heartbeat_sync_key(&heartbeat, 123, true, None),
-            heartbeat_sync_key(&heartbeat, 123, true, None)
-        );
     }
 }
