@@ -1,5 +1,5 @@
 use crate::contracts::{
-    AgentRegistration, AppendChatMessageRequest, ChatMessageRecord, CreditsLedgerRecord, Heartbeat,
+    AgentRegistration, AppendChatMessageRequest, ChatMessageRecord, CreditsLedgerRecord,
     JobCompletion, JobEventRecord, JobRecord, NodeRecord,
 };
 use crate::state::ControlPlaneState;
@@ -152,59 +152,6 @@ impl SupabaseMirror {
             "resolution=merge-duplicates,return=minimal",
             payload,
         )
-    }
-
-    pub fn record_heartbeat(&self, heartbeat: &Heartbeat, node: &NodeRecord) -> Result<(), String> {
-        let now = parse_epoch(&heartbeat.updated_at).unwrap_or_else(now_epoch);
-        let source_heartbeat_key = heartbeat_sync_key(
-            heartbeat,
-            now,
-            node.policy_allowed,
-            node.policy_reason.as_deref(),
-        );
-
-        self.record_node_snapshot(node)?;
-
-        let policy_override = node.operator_policy_override.as_ref();
-        let heartbeat_row = json!({
-            "source_heartbeat_key": source_heartbeat_key,
-            "node_id": heartbeat.node_id,
-            "backend": heartbeat.backend,
-            "agent_state": heartbeat.agent_state,
-            "reported_state": node.reported_state,
-            "available_memory_mb": heartbeat.available_memory_mb,
-            "available_gpu_percent": heartbeat.available_gpu_percent,
-            "contribution_percent": heartbeat.contribution_percent,
-            "hostname": heartbeat.hostname,
-            "identity_trust_path": heartbeat.identity_trust_path,
-            "power_source": heartbeat.power_source,
-            "on_battery": heartbeat.on_battery,
-            "battery_percent": heartbeat.battery_percent,
-            "policy_allowed": node.policy_allowed,
-            "policy_reason": node.policy_reason,
-            "computed_policy_allowed": node.computed_policy_allowed,
-            "computed_policy_reason": node.computed_policy_reason,
-            "operator_policy_override_target": policy_override.map(|value| value.target),
-            "operator_policy_override_reason": policy_override.map(|value| value.reason.clone()),
-            "operator_policy_override_actor": policy_override.map(|value| value.actor.clone()),
-            "operator_policy_override_updated_at": policy_override.map(|value| value.updated_at.clone()),
-            "worker_healthy": heartbeat.worker_health.healthy,
-            "worker_runtime_ready": heartbeat.worker_health.runtime_ready,
-            "worker_model_name": heartbeat.worker_health.model_name.as_deref(),
-            "worker_runtime_mode": heartbeat.worker_health.runtime_mode.as_str(),
-            "worker_streaming": heartbeat.worker_health.streaming_supported,
-            "worker_health_json": serde_json::to_value(&heartbeat.worker_health).ok(),
-            "observed_at_epoch": now,
-        });
-
-        self.post_json(
-            "heartbeats",
-            Some("source_heartbeat_key"),
-            "resolution=merge-duplicates,return=minimal",
-            heartbeat_row,
-        )?;
-
-        Ok(())
     }
 
     pub fn record_job(&self, job: &JobRecord) -> Result<(), String> {
@@ -843,37 +790,6 @@ fn job_event_dedupe_key(event: &JobEventRecord) -> String {
             event.payload
         ),
     }
-}
-
-fn heartbeat_sync_key(
-    heartbeat: &Heartbeat,
-    observed_at: i64,
-    policy_allowed: bool,
-    policy_reason: Option<&str>,
-) -> String {
-    let battery_percent = heartbeat
-        .battery_percent
-        .map(|value| value.to_string())
-        .unwrap_or_else(|| "none".to_string());
-    let policy_reason = policy_reason.unwrap_or_default().replace('|', "/");
-
-    format!(
-        "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{}",
-        heartbeat.node_id,
-        observed_at,
-        heartbeat.backend,
-        heartbeat.agent_state,
-        heartbeat.available_memory_mb,
-        heartbeat.available_gpu_percent,
-        heartbeat.contribution_percent,
-        heartbeat.hostname,
-        heartbeat.identity_trust_path,
-        heartbeat.power_source,
-        heartbeat.on_battery,
-        battery_percent,
-        policy_allowed,
-        policy_reason
-    )
 }
 
 fn trim_trailing_slash(input: &str) -> String {
