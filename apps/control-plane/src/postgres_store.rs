@@ -749,7 +749,11 @@ insert into public.credits_ledger (
   amount, currency, metadata, created_at
 ) values (
   $1::uuid, $2::uuid, $3, $4, $5, $6, $7,
-  $8::double precision::numeric, $9, $10::text::jsonb, to_timestamp($11::bigint)
+  $8::double precision::numeric, $9, $10::text::jsonb,
+  case
+    when $11::text ~ '^[0-9]+$' then to_timestamp(($11::text)::bigint)
+    else ($11::text)::timestamptz
+  end
 )
 on conflict (id) do update set
   user_id = excluded.user_id,
@@ -768,7 +772,11 @@ const JOB_EVENTS_UPSERT_SQL: &str = r#"
 insert into public.job_events (
   source_event_id, node_id, job_id, event_type, payload, created_at
 ) values (
-  $1, $2, $3, $4, $5::text::jsonb, to_timestamp($6::bigint)
+  $1, $2, $3, $4, $5::text::jsonb,
+  case
+    when $6::text ~ '^[0-9]+$' then to_timestamp(($6::text)::bigint)
+    else ($6::text)::timestamptz
+  end
 )
 on conflict (source_event_id) do update set
   node_id = excluded.node_id,
@@ -858,6 +866,14 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn serialized_timestamp_parameters_accept_epoch_and_restored_timestamp_text() {
+        assert!(CREDITS_UPSERT_SQL.contains("$11::text"));
+        assert!(CREDITS_UPSERT_SQL.contains("($11::text)::timestamptz"));
+        assert!(JOB_EVENTS_UPSERT_SQL.contains("$6::text"));
+        assert!(JOB_EVENTS_UPSERT_SQL.contains("($6::text)::timestamptz"));
     }
 
     #[test]
