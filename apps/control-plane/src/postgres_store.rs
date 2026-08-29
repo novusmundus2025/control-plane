@@ -624,7 +624,7 @@ insert into public.devices (
   $11, $12, $13, $14, $15,
   $16, $17, $18, $19,
   $20, $21, $22,
-  $23, $24::jsonb, $25, $26::jsonb, $27, $28
+  $23, $24::text::jsonb, $25, $26::text::jsonb, $27, $28
 )
 on conflict (node_id) do update set
   public_key_fingerprint = excluded.public_key_fingerprint,
@@ -672,7 +672,7 @@ insert into public.heartbeats (
   $15, $16, $17,
   $18, $19, $20,
   $21, $22, $23, $24,
-  $25, $26, $27::jsonb, $28
+  $25, $26, $27::text::jsonb, $28
 )
 on conflict (source_heartbeat_key) do update set
   node_id = excluded.node_id,
@@ -713,7 +713,7 @@ insert into public.jobs (
 ) values (
   $1, $2, $3, $4, $5, $6, $7, $8,
   $9::double precision::numeric, $10::double precision::numeric, $11,
-  $12::jsonb, $13::jsonb, $14::jsonb, $15, $16,
+  $12::text::jsonb, $13::text::jsonb, $14::text::jsonb, $15, $16,
   $17, $18, $19, $20, $21, $22,
   $23, $24
 )
@@ -749,7 +749,7 @@ insert into public.credits_ledger (
   amount, currency, metadata, created_at
 ) values (
   $1::uuid, $2::uuid, $3, $4, $5, $6, $7,
-  $8::double precision::numeric, $9, $10::jsonb, to_timestamp($11::bigint)
+  $8::double precision::numeric, $9, $10::text::jsonb, to_timestamp($11::bigint)
 )
 on conflict (id) do update set
   user_id = excluded.user_id,
@@ -768,7 +768,7 @@ const JOB_EVENTS_UPSERT_SQL: &str = r#"
 insert into public.job_events (
   source_event_id, node_id, job_id, event_type, payload, created_at
 ) values (
-  $1, $2, $3, $4, $5::jsonb, to_timestamp($6::bigint)
+  $1, $2, $3, $4, $5::text::jsonb, to_timestamp($6::bigint)
 )
 on conflict (source_event_id) do update set
   node_id = excluded.node_id,
@@ -781,7 +781,7 @@ on conflict (source_event_id) do update set
 const CHAT_MESSAGE_INSERT_SQL: &str = r#"
 with inserted as (
   insert into public.chat_messages (conversation_id, role, content, job_id, tool, metadata)
-  values ($1::uuid, $2, $3, $4, $5, $6::jsonb)
+  values ($1::uuid, $2, $3, $4, $5, $6::text::jsonb)
   on conflict (job_id) where job_id is not null do nothing
   returning *
 ), selected as (
@@ -807,7 +807,10 @@ from (
 
 #[cfg(test)]
 mod tests {
-    use super::{heartbeat_sync_key, PostgresStore};
+    use super::{
+        heartbeat_sync_key, PostgresStore, CHAT_MESSAGE_INSERT_SQL, CREDITS_UPSERT_SQL,
+        DEVICES_UPSERT_SQL, HEARTBEATS_UPSERT_SQL, JOBS_UPSERT_SQL, JOB_EVENTS_UPSERT_SQL,
+    };
     use crate::contracts::{AgentState, Backend, Heartbeat, WorkerHealthReport};
 
     #[test]
@@ -834,6 +837,27 @@ mod tests {
             store.database_url,
             "postgresql://admin@postgres.example/mundusx"
         );
+    }
+
+    #[test]
+    fn serialized_json_parameters_are_cast_from_text_before_jsonb() {
+        for sql in [
+            DEVICES_UPSERT_SQL,
+            HEARTBEATS_UPSERT_SQL,
+            JOBS_UPSERT_SQL,
+            CREDITS_UPSERT_SQL,
+            JOB_EVENTS_UPSERT_SQL,
+            CHAT_MESSAGE_INSERT_SQL,
+        ] {
+            for token in sql.split_whitespace() {
+                if token.starts_with('$') && token.contains("::jsonb") {
+                    assert!(
+                        token.contains("::text::jsonb"),
+                        "JSON parameter must bind as text before jsonb: {token}"
+                    );
+                }
+            }
+        }
     }
 
     #[test]
