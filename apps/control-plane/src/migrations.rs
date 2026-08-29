@@ -284,6 +284,21 @@ mod tests {
         fs::remove_dir_all(root).expect("cleanup");
     }
 
+    #[test]
+    fn heartbeat_history_purge_is_an_explicit_managed_migration() {
+        let migrations = migration_files().expect("managed migrations");
+        let purge = migrations
+            .iter()
+            .find(|migration| migration.version == "0013")
+            .expect("heartbeat purge migration");
+
+        assert_eq!(purge.name, "purge_heartbeat_history");
+        assert!(purge
+            .sql
+            .contains("truncate table public.heartbeats restart identity"));
+        assert!(!purge.sql.to_ascii_lowercase().contains("drop table"));
+    }
+
     fn test_root(name: &str) -> PathBuf {
         let unique = SystemTime::now()
             .duration_since(UNIX_EPOCH)
