@@ -5547,6 +5547,15 @@ fn header_value<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<
 }
 
 fn requires_device_signature(method: &str, path: &str) -> bool {
+    if method == "GET" && path == "/internal/harness/node/attempts/next" {
+        return true;
+    }
+    if method == "POST"
+        && parse_harness_attempt_route(path).is_some()
+        && path.starts_with("/internal/harness/node/attempts/")
+    {
+        return true;
+    }
     matches!(
         (method, path),
         ("POST", "/v1/register")
@@ -6017,7 +6026,9 @@ fn authorize_harness_request(
     route_path: &str,
     headers: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    if !route_path.starts_with("/internal/harness/") {
+    if !route_path.starts_with("/internal/harness/")
+        || route_path.starts_with("/internal/harness/node/")
+    {
         return Ok(());
     }
     authorize_harness_request_from_values(
@@ -6147,7 +6158,9 @@ enum HarnessAttemptRoute<'a> {
 }
 
 fn parse_harness_attempt_route(path: &str) -> Option<HarnessAttemptRoute<'_>> {
-    let remainder = path.strip_prefix("/internal/harness/attempts/")?;
+    let remainder = path
+        .strip_prefix("/internal/harness/attempts/")
+        .or_else(|| path.strip_prefix("/internal/harness/node/attempts/"))?;
     let (attempt_id, action) = remainder.split_once('/')?;
     if !attempt_id.starts_with("hattempt_") {
         None
@@ -6347,12 +6360,38 @@ fn select_harness_node(
 
 fn harness_actor(headers: &BTreeMap<String, String>) -> String {
     header_value(headers, "x-mundusx-actor")
+        .or_else(|| header_value(headers, "x-mundusx-node-id"))
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("harness-service")
         .chars()
         .take(160)
         .collect()
+}
+
+fn authorize_harness_attempt_owner(
+    path: &str,
+    headers: &BTreeMap<String, String>,
+    harness: &harness::HarnessState,
+    attempt_id: &str,
+) -> Result<(), harness::HarnessError> {
+    if !path.starts_with("/internal/harness/node/attempts/") {
+        return Ok(());
+    }
+    let node_id = header_value(headers, "x-mundusx-node-id").unwrap_or_default();
+    let attempt = harness.attempts.get(attempt_id).ok_or_else(|| {
+        harness::HarnessError::new(
+            "HARNESS_ATTEMPT_NOT_FOUND",
+            "harness attempt does not exist",
+        )
+    })?;
+    if attempt.node_id != node_id {
+        return Err(harness::HarnessError::new(
+            "HARNESS_AUTH_REQUIRED",
+            "node does not own this harness attempt",
+        ));
+    }
+    Ok(())
 }
 
 fn harness_error_response(error: harness::HarnessError) -> String {
@@ -6758,6 +6797,133 @@ fn handle_connection_with_streams(
             serde_json::to_value(planner_service_status_from_env())
                 .expect("planner service status json"),
         ),
+        ("GET", "/internal/harness/node/attempts/next") => {
+            let Some(database) = supabase else {
+                let response = harness_storage_response(
+                    "Coding Harness v1 requires configured PostgreSQL storage",
+                );
+                let _ = stream.write_all(response.as_bytes());
+                return;
+            };
+            let node_id = query_param(query, "node_id").unwrap_or_default();
+            if node_id.is_empty()
+                || header_value(&request.headers, "x-mundusx-node-id") != Some(node_id)
+            {
+                json_response(
+                    "401 Unauthorized",
+                    serde_json::json!({
+                        "error": "node id query/header mismatch",
+                        "code": "HARNESS_AUTH_REQUIRED"
+                    }),
+                )
+            } else {
+                let actor = harness_actor(&request.headers);
+                let now = now_unix_seconds_u64();
+                let mut guard = state.lock().expect("state lock");
+                if let Some(attempt) = guard
+                    .harness
+                    .attempts
+                    .values()
+                    .find(|attempt| attempt.node_id == node_id && !attempt.state.is_terminal())
+                    .cloned()
+                {
+                    let task = guard.harness.tasks.get(&attempt.task_id).cloned();
+                    json_response(
+                        "200 OK",
+                        serde_json::json!({ "task": task, "attempt": attempt }),
+                    )
+                } else {
+                    let mut queued = guard
+                        .harness
+                        .tasks
+                        .values()
+                        .filter(|task| task.state == harness::HarnessTaskState::Queued)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    queued.sort_by_key(|task| (task.created_at_epoch, task.task_id.clone()));
+                    let mut response = None;
+                    for task in queued {
+                        let reserve = harness::ReserveHarnessAttemptRequest {
+                            expected_task_state_version: task.state_version,
+                            node_id: Some(node_id.to_string()),
+                            allow_sandbox_fallback: true,
+                            slots: 1,
+                            reservation_ttl_seconds: 900,
+                            actor: actor.clone(),
+                        };
+                        let Ok(selection) = select_harness_node(&task, &reserve, &guard.nodes)
+                        else {
+                            continue;
+                        };
+                        let mut candidate = guard.harness.clone();
+                        let Ok((attempt, reservation)) = candidate.reserve_attempt(
+                            &task.task_id,
+                            task.state_version,
+                            &selection.node_id,
+                            selection.execution_mode,
+                            reserve.slots,
+                            selection.node_total_slots,
+                            reserve.reservation_ttl_seconds,
+                            &actor,
+                            now,
+                        ) else {
+                            continue;
+                        };
+                        let _ = candidate.record_routing_decision(
+                            &task.task_id,
+                            Some(&attempt.attempt_id),
+                            &actor,
+                            serde_json::to_value(&selection).expect("routing json"),
+                            now,
+                        );
+                        match database.record_harness_reservation(
+                            &candidate,
+                            &task.task_id,
+                            &reservation.reservation_id,
+                            task.state_version,
+                            selection.node_total_slots,
+                            now,
+                        ) {
+                            Ok(()) => {
+                                guard.harness = candidate;
+                                if let Err(error) = save_state(&guard) {
+                                    eprintln!("failed to save claimed harness attempt: {error}");
+                                }
+                                response = Some(json_response(
+                                    "200 OK",
+                                    serde_json::json!({
+                                        "task": task,
+                                        "attempt": attempt,
+                                        "routing": selection,
+                                    }),
+                                ));
+                                break;
+                            }
+                            Err(error)
+                                if error.starts_with("HARNESS_STATE_CONFLICT")
+                                    || error.starts_with("HARNESS_RESOURCE_EXHAUSTED") =>
+                            {
+                                continue;
+                            }
+                            Err(error) => {
+                                response = Some(harness_persistence_response(error));
+                                break;
+                            }
+                        }
+                    }
+                    response.unwrap_or_else(|| {
+                        json_response(
+                            "200 OK",
+                            serde_json::json!({
+                                "task": null,
+                                "attempt": null,
+                                "code": "HARNESS_NO_ELIGIBLE_TASK"
+                            }),
+                        )
+                    })
+                }
+            }
+        }
         ("GET", "/internal/harness/operations") => {
             let guard = state.lock().expect("state lock");
             let recent_events = guard
@@ -7169,6 +7335,16 @@ fn handle_connection_with_streams(
                 Ok(transition) => {
                     let actor = harness_actor(&request.headers);
                     let mut guard = state.lock().expect("state lock");
+                    if let Err(error) = authorize_harness_attempt_owner(
+                        path,
+                        &request.headers,
+                        &guard.harness,
+                        attempt_id,
+                    ) {
+                        let response = harness_error_response(error);
+                        let _ = stream.write_all(response.as_bytes());
+                        return;
+                    }
                     let expected_task_version = guard
                         .harness
                         .attempts
@@ -7252,6 +7428,13 @@ fn handle_connection_with_streams(
             let actor = harness_actor(&request.headers);
             let now = now_unix_seconds_u64();
             let mut guard = state.lock().expect("state lock");
+            if let Err(error) =
+                authorize_harness_attempt_owner(path, &request.headers, &guard.harness, attempt_id)
+            {
+                let response = harness_error_response(error);
+                let _ = stream.write_all(response.as_bytes());
+                return;
+            }
             let prior = guard.harness.attempts.get(attempt_id).and_then(|attempt| {
                 guard.harness.tasks.get(&attempt.task_id).map(|task| {
                     (
@@ -8979,13 +9162,15 @@ mod tests {
         migration_database_url_from_values, now_unix_seconds, operator_auth_mode_from_env,
         operator_auth_startup_config_error, operator_auth_token_from_env,
         parse_chat_completion_status_path, parse_conversation_messages_path,
-        parse_conversation_path, parse_harness_attempt_transition_route, parse_harness_task_route,
-        parse_request, read_http_request, requires_device_signature, requires_operator_auth,
-        resume_token_matches, resume_token_sha256, select_harness_node, should_enable_live_stream,
+        parse_conversation_path, parse_harness_attempt_route,
+        parse_harness_attempt_transition_route, parse_harness_task_route, parse_request,
+        read_http_request, requires_device_signature, requires_operator_auth, resume_token_matches,
+        resume_token_sha256, select_harness_node, should_enable_live_stream,
         status_snapshot_with_deploy_fingerprint, trust_grade, trust_grade_badge,
-        HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource, SupabaseSyncStatus,
-        AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, CONTROL_PLANE_LOGO_PATH,
-        CONTROL_PLANE_VEHICLE_PATH, DATABASE_DIRECT_URL_ENV, DATABASE_POOL_URL_ENV,
+        HarnessAttemptRoute, HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource,
+        SupabaseSyncStatus, AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV,
+        CONTROL_PLANE_LOGO_PATH, CONTROL_PLANE_VEHICLE_PATH, DATABASE_DIRECT_URL_ENV,
+        DATABASE_POOL_URL_ENV,
         LEGACY_DATABASE_URL_ENV, LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
     };
 
@@ -11570,6 +11755,7 @@ mod tests {
                     harness_contract_version: "1.0".to_string(),
                     tenant_id: "tenant-1".to_string(),
                     repository_source_id: "repo-1".to_string(),
+                    objective: "Update the bounded test fixture.".to_string(),
                     base_revision: "a".repeat(40),
                     allowed_path_prefixes: vec!["src".to_string()],
                     execution_mode: HarnessExecutionMode::Hybrid,
@@ -11616,6 +11802,36 @@ mod tests {
             "/internal/harness/attempts/hattempt_abc/delete"
         )
         .is_none());
+        assert_eq!(
+            parse_harness_attempt_transition_route(
+                "/internal/harness/node/attempts/hattempt_abc/transition"
+            ),
+            Some("hattempt_abc")
+        );
+        assert!(matches!(
+            parse_harness_attempt_route("/internal/harness/node/attempts/hattempt_abc/tool-calls"),
+            Some(HarnessAttemptRoute::ToolCalls("hattempt_abc"))
+        ));
+    }
+
+    #[test]
+    fn protects_node_harness_routes_with_device_signatures() {
+        assert!(requires_device_signature(
+            "GET",
+            "/internal/harness/node/attempts/next"
+        ));
+        assert!(requires_device_signature(
+            "POST",
+            "/internal/harness/node/attempts/hattempt_abc/transition"
+        ));
+        assert!(requires_device_signature(
+            "POST",
+            "/internal/harness/node/attempts/hattempt_abc/model-turns"
+        ));
+        assert!(!requires_device_signature(
+            "POST",
+            "/internal/harness/attempts/hattempt_abc/transition"
+        ));
     }
 
     #[test]

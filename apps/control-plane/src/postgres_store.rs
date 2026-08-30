@@ -544,6 +544,7 @@ impl PostgresStore {
                     &task.harness_contract_version,
                     &task.tenant_id,
                     &task.repository_source_id,
+                    &task.objective,
                     &task.base_revision,
                     &allowed_path_prefixes,
                     &execution_mode,
@@ -665,6 +666,9 @@ impl PostgresStore {
                         &record.exit_code,
                         &record.duration_ms.map(|value| value as i64),
                         &record.output_sha256,
+                        &record.artifact_sha256,
+                        &record.base_revision,
+                        &record.environment_sha256,
                         &record.output_truncated,
                         &(record.created_at_epoch as i64),
                     ],
@@ -1232,20 +1236,21 @@ select coalesce(jsonb_agg(to_jsonb(t) - 'id' order by t.created_at_epoch, t.even
 
 const HARNESS_TASK_UPSERT_SQL: &str = r#"
 insert into public.harness_tasks (
-  task_id, harness_contract_version, tenant_id, repository_source_id, base_revision,
+  task_id, harness_contract_version, tenant_id, repository_source_id, objective, base_revision,
   allowed_path_prefixes, execution_mode, allowed_operations, validation_profiles,
   budgets, state, state_version, current_attempt_id, verification_level,
   terminal_code, created_at_epoch, updated_at_epoch, expires_at_epoch
 ) values (
-  $1, $2, $3, $4, $5,
-  $6::text::jsonb, $7, $8::text::jsonb, $9::text::jsonb,
-  $10::text::jsonb, $11, $12, $13, $14,
-  $15, $16, $17, $18
+  $1, $2, $3, $4, $5, $6,
+  $7::text::jsonb, $8, $9::text::jsonb, $10::text::jsonb,
+  $11::text::jsonb, $12, $13, $14, $15,
+  $16, $17, $18, $19
 )
 on conflict (task_id) do update set
   harness_contract_version = excluded.harness_contract_version,
   tenant_id = excluded.tenant_id,
   repository_source_id = excluded.repository_source_id,
+  objective = excluded.objective,
   base_revision = excluded.base_revision,
   allowed_path_prefixes = excluded.allowed_path_prefixes,
   execution_mode = excluded.execution_mode,
@@ -1339,8 +1344,9 @@ on conflict (tool_call_id) do update set
 const HARNESS_VALIDATION_UPSERT_SQL: &str = r#"
 insert into public.harness_validations (
   validation_id, task_id, attempt_id, profile_id, profile_version, status, code,
-  exit_code, duration_ms, output_sha256, output_truncated, created_at_epoch
-) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+  exit_code, duration_ms, output_sha256, artifact_sha256, base_revision,
+  environment_sha256, output_truncated, created_at_epoch
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
 on conflict (validation_id) do nothing
 "#;
 
