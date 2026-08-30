@@ -115,6 +115,10 @@ pub struct HarnessTask {
     pub harness_contract_version: String,
     pub tenant_id: String,
     pub repository_source_id: String,
+    #[serde(default)]
+    pub requested_by_user_id: Option<String>,
+    #[serde(default)]
+    pub submitted_via: Option<String>,
     /// Bounded user-authored coding objective. It is never copied into audit metadata.
     pub objective: String,
     pub base_revision: String,
@@ -355,6 +359,10 @@ pub struct CreateHarnessTaskRequest {
     pub harness_contract_version: String,
     pub tenant_id: String,
     pub repository_source_id: String,
+    #[serde(default)]
+    pub requested_by_user_id: Option<String>,
+    #[serde(default)]
+    pub submitted_via: Option<String>,
     pub objective: String,
     pub base_revision: String,
     #[serde(default)]
@@ -1144,6 +1152,8 @@ impl HarnessState {
             harness_contract_version: request.harness_contract_version,
             tenant_id: request.tenant_id.trim().to_string(),
             repository_source_id: request.repository_source_id.trim().to_string(),
+            requested_by_user_id: request.requested_by_user_id,
+            submitted_via: request.submitted_via,
             objective: request.objective.trim().to_string(),
             base_revision: request.base_revision.to_ascii_lowercase(),
             allowed_path_prefixes: normalized_list(request.allowed_path_prefixes),
@@ -1696,6 +1706,26 @@ fn validate_create_request(
     }
     validate_identifier(&request.tenant_id, "tenant id")?;
     validate_identifier(&request.repository_source_id, "repository source id")?;
+    if request
+        .requested_by_user_id
+        .as_deref()
+        .is_some_and(|value| Uuid::parse_str(value).is_err())
+    {
+        return Err(HarnessError::new(
+            "HARNESS_USER_ID_INVALID",
+            "requesting user id must be a UUID",
+        ));
+    }
+    if request
+        .submitted_via
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "chat-u" | "service" | "control-plane-ui"))
+    {
+        return Err(HarnessError::new(
+            "HARNESS_SUBMISSION_SOURCE_INVALID",
+            "submission source is not recognized",
+        ));
+    }
     if request.objective.trim().is_empty() || request.objective.len() > 16_384 {
         return Err(HarnessError::new(
             "HARNESS_OBJECTIVE_INVALID",
@@ -1842,6 +1872,8 @@ mod tests {
             harness_contract_version: HARNESS_CONTRACT_VERSION.to_string(),
             tenant_id: "tenant-1".to_string(),
             repository_source_id: "repo-1".to_string(),
+            requested_by_user_id: None,
+            submitted_via: None,
             objective: "Update the bounded test fixture.".to_string(),
             base_revision: "a".repeat(40),
             allowed_path_prefixes: vec!["src".to_string(), "tests".to_string()],
