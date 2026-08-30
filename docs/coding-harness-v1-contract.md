@@ -3,15 +3,17 @@
 Status: **frozen for UAT implementation**  
 Contract version: `1.0`  
 Owner: EHDA control plane  
-Execution authority: MundusX node agent  
+Execution authority: paired local-user runner or explicitly hosted EHDA runner
 Tracking issue: `mundusx/control-plane#506`
 
 ## Objective
 
 Coding Harness v1 turns a model response into a bounded, reviewable software
 engineering attempt. EHDA owns task policy, scheduling, lifecycle, approval,
-and audit. A selected MundusX node owns an isolated workspace and executes only
-the typed repository and validation operations authorized by EHDA.
+and audit. A separately registered Harness runner owns an isolated workspace and
+executes only the typed repository and validation operations authorized by EHDA.
+Inference contributors never receive repository content, credentials, workspaces,
+or tool authority.
 
 The harness may inspect a repository, propose a patch, run permitted tests,
 repair a failed attempt within an explicit budget, and return an evidence
@@ -32,6 +34,7 @@ Harness v1 includes:
 - cancellation, timeout, cleanup, recovery, and idempotent retry;
 - content-integrity metadata and reconstructable audit events;
 - independent approval gates for applying, merging, and deploying a result.
+- separate requester, runner, and inference-contributor identities and capacity.
 
 It does **not** include unrestricted shell access, arbitrary host filesystem
 access, hidden production credentials, automatic merge/push/deploy, RAG,
@@ -44,13 +47,18 @@ The following inputs are untrusted:
 - user prompts and uploaded files;
 - repository contents, hooks, submodules, build scripts, and tests;
 - model text and model-requested tool calls;
-- contributor-node claims that are not independently verified;
+- runner claims that are not independently verified;
 - command output and generated artifacts.
 
-The control plane is the policy authority. A node agent may enforce a stricter
+The control plane is the policy authority. A runner may enforce a stricter
 local policy, but it cannot weaken the policy carried by a signed assignment.
-The model cannot call a node tool directly. Every operation passes through the
+The model cannot call a runner tool directly. Every operation passes through the
 control-plane authorization and attempt budget.
+
+Chat/VS Code user identity, Harness `runner_id`, and inference contributor
+`node_id` are distinct. A local-user runner must be bound to the authenticated
+requesting user and explicit tenant/repository scopes. No eligible runner means
+`HARNESS_RUNNER_UNAVAILABLE`; contributor fallback is forbidden.
 
 Harness v1 must defend against path traversal, symlink escape, repository hook
 execution, command injection, environment/credential disclosure, network data
@@ -61,9 +69,9 @@ effects, and forged evidence.
 ## Version and compatibility rules
 
 - Requests send `harness_contract_version: "1.0"`.
-- Nodes advertise `supported_harness_versions` and supported isolation modes.
+- Runners register supported contract versions, operations, and isolation modes.
 - An unknown non-empty version fails with `HARNESS_VERSION_UNSUPPORTED`.
-- A node that does not advertise version `1.0` is ineligible for harness work.
+- A runner that does not advertise version `1.0` is ineligible for harness work.
 - Additive optional fields are backward compatible. Removing a field, changing
   its meaning, or changing a unit requires a new contract version.
 - Limits use bytes, milliseconds, integer token counts, and UTC timestamps.
@@ -128,7 +136,7 @@ and disabled network unless a named policy explicitly allows destinations.
 ### Hybrid
 
 Hybrid means EHDA still plans, authorizes, and audits centrally while a trusted
-MundusX node performs repository operations locally. Hybrid does not mean
+user-owned runner performs repository operations locally. Hybrid does not mean
 unrestricted host execution. It still requires a per-attempt workspace, path
 confinement, environment allowlist, resource limits, child-process cleanup, and
 the same tool authorization contract. A policy may fall back from hybrid to
@@ -169,7 +177,7 @@ response, or repository file are never executable authority.
 - Processes run without inherited deployment secrets and with an explicit
   environment allowlist.
 - All descendants are terminated on completion, cancellation, timeout, agent
-  restart recovery, or node drain.
+  restart recovery, or runner drain.
 - Cleanup is idempotent. Only declared, validated artifacts survive cleanup.
 
 ## 5. Lifecycle
@@ -205,7 +213,7 @@ cannot start another operation. The node terminates descendants, seals any
 bounded diagnostic result, deletes the workspace, and acknowledges cleanup.
 
 Read-only operations may be retried. Workspace writes and validation may be
-retried only with the same idempotency key on the same attempt. A new node gets
+retried only with the same idempotency key on the same attempt. A new runner gets
 a new attempt and workspace. External side effects are not part of v1 and are
 never replayed.
 
@@ -225,7 +233,7 @@ integrity checks.
 
 The final evidence bundle contains:
 
-- task, attempt, node, contract, policy, and validation-profile versions;
+- task, attempt, runner, contract, policy, and validation-profile versions;
 - repository source identifier and immutable base revision;
 - final patch/diff digest and changed-path summary;
 - validation command-profile identifiers, exit codes, durations, and bounded
@@ -234,7 +242,7 @@ The final evidence bundle contains:
 - verification level: `verified`, `partially_verified`, or `unverified`;
 - cleanup outcome and timestamps.
 
-Artifacts are content addressed or signed by the node identity and verified by
+Artifacts are content addressed or signed by the runner identity and verified by
 the control plane. Raw repository snapshots, credentials, unrelated files, and
 unbounded logs are not stored.
 
@@ -259,9 +267,10 @@ apply, merge, or deployment, and no non-production approval implies production.
 | Code | Condition |
 |---|---|
 | `HARNESS_VERSION_UNSUPPORTED` | requested contract version is unsupported |
-| `HARNESS_NODE_INELIGIBLE` | node lacks required harness/isolation capability |
+| `HARNESS_RUNNER_UNAVAILABLE` | no paired, fresh, scoped runner is available |
+| `HARNESS_RUNNER_OWNER_MISMATCH` | local runner belongs to another requesting user |
 | `HARNESS_POLICY_DENIED` | operation or mode is not authorized |
-| `HARNESS_AUTH_REQUIRED` | authenticated service/node authority is missing |
+| `HARNESS_AUTH_REQUIRED` | authenticated service/runner authority is missing |
 | `HARNESS_BASE_REVISION_INVALID` | base revision is absent, mutable, or mismatched |
 | `HARNESS_WORKSPACE_PREPARE_FAILED` | isolated workspace could not be created |
 | `HARNESS_PATH_DENIED` | path escapes root or allowed prefixes |
@@ -290,19 +299,26 @@ internal surface; exact transport may be HTTP or an equivalent signed queue.
 POST /internal/harness/tasks
 GET  /internal/harness/tasks/{task_id}
 POST /internal/harness/tasks/{task_id}/cancel
+POST /internal/harness/runners/register
+GET  /internal/harness/runners/attempts/next?runner_id={runner_id}
+POST /internal/harness/runners/attempts/{attempt_id}/transition
+POST /internal/harness/runners/attempts/{attempt_id}/model-turns
+POST /internal/harness/runners/attempts/{attempt_id}/tool-calls
+POST /internal/harness/runners/attempts/{attempt_id}/validations
+POST /internal/harness/runners/attempts/{attempt_id}/artifacts
 POST /internal/harness/attempts/{attempt_id}/tool-calls
 POST /internal/harness/attempts/{attempt_id}/events
 POST /internal/harness/attempts/{attempt_id}/artifacts
 POST /internal/harness/tasks/{task_id}/approvals
 ```
 
-User-facing clients do not call node execution endpoints. Internal routes
-require service authentication, and node results require the existing signed
-device identity path.
+User-facing clients do not call execution endpoints. Runner endpoints use
+`/internal/harness/runners/...`, require a signed `runner_id`, and are separate
+from contributor node registration and heartbeat routes.
 
 ## 12. PostgreSQL authority
 
-Provider-neutral PostgreSQL stores `harness_tasks`, `harness_attempts`,
+Provider-neutral PostgreSQL stores `harness_runners`, `harness_tasks`, `harness_attempts`,
 `harness_tool_calls`, `harness_validations`, `harness_artifacts`,
 `harness_approvals`, and bounded `harness_audit_events`. Runtime traffic uses
 `MUNDUSX_DATABASE_POOL_URL`; migrations and administration use the direct
@@ -320,7 +336,8 @@ Harness v1 is UAT-complete when deterministic fixture repositories and a mixed
 - no cross-workspace or out-of-prefix access;
 - no unauthorized command, environment, network, merge, push, or deployment;
 - no capacity oversubscription;
-- correct cancellation, timeout, crash cleanup, and node-loss behavior;
+- correct cancellation, timeout, crash cleanup, and runner-loss behavior;
+- proof that contributor-only nodes cannot claim Harness work or consume runner slots;
 - bounded and deterministic retry/repair with no duplicated side effects;
 - validated evidence bound to the exact base revision and patch digest;
 - reconstructable routing and execution decisions without sensitive payloads;
