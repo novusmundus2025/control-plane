@@ -49,6 +49,23 @@ MUNDUSX_WEB_SEARCH_TTL_SECONDS=1800
 MUNDUSX_WEB_SEARCH_DAILY_BUDGET=<optional daily call cap; 0 or unset means unlimited>
 ```
 
+The Coding Harness launcher is disabled by default. To expose it in `chat-u`, bind it to one
+UAT repository boundary and provide the server-side Harness token (never a browser variable):
+
+```text
+MUNDUSX_HARNESS_UI_ENABLED=true
+MUNDUSX_HARNESS_SERVICE_TOKEN=<same secret configured on the control plane>
+MUNDUSX_HARNESS_TENANT_ID=ehda-uat
+MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID=github:mundusx/control-plane
+MUNDUSX_HARNESS_BASE_REVISION=<full 40-character git commit SHA>
+MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES=apps/control-plane,docs
+MUNDUSX_HARNESS_VALIDATION_PROFILES=control-plane-tests
+```
+
+Chat users can submit only the fixed repository, path, validation, and tool boundary. A submitted
+task remains in `created` state until an operator separately approves UAT execution in EHDA. The
+launcher cannot approve merge or deployment.
+
 Railway provides `PORT`; the app reads it automatically.
 
 ## Environment
@@ -74,6 +91,13 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEB_SEARCH_MAX_RESULTS` | `4` | Number of search snippets fetched and injected into the grounded prompt |
 | `MUNDUSX_WEB_SEARCH_TTL_SECONDS` | `1800` | Web search cache TTL when `MUNDUSX_WEATHER_CACHE_URL`/`VALKEY_URL`/`REDIS_URL` is configured |
 | `MUNDUSX_WEB_SEARCH_DAILY_BUDGET` | unset (unlimited) | Optional daily call cap for the web search tool, tracked in the same Redis/Valkey cache; once exceeded the tool declines until the next UTC day |
+| `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes the repository-bound Coding Harness launcher when set to `true` |
+| `MUNDUSX_HARNESS_SERVICE_TOKEN` | unset | Server-only token used to submit Harness tasks to the control plane |
+| `MUNDUSX_HARNESS_TENANT_ID` | unset | Fixed tenant for all tasks submitted through chat-u |
+| `MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID` | unset | Fixed repository source identifier; users cannot override it |
+| `MUNDUSX_HARNESS_BASE_REVISION` | unset | Fixed full 40-character UAT git commit SHA |
+| `MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES` | unset | Comma-separated repository-relative path boundary |
+| `MUNDUSX_HARNESS_VALIDATION_PROFILES` | unset | Comma-separated named validation profiles |
 
 ## Current Flow
 
