@@ -96,8 +96,14 @@ const ICON_MIC = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const ICON_VOLUME = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H3v6h3l5 4V5Z"/><path d="M15.5 8.5a5 5 0 0 1 0 7"/><path d="M18.5 5.5a9 9 0 0 1 0 13"/></svg>';
 
 const WELCOME_INNER_HTML = `<div class="welcome-inner">
-              <h1>Hello, my name is <span class="atlas-word">Atlas</span>.</h1>
-              <p class="welcome-copy">How can I help you today?</p>
+              <div class="welcome-heading"><h1>Hello, my name is <span class="atlas-word">Atlas</span>.</h1><span class="atlas-sparkle" aria-hidden="true">✦</span></div>
+              <p class="welcome-copy">Your AI companion on the decentralized edge.</p>
+              <div class="capability-grid" aria-label="Start with a capability">
+                <button class="capability-card" type="button" data-starter-prompt="Help me write and debug code"><span class="capability-icon">&lt;/&gt;</span><span><strong>Code</strong><small>Write &amp; debug code</small></span></button>
+                <button class="capability-card" type="button" data-starter-prompt="Analyze this data or file"><span class="capability-icon">⌁</span><span><strong>Analyze</strong><small>Analyze data &amp; files</small></span></button>
+                <button class="capability-card" type="button" data-starter-prompt="Help me build and deploy an app"><span class="capability-icon">◇</span><span><strong>Build</strong><small>Build &amp; deploy apps</small></span></button>
+                <button class="capability-card" type="button" data-starter-prompt="Research this topic in depth"><span class="capability-icon">⌕</span><span><strong>Research</strong><small>Deep research</small></span></button>
+              </div>
             </div>`;
 
 export function configFromEnv(env = process.env) {
@@ -213,6 +219,7 @@ export function page(config = configFromEnv()) {
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MundusX Chat</title>
+  <script>try{document.documentElement.dataset.theme=localStorage.getItem("mundusx.chat.theme")||((matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light")}catch(_){document.documentElement.dataset.theme="light"}</script>
   <style>
     :root {
       color-scheme: light;
@@ -1591,6 +1598,60 @@ export function page(config = configFromEnv()) {
       .markdown-table th,
       .markdown-table td { padding: 9px 11px; }
     }
+
+    /* Atlas home: theme-aware presentation and interactive decentralized mesh. */
+    :root { --bg:#f8f9ff; --rail:rgba(250,251,255,.94); --panel:rgba(255,255,255,.82); --panel-2:rgba(255,255,255,.72); --line:rgba(89,102,145,.14); --line-strong:rgba(89,102,145,.24); --text:#111321; --muted:#626a80; --muted-2:#8992aa; --mesh-a:85,98,255; --mesh-b:137,73,255; --surface-shadow:0 18px 60px rgba(57,53,146,.10); }
+    html[data-theme="dark"] { color-scheme:dark; --bg:#070a15; --rail:rgba(8,11,24,.94); --panel:rgba(17,21,40,.82); --panel-2:rgba(20,24,45,.72); --line:rgba(170,182,230,.14); --line-strong:rgba(170,182,230,.24); --text:#f4f5ff; --muted:#b1b7ca; --muted-2:#7f89a6; --mesh-a:68,103,255; --mesh-b:143,56,255; --surface-shadow:0 22px 70px rgba(0,0,0,.38); }
+    body { background:var(--bg); transition:background .28s ease,color .28s ease; }
+    .shell { position:relative; isolation:isolate; }
+    aside { position:relative; z-index:4; backdrop-filter:blur(22px); grid-template-rows:auto auto auto minmax(0,1fr) auto; gap:14px; }
+    .network-card { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; border:1px solid var(--line); border-radius:12px; padding:11px 12px; background:var(--panel); }
+    .network-card .status-dot { color:#43c767; box-shadow:0 0 12px rgba(67,199,103,.7); }
+    .network-copy { display:grid; gap:3px; }
+    .network-copy strong { font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
+    .network-copy span { color:var(--muted); font-size:11px; }
+    .network-wave { color:#43c767; font-size:20px; letter-spacing:-4px; transform:rotate(-8deg); }
+    .rail-primary { display:grid; gap:8px; }
+    .new-chat { color:white; border:0; background:var(--gradient); box-shadow:0 10px 24px rgba(84,71,244,.22); }
+    .new-chat:hover,.new-chat:focus-visible { background:var(--gradient); transform:translateY(-1px); }
+    .new-chat .kbd-hint { color:white; border-color:rgba(255,255,255,.25); background:rgba(255,255,255,.12); }
+    .rail-tabs { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; }
+    .rail-tab { border:0; border-bottom:2px solid transparent; padding:8px 2px; color:var(--muted); background:transparent; font-size:12px; }
+    .rail-tab.is-active { color:var(--purple); border-color:var(--purple); font-weight:700; }
+    main { position:relative; z-index:1; background:radial-gradient(circle at 55% 18%,rgba(var(--mesh-a),.06),transparent 42%); }
+    .mesh-canvas { position:absolute; z-index:-1; inset:58px 0 0; width:100%; height:calc(100% - 58px); pointer-events:none; opacity:.78; transition:opacity .4s ease; }
+    main:not(.is-empty-chat) .mesh-canvas { opacity:.10; }
+    header { position:relative; z-index:3; border-bottom-color:transparent; }
+    .theme-switch { display:inline-grid; grid-template-columns:repeat(2,30px); padding:3px; border:1px solid var(--line); border-radius:999px; background:var(--panel); }
+    .theme-option { width:30px; height:30px; display:grid; place-items:center; border:0; border-radius:50%; color:var(--muted); background:transparent; font-size:15px; }
+    .theme-option[aria-pressed="true"] { color:white; background:var(--gradient); box-shadow:0 5px 14px rgba(86,70,246,.32); }
+    .runtime-status-sentinel { background:var(--panel); backdrop-filter:blur(12px); }
+    main.is-empty-chat { grid-template-rows:58px minmax(0,1.18fr) minmax(0,.82fr); }
+    main.is-empty-chat .conversation { align-content:end; padding-bottom:26px; }
+    .welcome-inner { width:min(820px,100%); gap:16px; }
+    .welcome-heading { display:flex; align-items:flex-start; gap:12px; }
+    .welcome h1 { font-size:clamp(34px,4.2vw,54px); letter-spacing:-.035em; }
+    .atlas-word { padding:0; }
+    .atlas-word::after { display:none; }
+    .atlas-sparkle { color:#8555ff; font-size:28px; animation:atlas-twinkle 3.8s ease-in-out infinite; }
+    @keyframes atlas-twinkle { 0%,100%{transform:translateY(-4px) rotate(0) scale(.86);opacity:.7} 50%{transform:translateY(-8px) rotate(35deg) scale(1.08);opacity:1} }
+    .welcome-copy { font-size:16px; }
+    .capability-grid { width:min(760px,100%); display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; margin-top:4px; }
+    .capability-card { min-width:0; display:grid; grid-template-columns:34px 1fr; align-items:center; gap:10px; padding:13px; border:1px solid var(--line); border-radius:12px; color:var(--text); background:var(--panel-2); backdrop-filter:blur(14px); text-align:left; transition:transform .2s ease,border-color .2s ease,background .2s ease; }
+    .capability-card:hover,.capability-card:focus-visible { transform:translateY(-3px); border-color:rgba(112,79,255,.5); background:var(--panel); }
+    .capability-card>span:last-child { display:grid; gap:3px; min-width:0; }
+    .capability-card strong { font-size:13px; }
+    .capability-card small { color:var(--muted); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .capability-icon { width:32px; height:32px; display:grid; place-items:center; border:1px solid rgba(119,78,255,.35); border-radius:8px; color:#7757ff; font:700 12px/1 ui-monospace,monospace; }
+    .composer { border-color:rgba(116,91,255,.24); background:var(--panel); backdrop-filter:blur(18px); box-shadow:var(--surface-shadow); }
+    .account-bar,.account-menu,.account-upgrade { background:var(--panel); }
+    .account-bar:hover,.account-menu-header:hover,.account-menu-item:hover { background:var(--panel-2); }
+    html[data-theme="dark"] code { color:#c6bcff; }
+    html[data-theme="dark"] .message-retry-button { background:var(--panel); }
+    @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
+    @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px} }
+    @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
   </style>
 </head>
 <body data-auth-required="${config.auth?.required ? "true" : "false"}">
@@ -1612,7 +1673,11 @@ export function page(config = configFromEnv()) {
           <div class="brand-kicker">Decentralized AI Network</div>
         </div>
       </div>
-      <button class="new-chat" id="new-chat" type="button"><span>+ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
+      <div class="network-card" aria-label="Network status"><span class="status-dot"></span><span class="network-copy"><strong>Network status</strong><span>All systems operational</span></span><span class="network-wave" aria-hidden="true">⌁⌁</span></div>
+      <div class="rail-primary">
+        <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
+        <nav class="rail-tabs" aria-label="Workspace"><button class="rail-tab is-active" type="button">Chats</button><button class="rail-tab" type="button">Agents</button><button class="rail-tab" type="button">Nodes</button></nav>
+      </div>
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
       <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
         <button type="button" data-action="rename" role="menuitem">Rename</button>
@@ -1649,7 +1714,9 @@ export function page(config = configFromEnv()) {
       </div>
     </aside>
     <main id="chat-main" class="is-empty-chat">
+      <canvas class="mesh-canvas" id="mesh-canvas" aria-hidden="true"></canvas>
       <header>
+        <div class="theme-switch" role="group" aria-label="Color theme"><button class="theme-option" id="theme-light" type="button" aria-label="Use light theme" aria-pressed="true">☀</button><button class="theme-option" id="theme-dark" type="button" aria-label="Use dark theme" aria-pressed="false">☾</button></div>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
         ${repositoryLauncher}
         ${harnessLauncher}
@@ -1719,6 +1786,9 @@ export function page(config = configFromEnv()) {
     const repositoryPathEl = document.getElementById("repository-path");
     const repositoryResultEl = document.getElementById("repository-result");
     const repositoryUpEl = document.getElementById("repository-up");
+    const meshCanvasEl = document.getElementById("mesh-canvas");
+    const themeLightEl = document.getElementById("theme-light");
+    const themeDarkEl = document.getElementById("theme-dark");
     let authCsrfToken = null;
     let currentUser = null;
     let currentRepositoryPath = "";
@@ -1746,6 +1816,114 @@ export function page(config = configFromEnv()) {
     let chatScrollFrame = null;
     let draggingChatScrollbar = false;
     let lastChatTouchY = null;
+
+    const THEME_STORAGE_KEY = "mundusx.chat.theme";
+    function applyTheme(theme, persist = true) {
+      const selected = theme === "dark" ? "dark" : "light";
+      document.documentElement.dataset.theme = selected;
+      themeLightEl.setAttribute("aria-pressed", String(selected === "light"));
+      themeDarkEl.setAttribute("aria-pressed", String(selected === "dark"));
+      if (persist) localStorage.setItem(THEME_STORAGE_KEY, selected);
+    }
+    applyTheme(document.documentElement.dataset.theme, false);
+    themeLightEl.addEventListener("click", () => applyTheme("light"));
+    themeDarkEl.addEventListener("click", () => applyTheme("dark"));
+
+    function initializeMesh() {
+      const context = meshCanvasEl?.getContext("2d");
+      if (!context) return;
+      const reduceMotion = matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const pointer = { x: .5, y: .55, targetX: .5, targetY: .55, active: 0, targetActive: 0 };
+      let width = 0;
+      let height = 0;
+      let phase = 0;
+
+      function resizeMesh() {
+        const bounds = meshCanvasEl.getBoundingClientRect();
+        const ratio = Math.min(devicePixelRatio || 1, 1.75);
+        width = Math.max(1, bounds.width);
+        height = Math.max(1, bounds.height);
+        meshCanvasEl.width = Math.round(width * ratio);
+        meshCanvasEl.height = Math.round(height * ratio);
+        context.setTransform(ratio, 0, 0, ratio, 0, 0);
+      }
+
+      function meshPoint(column, row, columns, rows) {
+        const baseX = column * width / (columns - 1);
+        const baseY = height * .43 + row * height * .085;
+        const nx = baseX / width;
+        const ny = baseY / height;
+        const distance = Math.hypot(nx - pointer.x, (ny - pointer.y) * 1.25);
+        const influence = Math.max(0, 1 - distance * 3.1) * pointer.active;
+        const wave = Math.sin(column * .54 + phase + row * .72) * 18
+          + Math.cos(column * .2 - phase * .62 + row) * 12;
+        const hoverLift = influence * Math.sin(distance * 18 - phase * 2.2) * 42;
+        return { x: baseX + influence * (nx - pointer.x) * 26, y: baseY + wave + hoverLift };
+      }
+
+      function drawMesh() {
+        context.clearRect(0, 0, width, height);
+        pointer.x += (pointer.targetX - pointer.x) * .045;
+        pointer.y += (pointer.targetY - pointer.y) * .045;
+        pointer.active += (pointer.targetActive - pointer.active) * .055;
+        phase += reduceMotion ? 0 : .0035 + pointer.active * .008;
+        const columns = Math.max(18, Math.min(46, Math.round(width / 42)));
+        const rows = 9;
+        const dark = document.documentElement.dataset.theme === "dark";
+        const primary = dark ? "104,92,255" : "94,99,245";
+        const secondary = dark ? "38,105,255" : "116,126,255";
+
+        context.lineWidth = .7;
+        for (let row = 0; row < rows; row += 1) {
+          context.beginPath();
+          for (let column = 0; column < columns; column += 1) {
+            const point = meshPoint(column, row, columns, rows);
+            if (column === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
+          }
+          context.strokeStyle = "rgba(" + primary + "," + (.10 + row * .012) + ")";
+          context.stroke();
+        }
+        for (let column = 0; column < columns; column += 1) {
+          context.beginPath();
+          for (let row = 0; row < rows; row += 1) {
+            const point = meshPoint(column, row, columns, rows);
+            if (row === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
+          }
+          context.strokeStyle = "rgba(" + secondary + ",.10)";
+          context.stroke();
+        }
+        for (let row = 0; row < rows; row += 2) {
+          for (let column = 0; column < columns; column += 2) {
+            const point = meshPoint(column, row, columns, rows);
+            context.beginPath();
+            context.arc(point.x, point.y, 1.2 + pointer.active * .5, 0, Math.PI * 2);
+            context.fillStyle = "rgba(" + primary + "," + (.24 + pointer.active * .16) + ")";
+            context.fill();
+          }
+        }
+        if (!reduceMotion) requestAnimationFrame(drawMesh);
+      }
+
+      mainEl.addEventListener("pointermove", (event) => {
+        const bounds = mainEl.getBoundingClientRect();
+        pointer.targetX = Math.max(0, Math.min(1, (event.clientX - bounds.left) / bounds.width));
+        pointer.targetY = Math.max(0, Math.min(1, (event.clientY - bounds.top) / bounds.height));
+        pointer.targetActive = 1;
+      });
+      mainEl.addEventListener("pointerleave", () => { pointer.targetActive = 0; });
+      window.addEventListener("resize", resizeMesh, { passive: true });
+      resizeMesh();
+      drawMesh();
+    }
+    initializeMesh();
+
+    document.addEventListener("click", (event) => {
+      const starter = event.target.closest("[data-starter-prompt]");
+      if (!starter) return;
+      promptEl.value = starter.dataset.starterPrompt || "";
+      promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+      promptEl.focus();
+    });
 
     const nativeFetch = window.fetch.bind(window);
     window.fetch = (input, init = {}) => {
