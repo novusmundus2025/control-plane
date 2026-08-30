@@ -6189,6 +6189,19 @@ test("deleteChatConversation treats missing backend records as shallow local his
   assert.equal(result.persisted, false);
 });
 
+test("deleteChatConversation keeps local deletion when conversation storage is temporarily unavailable", async () => {
+  const result = await deleteChatConversation(
+    "conv-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => jsonResponse({ error: "conversation storage unavailable" }, false, 502),
+  );
+
+  assert.equal(result.conversation_id, "conv-1");
+  assert.equal(result.deleted, false);
+  assert.equal(result.persisted, false);
+  assert.match(result.reason, /conversation storage unavailable/);
+});
+
 test("extracts a location that comes before the word weather", () => {
   // "Whats the berlin weather today?" previously found nothing: the patterns
   // only look after "weather", so they saw "today" and rejected it.
