@@ -559,6 +559,8 @@ impl PostgresStore {
                     &(task.created_at_epoch as i64),
                     &(task.updated_at_epoch as i64),
                     &(task.expires_at_epoch as i64),
+                    &task.requested_by_user_id,
+                    &task.submitted_via,
                 ],
             )
             .map_err(|error| format!("postgres harness task sync failed: {error}"))?;
@@ -1239,12 +1241,13 @@ insert into public.harness_tasks (
   task_id, harness_contract_version, tenant_id, repository_source_id, objective, base_revision,
   allowed_path_prefixes, execution_mode, allowed_operations, validation_profiles,
   budgets, state, state_version, current_attempt_id, verification_level,
-  terminal_code, created_at_epoch, updated_at_epoch, expires_at_epoch
+  terminal_code, created_at_epoch, updated_at_epoch, expires_at_epoch,
+  requested_by_user_id, submitted_via
 ) values (
   $1, $2, $3, $4, $5, $6,
   $7::text::jsonb, $8, $9::text::jsonb, $10::text::jsonb,
   $11::text::jsonb, $12, $13, $14, $15,
-  $16, $17, $18, $19
+  $16, $17, $18, $19, $20::uuid, $21
 )
 on conflict (task_id) do update set
   harness_contract_version = excluded.harness_contract_version,
@@ -1264,7 +1267,9 @@ on conflict (task_id) do update set
   terminal_code = excluded.terminal_code,
   created_at_epoch = excluded.created_at_epoch,
   updated_at_epoch = excluded.updated_at_epoch,
-  expires_at_epoch = excluded.expires_at_epoch
+  expires_at_epoch = excluded.expires_at_epoch,
+  requested_by_user_id = coalesce(public.harness_tasks.requested_by_user_id, excluded.requested_by_user_id),
+  submitted_via = coalesce(public.harness_tasks.submitted_via, excluded.submitted_via)
 "#;
 
 const HARNESS_ATTEMPT_UPSERT_SQL: &str = r#"
