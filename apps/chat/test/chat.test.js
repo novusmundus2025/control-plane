@@ -85,8 +85,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /prefers-reduced-motion: reduce/);
   assert.match(html, /data-starter-prompt="Help me write and debug code"/);
   assert.match(html, /mainEl\.addEventListener\("pointermove"/);
-  assert.match(html, /const stagger = row % 2 \? \.5 : 0/);
-  assert.match(html, /context\.lineTo\(d\.x, d\.y\)/);
+  assert.match(html, /function createConstellation\(\)/);
+  assert.match(html, /constellationEdges\.forEach/);
   assert.doesNotMatch(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
   assert.doesNotMatch(html, /Example Questions/);
   assert.match(html, /id="chat-form"/);
@@ -271,6 +271,7 @@ test("renders a usable chat page", () => {
   for (const script of embeddedScripts) assert.doesNotThrow(() => new Function(script));
   assert.match(html, /await loadHistoryItem\(item\)/);
   assert.match(html, /conversationCachePrefix/);
+  assert.match(html, /activeHistoryId = id;\s*return id;/);
   assert.match(html, /\/api\/conversations\//);
   assert.match(html, /\.rail-list \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   assert.match(html, /\.history-item \{[\s\S]*?overflow: hidden;/);

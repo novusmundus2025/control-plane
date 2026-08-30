@@ -1837,6 +1837,39 @@ export function page(config = configFromEnv()) {
       let width = 0;
       let height = 0;
       let phase = 0;
+      let constellationNodes = [];
+      let constellationEdges = [];
+
+      function seededValue(index, salt = 0) {
+        const value = Math.sin(index * 91.913 + salt * 47.117) * 43758.5453;
+        return value - Math.floor(value);
+      }
+
+      function createConstellation() {
+        const count = Math.max(54, Math.min(96, Math.round(width / 17)));
+        constellationNodes = Array.from({ length: count }, (_, index) => ({
+          x: seededValue(index, 1),
+          y: .10 + seededValue(index, 2) * .82,
+          drift: seededValue(index, 3) * Math.PI * 2,
+          size: .55 + seededValue(index, 4) * 1.25,
+          label: index % 29 === 0 ? ["phone", "spark", "watch", "node"][index % 4] : "",
+        }));
+        constellationEdges = [];
+        constellationNodes.forEach((node, index) => {
+          const nearest = constellationNodes
+            .map((other, otherIndex) => ({ otherIndex, distance: Math.hypot(node.x - other.x, node.y - other.y) }))
+            .filter((candidate) => candidate.otherIndex !== index && candidate.distance < .19)
+            .sort((a, b) => a.distance - b.distance)
+            .slice(0, 2);
+          nearest.forEach(({ otherIndex }) => {
+            const from = Math.min(index, otherIndex);
+            const to = Math.max(index, otherIndex);
+            if (!constellationEdges.some((edge) => edge.from === from && edge.to === to)) {
+              constellationEdges.push({ from, to, signal: (from * 7 + to * 11) % 19 === 0, offset: seededValue(from + to, 7) });
+            }
+          });
+        });
+      }
 
       function resizeMesh() {
         const bounds = meshCanvasEl.getBoundingClientRect();
@@ -1846,24 +1879,7 @@ export function page(config = configFromEnv()) {
         meshCanvasEl.width = Math.round(width * ratio);
         meshCanvasEl.height = Math.round(height * ratio);
         context.setTransform(ratio, 0, 0, ratio, 0, 0);
-      }
-
-      function meshPoint(column, row, columns, rows) {
-        const stagger = row % 2 ? .5 : 0;
-        const baseX = (column + stagger) * width / (columns - 1);
-        const depth = row / (rows - 1);
-        const ridge = Math.sin(column * .34 + phase + row * .13) * (32 - depth * 12)
-          + Math.cos(column * .13 - phase * .54 + row * .38) * 22
-          + Math.sin(column * .08 + phase * .32) * 34;
-        const jitter = Math.sin(column * 12.9898 + row * 78.233) * 7;
-        const baseY = height * .38 + ridge + row * height * .045 + jitter;
-        const nx = baseX / width;
-        const ny = baseY / height;
-        const distance = Math.hypot(nx - pointer.x, (ny - pointer.y) * 1.18);
-        const influence = Math.pow(Math.max(0, 1 - distance * 3), 1.7) * pointer.active;
-        const hoverLift = influence * Math.cos(distance * 22 - phase * 3) * 56;
-        const hoverPull = influence * (pointer.x - nx) * 36;
-        return { x: baseX + hoverPull, y: baseY + hoverLift, depth, influence };
+        createConstellation();
       }
 
       function drawMesh() {
@@ -1871,58 +1887,63 @@ export function page(config = configFromEnv()) {
         pointer.x += (pointer.targetX - pointer.x) * .045;
         pointer.y += (pointer.targetY - pointer.y) * .045;
         pointer.active += (pointer.targetActive - pointer.active) * .055;
-        phase += reduceMotion ? 0 : .0035 + pointer.active * .008;
-        const columns = Math.max(24, Math.min(52, Math.round(width / 32)));
-        const rows = 13;
+        phase += reduceMotion ? 0 : .0022 + pointer.active * .004;
         const dark = document.documentElement.dataset.theme === "dark";
-        const primary = dark ? "129,77,255" : "101,91,246";
-        const secondary = dark ? "42,105,255" : "103,135,255";
-        const points = Array.from({ length: rows }, (_, row) =>
-          Array.from({ length: columns }, (_, column) => meshPoint(column, row, columns, rows)),
-        );
+        const primary = dark ? "103,84,255" : "57,91,255";
+        const neutral = dark ? "139,151,190" : "91,101,119";
 
-        const glow = context.createLinearGradient(0, height * .3, 0, height);
-        glow.addColorStop(0, "rgba(" + primary + ",0)");
-        glow.addColorStop(.32, "rgba(" + primary + (dark ? ",.07)" : ",.035)"));
-        glow.addColorStop(1, "rgba(" + secondary + ",0)");
-        context.fillStyle = glow;
-        context.fillRect(0, height * .24, width, height * .76);
-
-        context.lineWidth = .62;
-        for (let row = 0; row < rows - 1; row += 1) {
-          for (let column = 0; column < columns - 1; column += 1) {
-            const a = points[row][column];
-            const b = points[row][column + 1];
-            const c = points[row + 1][column];
-            const d = points[row + 1][column + 1];
-            context.beginPath();
-            context.moveTo(a.x, a.y);
-            context.lineTo(b.x, b.y);
-            context.moveTo(a.x, a.y);
-            context.lineTo(c.x, c.y);
-            if ((row + column) % 2 === 0) {
-              context.moveTo(a.x, a.y);
-              context.lineTo(d.x, d.y);
-            } else {
-              context.moveTo(b.x, b.y);
-              context.lineTo(c.x, c.y);
-            }
-            const alpha = .055 + (1 - a.depth) * .06 + a.influence * .15;
-            context.strokeStyle = "rgba(" + (column % 3 ? primary : secondary) + "," + alpha + ")";
-            context.stroke();
-          }
+        context.fillStyle = "rgba(" + neutral + (dark ? ",.08)" : ",.11)");
+        for (let y = 8; y < height; y += 18) {
+          for (let x = 8; x < width; x += 18) context.fillRect(x, y, 1, 1);
         }
-        for (let row = 0; row < rows; row += 1) {
-          for (let column = 0; column < columns; column += 1) {
-            if ((column * 3 + row * 5) % 4 !== 0) continue;
-            const point = points[row][column];
-            const sparkle = .7 + ((column * 17 + row * 11) % 9) / 10;
+
+        const positions = constellationNodes.map((node, index) => {
+          let x = node.x * width + Math.sin(phase * .9 + node.drift) * 8;
+          let y = node.y * height + Math.cos(phase * .72 + node.drift) * 7;
+          const distance = Math.hypot(x / width - pointer.x, (y / height - pointer.y) * 1.2);
+          const influence = Math.pow(Math.max(0, 1 - distance * 4.2), 2) * pointer.active;
+          x += (x / width - pointer.x) * influence * 48;
+          y += Math.sin(distance * 25 - phase * 4 + index) * influence * 24;
+          return { x, y, influence };
+        });
+
+        constellationEdges.forEach((edge) => {
+          const from = positions[edge.from];
+          const to = positions[edge.to];
+          const active = edge.signal || from.influence > .08 || to.influence > .08;
+          context.beginPath();
+          context.moveTo(from.x, from.y);
+          context.lineTo(to.x, to.y);
+          context.lineWidth = active ? 1.05 : .55;
+          context.strokeStyle = "rgba(" + (active ? primary : neutral) + "," + (active ? .34 : .09) + ")";
+          context.stroke();
+          if (edge.signal) {
+            const travel = (phase * 10 + edge.offset) % 1;
+            const pulseX = from.x + (to.x - from.x) * travel;
+            const pulseY = from.y + (to.y - from.y) * travel;
+            const glow = context.createRadialGradient(pulseX, pulseY, 0, pulseX, pulseY, 12);
+            glow.addColorStop(0, "rgba(" + primary + ",.95)");
+            glow.addColorStop(1, "rgba(" + primary + ",0)");
+            context.fillStyle = glow;
             context.beginPath();
-            context.arc(point.x, point.y, sparkle + point.influence * 1.2, 0, Math.PI * 2);
-            context.fillStyle = "rgba(" + (column % 2 ? primary : secondary) + "," + (.20 + point.influence * .30) + ")";
+            context.arc(pulseX, pulseY, 12, 0, Math.PI * 2);
             context.fill();
           }
-        }
+        });
+
+        positions.forEach((point, index) => {
+          const node = constellationNodes[index];
+          const emphasized = node.label || point.influence > .1;
+          context.beginPath();
+          context.arc(point.x, point.y, node.size + point.influence * 2.2, 0, Math.PI * 2);
+          context.fillStyle = "rgba(" + (emphasized ? primary : neutral) + "," + (emphasized ? .72 : .28) + ")";
+          context.fill();
+          if (node.label) {
+            context.font = "10px Inter, Segoe UI, sans-serif";
+            context.fillStyle = "rgba(" + neutral + ",.58)";
+            context.fillText(node.label, point.x + 8, point.y + 3);
+          }
+        });
         if (!reduceMotion) requestAnimationFrame(drawMesh);
       }
 
@@ -4026,6 +4047,7 @@ export function page(config = configFromEnv()) {
         id = crypto.randomUUID();
         localStorage.setItem(conversationIdKey, id);
       }
+      activeHistoryId = id;
       return id;
     }
 
