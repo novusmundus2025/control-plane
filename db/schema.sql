@@ -174,13 +174,14 @@ create index if not exists job_events_node_id_idx on public.job_events(node_id);
 create index if not exists job_events_job_id_idx on public.job_events(job_id);
 create index if not exists job_events_source_event_id_idx on public.job_events(source_event_id);
 
-+-- Coding Harness v1 durable lifecycle, evidence, approvals, and capacity state.
+-- Coding Harness v1 durable lifecycle, evidence, approvals, and capacity state.
 
 create table if not exists public.harness_tasks (
   task_id text primary key,
   harness_contract_version text not null,
   tenant_id text not null,
   repository_source_id text not null,
+  objective text not null default '',
   base_revision text not null,
   allowed_path_prefixes jsonb not null default '[]'::jsonb,
   execution_mode text not null,
@@ -266,6 +267,9 @@ create table if not exists public.harness_validations (
   exit_code integer,
   duration_ms bigint,
   output_sha256 text,
+  artifact_sha256 text not null default repeat('0', 64),
+  base_revision text not null default repeat('0', 40),
+  environment_sha256 text not null default repeat('0', 64),
   output_truncated boolean not null default false,
   created_at_epoch bigint not null
 );
