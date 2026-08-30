@@ -4,6 +4,9 @@ use uuid::Uuid;
 
 pub const HARNESS_CONTRACT_VERSION: &str = "1.0";
 const DEFAULT_TASK_TTL_SECONDS: u64 = 3_600;
+const DEFAULT_TENANT_MAX_ACTIVE_ATTEMPTS: u32 = 4;
+const DEFAULT_TENANT_MAX_QUEUED_TASKS: u32 = 25;
+const DEFAULT_TENANT_MAX_ARTIFACT_BYTES: u64 = 104_857_600;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -143,6 +146,18 @@ pub struct HarnessAttempt {
     pub updated_at_epoch: u64,
     pub started_at_epoch: Option<u64>,
     pub finished_at_epoch: Option<u64>,
+    #[serde(default)]
+    pub model_turns: u32,
+    #[serde(default)]
+    pub tool_calls: u32,
+    #[serde(default)]
+    pub output_bytes: u64,
+    #[serde(default)]
+    pub repair_attempts: u32,
+    #[serde(default)]
+    pub last_progress_sha256: Option<String>,
+    #[serde(default)]
+    pub repeated_progress_count: u32,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -180,6 +195,147 @@ pub struct HarnessAuditEvent {
     pub code: Option<String>,
     pub metadata: serde_json::Value,
     pub created_at_epoch: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessOperationalPolicy {
+    pub kill_switch: bool,
+    pub drained_nodes: Vec<String>,
+    pub tenant_max_active_attempts: u32,
+    pub tenant_max_queued_tasks: u32,
+    pub tenant_max_artifact_bytes: u64,
+}
+
+impl Default for HarnessOperationalPolicy {
+    fn default() -> Self {
+        Self {
+            kill_switch: false,
+            drained_nodes: Vec::new(),
+            tenant_max_active_attempts: DEFAULT_TENANT_MAX_ACTIVE_ATTEMPTS,
+            tenant_max_queued_tasks: DEFAULT_TENANT_MAX_QUEUED_TASKS,
+            tenant_max_artifact_bytes: DEFAULT_TENANT_MAX_ARTIFACT_BYTES,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessOperationalEvent {
+    pub event_id: String,
+    pub actor: String,
+    pub action: String,
+    pub target: Option<String>,
+    pub metadata: serde_json::Value,
+    pub created_at_epoch: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct UpdateHarnessOperationalPolicyRequest {
+    pub kill_switch: Option<bool>,
+    pub drain_node_id: Option<String>,
+    pub undrain_node_id: Option<String>,
+    pub tenant_max_active_attempts: Option<u32>,
+    pub tenant_max_queued_tasks: Option<u32>,
+    pub tenant_max_artifact_bytes: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessToolCall {
+    pub tool_call_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub operation: String,
+    pub idempotency_key: Option<String>,
+    pub input_sha256: String,
+    pub output_sha256: Option<String>,
+    pub status: String,
+    pub code: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub output_bytes: u64,
+    pub created_at_epoch: u64,
+    pub completed_at_epoch: Option<u64>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessValidation {
+    pub validation_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub profile_id: String,
+    pub profile_version: String,
+    pub status: String,
+    pub code: Option<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub output_sha256: Option<String>,
+    pub output_truncated: bool,
+    pub created_at_epoch: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessArtifact {
+    pub artifact_id: String,
+    pub task_id: String,
+    pub attempt_id: String,
+    pub kind: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub storage_reference: Option<String>,
+    pub base_revision: String,
+    pub changed_paths: Vec<String>,
+    pub verification_level: HarnessVerificationLevel,
+    pub created_at_epoch: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecordHarnessToolCallRequest {
+    pub expected_attempt_state_version: u64,
+    pub tool_call_id: String,
+    pub operation: String,
+    pub idempotency_key: Option<String>,
+    pub input_sha256: String,
+    pub output_sha256: Option<String>,
+    pub status: String,
+    pub code: Option<String>,
+    pub duration_ms: Option<u64>,
+    #[serde(default)]
+    pub output_bytes: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecordHarnessValidationRequest {
+    pub expected_attempt_state_version: u64,
+    pub profile_id: String,
+    pub profile_version: String,
+    pub status: String,
+    pub code: Option<String>,
+    pub exit_code: Option<i32>,
+    pub duration_ms: Option<u64>,
+    pub output_sha256: Option<String>,
+    #[serde(default)]
+    pub output_truncated: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct PublishHarnessArtifactRequest {
+    pub expected_attempt_state_version: u64,
+    pub kind: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub storage_reference: Option<String>,
+    pub base_revision: String,
+    #[serde(default)]
+    pub changed_paths: Vec<String>,
+    pub verification_level: HarnessVerificationLevel,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct RecordHarnessModelTurnRequest {
+    pub expected_attempt_state_version: u64,
+    pub progress_sha256: String,
+    #[serde(default)]
+    pub output_bytes: u64,
+    #[serde(default)]
+    pub repair_attempt: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -259,11 +415,21 @@ pub struct HarnessReconciliation {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct HarnessState {
     #[serde(default)]
+    pub operational_policy: HarnessOperationalPolicy,
+    #[serde(default)]
+    pub operational_events: Vec<HarnessOperationalEvent>,
+    #[serde(default)]
     pub tasks: BTreeMap<String, HarnessTask>,
     #[serde(default)]
     pub attempts: BTreeMap<String, HarnessAttempt>,
     #[serde(default)]
     pub reservations: BTreeMap<String, HarnessCapacityReservation>,
+    #[serde(default)]
+    pub tool_calls: BTreeMap<String, HarnessToolCall>,
+    #[serde(default)]
+    pub validations: BTreeMap<String, HarnessValidation>,
+    #[serde(default)]
+    pub artifacts: BTreeMap<String, HarnessArtifact>,
     #[serde(default)]
     pub approvals: BTreeMap<String, HarnessApproval>,
     #[serde(default)]
@@ -271,6 +437,546 @@ pub struct HarnessState {
 }
 
 impl HarnessState {
+    pub fn update_operational_policy(
+        &mut self,
+        request: UpdateHarnessOperationalPolicyRequest,
+        actor: &str,
+        now_epoch: u64,
+    ) -> Result<HarnessOperationalPolicy, HarnessError> {
+        validate_identifier(actor, "actor")?;
+        if request.drain_node_id.is_some() && request.undrain_node_id.is_some() {
+            return Err(HarnessError::new(
+                "HARNESS_POLICY_DENIED",
+                "drain and undrain cannot be requested together",
+            ));
+        }
+        if request
+            .tenant_max_active_attempts
+            .is_some_and(|value| value == 0 || value > 1_000)
+            || request
+                .tenant_max_queued_tasks
+                .is_some_and(|value| value == 0 || value > 100_000)
+            || request
+                .tenant_max_artifact_bytes
+                .is_some_and(|value| value == 0)
+        {
+            return Err(HarnessError::new(
+                "HARNESS_POLICY_DENIED",
+                "operational quota is outside supported bounds",
+            ));
+        }
+        if let Some(value) = request.kill_switch {
+            self.operational_policy.kill_switch = value;
+        }
+        if let Some(node_id) = request.drain_node_id.as_deref() {
+            validate_identifier(node_id, "node id")?;
+            self.operational_policy
+                .drained_nodes
+                .push(node_id.to_string());
+        }
+        if let Some(node_id) = request.undrain_node_id.as_deref() {
+            validate_identifier(node_id, "node id")?;
+            self.operational_policy
+                .drained_nodes
+                .retain(|value| value != node_id);
+        }
+        if let Some(value) = request.tenant_max_active_attempts {
+            self.operational_policy.tenant_max_active_attempts = value;
+        }
+        if let Some(value) = request.tenant_max_queued_tasks {
+            self.operational_policy.tenant_max_queued_tasks = value;
+        }
+        if let Some(value) = request.tenant_max_artifact_bytes {
+            self.operational_policy.tenant_max_artifact_bytes = value;
+        }
+        self.operational_policy.drained_nodes.sort();
+        self.operational_policy.drained_nodes.dedup();
+        self.operational_events.push(HarnessOperationalEvent {
+            event_id: format!("hop_{}", Uuid::new_v4().simple()),
+            actor: actor.to_string(),
+            action: "harness_operational_policy_updated".to_string(),
+            target: request.drain_node_id.or(request.undrain_node_id),
+            metadata: serde_json::json!({
+                "kill_switch": self.operational_policy.kill_switch,
+                "tenant_max_active_attempts": self.operational_policy.tenant_max_active_attempts,
+                "tenant_max_queued_tasks": self.operational_policy.tenant_max_queued_tasks,
+                "tenant_max_artifact_bytes": self.operational_policy.tenant_max_artifact_bytes,
+            }),
+            created_at_epoch: now_epoch,
+        });
+        Ok(self.operational_policy.clone())
+    }
+
+    pub fn record_model_turn(
+        &mut self,
+        attempt_id: &str,
+        request: RecordHarnessModelTurnRequest,
+        actor: &str,
+        now_epoch: u64,
+    ) -> Result<HarnessAttempt, HarnessError> {
+        if self.operational_policy.kill_switch {
+            return Err(HarnessError::new(
+                "HARNESS_KILL_SWITCH_ACTIVE",
+                "model execution is disabled by the operator kill switch",
+            ));
+        }
+        if !is_sha256(&request.progress_sha256) {
+            return Err(HarnessError::new(
+                "HARNESS_MODEL_OUTPUT_INVALID",
+                "model progress digest must be a SHA-256",
+            ));
+        }
+        let attempt = self.attempts.get(attempt_id).cloned().ok_or_else(|| {
+            HarnessError::new(
+                "HARNESS_ATTEMPT_NOT_FOUND",
+                "harness attempt does not exist",
+            )
+        })?;
+        if attempt.state_version != request.expected_attempt_state_version {
+            return Err(HarnessError::new(
+                "HARNESS_STATE_CONFLICT",
+                "harness attempt state version changed",
+            ));
+        }
+        let task = self.tasks.get(&attempt.task_id).ok_or_else(|| {
+            HarnessError::new("HARNESS_TASK_NOT_FOUND", "harness task does not exist")
+        })?;
+        if attempt.state.is_terminal() || task.state == HarnessTaskState::Cancelling {
+            return Err(HarnessError::new(
+                "HARNESS_CANCELLED",
+                "model turn is not allowed for a terminal or cancelling attempt",
+            ));
+        }
+        let next_turns = attempt.model_turns.saturating_add(1);
+        let next_output = attempt.output_bytes.saturating_add(request.output_bytes);
+        let next_repairs = attempt
+            .repair_attempts
+            .saturating_add(u32::from(request.repair_attempt));
+        if next_turns > task.budgets.max_model_turns
+            || next_output > task.budgets.max_output_bytes
+            || next_repairs > task.budgets.max_repair_attempts
+        {
+            return Err(HarnessError::new(
+                "HARNESS_BUDGET_EXHAUSTED",
+                "model turn, repair, or output budget is exhausted",
+            ));
+        }
+        let attempt = self
+            .attempts
+            .get_mut(attempt_id)
+            .expect("validated attempt");
+        attempt.model_turns = next_turns;
+        attempt.output_bytes = next_output;
+        attempt.repair_attempts = next_repairs;
+        if attempt.last_progress_sha256.as_deref() == Some(&request.progress_sha256) {
+            attempt.repeated_progress_count = attempt.repeated_progress_count.saturating_add(1);
+        } else {
+            attempt.last_progress_sha256 = Some(request.progress_sha256.clone());
+            attempt.repeated_progress_count = 0;
+        }
+        if attempt.repeated_progress_count >= 3 {
+            return Err(HarnessError::new(
+                "HARNESS_NO_PROGRESS",
+                "model repeated the same progress state three times",
+            ));
+        }
+        attempt.updated_at_epoch = now_epoch;
+        attempt.state_version = attempt.state_version.saturating_add(1);
+        let result = attempt.clone();
+        self.audit(
+            &result.task_id,
+            Some(attempt_id),
+            actor,
+            "harness_model_turn_recorded",
+            None,
+            serde_json::json!({
+                "model_turns": result.model_turns,
+                "repair_attempts": result.repair_attempts,
+                "output_bytes": result.output_bytes,
+                "progress_sha256": request.progress_sha256,
+            }),
+            now_epoch,
+        );
+        Ok(result)
+    }
+
+    pub fn record_tool_call(
+        &mut self,
+        attempt_id: &str,
+        request: RecordHarnessToolCallRequest,
+        actor: &str,
+        now_epoch: u64,
+    ) -> Result<HarnessToolCall, HarnessError> {
+        if self.operational_policy.kill_switch {
+            return Err(HarnessError::new(
+                "HARNESS_KILL_SWITCH_ACTIVE",
+                "tool execution is disabled by the operator kill switch",
+            ));
+        }
+        validate_identifier(&request.tool_call_id, "tool call id")?;
+        if !is_sha256(&request.input_sha256)
+            || request
+                .output_sha256
+                .as_deref()
+                .is_some_and(|value| !is_sha256(value))
+        {
+            return Err(HarnessError::new(
+                "HARNESS_TOOL_INPUT_INVALID",
+                "tool input and output digests must be SHA-256 values",
+            ));
+        }
+        if let Some(existing) = self.tool_calls.get(&request.tool_call_id) {
+            if existing.attempt_id == attempt_id
+                && existing.input_sha256 == request.input_sha256
+                && existing.operation == request.operation
+                && existing.idempotency_key == request.idempotency_key
+            {
+                return Ok(existing.clone());
+            }
+            return Err(HarnessError::new(
+                "HARNESS_IDEMPOTENCY_CONFLICT",
+                "tool call id was reused with different authority or input",
+            ));
+        }
+        if let Some(idempotency_key) = request.idempotency_key.as_deref() {
+            if let Some(existing) = self.tool_calls.values().find(|record| {
+                record.attempt_id == attempt_id
+                    && record.idempotency_key.as_deref() == Some(idempotency_key)
+            }) {
+                if existing.input_sha256 == request.input_sha256
+                    && existing.operation == request.operation
+                {
+                    return Ok(existing.clone());
+                }
+                return Err(HarnessError::new(
+                    "HARNESS_IDEMPOTENCY_CONFLICT",
+                    "idempotency key was reused with different authority or input",
+                ));
+            }
+        }
+        let attempt = self.attempts.get(attempt_id).cloned().ok_or_else(|| {
+            HarnessError::new(
+                "HARNESS_ATTEMPT_NOT_FOUND",
+                "harness attempt does not exist",
+            )
+        })?;
+        if attempt.state_version != request.expected_attempt_state_version {
+            return Err(HarnessError::new(
+                "HARNESS_STATE_CONFLICT",
+                "harness attempt state version changed",
+            ));
+        }
+        let task = self.tasks.get(&attempt.task_id).ok_or_else(|| {
+            HarnessError::new("HARNESS_TASK_NOT_FOUND", "harness task does not exist")
+        })?;
+        if !task.allowed_operations.contains(&request.operation) {
+            return Err(HarnessError::new(
+                "HARNESS_OPERATION_UNSUPPORTED",
+                "tool operation is outside task authority",
+            ));
+        }
+        let side_effecting = matches!(
+            request.operation.as_str(),
+            "patch.apply" | "validation.run" | "artifact.publish"
+        );
+        if side_effecting
+            && request
+                .idempotency_key
+                .as_deref()
+                .is_none_or(|value| validate_identifier(value, "idempotency key").is_err())
+        {
+            return Err(HarnessError::new(
+                "HARNESS_IDEMPOTENCY_REQUIRED",
+                "side-effecting tool calls require a valid idempotency key",
+            ));
+        }
+        if attempt.tool_calls.saturating_add(1) > task.budgets.max_tool_calls
+            || attempt.output_bytes.saturating_add(request.output_bytes)
+                > task.budgets.max_output_bytes
+        {
+            return Err(HarnessError::new(
+                "HARNESS_BUDGET_EXHAUSTED",
+                "tool-call or accumulated-output budget is exhausted",
+            ));
+        }
+        if !["requested", "succeeded", "failed", "cancelled"].contains(&request.status.as_str()) {
+            return Err(HarnessError::new(
+                "HARNESS_TOOL_RESULT_INVALID",
+                "tool status is not recognized",
+            ));
+        }
+        let completed = request.status != "requested";
+        let record = HarnessToolCall {
+            tool_call_id: request.tool_call_id,
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt_id.to_string(),
+            operation: request.operation,
+            idempotency_key: request.idempotency_key,
+            input_sha256: request.input_sha256,
+            output_sha256: request.output_sha256,
+            status: request.status,
+            code: request.code,
+            duration_ms: request.duration_ms,
+            output_bytes: request.output_bytes,
+            created_at_epoch: now_epoch,
+            completed_at_epoch: completed.then_some(now_epoch),
+        };
+        let attempt = self
+            .attempts
+            .get_mut(attempt_id)
+            .expect("validated attempt");
+        attempt.tool_calls = attempt.tool_calls.saturating_add(1);
+        attempt.output_bytes = attempt.output_bytes.saturating_add(record.output_bytes);
+        attempt.updated_at_epoch = now_epoch;
+        attempt.state_version = attempt.state_version.saturating_add(1);
+        self.tool_calls
+            .insert(record.tool_call_id.clone(), record.clone());
+        self.audit(
+            &record.task_id,
+            Some(attempt_id),
+            actor,
+            "harness_tool_call_recorded",
+            record.code.as_deref(),
+            serde_json::json!({
+                "tool_call_id": record.tool_call_id,
+                "operation": record.operation,
+                "status": record.status,
+                "input_sha256": record.input_sha256,
+                "output_sha256": record.output_sha256,
+                "output_bytes": record.output_bytes,
+            }),
+            now_epoch,
+        );
+        Ok(record)
+    }
+
+    pub fn record_validation(
+        &mut self,
+        attempt_id: &str,
+        request: RecordHarnessValidationRequest,
+        actor: &str,
+        now_epoch: u64,
+    ) -> Result<HarnessValidation, HarnessError> {
+        if self.operational_policy.kill_switch {
+            return Err(HarnessError::new(
+                "HARNESS_KILL_SWITCH_ACTIVE",
+                "validation is disabled by the operator kill switch",
+            ));
+        }
+        validate_identifier(&request.profile_id, "validation profile")?;
+        validate_identifier(&request.profile_version, "validation profile version")?;
+        if request
+            .output_sha256
+            .as_deref()
+            .is_some_and(|value| !is_sha256(value))
+            || !["passed", "failed", "timeout", "cancelled"].contains(&request.status.as_str())
+        {
+            return Err(HarnessError::new(
+                "HARNESS_VALIDATION_FAILED",
+                "validation result is malformed",
+            ));
+        }
+        let attempt = self.attempts.get(attempt_id).ok_or_else(|| {
+            HarnessError::new(
+                "HARNESS_ATTEMPT_NOT_FOUND",
+                "harness attempt does not exist",
+            )
+        })?;
+        if attempt.state_version != request.expected_attempt_state_version {
+            return Err(HarnessError::new(
+                "HARNESS_STATE_CONFLICT",
+                "harness attempt state version changed",
+            ));
+        }
+        let task = self.tasks.get(&attempt.task_id).ok_or_else(|| {
+            HarnessError::new("HARNESS_TASK_NOT_FOUND", "harness task does not exist")
+        })?;
+        if !task.validation_profiles.contains(&request.profile_id) {
+            return Err(HarnessError::new(
+                "HARNESS_VALIDATION_PROFILE_DENIED",
+                "validation profile is outside task authority",
+            ));
+        }
+        let record = HarnessValidation {
+            validation_id: format!("hvalidation_{}", Uuid::new_v4().simple()),
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt_id.to_string(),
+            profile_id: request.profile_id,
+            profile_version: request.profile_version,
+            status: request.status,
+            code: request.code,
+            exit_code: request.exit_code,
+            duration_ms: request.duration_ms,
+            output_sha256: request.output_sha256,
+            output_truncated: request.output_truncated,
+            created_at_epoch: now_epoch,
+        };
+        self.validations
+            .insert(record.validation_id.clone(), record.clone());
+        if let Some(attempt) = self.attempts.get_mut(attempt_id) {
+            attempt.state_version = attempt.state_version.saturating_add(1);
+            attempt.updated_at_epoch = now_epoch;
+        }
+        self.audit(
+            &record.task_id,
+            Some(attempt_id),
+            actor,
+            "harness_validation_recorded",
+            record.code.as_deref(),
+            serde_json::json!({
+                "validation_id": record.validation_id,
+                "profile_id": record.profile_id,
+                "profile_version": record.profile_version,
+                "status": record.status,
+                "exit_code": record.exit_code,
+                "duration_ms": record.duration_ms,
+                "output_sha256": record.output_sha256,
+                "output_truncated": record.output_truncated,
+            }),
+            now_epoch,
+        );
+        Ok(record)
+    }
+
+    pub fn publish_artifact(
+        &mut self,
+        attempt_id: &str,
+        request: PublishHarnessArtifactRequest,
+        actor: &str,
+        now_epoch: u64,
+    ) -> Result<HarnessArtifact, HarnessError> {
+        if self.operational_policy.kill_switch {
+            return Err(HarnessError::new(
+                "HARNESS_KILL_SWITCH_ACTIVE",
+                "artifact publication is disabled by the operator kill switch",
+            ));
+        }
+        if request.kind != "patch"
+            || !is_sha256(&request.sha256)
+            || request.size_bytes == 0
+            || request.changed_paths.is_empty()
+        {
+            return Err(HarnessError::new(
+                "HARNESS_ARTIFACT_INVALID",
+                "artifact must be a non-empty content-addressed patch",
+            ));
+        }
+        let attempt = self.attempts.get(attempt_id).ok_or_else(|| {
+            HarnessError::new(
+                "HARNESS_ATTEMPT_NOT_FOUND",
+                "harness attempt does not exist",
+            )
+        })?;
+        if attempt.state_version != request.expected_attempt_state_version {
+            return Err(HarnessError::new(
+                "HARNESS_STATE_CONFLICT",
+                "harness attempt state version changed",
+            ));
+        }
+        let task = self.tasks.get(&attempt.task_id).ok_or_else(|| {
+            HarnessError::new("HARNESS_TASK_NOT_FOUND", "harness task does not exist")
+        })?;
+        let tenant_artifact_bytes = self
+            .artifacts
+            .values()
+            .filter(|artifact| {
+                self.tasks
+                    .get(&artifact.task_id)
+                    .is_some_and(|candidate| candidate.tenant_id == task.tenant_id)
+            })
+            .map(|artifact| artifact.size_bytes)
+            .sum::<u64>();
+        if tenant_artifact_bytes.saturating_add(request.size_bytes)
+            > self.operational_policy.tenant_max_artifact_bytes
+        {
+            return Err(HarnessError::new(
+                "HARNESS_TENANT_QUOTA_EXCEEDED",
+                "tenant artifact-storage quota is exhausted",
+            ));
+        }
+        if request.base_revision.to_ascii_lowercase() != task.base_revision
+            || request.size_bytes > u64::from(task.budgets.max_disk_mb) * 1_048_576
+            || request.changed_paths.iter().any(|path| {
+                path.starts_with('/')
+                    || path.contains("..")
+                    || path.contains('\\')
+                    || !task.allowed_path_prefixes.iter().any(|prefix| {
+                        path == prefix
+                            || path.starts_with(&format!("{}/", prefix.trim_end_matches('/')))
+                    })
+            })
+        {
+            return Err(HarnessError::new(
+                "HARNESS_ARTIFACT_INVALID",
+                "artifact base, size, or changed paths violate task authority",
+            ));
+        }
+        if request
+            .storage_reference
+            .as_deref()
+            .is_some_and(|reference| reference != format!("artifact://sha256/{}", request.sha256))
+        {
+            return Err(HarnessError::new(
+                "HARNESS_ARTIFACT_INVALID",
+                "artifact storage reference must be digest-derived",
+            ));
+        }
+        let validation_passed = self
+            .validations
+            .values()
+            .any(|validation| validation.attempt_id == attempt_id && validation.status == "passed");
+        if request.verification_level == HarnessVerificationLevel::Verified && !validation_passed {
+            return Err(HarnessError::new(
+                "HARNESS_VALIDATION_FAILED",
+                "verified artifact requires a passing validation result",
+            ));
+        }
+        if let Some(existing) = self
+            .artifacts
+            .values()
+            .find(|artifact| artifact.attempt_id == attempt_id && artifact.sha256 == request.sha256)
+        {
+            return Ok(existing.clone());
+        }
+        let record = HarnessArtifact {
+            artifact_id: format!("hartifact_{}", Uuid::new_v4().simple()),
+            task_id: attempt.task_id.clone(),
+            attempt_id: attempt_id.to_string(),
+            kind: request.kind,
+            sha256: request.sha256,
+            size_bytes: request.size_bytes,
+            storage_reference: request.storage_reference,
+            base_revision: request.base_revision.to_ascii_lowercase(),
+            changed_paths: normalized_list(request.changed_paths),
+            verification_level: request.verification_level,
+            created_at_epoch: now_epoch,
+        };
+        self.artifacts
+            .insert(record.artifact_id.clone(), record.clone());
+        if let Some(attempt) = self.attempts.get_mut(attempt_id) {
+            attempt.state_version = attempt.state_version.saturating_add(1);
+            attempt.updated_at_epoch = now_epoch;
+        }
+        self.audit(
+            &record.task_id,
+            Some(attempt_id),
+            actor,
+            "harness_artifact_published",
+            None,
+            serde_json::json!({
+                "artifact_id": record.artifact_id,
+                "kind": record.kind,
+                "sha256": record.sha256,
+                "size_bytes": record.size_bytes,
+                "base_revision": record.base_revision,
+                "changed_paths": record.changed_paths,
+                "verification_level": record.verification_level,
+            }),
+            now_epoch,
+        );
+        Ok(record)
+    }
+
     pub fn reconcile_unavailable_nodes(
         &mut self,
         unavailable_node_ids: &[String],
@@ -389,7 +1095,24 @@ impl HarnessState {
         actor: &str,
         now_epoch: u64,
     ) -> Result<HarnessTask, HarnessError> {
+        if self.operational_policy.kill_switch {
+            return Err(HarnessError::new(
+                "HARNESS_KILL_SWITCH_ACTIVE",
+                "new harness work is disabled by the operator kill switch",
+            ));
+        }
         validate_create_request(&request, now_epoch)?;
+        let tenant_queued = self
+            .tasks
+            .values()
+            .filter(|task| task.tenant_id == request.tenant_id && !task.state.is_terminal())
+            .count() as u32;
+        if tenant_queued >= self.operational_policy.tenant_max_queued_tasks {
+            return Err(HarnessError::new(
+                "HARNESS_TENANT_QUOTA_EXCEEDED",
+                "tenant queued-task quota is exhausted",
+            ));
+        }
         let task_id = format!("htask_{}", Uuid::new_v4().simple());
         let task = HarnessTask {
             task_id: task_id.clone(),
@@ -514,6 +1237,18 @@ impl HarnessState {
         now_epoch: u64,
     ) -> Result<(HarnessAttempt, HarnessCapacityReservation), HarnessError> {
         validate_identifier(node_id, "node id")?;
+        if self.operational_policy.kill_switch
+            || self
+                .operational_policy
+                .drained_nodes
+                .iter()
+                .any(|value| value == node_id)
+        {
+            return Err(HarnessError::new(
+                "HARNESS_NODE_DRAINED",
+                "node is drained or harness execution is disabled",
+            ));
+        }
         if slots == 0
             || slots > node_total_slots
             || reservation_ttl_seconds == 0
@@ -527,6 +1262,23 @@ impl HarnessState {
         let task = self.tasks.get(task_id).ok_or_else(|| {
             HarnessError::new("HARNESS_TASK_NOT_FOUND", "harness task does not exist")
         })?;
+        let active_for_tenant = self
+            .attempts
+            .values()
+            .filter(|attempt| {
+                !attempt.state.is_terminal()
+                    && self
+                        .tasks
+                        .get(&attempt.task_id)
+                        .is_some_and(|candidate| candidate.tenant_id == task.tenant_id)
+            })
+            .count() as u32;
+        if active_for_tenant >= self.operational_policy.tenant_max_active_attempts {
+            return Err(HarnessError::new(
+                "HARNESS_TENANT_QUOTA_EXCEEDED",
+                "tenant active-attempt quota is exhausted",
+            ));
+        }
         if task.state != HarnessTaskState::Queued
             || task.state_version != expected_task_state_version
         {
@@ -588,6 +1340,12 @@ impl HarnessState {
             updated_at_epoch: now_epoch,
             started_at_epoch: None,
             finished_at_epoch: None,
+            model_turns: 0,
+            tool_calls: 0,
+            output_bytes: 0,
+            repair_attempts: 0,
+            last_progress_sha256: None,
+            repeated_progress_count: 0,
         };
         self.attempts.insert(attempt_id.clone(), attempt.clone());
         self.reservations
@@ -1329,6 +2087,266 @@ mod tests {
         assert_eq!(
             state.reservations[&reservation.reservation_id].state,
             "released"
+        );
+    }
+
+    #[test]
+    fn bounded_tool_validation_and_artifact_evidence_is_policy_enforced() {
+        let mut state = HarnessState::default();
+        let task = state.create_task(request(), "operator", 1_000).unwrap();
+        approve_for_execution(&mut state, &task.task_id);
+        let (mut attempt, _) = state
+            .reserve_attempt(
+                &task.task_id,
+                state.tasks[&task.task_id].state_version,
+                "node-1",
+                HarnessExecutionMode::Sandbox,
+                1,
+                2,
+                300,
+                "scheduler",
+                1_002,
+            )
+            .unwrap();
+        attempt = state
+            .transition_attempt(
+                &attempt.attempt_id,
+                attempt.state_version,
+                HarnessAttemptState::Preparing,
+                Some("workspace-1".to_string()),
+                None,
+                "node-1",
+                1_003,
+            )
+            .unwrap();
+        attempt = state
+            .transition_attempt(
+                &attempt.attempt_id,
+                attempt.state_version,
+                HarnessAttemptState::Running,
+                None,
+                None,
+                "node-1",
+                1_004,
+            )
+            .unwrap();
+        attempt = state
+            .record_model_turn(
+                &attempt.attempt_id,
+                RecordHarnessModelTurnRequest {
+                    expected_attempt_state_version: attempt.state_version,
+                    progress_sha256: "1".repeat(64),
+                    output_bytes: 100,
+                    repair_attempt: false,
+                },
+                "node-1",
+                1_005,
+            )
+            .unwrap();
+        let tool = state
+            .record_tool_call(
+                &attempt.attempt_id,
+                RecordHarnessToolCallRequest {
+                    expected_attempt_state_version: attempt.state_version,
+                    tool_call_id: "tool-1".to_string(),
+                    operation: "validation.run".to_string(),
+                    idempotency_key: Some("validation-1".to_string()),
+                    input_sha256: "2".repeat(64),
+                    output_sha256: Some("3".repeat(64)),
+                    status: "succeeded".to_string(),
+                    code: None,
+                    duration_ms: Some(50),
+                    output_bytes: 200,
+                },
+                "node-1",
+                1_006,
+            )
+            .unwrap();
+        assert_eq!(tool.operation, "validation.run");
+        attempt = state.attempts[&attempt.attempt_id].clone();
+        let validation = state
+            .record_validation(
+                &attempt.attempt_id,
+                RecordHarnessValidationRequest {
+                    expected_attempt_state_version: attempt.state_version,
+                    profile_id: "rust-default".to_string(),
+                    profile_version: "1".to_string(),
+                    status: "passed".to_string(),
+                    code: None,
+                    exit_code: Some(0),
+                    duration_ms: Some(50),
+                    output_sha256: Some("3".repeat(64)),
+                    output_truncated: false,
+                },
+                "node-1",
+                1_007,
+            )
+            .unwrap();
+        assert_eq!(validation.status, "passed");
+        attempt = state.attempts[&attempt.attempt_id].clone();
+        let artifact = state
+            .publish_artifact(
+                &attempt.attempt_id,
+                PublishHarnessArtifactRequest {
+                    expected_attempt_state_version: attempt.state_version,
+                    kind: "patch".to_string(),
+                    sha256: "4".repeat(64),
+                    size_bytes: 500,
+                    storage_reference: Some(format!("artifact://sha256/{}", "4".repeat(64))),
+                    base_revision: "a".repeat(40),
+                    changed_paths: vec!["src/lib.rs".to_string()],
+                    verification_level: HarnessVerificationLevel::Verified,
+                },
+                "node-1",
+                1_008,
+            )
+            .unwrap();
+        assert_eq!(
+            artifact.verification_level,
+            HarnessVerificationLevel::Verified
+        );
+        assert_eq!(state.tool_calls.len(), 1);
+        assert_eq!(state.validations.len(), 1);
+        assert_eq!(state.artifacts.len(), 1);
+    }
+
+    #[test]
+    fn side_effecting_tool_requires_idempotency_and_out_of_scope_artifact_is_rejected() {
+        let mut state = HarnessState::default();
+        let task = state.create_task(request(), "operator", 1_000).unwrap();
+        approve_for_execution(&mut state, &task.task_id);
+        let (attempt, _) = state
+            .reserve_attempt(
+                &task.task_id,
+                state.tasks[&task.task_id].state_version,
+                "node-1",
+                HarnessExecutionMode::Sandbox,
+                1,
+                2,
+                300,
+                "scheduler",
+                1_002,
+            )
+            .unwrap();
+        assert_eq!(
+            state
+                .record_tool_call(
+                    &attempt.attempt_id,
+                    RecordHarnessToolCallRequest {
+                        expected_attempt_state_version: attempt.state_version,
+                        tool_call_id: "tool-1".to_string(),
+                        operation: "validation.run".to_string(),
+                        idempotency_key: None,
+                        input_sha256: "2".repeat(64),
+                        output_sha256: None,
+                        status: "requested".to_string(),
+                        code: None,
+                        duration_ms: None,
+                        output_bytes: 0,
+                    },
+                    "node-1",
+                    1_003,
+                )
+                .unwrap_err()
+                .code,
+            "HARNESS_IDEMPOTENCY_REQUIRED"
+        );
+        assert_eq!(
+            state
+                .publish_artifact(
+                    &attempt.attempt_id,
+                    PublishHarnessArtifactRequest {
+                        expected_attempt_state_version: attempt.state_version,
+                        kind: "patch".to_string(),
+                        sha256: "4".repeat(64),
+                        size_bytes: 500,
+                        storage_reference: None,
+                        base_revision: "a".repeat(40),
+                        changed_paths: vec!["secrets.env".to_string()],
+                        verification_level: HarnessVerificationLevel::Unverified,
+                    },
+                    "node-1",
+                    1_004,
+                )
+                .unwrap_err()
+                .code,
+            "HARNESS_ARTIFACT_INVALID"
+        );
+    }
+
+    #[test]
+    fn operational_kill_switch_drain_and_tenant_queue_quota_are_enforced_and_audited() {
+        let mut state = HarnessState::default();
+        let policy = state
+            .update_operational_policy(
+                UpdateHarnessOperationalPolicyRequest {
+                    kill_switch: Some(false),
+                    drain_node_id: Some("node-1".to_string()),
+                    undrain_node_id: None,
+                    tenant_max_active_attempts: Some(1),
+                    tenant_max_queued_tasks: Some(1),
+                    tenant_max_artifact_bytes: Some(1_024),
+                },
+                "operator",
+                1_000,
+            )
+            .unwrap();
+        assert!(policy.drained_nodes.contains(&"node-1".to_string()));
+        let task = state.create_task(request(), "operator", 1_001).unwrap();
+        assert_eq!(
+            state
+                .create_task(request(), "operator", 1_001)
+                .unwrap_err()
+                .code,
+            "HARNESS_TENANT_QUOTA_EXCEEDED"
+        );
+        approve_for_execution(&mut state, &task.task_id);
+        assert_eq!(
+            state
+                .reserve_attempt(
+                    &task.task_id,
+                    state.tasks[&task.task_id].state_version,
+                    "node-1",
+                    HarnessExecutionMode::Sandbox,
+                    1,
+                    2,
+                    300,
+                    "scheduler",
+                    1_002,
+                )
+                .unwrap_err()
+                .code,
+            "HARNESS_NODE_DRAINED"
+        );
+        state
+            .update_operational_policy(
+                UpdateHarnessOperationalPolicyRequest {
+                    kill_switch: Some(true),
+                    drain_node_id: None,
+                    undrain_node_id: Some("node-1".to_string()),
+                    tenant_max_active_attempts: None,
+                    tenant_max_queued_tasks: None,
+                    tenant_max_artifact_bytes: None,
+                },
+                "operator",
+                1_003,
+            )
+            .unwrap();
+        assert_eq!(state.operational_events.len(), 2);
+        assert_eq!(
+            state
+                .create_task(
+                    {
+                        let mut value = request();
+                        value.tenant_id = "tenant-2".to_string();
+                        value
+                    },
+                    "operator",
+                    1_004
+                )
+                .unwrap_err()
+                .code,
+            "HARNESS_KILL_SWITCH_ACTIVE"
         );
     }
 }
