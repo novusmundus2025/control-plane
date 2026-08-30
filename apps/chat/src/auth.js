@@ -1,10 +1,15 @@
-import { createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { Pool } from "pg";
 
 const SESSION_COOKIE = "__Host-mx_session";
 const CSRF_COOKIE = "__Host-mx_csrf";
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 const CHALLENGE_SECONDS = 10 * 60;
+const GITHUB_API_VERSION = "2026-03-10";
+const MAX_GITHUB_PAGES = 5;
+const MAX_GITHUB_INSTALLATIONS = 20;
+const MAX_GITHUB_REPOSITORIES = 1000;
+const MAX_REPOSITORY_FILE_BYTES = 256 * 1024;
 
 function digest(value) {
   return createHash("sha256").update(String(value)).digest("hex");
@@ -36,6 +41,52 @@ function cookie(name, value, maxAge, httpOnly = true) {
   return `${name}=${encodeURIComponent(value)}; Path=/; Max-Age=${maxAge}; Secure; SameSite=Lax${httpOnly ? "; HttpOnly" : ""}`;
 }
 
+function encryptionKey(value) {
+  if (!value) return null;
+  try {
+    const decoded = Buffer.from(value, "base64");
+    return decoded.length === 32 ? decoded : null;
+  } catch { return null; }
+}
+
+function encryptSecret(value, key) {
+  const nonce = randomBytes(12);
+  const cipher = createCipheriv("aes-256-gcm", key, nonce);
+  const encrypted = Buffer.concat([cipher.update(String(value), "utf8"), cipher.final()]);
+  return [nonce, cipher.getAuthTag(), encrypted].map((part) => part.toString("base64url")).join(".");
+}
+
+function decryptSecret(value, key) {
+  const [nonce, tag, encrypted] = String(value).split(".").map((part) => Buffer.from(part, "base64url"));
+  if (!nonce || nonce.length !== 12 || !tag || tag.length !== 16 || !encrypted) throw new Error("Encrypted GitHub credential is invalid");
+  const decipher = createDecipheriv("aes-256-gcm", key, nonce);
+  decipher.setAuthTag(tag);
+  return Buffer.concat([decipher.update(encrypted), decipher.final()]).toString("utf8");
+}
+
+function githubHeaders(accessToken) {
+  return { Accept: "application/vnd.github+json", Authorization: `Bearer ${accessToken}`, "X-GitHub-Api-Version": GITHUB_API_VERSION };
+}
+
+function sensitiveRepositoryPath(path) {
+  const normalized = String(path || "").replace(/\\/g, "/").toLowerCase();
+  return normalized.split("/").some((part) => part === ".git" || part === ".env" || part.startsWith(".env.") || /^(id_rsa|id_ed25519|.*\.(pem|p12|pfx|key))$/.test(part));
+}
+
+function redactRepositoryText(value) {
+  let redacted = false;
+  const content = String(value || "")
+    .replace(/-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----/g, () => {
+      redacted = true;
+      return "[REDACTED PRIVATE KEY]";
+    })
+    .replace(/((?:api[_-]?key|access[_-]?token|client[_-]?secret|password|secret)\s*[:=]\s*["']?)([^\s"',;]+)/gi, (_match, prefix) => {
+      redacted = true;
+      return `${prefix}[REDACTED]`;
+    });
+  return { content, redacted };
+}
+
 export function authConfigFromEnv(env = process.env) {
   return {
     required: !["0", "false", "no"].includes(String(env.MUNDUSX_CHAT_AUTH_REQUIRED ?? "true").toLowerCase()),
@@ -43,6 +94,7 @@ export function authConfigFromEnv(env = process.env) {
     publicOrigin: String(env.MUNDUSX_PUBLIC_ORIGIN ?? "https://chat-u.mundusx.ai").replace(/\/$/, ""),
     githubClientId: String(env.MUNDUSX_GITHUB_CLIENT_ID ?? "").trim(),
     githubClientSecret: String(env.MUNDUSX_GITHUB_CLIENT_SECRET ?? "").trim(),
+    encryptionKey: encryptionKey(String(env.MUNDUSX_AUTH_ENCRYPTION_KEY ?? "").trim()),
     resendApiKey: String(env.RESEND_API_KEY ?? "").trim(),
     emailFrom: String(env.MUNDUSX_AUTH_EMAIL_FROM ?? "").trim(),
   };
@@ -61,7 +113,7 @@ export class PostgresAuthStore {
 
   providers() {
     return {
-      github: Boolean(this.config.githubClientId && this.config.githubClientSecret),
+      github: Boolean(this.config.githubClientId && this.config.githubClientSecret && this.config.encryptionKey),
       email: Boolean(this.config.resendApiKey && this.config.emailFrom),
     };
   }
@@ -72,16 +124,9 @@ export class PostgresAuthStore {
     if (!raw) return null;
     const result = await this.pool.query(`
       select s.session_hash, s.csrf_hash, u.id, u.email, u.display_name, u.role,
-        coalesce(jsonb_agg(jsonb_build_object(
-          'grant_id', g.grant_id, 'tenant_id', g.tenant_id,
-          'repository_source_id', g.repository_source_id,
-          'allowed_path_prefixes', g.allowed_path_prefixes,
-          'validation_profiles', g.validation_profiles,
-          'allowed_execution_modes', g.allowed_execution_modes
-        )) filter (where g.grant_id is not null), '[]'::jsonb) as harness_grants
+        exists(select 1 from public.github_user_tokens gt where gt.user_id = u.id) as github_connected
       from public.user_sessions s
       join public.users u on u.id = s.user_id
-      left join public.user_repository_grants g on g.user_id = u.id and g.status = 'active'
       where s.session_hash = $1 and s.revoked_at is null and s.expires_at > now() and u.status = 'active'
       group by s.session_hash, s.csrf_hash, u.id, u.email, u.display_name, u.role`, [digest(raw)]);
     return result.rows[0] ?? null;
@@ -126,6 +171,154 @@ export class PostgresAuthStore {
     }
   }
 
+  async storeGithubToken(database, userId, payload) {
+    if (!this.config.encryptionKey) throw Object.assign(new Error("GitHub credential encryption is unavailable"), { statusCode: 503 });
+    const accessExpiresAt = Number(payload.expires_in) > 0 ? new Date(Date.now() + Number(payload.expires_in) * 1000) : null;
+    const refreshExpiresAt = Number(payload.refresh_token_expires_in) > 0 ? new Date(Date.now() + Number(payload.refresh_token_expires_in) * 1000) : null;
+    await database.query(`insert into public.github_user_tokens
+      (user_id, access_ciphertext, refresh_ciphertext, access_expires_at, refresh_expires_at, token_type)
+      values ($1, $2, $3, $4, $5, $6)
+      on conflict (user_id) do update set
+        access_ciphertext = excluded.access_ciphertext,
+        refresh_ciphertext = coalesce(excluded.refresh_ciphertext, public.github_user_tokens.refresh_ciphertext),
+        access_expires_at = excluded.access_expires_at,
+        refresh_expires_at = coalesce(excluded.refresh_expires_at, public.github_user_tokens.refresh_expires_at),
+        token_type = excluded.token_type,
+        updated_at = now()`, [
+      userId,
+      encryptSecret(payload.access_token, this.config.encryptionKey),
+      payload.refresh_token ? encryptSecret(payload.refresh_token, this.config.encryptionKey) : null,
+      accessExpiresAt,
+      refreshExpiresAt,
+      String(payload.token_type || "bearer").toLowerCase(),
+    ]);
+  }
+
+  async githubToken(userId) {
+    this.ensureReady();
+    if (!this.providers().github) throw Object.assign(new Error("GitHub App access is unavailable"), { statusCode: 503 });
+    const result = await this.pool.query("select * from public.github_user_tokens where user_id = $1", [userId]);
+    const row = result.rows[0];
+    if (!row) throw Object.assign(new Error("Connect GitHub to access repositories"), { statusCode: 403 });
+    const expiresAt = row.access_expires_at ? new Date(row.access_expires_at).getTime() : null;
+    if (!expiresAt || expiresAt > Date.now() + 5 * 60 * 1000) return decryptSecret(row.access_ciphertext, this.config.encryptionKey);
+    if (!row.refresh_ciphertext || (row.refresh_expires_at && new Date(row.refresh_expires_at).getTime() <= Date.now())) {
+      await this.pool.query("delete from public.github_user_tokens where user_id = $1", [userId]);
+      throw Object.assign(new Error("GitHub access expired; reconnect your account"), { statusCode: 401 });
+    }
+    const refreshed = await this.fetch("https://github.com/login/oauth/access_token", {
+      method: "POST",
+      headers: { Accept: "application/json", "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: this.config.githubClientId,
+        client_secret: this.config.githubClientSecret,
+        grant_type: "refresh_token",
+        refresh_token: decryptSecret(row.refresh_ciphertext, this.config.encryptionKey),
+      }),
+    });
+    const payload = await refreshed.json();
+    if (!refreshed.ok || !payload.access_token) throw Object.assign(new Error("GitHub access could not be refreshed"), { statusCode: 502 });
+    await this.storeGithubToken(this.pool, userId, payload);
+    return payload.access_token;
+  }
+
+  async githubJson(userId, url) {
+    const accessToken = await this.githubToken(userId);
+    const response = await this.fetch(url, { headers: githubHeaders(accessToken) });
+    const payload = await response.json().catch(() => ({}));
+    if (response.status === 401) throw Object.assign(new Error("GitHub access expired; reconnect your account"), { statusCode: 401 });
+    if (response.status === 403) throw Object.assign(new Error("GitHub denied this repository operation"), { statusCode: 403 });
+    if (response.status === 404) throw Object.assign(new Error("Repository resource was not found"), { statusCode: 404 });
+    if (!response.ok) throw Object.assign(new Error(`GitHub returned ${response.status}`), { statusCode: 502 });
+    return payload;
+  }
+
+  async repositories(userId) {
+    const installations = [];
+    for (let page = 1; page <= MAX_GITHUB_PAGES; page += 1) {
+      const payload = await this.githubJson(userId, `https://api.github.com/user/installations?per_page=100&page=${page}`);
+      const batch = Array.isArray(payload.installations) ? payload.installations : [];
+      installations.push(...batch);
+      if (batch.length < 100) break;
+    }
+    const repositories = [];
+    for (const installation of installations.slice(0, MAX_GITHUB_INSTALLATIONS)) {
+      for (let page = 1; page <= MAX_GITHUB_PAGES; page += 1) {
+        const payload = await this.githubJson(userId, `https://api.github.com/user/installations/${encodeURIComponent(installation.id)}/repositories?per_page=100&page=${page}`);
+        const batch = Array.isArray(payload.repositories) ? payload.repositories : [];
+        repositories.push(...batch.map((repo) => this.normalizeRepository(repo, installation.id)));
+        if (repositories.length >= MAX_GITHUB_REPOSITORIES) return repositories.slice(0, MAX_GITHUB_REPOSITORIES).sort((left, right) => left.full_name.localeCompare(right.full_name));
+        if (batch.length < 100) break;
+      }
+    }
+    return repositories.sort((left, right) => left.full_name.localeCompare(right.full_name));
+  }
+
+  normalizeRepository(repo, installationId = null) {
+    return {
+      id: Number(repo.id),
+      installation_id: installationId,
+      full_name: String(repo.full_name || ""),
+      private: Boolean(repo.private),
+      default_branch: String(repo.default_branch || "main"),
+      permissions: {
+        pull: Boolean(repo.permissions?.pull || repo.permissions?.triage || repo.permissions?.push || repo.permissions?.maintain || repo.permissions?.admin),
+        push: Boolean(repo.permissions?.push || repo.permissions?.maintain || repo.permissions?.admin),
+        admin: Boolean(repo.permissions?.admin),
+      },
+    };
+  }
+
+  async authorizeRepository(userId, repositoryId, { requirePush = false } = {}) {
+    if (!/^\d+$/.test(String(repositoryId || ""))) throw Object.assign(new Error("repository id is invalid"), { statusCode: 400 });
+    const repo = this.normalizeRepository(await this.githubJson(userId, `https://api.github.com/repositories/${repositoryId}`));
+    if (!repo.id || !repo.full_name || !repo.permissions.pull || (requirePush && !repo.permissions.push)) {
+      throw Object.assign(new Error(requirePush ? "Write access to this repository is required" : "Repository access is required"), { statusCode: 403 });
+    }
+    return repo;
+  }
+
+  async repositoryContents(userId, repositoryId, path = "", ref = "") {
+    const repo = await this.authorizeRepository(userId, repositoryId);
+    const normalizedPath = String(path || "").replace(/^\/+|\/+$/g, "");
+    if (normalizedPath.includes("..") || sensitiveRepositoryPath(normalizedPath)) throw Object.assign(new Error("Repository path is not available"), { statusCode: 403 });
+    const selectedRef = String(ref || repo.default_branch);
+    if (!/^[A-Za-z0-9._/-]{1,200}$/.test(selectedRef) || selectedRef.includes("..")) throw Object.assign(new Error("repository ref is invalid"), { statusCode: 400 });
+    const encodedPath = normalizedPath.split("/").filter(Boolean).map(encodeURIComponent).join("/");
+    const payload = await this.githubJson(userId, `https://api.github.com/repos/${repo.full_name}/contents/${encodedPath}?ref=${encodeURIComponent(selectedRef)}`);
+    if (Array.isArray(payload)) {
+      return { repository: repo, ref: selectedRef, path: normalizedPath, entries: payload.slice(0, 500).filter((entry) => !sensitiveRepositoryPath(entry.path)).map((entry) => ({ name: entry.name, path: entry.path, type: entry.type, size: entry.size, sha: entry.sha })) };
+    }
+    if (payload.type !== "file" || payload.encoding !== "base64" || Number(payload.size) > MAX_REPOSITORY_FILE_BYTES) throw Object.assign(new Error("Only bounded text files can be viewed"), { statusCode: 413 });
+    const content = Buffer.from(String(payload.content || "").replace(/\s/g, ""), "base64").toString("utf8");
+    if (content.includes("\0")) throw Object.assign(new Error("Binary files cannot be viewed"), { statusCode: 415 });
+    const safeText = redactRepositoryText(content);
+    return { repository: repo, ref: selectedRef, path: normalizedPath, file: { name: payload.name, path: payload.path, size: payload.size, sha: payload.sha, ...safeText } };
+  }
+
+  async harnessAuthority(userId, repositoryId, executionMode, operations = []) {
+    if (!Array.isArray(operations)) throw Object.assign(new Error("allowed operations must be a list"), { statusCode: 400 });
+    const requirePush = operations.some((operation) => ["patch.apply", "validation.run"].includes(String(operation)));
+    const repo = await this.authorizeRepository(userId, repositoryId, { requirePush });
+    const policyResult = await this.pool.query(`select * from public.repository_harness_policies
+      where repository_id = $1 and status = 'active'`, [repo.id]);
+    const policy = policyResult.rows[0];
+    if (!policy || policy.repository_full_name.toLowerCase() !== repo.full_name.toLowerCase()) throw Object.assign(new Error("This repository is not enabled for EHDA Harness work"), { statusCode: 403 });
+    if (!policy.allowed_execution_modes.includes(executionMode)) throw Object.assign(new Error("EHDA policy does not permit this execution mode"), { statusCode: 403 });
+    if (policy.require_write_permission && !repo.permissions.push) throw Object.assign(new Error("Write permission is required by EHDA policy"), { statusCode: 403 });
+    const commit = await this.githubJson(userId, `https://api.github.com/repos/${repo.full_name}/commits/${encodeURIComponent(repo.default_branch)}`);
+    if (!/^[0-9a-f]{40}$/i.test(String(commit.sha || ""))) throw Object.assign(new Error("GitHub did not return an immutable base revision"), { statusCode: 502 });
+    return {
+      user_id: userId,
+      tenant_id: policy.tenant_id,
+      repository_source_id: `github:${repo.id}:${repo.full_name}`,
+      base_revision: String(commit.sha).toLowerCase(),
+      allowed_path_prefixes: policy.allowed_path_prefixes,
+      validation_profiles: policy.validation_profiles,
+      allowed_execution_modes: policy.allowed_execution_modes,
+    };
+  }
+
   async startGithub(redirectPath = "/") {
     this.ensureReady();
     if (!this.providers().github) throw Object.assign(new Error("GitHub login is unavailable"), { statusCode: 503 });
@@ -162,6 +355,7 @@ export class PostgresAuthStore {
     try {
       await client.query("begin");
       const userId = await this.upsertIdentity(client, { provider: "github", subject: String(profile.id), login: profile.login, email, displayName: profile.name || profile.login, profile: { avatar_url: profile.avatar_url } });
+      await this.storeGithubToken(client, userId, exchanged);
       await client.query("commit");
       await this.createSession(response, userId, "github", client);
       return safeRedirect(found.rows[0].redirect_path);
