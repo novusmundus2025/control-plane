@@ -115,6 +115,8 @@ pub struct HarnessTask {
     pub harness_contract_version: String,
     pub tenant_id: String,
     pub repository_source_id: String,
+    /// Bounded user-authored coding objective. It is never copied into audit metadata.
+    pub objective: String,
     pub base_revision: String,
     pub allowed_path_prefixes: Vec<String>,
     pub execution_mode: HarnessExecutionMode,
@@ -267,6 +269,12 @@ pub struct HarnessValidation {
     pub exit_code: Option<i32>,
     pub duration_ms: Option<u64>,
     pub output_sha256: Option<String>,
+    #[serde(default)]
+    pub artifact_sha256: String,
+    #[serde(default)]
+    pub base_revision: String,
+    #[serde(default)]
+    pub environment_sha256: String,
     pub output_truncated: bool,
     pub created_at_epoch: u64,
 }
@@ -311,6 +319,9 @@ pub struct RecordHarnessValidationRequest {
     pub exit_code: Option<i32>,
     pub duration_ms: Option<u64>,
     pub output_sha256: Option<String>,
+    pub artifact_sha256: String,
+    pub base_revision: String,
+    pub environment_sha256: String,
     #[serde(default)]
     pub output_truncated: bool,
 }
@@ -344,6 +355,7 @@ pub struct CreateHarnessTaskRequest {
     pub harness_contract_version: String,
     pub tenant_id: String,
     pub repository_source_id: String,
+    pub objective: String,
     pub base_revision: String,
     #[serde(default)]
     pub allowed_path_prefixes: Vec<String>,
@@ -769,6 +781,13 @@ impl HarnessState {
             .output_sha256
             .as_deref()
             .is_some_and(|value| !is_sha256(value))
+            || !is_sha256(&request.artifact_sha256)
+            || !is_sha256(&request.environment_sha256)
+            || request.base_revision.len() != 40
+            || !request
+                .base_revision
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit())
             || !["passed", "failed", "timeout", "cancelled"].contains(&request.status.as_str())
         {
             return Err(HarnessError::new(
@@ -808,6 +827,9 @@ impl HarnessState {
             exit_code: request.exit_code,
             duration_ms: request.duration_ms,
             output_sha256: request.output_sha256,
+            artifact_sha256: request.artifact_sha256,
+            base_revision: request.base_revision,
+            environment_sha256: request.environment_sha256,
             output_truncated: request.output_truncated,
             created_at_epoch: now_epoch,
         };
@@ -831,6 +853,9 @@ impl HarnessState {
                 "exit_code": record.exit_code,
                 "duration_ms": record.duration_ms,
                 "output_sha256": record.output_sha256,
+                "artifact_sha256": record.artifact_sha256,
+                "base_revision": record.base_revision,
+                "environment_sha256": record.environment_sha256,
                 "output_truncated": record.output_truncated,
             }),
             now_epoch,
@@ -1119,6 +1144,7 @@ impl HarnessState {
             harness_contract_version: request.harness_contract_version,
             tenant_id: request.tenant_id.trim().to_string(),
             repository_source_id: request.repository_source_id.trim().to_string(),
+            objective: request.objective.trim().to_string(),
             base_revision: request.base_revision.to_ascii_lowercase(),
             allowed_path_prefixes: normalized_list(request.allowed_path_prefixes),
             execution_mode: request.execution_mode,
@@ -1670,6 +1696,12 @@ fn validate_create_request(
     }
     validate_identifier(&request.tenant_id, "tenant id")?;
     validate_identifier(&request.repository_source_id, "repository source id")?;
+    if request.objective.trim().is_empty() || request.objective.len() > 16_384 {
+        return Err(HarnessError::new(
+            "HARNESS_OBJECTIVE_INVALID",
+            "objective must contain 1 to 16384 bytes",
+        ));
+    }
     if request.base_revision.len() != 40
         || !request
             .base_revision
@@ -1810,6 +1842,7 @@ mod tests {
             harness_contract_version: HARNESS_CONTRACT_VERSION.to_string(),
             tenant_id: "tenant-1".to_string(),
             repository_source_id: "repo-1".to_string(),
+            objective: "Update the bounded test fixture.".to_string(),
             base_revision: "a".repeat(40),
             allowed_path_prefixes: vec!["src".to_string(), "tests".to_string()],
             execution_mode: HarnessExecutionMode::Sandbox,
@@ -1840,6 +1873,126 @@ mod tests {
             .unwrap();
         assert_eq!(approval.scope, HarnessApprovalScope::ExecuteUat);
         assert_eq!(state.tasks[&task.task_id].state, HarnessTaskState::Queued);
+    }
+
+    #[test]
+    fn task_objective_is_required_bounded_and_excluded_from_audit_metadata() {
+        let mut state = HarnessState::default();
+        let mut invalid = request();
+        invalid.objective.clear();
+        assert_eq!(
+            state
+                .create_task(invalid, "operator", 1_000)
+                .unwrap_err()
+                .code,
+            "HARNESS_OBJECTIVE_INVALID"
+        );
+
+        let objective = "private coding objective marker";
+        let mut valid = request();
+        valid.objective = objective.to_string();
+        let task = state.create_task(valid, "operator", 1_000).unwrap();
+        assert_eq!(task.objective, objective);
+        let audit = serde_json::to_string(&state.audit_events).unwrap();
+        assert!(!audit.contains(objective));
+    }
+
+    #[test]
+    fn uat_mixed_fifty_job_load_never_oversubscribes_and_is_reconstructable() {
+        let mut state = HarnessState::default();
+        state.operational_policy.tenant_max_queued_tasks = 100;
+        state.operational_policy.tenant_max_active_attempts = 100;
+        let mut queued = Vec::new();
+        for index in 0..50 {
+            let mut task_request = request();
+            task_request.tenant_id = format!("tenant-{}", index % 5);
+            task_request.repository_source_id = format!("fixture-{}", index % 3);
+            task_request.execution_mode = if index % 2 == 0 {
+                HarnessExecutionMode::Sandbox
+            } else {
+                HarnessExecutionMode::Hybrid
+            };
+            task_request.budgets.max_tool_calls = 8 + (index % 4) as u32;
+            let task = state
+                .create_task(task_request, "uat-load-generator", 1_000 + index)
+                .unwrap();
+            state
+                .add_approval(
+                    &task.task_id,
+                    CreateHarnessApprovalRequest {
+                        scope: HarnessApprovalScope::ExecuteUat,
+                        target: "uat".to_string(),
+                        approver: "uat-fixture".to_string(),
+                        artifact_digest: None,
+                        expires_at_epoch: 10_000,
+                    },
+                    1_001 + index,
+                )
+                .unwrap();
+            queued.push(task.task_id);
+        }
+
+        let mut reserved = 0;
+        for (index, task_id) in queued.iter().enumerate() {
+            let task = state.tasks[task_id].clone();
+            let node_id = format!("uat-node-{}", index % 5);
+            match state.reserve_attempt(
+                task_id,
+                task.state_version,
+                &node_id,
+                task.execution_mode,
+                1,
+                4,
+                900,
+                "uat-scheduler",
+                2_000,
+            ) {
+                Ok((attempt, _)) => {
+                    state
+                        .record_routing_decision(
+                            task_id,
+                            Some(&attempt.attempt_id),
+                            "uat-scheduler",
+                            serde_json::json!({"node_id": node_id, "fixture_index": index}),
+                            2_000,
+                        )
+                        .unwrap();
+                    reserved += 1;
+                }
+                Err(error) => assert_eq!(error.code, "HARNESS_RESOURCE_EXHAUSTED"),
+            }
+        }
+
+        assert_eq!(reserved, 20);
+        for node_index in 0..5 {
+            let node_id = format!("uat-node-{node_index}");
+            let active = state
+                .reservations
+                .values()
+                .filter(|reservation| {
+                    reservation.node_id == node_id && reservation.state == "active"
+                })
+                .map(|reservation| reservation.slots)
+                .sum::<u32>();
+            assert_eq!(active, 4);
+        }
+        assert_eq!(
+            state
+                .audit_events
+                .iter()
+                .filter(|event| event.event_type == "harness_routing_decision")
+                .count(),
+            reserved
+        );
+        assert_eq!(state.tasks.len(), 50);
+        assert_eq!(
+            state
+                .tasks
+                .values()
+                .filter(|task| task.state == HarnessTaskState::Queued)
+                .count(),
+            30
+        );
     }
 
     #[test]
@@ -2176,6 +2329,9 @@ mod tests {
                     exit_code: Some(0),
                     duration_ms: Some(50),
                     output_sha256: Some("3".repeat(64)),
+                    artifact_sha256: "4".repeat(64),
+                    base_revision: "a".repeat(40),
+                    environment_sha256: "5".repeat(64),
                     output_truncated: false,
                 },
                 "node-1",
