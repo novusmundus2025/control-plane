@@ -428,7 +428,7 @@ export function page(config = configFromEnv()) {
     .history-menu-button:focus-visible,
     .history-menu-button[aria-expanded="true"] {
       color: var(--text);
-      background: #fff;
+      background: var(--panel);
       border-color: var(--line);
       outline: 0;
     }
@@ -440,8 +440,8 @@ export function page(config = configFromEnv()) {
       gap: 3px;
       padding: 7px;
       border-radius: 10px;
-      border: 1px solid rgba(17, 24, 39, 0.08);
-      background: #fff;
+      border: 1px solid var(--line);
+      background: var(--panel);
       box-shadow: 0 18px 45px rgba(20, 25, 40, 0.18);
     }
     .history-context-menu.is-open {
@@ -463,7 +463,7 @@ export function page(config = configFromEnv()) {
     }
     .history-context-menu button:hover,
     .history-context-menu button:focus-visible {
-      background: #f1f2f9;
+      background: var(--panel-2);
       outline: 0;
     }
     .history-context-menu .danger {
@@ -477,7 +477,7 @@ export function page(config = configFromEnv()) {
     .history-item:hover,
     .history-item:focus-visible {
       color: var(--text);
-      background: #f1f2f9;
+      background: var(--panel-2);
       outline: 0;
     }
     .history-item.active {
