@@ -100,10 +100,20 @@ const WELCOME_INNER_HTML = `<div class="welcome-inner">
             </div>`;
 
 export function configFromEnv(env = process.env) {
+  const harnessUiEnabled = ["1", "true", "yes"].includes(
+    String(env.MUNDUSX_HARNESS_UI_ENABLED ?? "").trim().toLowerCase(),
+  );
   return {
     port: Number(env.PORT ?? "3002"),
     controlPlaneUrl: normalizeOrigin(env.MUNDUSX_CONTROL_PLANE_URL ?? DEFAULT_CONTROL_PLANE_URL),
     operatorToken: (env.MUNDUSX_OPERATOR_TOKEN ?? env.OPENGPU_OPERATOR_TOKEN ?? "").trim(),
+    harnessServiceToken: (env.MUNDUSX_HARNESS_SERVICE_TOKEN ?? "").trim(),
+    harnessUiEnabled,
+    harnessTenantId: (env.MUNDUSX_HARNESS_TENANT_ID ?? "").trim(),
+    harnessRepositorySourceId: (env.MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID ?? "").trim(),
+    harnessBaseRevision: (env.MUNDUSX_HARNESS_BASE_REVISION ?? "").trim().toLowerCase(),
+    harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
+    harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
@@ -160,6 +170,29 @@ export function normalizeAssistantDisplayText(text) {
 }
 
 export function page(config = configFromEnv()) {
+  const harnessLauncher = config.harnessUiEnabled
+    ? `<button class="header-action" id="harness-open" type="button">Coding Harness</button>
+      <dialog class="harness-dialog" id="harness-dialog">
+        <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
+        <h2>Coding Harness</h2>
+        <p>Submit a bounded coding task for operator review. This does not approve execution, merge, or deployment.</p>
+        <div class="harness-boundary"><strong>${escapeHtml(config.harnessRepositorySourceId || "Repository not configured")}</strong><span>Base ${escapeHtml(config.harnessBaseRevision || "not configured")}</span></div>
+        <form id="harness-form" class="harness-form">
+          <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="Describe one bounded coding change"></textarea></label>
+          <label>Execution mode<select name="execution_mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted node only)</option></select></label>
+          <fieldset><legend>Allowed tools</legend>
+            <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
+            <label><input type="checkbox" name="allowed_operations" value="repository.diff" checked> Repository diff</label>
+            <label><input type="checkbox" name="allowed_operations" value="file.read" checked> Read files</label>
+            <label><input type="checkbox" name="allowed_operations" value="file.search" checked> Search files</label>
+            <label><input type="checkbox" name="allowed_operations" value="patch.apply" checked> Apply bounded patches</label>
+            <label><input type="checkbox" name="allowed_operations" value="validation.run" checked> Run named validations</label>
+          </fieldset>
+          <button class="harness-submit" type="submit">Submit for review</button>
+          <output id="harness-result" aria-live="polite"></output>
+        </form>
+      </dialog>`
+    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1391,6 +1424,19 @@ export function page(config = configFromEnv()) {
       background: #e9fbf4;
       color: var(--green);
     }
+    .header-action { border: 1px solid var(--line-strong); border-radius: 999px; background: white; color: var(--blue); padding: 8px 14px; font: inherit; font-weight: 700; cursor: pointer; }
+    .harness-dialog { width: min(620px, calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: 18px; padding: 24px; color: var(--text); box-shadow: 0 28px 80px rgba(18,19,28,.24); }
+    .harness-dialog::backdrop { background: rgba(15,23,42,.48); }
+    .dialog-close { float: right; padding: 0; }
+    .dialog-close button { border: 0; background: transparent; font-size: 28px; cursor: pointer; }
+    .harness-boundary,.harness-form { display: grid; gap: 14px; }
+    .harness-boundary { padding: 12px; border-radius: 10px; background: var(--bg); }
+    .harness-form label { display: grid; gap: 6px; }
+    .harness-form textarea,.harness-form select { grid-column: auto; grid-row: auto; width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; background: white; font: inherit; }
+    .harness-form textarea { min-height: 120px; max-height: 320px; resize: vertical; }
+    .harness-form fieldset { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 10px; }
+    .harness-form fieldset label { display: flex; align-items: center; gap: 8px; }
+    .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
     .voice-controls {
       display: contents;
     }
@@ -1566,6 +1612,7 @@ export function page(config = configFromEnv()) {
     <main id="chat-main" class="is-empty-chat">
       <header>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
+        ${harnessLauncher}
       </header>
       <section class="messages" id="messages" aria-live="polite">
         <div class="conversation" id="conversation">
@@ -1610,6 +1657,10 @@ export function page(config = configFromEnv()) {
     const accountMenuEl = document.getElementById("account-menu");
     const webSearchToggleEl = document.getElementById("web-search-toggle");
     const webSearchLabelEl = document.getElementById("web-search-label");
+    const harnessOpenEl = document.getElementById("harness-open");
+    const harnessDialogEl = document.getElementById("harness-dialog");
+    const harnessFormEl = document.getElementById("harness-form");
+    const harnessResultEl = document.getElementById("harness-result");
     const enterToSendToggleEl = document.getElementById("enter-to-send-toggle");
     const enterToSendLabelEl = document.getElementById("enter-to-send-label");
     const voiceMicEl = document.getElementById("voice-mic");
@@ -1750,6 +1801,30 @@ export function page(config = configFromEnv()) {
       localStorage.setItem("mundusx.chat.toolMode", String(webSearchEnabled));
       renderToolMode();
       promptEl.focus();
+    });
+    harnessOpenEl?.addEventListener("click", () => harnessDialogEl?.showModal());
+    harnessFormEl?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const data = new FormData(harnessFormEl);
+      const allowedOperations = data.getAll("allowed_operations").map(String);
+      harnessResultEl.textContent = "Submitting bounded task...";
+      try {
+        const response = await fetch("/api/harness/tasks", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            objective: String(data.get("objective") || ""),
+            execution_mode: String(data.get("execution_mode") || "sandbox"),
+            allowed_operations: allowedOperations,
+          }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Harness submission failed");
+        harnessResultEl.textContent = "Task " + payload.task_id + " is awaiting operator UAT approval.";
+        harnessFormEl.reset();
+      } catch (error) {
+        harnessResultEl.textContent = error.message || "Harness submission failed";
+      }
     });
     enterToSendToggleEl?.addEventListener("click", () => {
       enterToSendEnabled = !enterToSendEnabled;
@@ -3921,6 +3996,11 @@ export function createServerApp(config = configFromEnv()) {
         const result = await fetchNetworkSummary(config);
         return sendJson(response, 200, result);
       }
+      if (request.method === "POST" && url.pathname === "/api/harness/tasks") {
+        const body = await readJsonBody(request);
+        const result = await submitHarnessTask(body, config);
+        return sendJson(response, 201, result);
+      }
       if (request.method === "GET" && url.pathname.startsWith("/api/conversations/") && url.pathname.endsWith("/messages")) {
         const conversationId = decodeURIComponent(
           url.pathname.slice("/api/conversations/".length, -"/messages".length),
@@ -3961,6 +4041,84 @@ export function createServerApp(config = configFromEnv()) {
       return sendJson(response, status, { error: error.message ?? "request failed" });
     }
   });
+}
+
+const CHAT_HARNESS_OPERATIONS = new Set([
+  "repository.status",
+  "repository.diff",
+  "file.read",
+  "file.search",
+  "patch.apply",
+  "validation.run",
+]);
+
+export async function submitHarnessTask(body, config = configFromEnv(), fetchImpl = fetch) {
+  if (!config.harnessUiEnabled) throw httpError(404, "Coding Harness is not enabled");
+  const token = config.harnessServiceToken || config.operatorToken;
+  if (!token) throw httpError(503, "Coding Harness service authentication is not configured");
+  if (
+    !config.harnessTenantId ||
+    !config.harnessRepositorySourceId ||
+    !/^[0-9a-f]{40}$/.test(config.harnessBaseRevision) ||
+    !config.harnessAllowedPathPrefixes ||
+    !config.harnessValidationProfiles
+  ) {
+    throw httpError(503, "Coding Harness repository boundary is incomplete");
+  }
+  const objective = String(body?.objective ?? "").trim();
+  if (!objective || objective.length > 4000) {
+    throw httpError(400, "objective must contain 1 to 4000 characters");
+  }
+  const executionMode = String(body?.execution_mode ?? "sandbox");
+  if (!["sandbox", "hybrid"].includes(executionMode)) {
+    throw httpError(400, "execution_mode must be sandbox or hybrid");
+  }
+  const allowedOperations = Array.isArray(body?.allowed_operations)
+    ? [...new Set(body.allowed_operations.map(String))]
+    : [];
+  if (
+    allowedOperations.length === 0 ||
+    allowedOperations.some((operation) => !CHAT_HARNESS_OPERATIONS.has(operation))
+  ) {
+    throw httpError(400, "allowed_operations contains an unavailable tool");
+  }
+  const upstream = await fetchImpl(`${config.controlPlaneUrl}/internal/harness/tasks`, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+      "X-MundusX-Actor": "chat-u",
+    },
+    body: JSON.stringify({
+      harness_contract_version: "1.0",
+      tenant_id: config.harnessTenantId,
+      repository_source_id: config.harnessRepositorySourceId,
+      objective,
+      base_revision: config.harnessBaseRevision,
+      allowed_path_prefixes: config.harnessAllowedPathPrefixes
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+      execution_mode: executionMode,
+      allowed_operations: allowedOperations,
+      validation_profiles: config.harnessValidationProfiles
+        .split(",")
+        .map((value) => value.trim())
+        .filter(Boolean),
+    }),
+  });
+  const text = await upstream.text();
+  let payload;
+  try {
+    payload = text ? JSON.parse(text) : {};
+  } catch {
+    payload = {};
+  }
+  if (!upstream.ok) {
+    throw httpError(upstream.status, payload.error || `control plane returned ${upstream.status}`);
+  }
+  if (!payload.task_id) throw httpError(502, "control plane did not return a Harness task id");
+  return { task_id: payload.task_id, state: payload.state ?? "created", approval: "required" };
 }
 
 export async function submitChatTurn(body, config = configFromEnv(), fetchImpl = fetch) {

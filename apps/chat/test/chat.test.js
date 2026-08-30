@@ -43,6 +43,7 @@ import {
   relayControlPlaneOpenAiStream,
   submitChatJob,
   submitChatTurn,
+  submitHarnessTask,
   submitOpenAiChatCompletion,
   streamOpenAiChatCompletion,
   streamChatTurn,
@@ -371,6 +372,58 @@ test("normalizes chat app environment", () => {
   assert.equal(config.controlPlaneUrl, "https://uat.mundusx.ai");
   assert.equal(config.operatorToken, "token");
   assert.equal(config.modelOverride, "");
+  assert.equal(config.harnessUiEnabled, false);
+});
+
+test("renders the opt-in repository-bound Harness launcher", () => {
+  const html = page(
+    configFromEnv({
+      MUNDUSX_HARNESS_UI_ENABLED: "true",
+      MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID: "github:mundusx/control-plane",
+      MUNDUSX_HARNESS_BASE_REVISION: "a".repeat(40),
+    }),
+  );
+
+  assert.match(html, /id="harness-open"/);
+  assert.match(html, /github:mundusx\/control-plane/);
+  assert.match(html, /Submit for review/);
+  assert.match(html, /does not approve execution, merge, or deployment/);
+  assert.doesNotMatch(page(configFromEnv({})), /id="harness-open"/);
+});
+
+test("submits Harness work only inside the configured repository boundary", async () => {
+  let upstreamRequest;
+  const config = configFromEnv({
+    MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
+    MUNDUSX_HARNESS_UI_ENABLED: "true",
+    MUNDUSX_HARNESS_SERVICE_TOKEN: "server-secret",
+    MUNDUSX_HARNESS_TENANT_ID: "ehda-uat",
+    MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID: "github:mundusx/control-plane",
+    MUNDUSX_HARNESS_BASE_REVISION: "a".repeat(40),
+    MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES: "apps/control-plane,docs",
+    MUNDUSX_HARNESS_VALIDATION_PROFILES: "control-plane-tests",
+  });
+  const result = await submitHarnessTask(
+    {
+      objective: "Add a bounded test",
+      repository_source_id: "github:attacker/override",
+      allowed_operations: ["file.read", "validation.run"],
+      execution_mode: "sandbox",
+    },
+    config,
+    async (url, options) => {
+      upstreamRequest = { url, options };
+      return jsonResponse({ task_id: "htask_abc", state: "created" });
+    },
+  );
+
+  const submitted = JSON.parse(upstreamRequest.options.body);
+  assert.equal(upstreamRequest.url, "https://uat.mundusx.ai/internal/harness/tasks");
+  assert.equal(upstreamRequest.options.headers.Authorization, "Bearer server-secret");
+  assert.equal(submitted.repository_source_id, "github:mundusx/control-plane");
+  assert.equal(submitted.tenant_id, "ehda-uat");
+  assert.deepEqual(submitted.allowed_path_prefixes, ["apps/control-plane", "docs"]);
+  assert.deepEqual(result, { task_id: "htask_abc", state: "created", approval: "required" });
 });
 
 test("accepts an explicit chat model override without making it a default", () => {

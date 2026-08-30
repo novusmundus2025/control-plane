@@ -2901,6 +2901,7 @@ enum OperatorPage {
     Flow,
     Nodes,
     Jobs,
+    Harness,
     Credits,
     Registry,
     Settings,
@@ -2912,6 +2913,7 @@ impl OperatorPage {
             "/flow" => Some(Self::Flow),
             "/nodes" => Some(Self::Nodes),
             "/jobs" => Some(Self::Jobs),
+            "/harness" => Some(Self::Harness),
             "/credits" => Some(Self::Credits),
             "/registry" => Some(Self::Registry),
             "/settings" => Some(Self::Settings),
@@ -2924,6 +2926,7 @@ impl OperatorPage {
             Self::Flow => "Request Flow",
             Self::Nodes => "Nodes",
             Self::Jobs => "Jobs",
+            Self::Harness => "Coding Harness",
             Self::Credits => "Credits",
             Self::Registry => "Registry & Trust",
             Self::Settings => "Operator Settings",
@@ -2935,6 +2938,7 @@ impl OperatorPage {
             Self::Flow => "/flow",
             Self::Nodes => "/nodes",
             Self::Jobs => "/jobs",
+            Self::Harness => "/harness",
             Self::Credits => "/credits",
             Self::Registry => "/registry",
             Self::Settings => "/settings",
@@ -2946,6 +2950,7 @@ impl OperatorPage {
             Self::Flow => "Flow",
             Self::Nodes => "Nodes",
             Self::Jobs => "Jobs",
+            Self::Harness => "Harness",
             Self::Credits => "Credits",
             Self::Registry => "Registry",
             Self::Settings => "Settings",
@@ -2962,6 +2967,9 @@ impl OperatorPage {
             }
             Self::Jobs => {
                 r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>"#
+            }
+            Self::Harness => {
+                r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-4 3 4 3"/><path d="m16 9 4 3-4 3"/><path d="m14 5-4 14"/></svg>"#
             }
             Self::Credits => {
                 r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>"#
@@ -3069,6 +3077,191 @@ fn render_admission_policy(state: &ControlPlaneState) -> String {
         model_rows = model_rows,
         updated = escape_html(updated),
         updated_by = escape_html(updated_by),
+    )
+}
+
+const HARNESS_UI_OPERATIONS: [(&str, &str); 7] = [
+    ("repository.status", "Repository status"),
+    ("repository.diff", "Repository diff"),
+    ("file.read", "Read files"),
+    ("file.search", "Search files"),
+    ("patch.apply", "Apply bounded patches"),
+    ("validation.run", "Run named validation profiles"),
+    ("artifact.publish", "Publish evidence artifacts"),
+];
+
+fn harness_enum_label<T: Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .ok()
+        .and_then(|value| value.as_str().map(str::to_string))
+        .unwrap_or_else(|| "unknown".to_string())
+}
+
+fn render_harness_console(state: &ControlPlaneState) -> String {
+    let policy = &state.harness.operational_policy;
+    let operation_controls = HARNESS_UI_OPERATIONS
+        .iter()
+        .enumerate()
+        .map(|(index, (operation, label))| {
+            format!(
+                r#"<label class="check"><input type="checkbox" name="operation_{index}" value="1"{checked}> <strong>{label}</strong><span class="meta">{operation}</span></label>"#,
+                checked = checked_attr(*operation != "artifact.publish"),
+                label = escape_html(label),
+                operation = escape_html(operation),
+            )
+        })
+        .collect::<String>();
+    let drained_nodes = if policy.drained_nodes.is_empty() {
+        r#"<div class="empty">No Harness nodes are drained.</div>"#.to_string()
+    } else {
+        policy
+            .drained_nodes
+            .iter()
+            .map(|node_id| {
+                format!(
+                    r#"<form method="post" action="/actions/harness/operations" class="inline-control"><code>{node}</code><input type="hidden" name="undrain_node_id" value="{node}"><button class="button" type="submit">Undrain</button></form>"#,
+                    node = escape_html(node_id)
+                )
+            })
+            .collect::<String>()
+    };
+    let mut tasks = state.harness.tasks.values().collect::<Vec<_>>();
+    tasks.sort_by_key(|task| std::cmp::Reverse(task.created_at_epoch));
+    let task_rows = if tasks.is_empty() {
+        r#"<div class="empty">No Harness tasks yet.</div>"#.to_string()
+    } else {
+        tasks
+            .into_iter()
+            .take(50)
+            .map(|task| {
+                let state_label = harness_enum_label(&task.state);
+                let execution_mode = harness_enum_label(&task.execution_mode);
+                let attempts = state
+                    .harness
+                    .attempts
+                    .values()
+                    .filter(|attempt| attempt.task_id == task.task_id)
+                    .count();
+                let tool_calls = state
+                    .harness
+                    .tool_calls
+                    .values()
+                    .filter(|record| record.task_id == task.task_id)
+                    .count();
+                let validations = state
+                    .harness
+                    .validations
+                    .values()
+                    .filter(|record| record.task_id == task.task_id)
+                    .count();
+                let artifacts = state
+                    .harness
+                    .artifacts
+                    .values()
+                    .filter(|record| record.task_id == task.task_id)
+                    .count();
+                let has_uat_approval = state.harness.approvals.values().any(|approval| {
+                    approval.task_id == task.task_id
+                        && approval.scope == harness::HarnessApprovalScope::ExecuteUat
+                });
+                let approve = if task.state == harness::HarnessTaskState::Created
+                    && !has_uat_approval
+                {
+                    format!(
+                        r#"<form method="post" action="/actions/harness/tasks/{task_id}/approve-uat"><button class="button primary" type="submit">Approve UAT run</button></form>"#,
+                        task_id = escape_html(&task.task_id)
+                    )
+                } else {
+                    String::new()
+                };
+                let cancel = if task.state.is_terminal() {
+                    String::new()
+                } else {
+                    format!(
+                        r#"<form method="post" action="/actions/harness/tasks/{task_id}/cancel"><button class="button" type="submit">Cancel</button></form>"#,
+                        task_id = escape_html(&task.task_id)
+                    )
+                };
+                format!(
+                    r#"<article class="harness-task">
+                      <div><strong>{task_id}</strong><span class="pill">{state}</span><span class="pill">{mode}</span></div>
+                      <p>{objective}</p>
+                      <div class="meta">Repository {repository} at {revision} · paths {paths}</div>
+                      <div class="meta">Tools: {operations}</div>
+                      <div class="meta">Evidence: {attempts} attempts · {tool_calls} tool calls · {validations} validations · {artifacts} artifacts</div>
+                      <div class="inline-actions"><a class="button" href="/internal/harness/tasks/{task_id}">Evidence JSON</a>{approve}{cancel}</div>
+                    </article>"#,
+                    task_id = escape_html(&task.task_id),
+                    state = escape_html(&state_label),
+                    mode = escape_html(&execution_mode),
+                    objective = escape_html(&task.objective),
+                    repository = escape_html(&task.repository_source_id),
+                    revision = escape_html(&task.base_revision),
+                    paths = escape_html(&task.allowed_path_prefixes.join(", ")),
+                    operations = escape_html(&task.allowed_operations.join(", ")),
+                )
+            })
+            .collect::<String>()
+    };
+
+    format!(
+        r#"<section class="grid four">
+          <div class="metric"><span>Kill switch</span><strong>{kill_switch}</strong></div>
+          <div class="metric"><span>Tasks</span><strong>{tasks}</strong></div>
+          <div class="metric"><span>Active attempts / tenant</span><strong>{active_limit}</strong></div>
+          <div class="metric"><span>Queued tasks / tenant</span><strong>{queued_limit}</strong></div>
+        </section>
+        <section class="panel warning-panel">
+          <h2>UAT authority boundary</h2>
+          <p>These controls authorize bounded UAT implementation and testing only. They do not authorize merge, a UAT deployment, or any production deployment.</p>
+        </section>
+        <section class="panel">
+          <h2>Create bounded coding task</h2>
+          <p class="meta">Choose the exact tools the node may use. Arbitrary shell commands, unrestricted filesystem access, merge, and deployment are not available operations.</p>
+          <form method="post" action="/actions/harness/tasks" class="policy-form">
+            <div class="policy-grid">
+              <label><span>Tenant</span><input name="tenant_id" required maxlength="160" placeholder="ehda-uat"></label>
+              <label><span>Repository source ID</span><input name="repository_source_id" required maxlength="160" placeholder="github:mundusx/control-plane"></label>
+              <label><span>Base revision (full SHA)</span><input name="base_revision" required minlength="40" maxlength="40" pattern="[0-9a-fA-F]{{40}}"></label>
+              <label><span>Execution mode</span><select name="execution_mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted nodes only)</option></select></label>
+              <label><span>Allowed path prefixes</span><input name="allowed_path_prefixes" required placeholder="apps/control-plane,docs"></label>
+              <label><span>Validation profiles</span><input name="validation_profiles" required placeholder="control-plane-tests"></label>
+            </div>
+            <label><span>Objective</span><textarea name="objective" required maxlength="4000" rows="5" placeholder="Describe one bounded coding objective"></textarea></label>
+            <div class="tool-controls"><h3>Allowed tools</h3>{operation_controls}</div>
+            <div class="policy-grid">
+              <label><span>Wall time (ms)</span><input type="number" name="max_wall_time_ms" min="1000" value="900000"></label>
+              <label><span>CPU time (ms)</span><input type="number" name="max_cpu_time_ms" min="1000" value="600000"></label>
+              <label><span>Memory (MB)</span><input type="number" name="max_memory_mb" min="128" value="8192"></label>
+              <label><span>Workspace disk (MB)</span><input type="number" name="max_disk_mb" min="128" value="4096"></label>
+              <label><span>Maximum tool calls</span><input type="number" name="max_tool_calls" min="1" value="80"></label>
+              <label><span>Maximum model turns</span><input type="number" name="max_model_turns" min="1" value="24"></label>
+            </div>
+            <button class="button primary" type="submit">Create for operator review</button>
+          </form>
+        </section>
+        <section class="panel">
+          <h2>Operational safety controls</h2>
+          <form method="post" action="/actions/harness/operations" class="policy-form">
+            <input type="hidden" name="policy_update" value="1">
+            <label class="check"><input type="checkbox" name="kill_switch" value="1"{kill_checked}> Stop admission of new Harness work</label>
+            <div class="policy-grid">
+              <label><span>Active attempts / tenant</span><input type="number" name="tenant_max_active_attempts" min="1" value="{active_limit}"></label>
+              <label><span>Queued tasks / tenant</span><input type="number" name="tenant_max_queued_tasks" min="1" value="{queued_limit}"></label>
+              <label><span>Artifact bytes / tenant</span><input type="number" name="tenant_max_artifact_bytes" min="1" value="{artifact_limit}"></label>
+              <label><span>Drain node ID</span><input name="drain_node_id" placeholder="node-..."></label>
+            </div>
+            <button class="button" type="submit">Apply Harness policy</button>
+          </form>
+          <h3>Drained nodes</h3>{drained_nodes}
+        </section>
+        <section class="panel"><h2>Harness tasks and evidence</h2>{task_rows}</section>"#,
+        kill_switch = if policy.kill_switch { "ACTIVE" } else { "off" },
+        kill_checked = checked_attr(policy.kill_switch),
+        tasks = state.harness.tasks.len(),
+        active_limit = policy.tenant_max_active_attempts,
+        queued_limit = policy.tenant_max_queued_tasks,
+        artifact_limit = policy.tenant_max_artifact_bytes,
     )
 }
 
@@ -3200,6 +3393,7 @@ fn control_plane_operator_page(
             filters = control_filter_form(page, query, &jobs_api_href),
             job_detail_html = job_detail_html
         ),
+        OperatorPage::Harness => render_harness_console(state),
         OperatorPage::Credits => format!(
             r#"{filters}
             <section class="grid two">
@@ -3257,6 +3451,7 @@ fn control_plane_operator_page(
     let nav = [
         OperatorPage::Nodes,
         OperatorPage::Jobs,
+        OperatorPage::Harness,
         OperatorPage::Credits,
         OperatorPage::Registry,
         OperatorPage::Settings,
@@ -3317,13 +3512,21 @@ fn control_plane_operator_page(
       .toolbar .button {{ width:100%; }}
       .panel .button {{ margin-top:10px; margin-right:8px; }}
       .topbar .button {{ margin-left:auto; }}
-      input,select {{ width:100%; min-height:42px; border:1px solid var(--line); border-radius:8px; background:#090a0c; color:var(--text); padding:0 12px; font:inherit; }}
+      input,select,textarea {{ width:100%; min-height:42px; border:1px solid var(--line); border-radius:8px; background:#090a0c; color:var(--text); padding:10px 12px; font:inherit; }}
       input[type="checkbox"] {{ width:auto; min-height:auto; accent-color:var(--blue); }}
       .policy-form {{ display:grid; gap:14px; margin-top:14px; }}
       .policy-grid {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }}
       .policy-grid label {{ display:grid; gap:7px; color:var(--muted); font-size:13px; text-transform:uppercase; }}
       .policy-backends {{ display:flex; align-items:center; flex-wrap:wrap; gap:12px; color:var(--muted); }}
       .check {{ display:inline-flex; align-items:center; gap:8px; color:#dbe8f7; }}
+      .tool-controls {{ display:grid; gap:10px; }}
+      .harness-task {{ display:grid; gap:8px; padding:16px 0; border-bottom:1px solid var(--line); }}
+      .harness-task .pill {{ margin-left:8px; }}
+      .inline-actions,.inline-control {{ display:flex; align-items:center; flex-wrap:wrap; gap:8px; }}
+      .inline-actions form {{ display:inline-flex; }}
+      .inline-actions .button,.inline-control .button {{ margin-top:0; }}
+      .inline-control {{ justify-content:space-between; padding:8px 0; }}
+      .warning-panel {{ border-color:rgba(255,190,80,.45); background:rgba(77,48,8,.36); }}
       .grid {{ display:grid; gap:14px; margin-bottom:18px; }}
       .grid.four {{ grid-template-columns:repeat(4,minmax(0,1fr)); }}
       .grid.two {{ grid-template-columns:repeat(2,minmax(0,1fr)); }}
@@ -5075,6 +5278,81 @@ fn form_u32(body: &str, key: &str) -> u32 {
         .unwrap_or(0)
 }
 
+fn form_u64(body: &str, key: &str) -> Option<u64> {
+    query_param(Some(body), key).and_then(|value| value.parse::<u64>().ok())
+}
+
+fn form_text(body: &str, key: &str) -> Option<String> {
+    let encoded = query_param(Some(body), key)?;
+    decode_path_segment(&encoded.replace('+', " "))
+}
+
+fn form_csv(body: &str, key: &str) -> Vec<String> {
+    form_text(body, key)
+        .unwrap_or_default()
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+fn harness_task_request_from_form(body: &str) -> Result<harness::CreateHarnessTaskRequest, String> {
+    let required = |key: &str| {
+        form_text(body, key)
+            .filter(|value| !value.trim().is_empty())
+            .ok_or_else(|| format!("missing {key}"))
+    };
+    let execution_mode = match required("execution_mode")?.as_str() {
+        "sandbox" => harness::HarnessExecutionMode::Sandbox,
+        "hybrid" => harness::HarnessExecutionMode::Hybrid,
+        _ => return Err("execution_mode must be sandbox or hybrid".to_string()),
+    };
+    let allowed_operations = HARNESS_UI_OPERATIONS
+        .iter()
+        .enumerate()
+        .filter(|(index, _)| form_flag(body, &format!("operation_{index}")))
+        .map(|(_, (operation, _))| (*operation).to_string())
+        .collect();
+    let mut budgets = harness::HarnessBudgets::default();
+    budgets.max_wall_time_ms =
+        form_u64(body, "max_wall_time_ms").unwrap_or(budgets.max_wall_time_ms);
+    budgets.max_cpu_time_ms = form_u64(body, "max_cpu_time_ms").unwrap_or(budgets.max_cpu_time_ms);
+    budgets.max_memory_mb = form_u32(body, "max_memory_mb").max(1);
+    budgets.max_disk_mb = form_u32(body, "max_disk_mb").max(1);
+    budgets.max_tool_calls = form_u32(body, "max_tool_calls").max(1);
+    budgets.max_model_turns = form_u32(body, "max_model_turns").max(1);
+    Ok(harness::CreateHarnessTaskRequest {
+        harness_contract_version: harness::HARNESS_CONTRACT_VERSION.to_string(),
+        tenant_id: required("tenant_id")?,
+        repository_source_id: required("repository_source_id")?,
+        objective: required("objective")?,
+        base_revision: required("base_revision")?,
+        allowed_path_prefixes: form_csv(body, "allowed_path_prefixes"),
+        execution_mode,
+        allowed_operations,
+        validation_profiles: form_csv(body, "validation_profiles"),
+        budgets,
+        expires_at_epoch: None,
+    })
+}
+
+fn harness_policy_request_from_form(body: &str) -> harness::UpdateHarnessOperationalPolicyRequest {
+    let policy_update = form_flag(body, "policy_update");
+    harness::UpdateHarnessOperationalPolicyRequest {
+        kill_switch: policy_update.then(|| form_flag(body, "kill_switch")),
+        drain_node_id: form_text(body, "drain_node_id").filter(|value| !value.trim().is_empty()),
+        undrain_node_id: form_text(body, "undrain_node_id")
+            .filter(|value| !value.trim().is_empty()),
+        tenant_max_active_attempts: policy_update
+            .then(|| form_u32(body, "tenant_max_active_attempts")),
+        tenant_max_queued_tasks: policy_update.then(|| form_u32(body, "tenant_max_queued_tasks")),
+        tenant_max_artifact_bytes: policy_update
+            .then(|| form_u64(body, "tenant_max_artifact_bytes"))
+            .flatten(),
+    }
+}
+
 fn admission_policy_update_from_form(body: &str) -> AdmissionPolicyUpdate {
     let mut allowed_backends = Vec::new();
     if form_flag(body, "allow_backend_auto") {
@@ -5285,6 +5563,9 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
             completed = selected_attr(query, "status", "completed"),
             failed = selected_attr(query, "status", "failed"),
             events_href = escape_html(&filtered_api_href("/v1/job-events", query)),
+        ),
+        OperatorPage::Harness => format!(
+            r#"<section class="toolbar"><a class="button" href="/internal/harness/tasks">Tasks JSON</a><a class="button" href="/internal/harness/operations">Operations JSON</a></section>"#
         ),
         OperatorPage::Credits => format!(
             r#"<form class="toolbar" method="get" action="/credits">
@@ -5570,6 +5851,10 @@ fn requires_device_signature(method: &str, path: &str) -> bool {
 }
 
 fn requires_operator_auth(method: &str, path: &str) -> bool {
+    if method == "POST" && path.starts_with("/actions/harness/") {
+        return true;
+    }
+
     if method == "GET" && path.starts_with("/v1/jobs/") {
         return true;
     }
@@ -5594,6 +5879,7 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
             | ("GET", "/v1/jobs")
             | ("GET", "/v1/job-events")
             | ("GET", "/v1/credits")
+            | ("GET", "/harness")
             | ("POST", "/v1/jobs")
             | ("POST", "/v1/tool-rewards")
             | ("POST", "/v1/nodes/contribution-cap")
@@ -6097,6 +6383,115 @@ fn apply_admission_policy_update(
         }
     }
     Ok(serde_json::to_value(policy).expect("policy json"))
+}
+
+fn create_harness_task_from_operator(
+    state: &Arc<Mutex<ControlPlaneState>>,
+    database: Option<&DatabaseMirror>,
+    request: harness::CreateHarnessTaskRequest,
+) -> Result<(), String> {
+    let database = database
+        .ok_or_else(|| "Coding Harness v1 requires configured PostgreSQL storage".to_string())?;
+    let now = now_unix_seconds_u64();
+    let mut guard = state.lock().expect("state lock");
+    let mut candidate = guard.harness.clone();
+    let task = candidate
+        .create_task(request, "operator", now)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    database.record_harness_task(&candidate, &task.task_id)?;
+    guard.harness = candidate;
+    save_state(&guard)
+        .map(|_| ())
+        .map_err(|error| format!("failed to save harness state: {error}"))
+}
+
+fn approve_harness_uat_from_operator(
+    state: &Arc<Mutex<ControlPlaneState>>,
+    database: Option<&DatabaseMirror>,
+    task_id: &str,
+) -> Result<(), String> {
+    let database = database
+        .ok_or_else(|| "Coding Harness v1 requires configured PostgreSQL storage".to_string())?;
+    let now = now_unix_seconds_u64();
+    let mut guard = state.lock().expect("state lock");
+    let expected_version = guard
+        .harness
+        .tasks
+        .get(task_id)
+        .map(|task| task.state_version)
+        .ok_or_else(|| "HARNESS_TASK_NOT_FOUND: harness task does not exist".to_string())?;
+    let mut candidate = guard.harness.clone();
+    candidate
+        .add_approval(
+            task_id,
+            harness::CreateHarnessApprovalRequest {
+                scope: harness::HarnessApprovalScope::ExecuteUat,
+                target: "uat".to_string(),
+                approver: "operator".to_string(),
+                artifact_digest: None,
+                expires_at_epoch: now.saturating_add(3_600),
+            },
+            now,
+        )
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    database.record_harness_task_transition(&candidate, task_id, expected_version)?;
+    guard.harness = candidate;
+    save_state(&guard)
+        .map(|_| ())
+        .map_err(|error| format!("failed to save harness state: {error}"))
+}
+
+fn cancel_harness_task_from_operator(
+    state: &Arc<Mutex<ControlPlaneState>>,
+    database: Option<&DatabaseMirror>,
+    task_id: &str,
+) -> Result<(), String> {
+    let database = database
+        .ok_or_else(|| "Coding Harness v1 requires configured PostgreSQL storage".to_string())?;
+    let now = now_unix_seconds_u64();
+    let mut guard = state.lock().expect("state lock");
+    let expected_version = guard
+        .harness
+        .tasks
+        .get(task_id)
+        .map(|task| task.state_version)
+        .ok_or_else(|| "HARNESS_TASK_NOT_FOUND: harness task does not exist".to_string())?;
+    let mut candidate = guard.harness.clone();
+    candidate
+        .cancel_task(task_id, "operator", now)
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    database.record_harness_task_transition(&candidate, task_id, expected_version)?;
+    guard.harness = candidate;
+    save_state(&guard)
+        .map(|_| ())
+        .map_err(|error| format!("failed to save harness state: {error}"))
+}
+
+fn update_harness_policy_from_operator(
+    state: &Arc<Mutex<ControlPlaneState>>,
+    database: Option<&DatabaseMirror>,
+    update: harness::UpdateHarnessOperationalPolicyRequest,
+) -> Result<(), String> {
+    let database = database
+        .ok_or_else(|| "Coding Harness v1 requires configured PostgreSQL storage".to_string())?;
+    let mut guard = state.lock().expect("state lock");
+    let mut candidate = guard.harness.clone();
+    candidate
+        .update_operational_policy(update, "operator", now_unix_seconds_u64())
+        .map_err(|error| format!("{}: {}", error.code, error.message))?;
+    database.record_harness_operational_policy(&candidate)?;
+    guard.harness = candidate;
+    save_state(&guard)
+        .map(|_| ())
+        .map_err(|error| format!("failed to save harness state: {error}"))
+}
+
+fn harness_action_task_id<'a>(path: &'a str, action: &str) -> Option<&'a str> {
+    let task_id = path
+        .strip_prefix("/actions/harness/tasks/")?
+        .strip_suffix(action)?
+        .strip_suffix('/')?;
+    (task_id.starts_with("htask_") && !task_id.contains('/')).then_some(task_id)
 }
 
 fn completion_event_type(
@@ -6716,6 +7111,48 @@ fn handle_connection_with_streams(
                 serde_json::json!({ "error": error }),
             ),
         },
+        ("POST", "/actions/harness/tasks") => match harness_task_request_from_form(&request.body)
+            .and_then(|create| create_harness_task_from_operator(&state, supabase, create))
+        {
+            Ok(()) => redirect_response("/harness"),
+            Err(error) => json_response(
+                "400 Bad Request",
+                serde_json::json!({ "error": error, "code": "HARNESS_REQUEST_INVALID" }),
+            ),
+        },
+        ("POST", "/actions/harness/operations") => {
+            match update_harness_policy_from_operator(
+                &state,
+                supabase,
+                harness_policy_request_from_form(&request.body),
+            ) {
+                Ok(()) => redirect_response("/harness"),
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error, "code": "HARNESS_POLICY_INVALID" }),
+                ),
+            }
+        }
+        ("POST", path) if harness_action_task_id(path, "approve-uat").is_some() => {
+            let task_id = harness_action_task_id(path, "approve-uat").expect("matched task id");
+            match approve_harness_uat_from_operator(&state, supabase, task_id) {
+                Ok(()) => redirect_response("/harness"),
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error, "code": "HARNESS_APPROVAL_FAILED" }),
+                ),
+            }
+        }
+        ("POST", path) if harness_action_task_id(path, "cancel").is_some() => {
+            let task_id = harness_action_task_id(path, "cancel").expect("matched task id");
+            match cancel_harness_task_from_operator(&state, supabase, task_id) {
+                Ok(()) => redirect_response("/harness"),
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error, "code": "HARNESS_CANCEL_FAILED" }),
+                ),
+            }
+        }
         ("GET", "/health") => {
             let snapshot = state
                 .lock()
@@ -9158,7 +9595,8 @@ mod tests {
         authorize_harness_request_from_values, chat_messages_to_prompt, completion_event_type,
         control_plane_bind_addr_from_env, control_plane_home, control_plane_operator_page,
         database_health_from_values, deploy_fingerprint_from_env, handle_connection,
-        job_async_payload, json_response_with_retry_after, legacy_supabase_enabled_from_value,
+        harness_policy_request_from_form, harness_task_request_from_form, job_async_payload,
+        json_response_with_retry_after, legacy_supabase_enabled_from_value,
         migration_database_url_from_values, now_unix_seconds, operator_auth_mode_from_env,
         operator_auth_startup_config_error, operator_auth_token_from_env,
         parse_chat_completion_status_path, parse_conversation_messages_path,
@@ -9170,8 +9608,8 @@ mod tests {
         HarnessAttemptRoute, HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource,
         SupabaseSyncStatus, AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV,
         CONTROL_PLANE_LOGO_PATH, CONTROL_PLANE_VEHICLE_PATH, DATABASE_DIRECT_URL_ENV,
-        DATABASE_POOL_URL_ENV,
-        LEGACY_DATABASE_URL_ENV, LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES, OPERATOR_TOKEN_ENV,
+        DATABASE_POOL_URL_ENV, LEGACY_DATABASE_URL_ENV, LEGACY_OPERATOR_TOKEN_ENV, MAX_BODY_BYTES,
+        OPERATOR_TOKEN_ENV,
     };
 
     #[test]
@@ -10859,6 +11297,51 @@ mod tests {
             update.allowed_models,
             vec!["Qwen/Qwen2.5-0.5B-Instruct".to_string()]
         );
+    }
+
+    #[test]
+    fn harness_page_exposes_bounded_tools_and_uat_authority() {
+        let state = ControlPlaneState::default();
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Harness,
+            None,
+        );
+
+        assert!(html.contains("Coding Harness"));
+        assert!(html.contains("repository.status"));
+        assert!(html.contains("patch.apply"));
+        assert!(html.contains("validation.run"));
+        assert!(html.contains("Approve UAT run") || html.contains("UAT authority boundary"));
+        assert!(html.to_ascii_lowercase().contains("do not authorize merge"));
+        assert!(!html.contains("shell.exec"));
+        assert!(!html.contains("Deploy production"));
+    }
+
+    #[test]
+    fn harness_operator_forms_keep_exact_tool_and_policy_boundaries() {
+        let request = harness_task_request_from_form(
+            "tenant_id=ehda-uat&repository_source_id=github%3Amundusx%2Fcontrol-plane&objective=Add+a+test&base_revision=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa&allowed_path_prefixes=apps%2Fcontrol-plane%2Cdocs&execution_mode=sandbox&operation_2=1&operation_5=1&validation_profiles=control-plane-tests&max_wall_time_ms=900000&max_cpu_time_ms=600000&max_memory_mb=8192&max_disk_mb=4096&max_tool_calls=80&max_model_turns=24",
+        )
+        .expect("valid Harness form");
+        assert_eq!(request.objective, "Add a test");
+        assert_eq!(
+            request.allowed_operations,
+            vec!["file.read".to_string(), "validation.run".to_string()]
+        );
+        assert_eq!(
+            request.allowed_path_prefixes,
+            vec!["apps/control-plane".to_string(), "docs".to_string()]
+        );
+
+        let update = harness_policy_request_from_form(
+            "policy_update=1&kill_switch=1&tenant_max_active_attempts=3&tenant_max_queued_tasks=20&tenant_max_artifact_bytes=1024&drain_node_id=node-1",
+        );
+        assert_eq!(update.kill_switch, Some(true));
+        assert_eq!(update.drain_node_id.as_deref(), Some("node-1"));
+        assert_eq!(update.tenant_max_active_attempts, Some(3));
     }
 
     #[test]
