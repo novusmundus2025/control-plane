@@ -1002,12 +1002,12 @@ test("uses word-only CRUD deliverables to select coherent or parallel code execu
     fetchImpl,
   );
 
-  assert.equal(calls[0].execution_mode, "single");
+  assert.equal(calls[0].execution_mode, "decompose");
   assert.equal(calls[0].max_tokens, 6144);
   assert.equal(calls[1].execution_mode, "decompose");
   assert.equal(calls[1].max_tokens, 6144);
   assert.match(calls[1].system_prompt, /Project Structure/i);
-  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90), 300);
+  assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90), 900);
   assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, null, 90), 900);
   assert.equal(inferChatRequestTimeoutSeconds(`${basePrompt}, with md documentation and code review`, 120, 90), 120);
   assert.equal(inferChatRequestTimeoutSeconds(basePrompt, null, 90, "decompose"), 900);
@@ -1029,11 +1029,31 @@ test("treats a complete Node CRUD API as a production multi-file project", async
   );
 
   assert.equal(calls[0].max_tokens, 6144);
-  assert.equal(calls[0].execution_mode, "single");
+  assert.equal(calls[0].execution_mode, "decompose");
   assert.match(calls[0].system_prompt, /production-oriented application project/i);
   assert.match(calls[0].system_prompt, /Project Structure/i);
   assert.match(calls[0].system_prompt, /persistent database configuration/i);
-  assert.equal(inferChatRequestTimeoutSeconds("give me a complete programs for nodejs, to have a complete CRUD API for school and students", null, 90), 300);
+  assert.equal(inferChatRequestTimeoutSeconds("give me a complete programs for nodejs, to have a complete CRUD API for school and students", null, 90), 900);
+});
+
+test("decomposes an unbounded full Node.js student API instead of imposing one response ceiling", async () => {
+  const calls = [];
+  await submitChatJob(
+    { message: "Help me write nodejs code full api for students model" },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (_url, init = {}) => {
+      if (_url.endsWith("/v1/nodes?page=1&page_size=25")) return jsonResponse({ items: [] });
+      calls.push(JSON.parse(init.body));
+      return jsonResponse({
+        job_id: "job-student-api",
+        job: { job_id: "job-student-api", status: "queued", graph: { nodes: [] } },
+      });
+    },
+  );
+
+  assert.equal(calls[0].execution_mode, "decompose");
+  assert.equal(calls[0].max_tokens_source, "auto");
+  assert.match(calls[0].system_prompt, /production-oriented application project/i);
 });
 
 test("returns a complete deterministic Node Express MySQL customer CRUD project", async () => {
@@ -5651,6 +5671,7 @@ test("pollChatJob rejects Java when main omits the requested Fibonacci method co
 
 test("submitChatTurn retries one invalid complete-code result with stricter validation instructions", async () => {
   const prompts = [];
+  const budgets = [];
   const fetchImpl = async (url, init = {}) => {
     if (url.startsWith("https://uat.mundusx.ai/v1/nodes")) {
       return jsonResponse({ items: [] });
@@ -5658,6 +5679,7 @@ test("submitChatTurn retries one invalid complete-code result with stricter vali
     assert.equal(url, "https://uat.mundusx.ai/v1/jobs");
     const body = JSON.parse(init.body);
     prompts.push(body.system_prompt);
+    budgets.push(body.max_tokens);
     const retry = /internal validation retry/i.test(body.system_prompt);
     return jsonResponse({
       job_id: retry ? "job-retry-valid" : "job-first-invalid",
@@ -5680,6 +5702,7 @@ test("submitChatTurn retries one invalid complete-code result with stricter vali
   assert.equal(prompts.length, 2);
   assert.doesNotMatch(prompts[0], /internal validation retry/i);
   assert.match(prompts[1], /internal validation retry/i);
+  assert.ok(budgets[1] > budgets[0]);
   assert.equal(result.status, "completed");
   assert.match(result.output, /fibonacci\(8\)/);
 });
