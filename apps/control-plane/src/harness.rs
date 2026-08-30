@@ -133,6 +133,7 @@ pub struct HarnessAttempt {
     pub attempt_id: String,
     pub task_id: String,
     pub node_id: String,
+    pub execution_mode: HarnessExecutionMode,
     pub state: HarnessAttemptState,
     pub state_version: u64,
     pub reserved_slots: u32,
@@ -225,7 +226,10 @@ pub struct HarnessTransitionRequest {
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ReserveHarnessAttemptRequest {
     pub expected_task_state_version: u64,
-    pub node_id: String,
+    #[serde(default)]
+    pub node_id: Option<String>,
+    #[serde(default = "default_true")]
+    pub allow_sandbox_fallback: bool,
     #[serde(default = "default_reserved_slots")]
     pub slots: u32,
     #[serde(default = "default_reservation_ttl_seconds")]
@@ -244,6 +248,14 @@ pub struct HarnessAttemptTransitionRequest {
     pub actor: String,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct HarnessReconciliation {
+    pub task_id: String,
+    pub attempt_id: String,
+    pub expected_task_state_version: u64,
+    pub expected_attempt_state_version: u64,
+}
+
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct HarnessState {
     #[serde(default)]
@@ -259,6 +271,118 @@ pub struct HarnessState {
 }
 
 impl HarnessState {
+    pub fn reconcile_unavailable_nodes(
+        &mut self,
+        unavailable_node_ids: &[String],
+        now_epoch: u64,
+    ) -> Vec<HarnessReconciliation> {
+        let candidates = self
+            .attempts
+            .values()
+            .filter(|attempt| {
+                !attempt.state.is_terminal() && unavailable_node_ids.contains(&attempt.node_id)
+            })
+            .map(|attempt| {
+                let task_version = self
+                    .tasks
+                    .get(&attempt.task_id)
+                    .map(|task| task.state_version)
+                    .unwrap_or_default();
+                (
+                    attempt.attempt_id.clone(),
+                    attempt.task_id.clone(),
+                    task_version,
+                    attempt.state_version,
+                )
+            })
+            .collect::<Vec<_>>();
+        let mut reconciled = Vec::new();
+        for (attempt_id, task_id, task_version, attempt_version) in candidates {
+            let cancelling = self
+                .tasks
+                .get(&task_id)
+                .is_some_and(|task| task.state == HarnessTaskState::Cancelling);
+            let next = if cancelling {
+                HarnessAttemptState::Cancelled
+            } else {
+                HarnessAttemptState::Expired
+            };
+            if self
+                .transition_attempt(
+                    &attempt_id,
+                    attempt_version,
+                    next,
+                    None,
+                    Some(
+                        if cancelling {
+                            "HARNESS_CANCELLED"
+                        } else {
+                            "HARNESS_NODE_LOST"
+                        }
+                        .to_string(),
+                    ),
+                    "maintenance",
+                    now_epoch,
+                )
+                .is_ok()
+            {
+                let attempts_used = self
+                    .attempts
+                    .values()
+                    .filter(|attempt| attempt.task_id == task_id)
+                    .count() as u32;
+                if !cancelling {
+                    if let Some(task) = self.tasks.get(&task_id).cloned() {
+                        if attempts_used > task.budgets.max_repair_attempts {
+                            let _ = self.transition_task(
+                                &task_id,
+                                task.state_version,
+                                HarnessTaskState::Failed,
+                                None,
+                                Some("HARNESS_RETRY_EXHAUSTED".to_string()),
+                                "maintenance",
+                                now_epoch,
+                            );
+                        }
+                    }
+                }
+                reconciled.push(HarnessReconciliation {
+                    task_id,
+                    attempt_id,
+                    expected_task_state_version: task_version,
+                    expected_attempt_state_version: attempt_version,
+                });
+            }
+        }
+        reconciled
+    }
+
+    pub fn record_routing_decision(
+        &mut self,
+        task_id: &str,
+        attempt_id: Option<&str>,
+        actor: &str,
+        decision: serde_json::Value,
+        now_epoch: u64,
+    ) -> Result<(), HarnessError> {
+        if !self.tasks.contains_key(task_id) {
+            return Err(HarnessError::new(
+                "HARNESS_TASK_NOT_FOUND",
+                "harness task does not exist",
+            ));
+        }
+        self.audit(
+            task_id,
+            attempt_id,
+            actor,
+            "harness_routing_decision",
+            None,
+            decision,
+            now_epoch,
+        );
+        Ok(())
+    }
+
     pub fn create_task(
         &mut self,
         request: CreateHarnessTaskRequest,
@@ -382,6 +506,7 @@ impl HarnessState {
         task_id: &str,
         expected_task_state_version: u64,
         node_id: &str,
+        execution_mode: HarnessExecutionMode,
         slots: u32,
         node_total_slots: u32,
         reservation_ttl_seconds: u64,
@@ -453,6 +578,7 @@ impl HarnessState {
             attempt_id: attempt_id.clone(),
             task_id: task_id.to_string(),
             node_id: node_id.to_string(),
+            execution_mode,
             state: HarnessAttemptState::Reserved,
             state_version: 1,
             reserved_slots: slots,
@@ -480,6 +606,7 @@ impl HarnessState {
             serde_json::json!({
                 "reservation_id": reservation.reservation_id,
                 "node_id": node_id,
+                "execution_mode": execution_mode,
                 "slots": slots,
                 "capacity_before": node_total_slots.saturating_sub(active_slots),
                 "capacity_after": node_total_slots.saturating_sub(active_slots.saturating_add(slots)),
@@ -769,6 +896,10 @@ fn default_reservation_ttl_seconds() -> u64 {
     900
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn validate_create_request(
     request: &CreateHarnessTaskRequest,
     now_epoch: u64,
@@ -1056,6 +1187,7 @@ mod tests {
                 &first.task_id,
                 state.tasks[&first.task_id].state_version,
                 "node-1",
+                HarnessExecutionMode::Sandbox,
                 2,
                 2,
                 300,
@@ -1069,6 +1201,7 @@ mod tests {
                     &second.task_id,
                     state.tasks[&second.task_id].state_version,
                     "node-1",
+                    HarnessExecutionMode::Sandbox,
                     1,
                     2,
                     300,
@@ -1091,6 +1224,7 @@ mod tests {
                 &task.task_id,
                 state.tasks[&task.task_id].state_version,
                 "node-1",
+                HarnessExecutionMode::Sandbox,
                 1,
                 2,
                 300,
@@ -1144,6 +1278,7 @@ mod tests {
                 &task.task_id,
                 state.tasks[&task.task_id].state_version,
                 "node-1",
+                HarnessExecutionMode::Sandbox,
                 1,
                 2,
                 300,
@@ -1156,6 +1291,40 @@ mod tests {
         assert_eq!(
             state.attempts[&attempt.attempt_id].state,
             HarnessAttemptState::Expired
+        );
+        assert_eq!(
+            state.reservations[&reservation.reservation_id].state,
+            "released"
+        );
+    }
+
+    #[test]
+    fn node_loss_reconciles_attempt_and_capacity_without_replaying_side_effects() {
+        let mut state = HarnessState::default();
+        let task = state.create_task(request(), "operator", 1_000).unwrap();
+        approve_for_execution(&mut state, &task.task_id);
+        let (attempt, reservation) = state
+            .reserve_attempt(
+                &task.task_id,
+                state.tasks[&task.task_id].state_version,
+                "node-1",
+                HarnessExecutionMode::Sandbox,
+                1,
+                2,
+                300,
+                "scheduler",
+                1_002,
+            )
+            .unwrap();
+        let reconciled = state.reconcile_unavailable_nodes(&["node-1".to_string()], 1_010);
+        assert_eq!(reconciled.len(), 1);
+        assert_eq!(
+            state.attempts[&attempt.attempt_id].state,
+            HarnessAttemptState::Expired
+        );
+        assert_eq!(
+            state.tasks[&task.task_id].state,
+            HarnessTaskState::RetryPending
         );
         assert_eq!(
             state.reservations[&reservation.reservation_id].state,

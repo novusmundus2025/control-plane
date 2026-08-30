@@ -201,6 +201,7 @@ create table if not exists public.harness_attempts (
   attempt_id text primary key,
   task_id text not null references public.harness_tasks(task_id) on delete cascade,
   node_id text references public.devices(node_id) on delete set null,
+  execution_mode text not null default 'sandbox',
   state text not null,
   state_version bigint not null default 1,
   reserved_slots integer not null default 1,

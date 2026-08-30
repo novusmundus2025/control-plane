@@ -6158,6 +6158,157 @@ fn harness_node_slots(node: &contracts::NodeRecord) -> Result<u32, harness::Harn
     Ok(u32::from(capabilities.parallel_slots))
 }
 
+#[derive(Clone, Debug, Serialize)]
+struct HarnessNodeRejection {
+    node_id: String,
+    code: String,
+    reason: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct HarnessRoutingSelection {
+    node_id: String,
+    execution_mode: harness::HarnessExecutionMode,
+    node_total_slots: u32,
+    fallback_used: bool,
+    rejected_nodes: Vec<HarnessNodeRejection>,
+}
+
+fn select_harness_node(
+    task: &harness::HarnessTask,
+    request: &harness::ReserveHarnessAttemptRequest,
+    nodes: &BTreeMap<String, contracts::NodeRecord>,
+) -> Result<HarnessRoutingSelection, harness::HarnessError> {
+    let mut rejected_nodes = Vec::new();
+    let mut eligible = Vec::new();
+    for node in nodes.values().filter(|node| {
+        request
+            .node_id
+            .as_deref()
+            .is_none_or(|requested| requested == node.node_id)
+    }) {
+        let reject = |code: &str, reason: &str| HarnessNodeRejection {
+            node_id: node.node_id.clone(),
+            code: code.to_string(),
+            reason: reason.to_string(),
+        };
+        let slots = match harness_node_slots(node) {
+            Ok(slots) => slots,
+            Err(error) => {
+                rejected_nodes.push(reject(&error.code, &error.message));
+                continue;
+            }
+        };
+        let capabilities = node
+            .capabilities
+            .as_ref()
+            .expect("node slots checked manifest");
+        let Some(node_harness) = capabilities.harness.as_ref() else {
+            rejected_nodes.push(reject(
+                "HARNESS_TOOLS_UNSUPPORTED",
+                "node does not advertise Coding Harness capabilities",
+            ));
+            continue;
+        };
+        if task
+            .allowed_operations
+            .iter()
+            .any(|operation| !node_harness.supported_operations.contains(operation))
+        {
+            rejected_nodes.push(reject(
+                "HARNESS_TOOLS_UNSUPPORTED",
+                "node is missing one or more task operations",
+            ));
+            continue;
+        }
+        if task.budgets.max_disk_mb > node_harness.max_workspace_mb
+            || capabilities
+                .usable_memory_mb
+                .is_some_and(|memory| task.budgets.max_memory_mb > memory)
+        {
+            rejected_nodes.push(reject(
+                "HARNESS_RESOURCE_EXHAUSTED",
+                "task workspace or memory budget exceeds node limits",
+            ));
+            continue;
+        }
+        let supports = |mode: &str| {
+            node_harness
+                .execution_modes
+                .iter()
+                .any(|value| value == mode)
+        };
+        let (execution_mode, fallback_used) = match task.execution_mode {
+            harness::HarnessExecutionMode::Sandbox if supports("sandbox") => {
+                (harness::HarnessExecutionMode::Sandbox, false)
+            }
+            harness::HarnessExecutionMode::Hybrid
+                if supports("hybrid")
+                    && contracts::is_trusted_identity_path(&node.identity_trust_path) =>
+            {
+                (harness::HarnessExecutionMode::Hybrid, false)
+            }
+            harness::HarnessExecutionMode::Hybrid
+                if request.allow_sandbox_fallback && supports("sandbox") =>
+            {
+                (harness::HarnessExecutionMode::Sandbox, true)
+            }
+            harness::HarnessExecutionMode::Hybrid if supports("hybrid") => {
+                rejected_nodes.push(reject(
+                    "HARNESS_HYBRID_TRUST_REQUIRED",
+                    "hybrid execution requires a trusted node identity",
+                ));
+                continue;
+            }
+            _ => {
+                rejected_nodes.push(reject(
+                    "HARNESS_EXECUTION_MODE_UNSUPPORTED",
+                    "node cannot satisfy the requested isolation mode",
+                ));
+                continue;
+            }
+        };
+        eligible.push((
+            fallback_used,
+            std::cmp::Reverse(node.trust.score),
+            std::cmp::Reverse(slots),
+            node.node_id.clone(),
+            execution_mode,
+            slots,
+        ));
+    }
+    if eligible.is_empty() {
+        let evidence = rejected_nodes
+            .iter()
+            .map(|item| format!("{}:{}", item.node_id, item.code))
+            .collect::<Vec<_>>()
+            .join(",");
+        let code = if rejected_nodes
+            .iter()
+            .any(|item| item.code == "HARNESS_RESOURCE_EXHAUSTED")
+        {
+            "HARNESS_RESOURCE_EXHAUSTED"
+        } else {
+            "HARNESS_NODE_INELIGIBLE"
+        };
+        return Err(harness::HarnessError::new(
+            code,
+            format!("no eligible harness node; rejections={evidence}"),
+        ));
+    }
+    eligible.sort_by(|left, right| {
+        (left.0, left.1, left.2, &left.3).cmp(&(right.0, right.1, right.2, &right.3))
+    });
+    let (fallback_used, _, _, node_id, execution_mode, node_total_slots) = eligible.remove(0);
+    Ok(HarnessRoutingSelection {
+        node_id,
+        execution_mode,
+        node_total_slots,
+        fallback_used,
+        rejected_nodes,
+    })
+}
+
 fn harness_actor(headers: &BTreeMap<String, String>) -> String {
     header_value(headers, "x-mundusx-actor")
         .map(str::trim)
@@ -6296,6 +6447,43 @@ fn handle_connection_with_streams(
                 for event in &maintenance.changed_events {
                     if let Err(error) = db.record_job_event(event) {
                         eprintln!("database maintenance event sync skipped: {error}");
+                        note_supabase_failure(&sync_status, error);
+                    }
+                }
+            }
+        }
+
+        let unavailable_node_ids = maintenance
+            .changed_nodes
+            .iter()
+            .filter(|node| node.state == AgentState::Stopped)
+            .map(|node| node.node_id.clone())
+            .collect::<Vec<_>>();
+        if !unavailable_node_ids.is_empty() {
+            if let Some(database) = supabase {
+                let mut guard = state.lock().expect("state lock");
+                let mut candidate = guard.harness.clone();
+                let reconciled = candidate
+                    .reconcile_unavailable_nodes(&unavailable_node_ids, now_unix_seconds_u64());
+                let persisted = reconciled.iter().try_for_each(|item| {
+                    database.record_harness_attempt_transition(
+                        &candidate,
+                        &item.task_id,
+                        item.expected_task_state_version,
+                        &item.attempt_id,
+                        item.expected_attempt_state_version,
+                    )
+                });
+                match persisted {
+                    Ok(()) if !reconciled.is_empty() => {
+                        guard.harness = candidate;
+                        if let Err(error) = save_state(&guard) {
+                            eprintln!("failed to save reconciled harness tasks: {error}");
+                        }
+                    }
+                    Ok(()) => {}
+                    Err(error) => {
+                        eprintln!("database harness reconciliation skipped: {error}");
                         note_supabase_failure(&sync_status, error);
                     }
                 }
@@ -6736,55 +6924,67 @@ fn handle_connection_with_streams(
                     let actor = harness_actor(&request.headers);
                     let now = now_unix_seconds_u64();
                     let mut guard = state.lock().expect("state lock");
-                    let node_slots = guard
-                        .nodes
-                        .get(&reserve.node_id)
+                    let selection = guard
+                        .harness
+                        .tasks
+                        .get(task_id)
                         .ok_or_else(|| {
                             harness::HarnessError::new(
-                                "HARNESS_NODE_INELIGIBLE",
-                                "requested harness node does not exist",
+                                "HARNESS_TASK_NOT_FOUND",
+                                "harness task does not exist",
                             )
                         })
-                        .and_then(harness_node_slots);
-                    match node_slots {
-                        Ok(node_slots) => {
+                        .and_then(|task| select_harness_node(task, &reserve, &guard.nodes));
+                    match selection {
+                        Ok(selection) => {
                             let mut candidate = guard.harness.clone();
                             match candidate.reserve_attempt(
                                 task_id,
                                 reserve.expected_task_state_version,
-                                &reserve.node_id,
+                                &selection.node_id,
+                                selection.execution_mode,
                                 reserve.slots,
-                                node_slots,
+                                selection.node_total_slots,
                                 reserve.reservation_ttl_seconds,
                                 &actor,
                                 now,
                             ) {
-                                Ok((attempt, reservation)) => match database
-                                    .record_harness_reservation(
+                                Ok((attempt, reservation)) => {
+                                    let _ = candidate.record_routing_decision(
+                                        task_id,
+                                        Some(&attempt.attempt_id),
+                                        &actor,
+                                        serde_json::to_value(&selection)
+                                            .expect("harness routing json"),
+                                        now,
+                                    );
+                                    match database.record_harness_reservation(
                                         &candidate,
                                         task_id,
                                         &reservation.reservation_id,
                                         reserve.expected_task_state_version,
-                                        node_slots,
+                                        selection.node_total_slots,
                                         now,
                                     ) {
-                                    Ok(()) => {
-                                        guard.harness = candidate;
-                                        if let Err(error) = save_state(&guard) {
-                                            eprintln!(
-                                                "failed to save harness local checkpoint: {error}"
-                                            );
+                                        Ok(()) => {
+                                            guard.harness = candidate;
+                                            if let Err(error) = save_state(&guard) {
+                                                eprintln!(
+                                                    "failed to save harness local checkpoint: {error}"
+                                                );
+                                            }
+                                            json_response(
+                                                "201 Created",
+                                                serde_json::json!({
+                                                    "attempt": attempt,
+                                                    "reservation": reservation,
+                                                    "routing": selection,
+                                                }),
+                                            )
                                         }
-                                        json_response(
-                                            "201 Created",
-                                            serde_json::json!({
-                                                "attempt": attempt,
-                                                "reservation": reservation,
-                                            }),
-                                        )
+                                        Err(error) => harness_persistence_response(error),
                                     }
-                                    Err(error) => harness_persistence_response(error),
-                                },
+                                }
                                 Err(error) => harness_error_response(error),
                             }
                         }
@@ -8436,7 +8636,7 @@ mod tests {
         parse_chat_completion_status_path, parse_conversation_messages_path,
         parse_conversation_path, parse_harness_attempt_transition_route, parse_harness_task_route,
         parse_request, read_http_request, requires_device_signature, requires_operator_auth,
-        resume_token_matches, resume_token_sha256, should_enable_live_stream,
+        resume_token_matches, resume_token_sha256, select_harness_node, should_enable_live_stream,
         status_snapshot_with_deploy_fingerprint, trust_grade, trust_grade_badge,
         HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource, SupabaseSyncStatus,
         AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV, CONTROL_PLANE_LOGO_PATH,
@@ -10958,6 +11158,103 @@ mod tests {
             None,
         )
         .is_ok());
+    }
+
+    #[test]
+    fn harness_routing_prefers_trusted_hybrid_and_uses_explicit_sandbox_fallback() {
+        use crate::contracts::{
+            HarnessCapabilityAdvertisement, NodeCapabilityAdvertisement, NodeRole,
+            CAPABILITY_FABRIC_V1, IDENTITY_TRUST_KEYCHAIN, IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
+        };
+        use crate::harness::{
+            CreateHarnessTaskRequest, HarnessExecutionMode, HarnessState,
+            ReserveHarnessAttemptRequest,
+        };
+
+        let mut state = ControlPlaneState::default();
+        register_ready_node(&mut state, "trusted", "TRUSTED", "1");
+        register_ready_node(&mut state, "fallback", "FALLBACK", "1");
+        for (node_id, trust_path, modes) in [
+            (
+                "trusted",
+                IDENTITY_TRUST_KEYCHAIN,
+                vec!["hybrid", "sandbox"],
+            ),
+            (
+                "fallback",
+                IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
+                vec!["sandbox"],
+            ),
+        ] {
+            let node = state.nodes.get_mut(node_id).unwrap();
+            node.identity_trust_path = trust_path.to_string();
+            node.capability_fabric_version = Some(CAPABILITY_FABRIC_V1.to_string());
+            node.capabilities = Some(NodeCapabilityAdvertisement {
+                schema_version: 4,
+                backend: Backend::M,
+                contribution_percent: 50,
+                physical_memory_mb: Some(32_768),
+                usable_memory_mb: Some(24_576),
+                available_memory_mb: Some(20_000),
+                physical_vram_mb: None,
+                usable_vram_mb: None,
+                runtime_mode: "local".to_string(),
+                parallel_slots: 4,
+                capacity_class: "workstation".to_string(),
+                supported_roles: vec![NodeRole::Coding, NodeRole::ToolUse],
+                supported_tools: vec!["repository".to_string()],
+                harness: Some(HarnessCapabilityAdvertisement {
+                    execution_modes: modes.into_iter().map(str::to_string).collect(),
+                    supported_operations: vec![
+                        "file.read".to_string(),
+                        "validation.run".to_string(),
+                    ],
+                    sandbox_runtime: Some("docker".to_string()),
+                    network_default_disabled: true,
+                    max_workspace_mb: 8_192,
+                }),
+                active_model: None,
+                ready_for_jobs: true,
+                readiness_reason: None,
+            });
+        }
+        let mut harness = HarnessState::default();
+        let task = harness
+            .create_task(
+                CreateHarnessTaskRequest {
+                    harness_contract_version: "1.0".to_string(),
+                    tenant_id: "tenant-1".to_string(),
+                    repository_source_id: "repo-1".to_string(),
+                    base_revision: "a".repeat(40),
+                    allowed_path_prefixes: vec!["src".to_string()],
+                    execution_mode: HarnessExecutionMode::Hybrid,
+                    allowed_operations: vec!["file.read".to_string(), "validation.run".to_string()],
+                    validation_profiles: vec!["rust-default".to_string()],
+                    budgets: Default::default(),
+                    expires_at_epoch: Some(2_000),
+                },
+                "operator",
+                1_000,
+            )
+            .unwrap();
+        let request = ReserveHarnessAttemptRequest {
+            expected_task_state_version: task.state_version,
+            node_id: None,
+            allow_sandbox_fallback: true,
+            slots: 1,
+            reservation_ttl_seconds: 300,
+            actor: "scheduler".to_string(),
+        };
+        let selection = select_harness_node(&task, &request, &state.nodes).unwrap();
+        assert_eq!(selection.node_id, "trusted");
+        assert_eq!(selection.execution_mode, HarnessExecutionMode::Hybrid);
+        assert!(!selection.fallback_used);
+
+        let mut fallback_only = request;
+        fallback_only.node_id = Some("fallback".to_string());
+        let selection = select_harness_node(&task, &fallback_only, &state.nodes).unwrap();
+        assert_eq!(selection.execution_mode, HarnessExecutionMode::Sandbox);
+        assert!(selection.fallback_used);
     }
 
     #[test]
