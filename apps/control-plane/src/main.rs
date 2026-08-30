@@ -306,6 +306,19 @@ impl DatabaseMirror {
         }
     }
 
+    fn record_harness_operational_policy(
+        &self,
+        harness: &harness::HarnessState,
+    ) -> Result<(), String> {
+        match self {
+            Self::Postgres(store) => store.record_harness_operational_policy(harness),
+            Self::Supabase(_) => Err(
+                "Coding Harness v1 requires provider-neutral PostgreSQL runtime storage"
+                    .to_string(),
+            ),
+        }
+    }
+
     fn record_harness_task_transition(
         &self,
         harness: &harness::HarnessState,
@@ -6118,12 +6131,35 @@ fn parse_harness_task_route(path: &str) -> Option<HarnessTaskRoute<'_>> {
 }
 
 fn parse_harness_attempt_transition_route(path: &str) -> Option<&str> {
+    match parse_harness_attempt_route(path) {
+        Some(HarnessAttemptRoute::Transition(attempt_id)) => Some(attempt_id),
+        _ => None,
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HarnessAttemptRoute<'a> {
+    Transition(&'a str),
+    ModelTurns(&'a str),
+    ToolCalls(&'a str),
+    Validations(&'a str),
+    Artifacts(&'a str),
+}
+
+fn parse_harness_attempt_route(path: &str) -> Option<HarnessAttemptRoute<'_>> {
     let remainder = path.strip_prefix("/internal/harness/attempts/")?;
     let (attempt_id, action) = remainder.split_once('/')?;
-    if attempt_id.starts_with("hattempt_") && action == "transition" {
-        Some(attempt_id)
-    } else {
+    if !attempt_id.starts_with("hattempt_") {
         None
+    } else {
+        match action {
+            "transition" => Some(HarnessAttemptRoute::Transition(attempt_id)),
+            "model-turns" => Some(HarnessAttemptRoute::ModelTurns(attempt_id)),
+            "tool-calls" => Some(HarnessAttemptRoute::ToolCalls(attempt_id)),
+            "validations" => Some(HarnessAttemptRoute::Validations(attempt_id)),
+            "artifacts" => Some(HarnessAttemptRoute::Artifacts(attempt_id)),
+            _ => None,
+        }
     }
 }
 
@@ -6324,7 +6360,8 @@ fn harness_error_response(error: harness::HarnessError) -> String {
         "HARNESS_TASK_NOT_FOUND" | "HARNESS_ATTEMPT_NOT_FOUND" => "404 Not Found",
         "HARNESS_STATE_CONFLICT" | "HARNESS_IDEMPOTENCY_CONFLICT" => "409 Conflict",
         "HARNESS_AUTH_REQUIRED" => "401 Unauthorized",
-        "HARNESS_RESOURCE_EXHAUSTED" => "429 Too Many Requests",
+        "HARNESS_RESOURCE_EXHAUSTED" | "HARNESS_TENANT_QUOTA_EXCEEDED" => "429 Too Many Requests",
+        "HARNESS_KILL_SWITCH_ACTIVE" => "503 Service Unavailable",
         _ => "400 Bad Request",
     };
     json_response(
@@ -6357,6 +6394,34 @@ fn harness_persistence_response(error: String) -> String {
         }
     }
     harness_storage_response(error)
+}
+
+fn harness_metrics(harness: &harness::HarnessState) -> serde_json::Value {
+    let mut tasks_by_state = BTreeMap::<String, u64>::new();
+    for task in harness.tasks.values() {
+        let state = serde_json::to_value(task.state)
+            .ok()
+            .and_then(|value| value.as_str().map(str::to_string))
+            .unwrap_or_else(|| "unknown".to_string());
+        *tasks_by_state.entry(state).or_default() += 1;
+    }
+    let active_reservations = harness
+        .reservations
+        .values()
+        .filter(|reservation| reservation.state == "active")
+        .collect::<Vec<_>>();
+    serde_json::json!({
+        "tasks_by_state": tasks_by_state,
+        "active_attempts": harness.attempts.values().filter(|attempt| !attempt.state.is_terminal()).count(),
+        "active_reservations": active_reservations.len(),
+        "reserved_slots": active_reservations.iter().map(|reservation| reservation.slots as u64).sum::<u64>(),
+        "tool_calls_total": harness.tool_calls.len(),
+        "tool_failures_total": harness.tool_calls.values().filter(|record| record.status == "failed").count(),
+        "validation_passed_total": harness.validations.values().filter(|record| record.status == "passed").count(),
+        "validation_failed_total": harness.validations.values().filter(|record| record.status != "passed").count(),
+        "artifact_bytes": harness.artifacts.values().map(|record| record.size_bytes).sum::<u64>(),
+        "retry_pending": harness.tasks.values().filter(|task| task.state == harness::HarnessTaskState::RetryPending).count(),
+    })
 }
 
 fn handle_connection_with_streams(
@@ -6693,6 +6758,72 @@ fn handle_connection_with_streams(
             serde_json::to_value(planner_service_status_from_env())
                 .expect("planner service status json"),
         ),
+        ("GET", "/internal/harness/operations") => {
+            let guard = state.lock().expect("state lock");
+            let recent_events = guard
+                .harness
+                .operational_events
+                .iter()
+                .rev()
+                .take(100)
+                .cloned()
+                .collect::<Vec<_>>();
+            json_response(
+                "200 OK",
+                serde_json::json!({
+                    "policy": guard.harness.operational_policy,
+                    "recent_events": recent_events,
+                    "metrics": harness_metrics(&guard.harness),
+                }),
+            )
+        }
+        ("POST", "/internal/harness/operations") => {
+            let Some(database) = supabase else {
+                let response = harness_storage_response(
+                    "Coding Harness v1 requires configured PostgreSQL storage",
+                );
+                let _ = stream.write_all(response.as_bytes());
+                return;
+            };
+            match serde_json::from_str::<harness::UpdateHarnessOperationalPolicyRequest>(
+                &request.body,
+            ) {
+                Ok(update) => {
+                    let actor = harness_actor(&request.headers);
+                    let mut guard = state.lock().expect("state lock");
+                    let mut candidate = guard.harness.clone();
+                    match candidate.update_operational_policy(
+                        update,
+                        &actor,
+                        now_unix_seconds_u64(),
+                    ) {
+                        Ok(policy) => {
+                            match database.record_harness_operational_policy(&candidate) {
+                                Ok(()) => {
+                                    guard.harness = candidate;
+                                    if let Err(error) = save_state(&guard) {
+                                        eprintln!("failed to save harness operations: {error}");
+                                    }
+                                    json_response(
+                                        "200 OK",
+                                        serde_json::to_value(policy).expect("harness policy json"),
+                                    )
+                                }
+                                Err(error) => harness_storage_response(error),
+                            }
+                        }
+                        Err(error) => harness_error_response(error),
+                    }
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({
+                        "error": error.to_string(),
+                        "code": "HARNESS_REQUEST_INVALID"
+                    }),
+                ),
+            }
+        }
         ("POST", "/internal/harness/tasks") => {
             let Some(database) = supabase else {
                 let response = harness_storage_response(
@@ -6773,12 +6904,36 @@ fn handle_connection_with_streams(
                         .filter(|event| event.task_id == task_id)
                         .cloned()
                         .collect::<Vec<_>>();
+                    let tool_calls = guard
+                        .harness
+                        .tool_calls
+                        .values()
+                        .filter(|record| record.task_id == task_id)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let validations = guard
+                        .harness
+                        .validations
+                        .values()
+                        .filter(|record| record.task_id == task_id)
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    let artifacts = guard
+                        .harness
+                        .artifacts
+                        .values()
+                        .filter(|record| record.task_id == task_id)
+                        .cloned()
+                        .collect::<Vec<_>>();
                     json_response(
                         "200 OK",
                         serde_json::json!({
                             "task": task,
                             "attempts": attempts,
                             "approvals": approvals,
+                            "tool_calls": tool_calls,
+                            "validations": validations,
+                            "artifacts": artifacts,
                             "audit_events": audit_events,
                         }),
                     )
@@ -7066,6 +7221,196 @@ fn handle_connection_with_streams(
                         "code": "HARNESS_REQUEST_INVALID"
                     }),
                 ),
+            }
+        }
+        ("POST", path)
+            if matches!(
+                parse_harness_attempt_route(path),
+                Some(
+                    HarnessAttemptRoute::ModelTurns(_)
+                        | HarnessAttemptRoute::ToolCalls(_)
+                        | HarnessAttemptRoute::Validations(_)
+                        | HarnessAttemptRoute::Artifacts(_)
+                )
+            ) =>
+        {
+            let Some(database) = supabase else {
+                let response = harness_storage_response(
+                    "Coding Harness v1 requires configured PostgreSQL storage",
+                );
+                let _ = stream.write_all(response.as_bytes());
+                return;
+            };
+            let route = parse_harness_attempt_route(path).expect("matched harness evidence route");
+            let attempt_id = match route {
+                HarnessAttemptRoute::ModelTurns(value)
+                | HarnessAttemptRoute::ToolCalls(value)
+                | HarnessAttemptRoute::Validations(value)
+                | HarnessAttemptRoute::Artifacts(value) => value,
+                HarnessAttemptRoute::Transition(_) => unreachable!(),
+            };
+            let actor = harness_actor(&request.headers);
+            let now = now_unix_seconds_u64();
+            let mut guard = state.lock().expect("state lock");
+            let prior = guard.harness.attempts.get(attempt_id).and_then(|attempt| {
+                guard.harness.tasks.get(&attempt.task_id).map(|task| {
+                    (
+                        attempt.task_id.clone(),
+                        task.state_version,
+                        attempt.state_version,
+                    )
+                })
+            });
+            let mut candidate = guard.harness.clone();
+            let result: Result<serde_json::Value, harness::HarnessError> = match route {
+                HarnessAttemptRoute::ModelTurns(_) => {
+                    serde_json::from_str::<harness::RecordHarnessModelTurnRequest>(&request.body)
+                        .map_err(|error| {
+                            harness::HarnessError::new("HARNESS_REQUEST_INVALID", error.to_string())
+                        })
+                        .and_then(|payload| {
+                            candidate
+                                .record_model_turn(attempt_id, payload, &actor, now)
+                                .and_then(|value| {
+                                    serde_json::to_value(value).map_err(|error| {
+                                        harness::HarnessError::new(
+                                            "HARNESS_RESPONSE_INVALID",
+                                            error.to_string(),
+                                        )
+                                    })
+                                })
+                        })
+                }
+                HarnessAttemptRoute::ToolCalls(_) => {
+                    serde_json::from_str::<harness::RecordHarnessToolCallRequest>(&request.body)
+                        .map_err(|error| {
+                            harness::HarnessError::new("HARNESS_REQUEST_INVALID", error.to_string())
+                        })
+                        .and_then(|payload| {
+                            candidate
+                                .record_tool_call(attempt_id, payload, &actor, now)
+                                .and_then(|value| {
+                                    serde_json::to_value(value).map_err(|error| {
+                                        harness::HarnessError::new(
+                                            "HARNESS_RESPONSE_INVALID",
+                                            error.to_string(),
+                                        )
+                                    })
+                                })
+                        })
+                }
+                HarnessAttemptRoute::Validations(_) => {
+                    serde_json::from_str::<harness::RecordHarnessValidationRequest>(&request.body)
+                        .map_err(|error| {
+                            harness::HarnessError::new("HARNESS_REQUEST_INVALID", error.to_string())
+                        })
+                        .and_then(|payload| {
+                            candidate
+                                .record_validation(attempt_id, payload, &actor, now)
+                                .and_then(|value| {
+                                    serde_json::to_value(value).map_err(|error| {
+                                        harness::HarnessError::new(
+                                            "HARNESS_RESPONSE_INVALID",
+                                            error.to_string(),
+                                        )
+                                    })
+                                })
+                        })
+                }
+                HarnessAttemptRoute::Artifacts(_) => {
+                    serde_json::from_str::<harness::PublishHarnessArtifactRequest>(&request.body)
+                        .map_err(|error| {
+                            harness::HarnessError::new("HARNESS_REQUEST_INVALID", error.to_string())
+                        })
+                        .and_then(|payload| {
+                            candidate
+                                .publish_artifact(attempt_id, payload, &actor, now)
+                                .and_then(|value| {
+                                    serde_json::to_value(value).map_err(|error| {
+                                        harness::HarnessError::new(
+                                            "HARNESS_RESPONSE_INVALID",
+                                            error.to_string(),
+                                        )
+                                    })
+                                })
+                        })
+                }
+                HarnessAttemptRoute::Transition(_) => unreachable!(),
+            };
+            match (result, prior) {
+                (Ok(payload), Some((task_id, task_version, attempt_version))) => {
+                    let changed = candidate
+                        .attempts
+                        .get(attempt_id)
+                        .is_some_and(|attempt| attempt.state_version != attempt_version);
+                    let persisted = if changed {
+                        database.record_harness_attempt_transition(
+                            &candidate,
+                            &task_id,
+                            task_version,
+                            attempt_id,
+                            attempt_version,
+                        )
+                    } else {
+                        Ok(())
+                    };
+                    match persisted {
+                        Ok(()) => {
+                            if changed {
+                                guard.harness = candidate;
+                                if let Err(error) = save_state(&guard) {
+                                    eprintln!("failed to save harness evidence: {error}");
+                                }
+                            }
+                            json_response("200 OK", payload)
+                        }
+                        Err(error) => harness_persistence_response(error),
+                    }
+                }
+                (Ok(_), None) => harness_error_response(harness::HarnessError::new(
+                    "HARNESS_ATTEMPT_NOT_FOUND",
+                    "harness attempt does not exist",
+                )),
+                (Err(error), Some((task_id, task_version, attempt_version)))
+                    if matches!(
+                        error.code.as_str(),
+                        "HARNESS_BUDGET_EXHAUSTED" | "HARNESS_NO_PROGRESS"
+                    ) =>
+                {
+                    let candidate_version = candidate
+                        .attempts
+                        .get(attempt_id)
+                        .map(|attempt| attempt.state_version)
+                        .unwrap_or(attempt_version);
+                    let _ = candidate.transition_attempt(
+                        attempt_id,
+                        candidate_version,
+                        harness::HarnessAttemptState::Failed,
+                        None,
+                        Some(error.code.clone()),
+                        &actor,
+                        now,
+                    );
+                    match database.record_harness_attempt_transition(
+                        &candidate,
+                        &task_id,
+                        task_version,
+                        attempt_id,
+                        attempt_version,
+                    ) {
+                        Ok(()) => {
+                            guard.harness = candidate;
+                            if let Err(save_error) = save_state(&guard) {
+                                eprintln!(
+                                    "failed to save terminal harness budget state: {save_error}"
+                                );
+                            }
+                            harness_error_response(error)
+                        }
+                        Err(storage_error) => harness_persistence_response(storage_error),
+                    }
+                }
+                (Err(error), _) => harness_error_response(error),
             }
         }
         ("POST", path)

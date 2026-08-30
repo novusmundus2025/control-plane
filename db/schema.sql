@@ -210,7 +210,13 @@ create table if not exists public.harness_attempts (
   created_at_epoch bigint not null,
   updated_at_epoch bigint not null,
   started_at_epoch bigint,
-  finished_at_epoch bigint
+  finished_at_epoch bigint,
+  model_turns integer not null default 0,
+  tool_calls integer not null default 0,
+  output_bytes bigint not null default 0,
+  repair_attempts integer not null default 0,
+  last_progress_sha256 text,
+  repeated_progress_count integer not null default 0
 );
 
 alter table if exists public.harness_tasks
@@ -324,3 +330,23 @@ create index if not exists harness_approvals_task_scope_idx
   on public.harness_approvals(task_id, scope, expires_at_epoch);
 create index if not exists harness_audit_events_task_idx
   on public.harness_audit_events(task_id, created_at_epoch);
+
+create table if not exists public.harness_operational_policy (
+  singleton boolean primary key default true check (singleton),
+  kill_switch boolean not null default false,
+  drained_nodes jsonb not null default '[]'::jsonb,
+  tenant_max_active_attempts integer not null default 4,
+  tenant_max_queued_tasks integer not null default 25,
+  tenant_max_artifact_bytes bigint not null default 104857600,
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.harness_operational_events (
+  id bigserial unique,
+  event_id text primary key,
+  actor text not null,
+  action text not null,
+  target text,
+  metadata jsonb not null default '{}'::jsonb,
+  created_at_epoch bigint not null
+);

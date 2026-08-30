@@ -3,8 +3,9 @@ use crate::contracts::{
     JobCompletion, JobEventRecord, JobRecord, NodeRecord,
 };
 use crate::harness::{
-    HarnessApproval, HarnessAttempt, HarnessAuditEvent, HarnessCapacityReservation, HarnessState,
-    HarnessTask,
+    HarnessApproval, HarnessArtifact, HarnessAttempt, HarnessAuditEvent,
+    HarnessCapacityReservation, HarnessOperationalEvent, HarnessOperationalPolicy, HarnessState,
+    HarnessTask, HarnessToolCall, HarnessValidation,
 };
 use crate::state::ControlPlaneState;
 use native_tls::TlsConnector;
@@ -64,7 +65,22 @@ impl PostgresStore {
             query_json_array_optional(&mut client, HARNESS_RESERVATIONS_RESTORE_SQL)?;
         let harness_audit_events: Vec<HarnessAuditEvent> =
             query_json_array_optional(&mut client, HARNESS_AUDIT_RESTORE_SQL)?;
+        let harness_tool_calls: Vec<HarnessToolCall> =
+            query_json_array_optional(&mut client, HARNESS_TOOL_CALLS_RESTORE_SQL)?;
+        let harness_validations: Vec<HarnessValidation> =
+            query_json_array_optional(&mut client, HARNESS_VALIDATIONS_RESTORE_SQL)?;
+        let harness_artifacts: Vec<HarnessArtifact> =
+            query_json_array_optional(&mut client, HARNESS_ARTIFACTS_RESTORE_SQL)?;
+        let harness_operational_policy: Vec<HarnessOperationalPolicy> =
+            query_json_array_optional(&mut client, HARNESS_OPERATIONAL_POLICY_RESTORE_SQL)?;
+        let harness_operational_events: Vec<HarnessOperationalEvent> =
+            query_json_array_optional(&mut client, HARNESS_OPERATIONAL_EVENTS_RESTORE_SQL)?;
         state.harness = HarnessState {
+            operational_policy: harness_operational_policy
+                .into_iter()
+                .next()
+                .unwrap_or_default(),
+            operational_events: harness_operational_events,
             tasks: harness_tasks
                 .into_iter()
                 .map(|task| (task.task_id.clone(), task))
@@ -76,6 +92,18 @@ impl PostgresStore {
             reservations: harness_reservations
                 .into_iter()
                 .map(|reservation| (reservation.reservation_id.clone(), reservation))
+                .collect(),
+            tool_calls: harness_tool_calls
+                .into_iter()
+                .map(|record| (record.tool_call_id.clone(), record))
+                .collect(),
+            validations: harness_validations
+                .into_iter()
+                .map(|record| (record.validation_id.clone(), record))
+                .collect(),
+            artifacts: harness_artifacts
+                .into_iter()
+                .map(|record| (record.artifact_id.clone(), record))
                 .collect(),
             approvals: harness_approvals
                 .into_iter()
@@ -306,6 +334,46 @@ impl PostgresStore {
         Ok(deleted > 0)
     }
 
+    pub fn record_harness_operational_policy(&self, harness: &HarnessState) -> Result<(), String> {
+        let mut client = self.connect()?;
+        let mut transaction = client
+            .transaction()
+            .map_err(|error| format!("failed to start harness policy transaction: {error}"))?;
+        let drained_nodes = serde_json::to_string(&harness.operational_policy.drained_nodes)
+            .map_err(|error| format!("failed to serialize drained nodes: {error}"))?;
+        transaction
+            .execute(
+                HARNESS_OPERATIONAL_POLICY_UPSERT_SQL,
+                &[
+                    &harness.operational_policy.kill_switch,
+                    &drained_nodes,
+                    &(harness.operational_policy.tenant_max_active_attempts as i32),
+                    &(harness.operational_policy.tenant_max_queued_tasks as i32),
+                    &(harness.operational_policy.tenant_max_artifact_bytes as i64),
+                ],
+            )
+            .map_err(|error| format!("postgres harness policy sync failed: {error}"))?;
+        for event in &harness.operational_events {
+            let metadata = event.metadata.to_string();
+            transaction
+                .execute(
+                    HARNESS_OPERATIONAL_EVENT_UPSERT_SQL,
+                    &[
+                        &event.event_id,
+                        &event.actor,
+                        &event.action,
+                        &event.target,
+                        &metadata,
+                        &(event.created_at_epoch as i64),
+                    ],
+                )
+                .map_err(|error| format!("postgres harness operator event sync failed: {error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("postgres harness policy commit failed: {error}"))
+    }
+
     pub fn record_harness_task(&self, harness: &HarnessState, task_id: &str) -> Result<(), String> {
         self.record_harness_task_inner(harness, task_id, None, None, None)
     }
@@ -520,6 +588,12 @@ impl PostgresStore {
                         &(attempt.updated_at_epoch as i64),
                         &attempt.started_at_epoch.map(|value| value as i64),
                         &attempt.finished_at_epoch.map(|value| value as i64),
+                        &(attempt.model_turns as i32),
+                        &(attempt.tool_calls as i32),
+                        &(attempt.output_bytes as i64),
+                        &(attempt.repair_attempts as i32),
+                        &attempt.last_progress_sha256,
+                        &(attempt.repeated_progress_count as i32),
                     ],
                 )
                 .map_err(|error| format!("postgres harness attempt sync failed: {error}"))?;
@@ -545,6 +619,84 @@ impl PostgresStore {
                     ],
                 )
                 .map_err(|error| format!("postgres harness reservation sync failed: {error}"))?;
+        }
+        for record in harness
+            .tool_calls
+            .values()
+            .filter(|value| value.task_id == task_id)
+        {
+            transaction
+                .execute(
+                    HARNESS_TOOL_CALL_UPSERT_SQL,
+                    &[
+                        &record.tool_call_id,
+                        &record.task_id,
+                        &record.attempt_id,
+                        &record.operation,
+                        &record.idempotency_key,
+                        &record.input_sha256,
+                        &record.output_sha256,
+                        &record.status,
+                        &record.code,
+                        &record.duration_ms.map(|value| value as i64),
+                        &(record.output_bytes as i64),
+                        &(record.created_at_epoch as i64),
+                        &record.completed_at_epoch.map(|value| value as i64),
+                    ],
+                )
+                .map_err(|error| format!("postgres harness tool-call sync failed: {error}"))?;
+        }
+        for record in harness
+            .validations
+            .values()
+            .filter(|value| value.task_id == task_id)
+        {
+            transaction
+                .execute(
+                    HARNESS_VALIDATION_UPSERT_SQL,
+                    &[
+                        &record.validation_id,
+                        &record.task_id,
+                        &record.attempt_id,
+                        &record.profile_id,
+                        &record.profile_version,
+                        &record.status,
+                        &record.code,
+                        &record.exit_code,
+                        &record.duration_ms.map(|value| value as i64),
+                        &record.output_sha256,
+                        &record.output_truncated,
+                        &(record.created_at_epoch as i64),
+                    ],
+                )
+                .map_err(|error| format!("postgres harness validation sync failed: {error}"))?;
+        }
+        for record in harness
+            .artifacts
+            .values()
+            .filter(|value| value.task_id == task_id)
+        {
+            let changed_paths = serde_json::to_string(&record.changed_paths)
+                .map_err(|error| format!("failed to serialize harness artifact paths: {error}"))?;
+            let verification_level = enum_value(record.verification_level)?;
+            transaction
+                .execute(
+                    HARNESS_ARTIFACT_UPSERT_SQL,
+                    &[
+                        &record.artifact_id,
+                        &record.task_id,
+                        &record.attempt_id,
+                        &record.kind,
+                        &record.sha256,
+                        &(record.size_bytes as i64),
+                        &record.storage_reference,
+                        &record.base_revision,
+                        &changed_paths,
+                        &verification_level,
+                        &(record.created_at_epoch as i64),
+                    ],
+                )
+                .map_err(|error| format!("postgres harness artifact sync failed: {error}"))?;
         }
         for approval in harness
             .approvals
@@ -1056,6 +1208,28 @@ select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.event_id)::
 from public.harness_audit_events t
 "#;
 
+const HARNESS_TOOL_CALLS_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.tool_call_id)::text, '[]') from public.harness_tool_calls t
+"#;
+const HARNESS_VALIDATIONS_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.validation_id)::text, '[]') from public.harness_validations t
+"#;
+const HARNESS_ARTIFACTS_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.artifact_id)::text, '[]') from public.harness_artifacts t
+"#;
+const HARNESS_OPERATIONAL_POLICY_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(jsonb_build_object(
+  'kill_switch', kill_switch,
+  'drained_nodes', drained_nodes,
+  'tenant_max_active_attempts', tenant_max_active_attempts,
+  'tenant_max_queued_tasks', tenant_max_queued_tasks,
+  'tenant_max_artifact_bytes', tenant_max_artifact_bytes
+))::text, '[]') from public.harness_operational_policy where singleton = true
+"#;
+const HARNESS_OPERATIONAL_EVENTS_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) - 'id' order by t.created_at_epoch, t.event_id)::text, '[]') from public.harness_operational_events t
+"#;
+
 const HARNESS_TASK_UPSERT_SQL: &str = r#"
 insert into public.harness_tasks (
   task_id, harness_contract_version, tenant_id, repository_source_id, base_revision,
@@ -1092,11 +1266,12 @@ const HARNESS_ATTEMPT_UPSERT_SQL: &str = r#"
 insert into public.harness_attempts (
   attempt_id, task_id, node_id, execution_mode, state, state_version, reserved_slots,
   workspace_id, failure_code, created_at_epoch, updated_at_epoch,
-  started_at_epoch, finished_at_epoch
+  started_at_epoch, finished_at_epoch, model_turns, tool_calls, output_bytes,
+  repair_attempts, last_progress_sha256, repeated_progress_count
 ) values (
   $1, $2, $3, $4, $5, $6, $7,
   $8, $9, $10, $11,
-  $12, $13
+  $12, $13, $14, $15, $16, $17, $18, $19
 )
 on conflict (attempt_id) do update set
   task_id = excluded.task_id,
@@ -1109,7 +1284,13 @@ on conflict (attempt_id) do update set
   failure_code = excluded.failure_code,
   updated_at_epoch = excluded.updated_at_epoch,
   started_at_epoch = excluded.started_at_epoch,
-  finished_at_epoch = excluded.finished_at_epoch
+  finished_at_epoch = excluded.finished_at_epoch,
+  model_turns = excluded.model_turns,
+  tool_calls = excluded.tool_calls,
+  output_bytes = excluded.output_bytes,
+  repair_attempts = excluded.repair_attempts,
+  last_progress_sha256 = excluded.last_progress_sha256,
+  repeated_progress_count = excluded.repeated_progress_count
 "#;
 
 const HARNESS_RESERVATION_UPSERT_SQL: &str = r#"
@@ -1141,6 +1322,54 @@ insert into public.harness_audit_events (
   event_id, task_id, attempt_id, actor, event_type, code, metadata,
   created_at_epoch
 ) values ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)
+on conflict (event_id) do nothing
+"#;
+
+const HARNESS_TOOL_CALL_UPSERT_SQL: &str = r#"
+insert into public.harness_tool_calls (
+  tool_call_id, task_id, attempt_id, operation, idempotency_key, input_sha256,
+  output_sha256, status, code, duration_ms, output_bytes, created_at_epoch, completed_at_epoch
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+on conflict (tool_call_id) do update set
+  output_sha256 = excluded.output_sha256, status = excluded.status, code = excluded.code,
+  duration_ms = excluded.duration_ms, output_bytes = excluded.output_bytes,
+  completed_at_epoch = excluded.completed_at_epoch
+"#;
+
+const HARNESS_VALIDATION_UPSERT_SQL: &str = r#"
+insert into public.harness_validations (
+  validation_id, task_id, attempt_id, profile_id, profile_version, status, code,
+  exit_code, duration_ms, output_sha256, output_truncated, created_at_epoch
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+on conflict (validation_id) do nothing
+"#;
+
+const HARNESS_ARTIFACT_UPSERT_SQL: &str = r#"
+insert into public.harness_artifacts (
+  artifact_id, task_id, attempt_id, kind, sha256, size_bytes, storage_reference,
+  base_revision, changed_paths, verification_level, created_at_epoch
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9::text::jsonb, $10, $11)
+on conflict (artifact_id) do nothing
+"#;
+
+const HARNESS_OPERATIONAL_POLICY_UPSERT_SQL: &str = r#"
+insert into public.harness_operational_policy (
+  singleton, kill_switch, drained_nodes, tenant_max_active_attempts,
+  tenant_max_queued_tasks, tenant_max_artifact_bytes, updated_at
+) values (true, $1, $2::text::jsonb, $3, $4, $5, now())
+on conflict (singleton) do update set
+  kill_switch = excluded.kill_switch,
+  drained_nodes = excluded.drained_nodes,
+  tenant_max_active_attempts = excluded.tenant_max_active_attempts,
+  tenant_max_queued_tasks = excluded.tenant_max_queued_tasks,
+  tenant_max_artifact_bytes = excluded.tenant_max_artifact_bytes,
+  updated_at = excluded.updated_at
+"#;
+
+const HARNESS_OPERATIONAL_EVENT_UPSERT_SQL: &str = r#"
+insert into public.harness_operational_events (
+  event_id, actor, action, target, metadata, created_at_epoch
+) values ($1, $2, $3, $4, $5::text::jsonb, $6)
 on conflict (event_id) do nothing
 "#;
 
