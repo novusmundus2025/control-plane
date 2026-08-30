@@ -2,6 +2,10 @@ use crate::contracts::{
     AgentRegistration, AppendChatMessageRequest, ChatMessageRecord, CreditsLedgerRecord,
     JobCompletion, JobEventRecord, JobRecord, NodeRecord,
 };
+use crate::harness::{
+    HarnessApproval, HarnessAttempt, HarnessAuditEvent, HarnessCapacityReservation, HarnessState,
+    HarnessTask,
+};
 use crate::state::ControlPlaneState;
 use native_tls::TlsConnector;
 use postgres::{Client, Config};
@@ -50,6 +54,35 @@ impl PostgresStore {
         }
         state.job_events = dedupe_job_events(job_events);
         state.credits_ledger = dedupe_credits_ledger(credits_ledger);
+        let harness_tasks: Vec<HarnessTask> =
+            query_json_array_optional(&mut client, HARNESS_TASKS_RESTORE_SQL)?;
+        let harness_attempts: Vec<HarnessAttempt> =
+            query_json_array_optional(&mut client, HARNESS_ATTEMPTS_RESTORE_SQL)?;
+        let harness_approvals: Vec<HarnessApproval> =
+            query_json_array_optional(&mut client, HARNESS_APPROVALS_RESTORE_SQL)?;
+        let harness_reservations: Vec<HarnessCapacityReservation> =
+            query_json_array_optional(&mut client, HARNESS_RESERVATIONS_RESTORE_SQL)?;
+        let harness_audit_events: Vec<HarnessAuditEvent> =
+            query_json_array_optional(&mut client, HARNESS_AUDIT_RESTORE_SQL)?;
+        state.harness = HarnessState {
+            tasks: harness_tasks
+                .into_iter()
+                .map(|task| (task.task_id.clone(), task))
+                .collect(),
+            attempts: harness_attempts
+                .into_iter()
+                .map(|attempt| (attempt.attempt_id.clone(), attempt))
+                .collect(),
+            reservations: harness_reservations
+                .into_iter()
+                .map(|reservation| (reservation.reservation_id.clone(), reservation))
+                .collect(),
+            approvals: harness_approvals
+                .into_iter()
+                .map(|approval| (approval.approval_id.clone(), approval))
+                .collect(),
+            audit_events: harness_audit_events,
+        };
         Ok(state)
     }
 
@@ -273,6 +306,297 @@ impl PostgresStore {
         Ok(deleted > 0)
     }
 
+    pub fn record_harness_task(&self, harness: &HarnessState, task_id: &str) -> Result<(), String> {
+        self.record_harness_task_inner(harness, task_id, None, None, None)
+    }
+
+    pub fn record_harness_task_transition(
+        &self,
+        harness: &HarnessState,
+        task_id: &str,
+        expected_task_state_version: u64,
+    ) -> Result<(), String> {
+        self.record_harness_task_inner(
+            harness,
+            task_id,
+            Some(expected_task_state_version),
+            None,
+            None,
+        )
+    }
+
+    pub fn record_harness_attempt_transition(
+        &self,
+        harness: &HarnessState,
+        task_id: &str,
+        expected_task_state_version: u64,
+        attempt_id: &str,
+        expected_attempt_state_version: u64,
+    ) -> Result<(), String> {
+        self.record_harness_task_inner(
+            harness,
+            task_id,
+            Some(expected_task_state_version),
+            Some((attempt_id, expected_attempt_state_version)),
+            None,
+        )
+    }
+
+    pub fn record_harness_reservation(
+        &self,
+        harness: &HarnessState,
+        task_id: &str,
+        reservation_id: &str,
+        expected_task_state_version: u64,
+        node_total_slots: u32,
+        now_epoch: u64,
+    ) -> Result<(), String> {
+        self.record_harness_task_inner(
+            harness,
+            task_id,
+            Some(expected_task_state_version),
+            None,
+            Some((reservation_id, node_total_slots, now_epoch)),
+        )
+    }
+
+    fn record_harness_task_inner(
+        &self,
+        harness: &HarnessState,
+        task_id: &str,
+        expected_task_state_version: Option<u64>,
+        expected_attempt: Option<(&str, u64)>,
+        capacity_check: Option<(&str, u32, u64)>,
+    ) -> Result<(), String> {
+        let task = harness
+            .tasks
+            .get(task_id)
+            .ok_or_else(|| "harness task not found for persistence".to_string())?;
+        let allowed_path_prefixes = serde_json::to_string(&task.allowed_path_prefixes)
+            .map_err(|error| format!("failed to serialize harness paths: {error}"))?;
+        let allowed_operations = serde_json::to_string(&task.allowed_operations)
+            .map_err(|error| format!("failed to serialize harness operations: {error}"))?;
+        let validation_profiles = serde_json::to_string(&task.validation_profiles)
+            .map_err(|error| format!("failed to serialize harness profiles: {error}"))?;
+        let budgets = serde_json::to_string(&task.budgets)
+            .map_err(|error| format!("failed to serialize harness budgets: {error}"))?;
+        let execution_mode = enum_value(task.execution_mode)?;
+        let task_state = enum_value(task.state)?;
+        let verification_level = task.verification_level.map(enum_value).transpose()?;
+        let mut client = self.connect()?;
+        let mut transaction = client
+            .transaction()
+            .map_err(|error| format!("failed to start harness transaction: {error}"))?;
+        if let Some(expected_version) = expected_task_state_version {
+            let row = transaction
+                .query_opt(
+                    "select state_version from public.harness_tasks where task_id = $1 for update",
+                    &[&task_id],
+                )
+                .map_err(|error| format!("postgres harness task lock failed: {error}"))?
+                .ok_or_else(|| {
+                    "HARNESS_STATE_CONFLICT: durable harness task is missing".to_string()
+                })?;
+            let durable_version: i64 = row.get(0);
+            if durable_version != expected_version as i64 {
+                return Err(
+                    "HARNESS_STATE_CONFLICT: durable harness task version changed".to_string(),
+                );
+            }
+        }
+        if let Some((attempt_id, expected_version)) = expected_attempt {
+            let row = transaction
+                .query_opt(
+                    "select state_version from public.harness_attempts where attempt_id = $1 and task_id = $2 for update",
+                    &[&attempt_id, &task_id],
+                )
+                .map_err(|error| format!("postgres harness attempt lock failed: {error}"))?
+                .ok_or_else(|| "HARNESS_STATE_CONFLICT: durable harness attempt is missing".to_string())?;
+            let durable_version: i64 = row.get(0);
+            if durable_version != expected_version as i64 {
+                return Err(
+                    "HARNESS_STATE_CONFLICT: durable harness attempt version changed".to_string(),
+                );
+            }
+        }
+        if let Some((reservation_id, node_total_slots, now_epoch)) = capacity_check {
+            let reservation = harness.reservations.get(reservation_id).ok_or_else(|| {
+                "HARNESS_STATE_CONFLICT: capacity reservation is missing".to_string()
+            })?;
+            transaction
+                .query_one(
+                    "select pg_advisory_xact_lock(hashtext($1))",
+                    &[&reservation.node_id],
+                )
+                .map_err(|error| format!("postgres harness capacity lock failed: {error}"))?;
+            let durable_state = transaction
+                .query_one(
+                    "select state from public.harness_tasks where task_id = $1",
+                    &[&task_id],
+                )
+                .map_err(|error| format!("postgres harness task state check failed: {error}"))?
+                .get::<_, String>(0);
+            if durable_state != "queued" {
+                return Err("HARNESS_STATE_CONFLICT: durable task is no longer queued".to_string());
+            }
+            let approved = transaction
+                .query_one(
+                    "select exists(select 1 from public.harness_approvals where task_id = $1 and scope = 'execute_uat' and expires_at_epoch > $2)",
+                    &[&task_id, &(now_epoch as i64)],
+                )
+                .map_err(|error| format!("postgres harness approval check failed: {error}"))?
+                .get::<_, bool>(0);
+            if !approved {
+                return Err(
+                    "HARNESS_APPROVAL_REQUIRED: durable execute_uat approval is missing or expired"
+                        .to_string(),
+                );
+            }
+            let active_slots = transaction
+                .query_one(
+                    "select coalesce(sum(slots), 0)::bigint from public.harness_capacity_reservations where node_id = $1 and state = 'active' and expires_at_epoch > $2",
+                    &[&reservation.node_id, &(now_epoch as i64)],
+                )
+                .map_err(|error| format!("postgres harness capacity check failed: {error}"))?
+                .get::<_, i64>(0);
+            if active_slots.saturating_add(i64::from(reservation.slots))
+                > i64::from(node_total_slots)
+            {
+                return Err(
+                    "HARNESS_RESOURCE_EXHAUSTED: durable node capacity is fully reserved"
+                        .to_string(),
+                );
+            }
+        }
+        transaction
+            .execute(
+                HARNESS_TASK_UPSERT_SQL,
+                &[
+                    &task.task_id,
+                    &task.harness_contract_version,
+                    &task.tenant_id,
+                    &task.repository_source_id,
+                    &task.base_revision,
+                    &allowed_path_prefixes,
+                    &execution_mode,
+                    &allowed_operations,
+                    &validation_profiles,
+                    &budgets,
+                    &task_state,
+                    &(task.state_version as i64),
+                    &task.current_attempt_id,
+                    &verification_level,
+                    &task.terminal_code,
+                    &(task.created_at_epoch as i64),
+                    &(task.updated_at_epoch as i64),
+                    &(task.expires_at_epoch as i64),
+                ],
+            )
+            .map_err(|error| format!("postgres harness task sync failed: {error}"))?;
+
+        for attempt in harness
+            .attempts
+            .values()
+            .filter(|value| value.task_id == task_id)
+        {
+            let state = serde_json::to_string(&attempt.state)
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string();
+            transaction
+                .execute(
+                    HARNESS_ATTEMPT_UPSERT_SQL,
+                    &[
+                        &attempt.attempt_id,
+                        &attempt.task_id,
+                        &attempt.node_id,
+                        &state,
+                        &(attempt.state_version as i64),
+                        &(attempt.reserved_slots as i32),
+                        &attempt.workspace_id,
+                        &attempt.failure_code,
+                        &(attempt.created_at_epoch as i64),
+                        &(attempt.updated_at_epoch as i64),
+                        &attempt.started_at_epoch.map(|value| value as i64),
+                        &attempt.finished_at_epoch.map(|value| value as i64),
+                    ],
+                )
+                .map_err(|error| format!("postgres harness attempt sync failed: {error}"))?;
+        }
+        for reservation in harness
+            .reservations
+            .values()
+            .filter(|value| value.task_id == task_id)
+        {
+            transaction
+                .execute(
+                    HARNESS_RESERVATION_UPSERT_SQL,
+                    &[
+                        &reservation.reservation_id,
+                        &reservation.task_id,
+                        &reservation.attempt_id,
+                        &reservation.node_id,
+                        &(reservation.slots as i32),
+                        &reservation.state,
+                        &(reservation.created_at_epoch as i64),
+                        &(reservation.expires_at_epoch as i64),
+                        &reservation.released_at_epoch.map(|value| value as i64),
+                    ],
+                )
+                .map_err(|error| format!("postgres harness reservation sync failed: {error}"))?;
+        }
+        for approval in harness
+            .approvals
+            .values()
+            .filter(|value| value.task_id == task_id)
+        {
+            let scope = serde_json::to_string(&approval.scope)
+                .unwrap_or_default()
+                .trim_matches('"')
+                .to_string();
+            transaction
+                .execute(
+                    HARNESS_APPROVAL_UPSERT_SQL,
+                    &[
+                        &approval.approval_id,
+                        &approval.task_id,
+                        &approval.artifact_digest,
+                        &approval.target,
+                        &scope,
+                        &approval.approver,
+                        &(approval.created_at_epoch as i64),
+                        &(approval.expires_at_epoch as i64),
+                    ],
+                )
+                .map_err(|error| format!("postgres harness approval sync failed: {error}"))?;
+        }
+        for event in harness
+            .audit_events
+            .iter()
+            .filter(|value| value.task_id == task_id)
+        {
+            let metadata = event.metadata.to_string();
+            transaction
+                .execute(
+                    HARNESS_AUDIT_UPSERT_SQL,
+                    &[
+                        &event.event_id,
+                        &event.task_id,
+                        &event.attempt_id,
+                        &event.actor,
+                        &event.event_type,
+                        &event.code,
+                        &metadata,
+                        &(event.created_at_epoch as i64),
+                    ],
+                )
+                .map_err(|error| format!("postgres harness audit sync failed: {error}"))?;
+        }
+        transaction
+            .commit()
+            .map_err(|error| format!("postgres harness transaction commit failed: {error}"))
+    }
+
     fn connect(&self) -> Result<Client, String> {
         connect_client(&self.database_url)
     }
@@ -319,6 +643,14 @@ fn upsert_job(client: &mut Client, job: &JobRecord) -> Result<(), String> {
         .map_err(|error| format!("postgres job sync failed: {error}"))
 }
 
+fn enum_value<T: serde::Serialize>(value: T) -> Result<String, String> {
+    serde_json::to_value(value)
+        .map_err(|error| format!("failed to serialize harness enum: {error}"))?
+        .as_str()
+        .map(str::to_string)
+        .ok_or_else(|| "harness enum did not serialize as a string".to_string())
+}
+
 fn query_json_array<T>(client: &mut Client, sql: &str) -> Result<Vec<T>, String>
 where
     T: serde::de::DeserializeOwned,
@@ -328,6 +660,21 @@ where
         .map_err(|error| format!("postgres restore query failed: {error}"))?;
     let raw: String = row.get(0);
     serde_json::from_str(&raw).map_err(|error| format!("failed to parse postgres restore: {error}"))
+}
+
+fn query_json_array_optional<T>(client: &mut Client, sql: &str) -> Result<Vec<T>, String>
+where
+    T: serde::de::DeserializeOwned,
+{
+    match client.query_one(sql, &[]) {
+        Ok(row) => {
+            let raw: String = row.get(0);
+            serde_json::from_str(&raw)
+                .map_err(|error| format!("failed to parse postgres harness restore: {error}"))
+        }
+        Err(error) if error.code().is_some_and(|code| code.code() == "42P01") => Ok(Vec::new()),
+        Err(error) => Err(format!("postgres harness restore query failed: {error}")),
+    }
 }
 
 fn connect_client(database_url: &str) -> Result<Client, String> {
@@ -683,10 +1030,123 @@ from (
 ) t
 "#;
 
+const HARNESS_TASKS_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.task_id)::text, '[]')
+from public.harness_tasks t
+"#;
+
+const HARNESS_ATTEMPTS_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.attempt_id)::text, '[]')
+from public.harness_attempts t
+"#;
+
+const HARNESS_RESERVATIONS_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.reservation_id)::text, '[]')
+from public.harness_capacity_reservations t
+"#;
+
+const HARNESS_APPROVALS_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.approval_id)::text, '[]')
+from public.harness_approvals t
+"#;
+
+const HARNESS_AUDIT_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.event_id)::text, '[]')
+from public.harness_audit_events t
+"#;
+
+const HARNESS_TASK_UPSERT_SQL: &str = r#"
+insert into public.harness_tasks (
+  task_id, harness_contract_version, tenant_id, repository_source_id, base_revision,
+  allowed_path_prefixes, execution_mode, allowed_operations, validation_profiles,
+  budgets, state, state_version, current_attempt_id, verification_level,
+  terminal_code, created_at_epoch, updated_at_epoch, expires_at_epoch
+) values (
+  $1, $2, $3, $4, $5,
+  $6::text::jsonb, $7, $8::text::jsonb, $9::text::jsonb,
+  $10::text::jsonb, $11, $12, $13, $14,
+  $15, $16, $17, $18
+)
+on conflict (task_id) do update set
+  harness_contract_version = excluded.harness_contract_version,
+  tenant_id = excluded.tenant_id,
+  repository_source_id = excluded.repository_source_id,
+  base_revision = excluded.base_revision,
+  allowed_path_prefixes = excluded.allowed_path_prefixes,
+  execution_mode = excluded.execution_mode,
+  allowed_operations = excluded.allowed_operations,
+  validation_profiles = excluded.validation_profiles,
+  budgets = excluded.budgets,
+  state = excluded.state,
+  state_version = excluded.state_version,
+  current_attempt_id = excluded.current_attempt_id,
+  verification_level = excluded.verification_level,
+  terminal_code = excluded.terminal_code,
+  created_at_epoch = excluded.created_at_epoch,
+  updated_at_epoch = excluded.updated_at_epoch,
+  expires_at_epoch = excluded.expires_at_epoch
+"#;
+
+const HARNESS_ATTEMPT_UPSERT_SQL: &str = r#"
+insert into public.harness_attempts (
+  attempt_id, task_id, node_id, state, state_version, reserved_slots,
+  workspace_id, failure_code, created_at_epoch, updated_at_epoch,
+  started_at_epoch, finished_at_epoch
+) values (
+  $1, $2, $3, $4, $5, $6,
+  $7, $8, $9, $10,
+  $11, $12
+)
+on conflict (attempt_id) do update set
+  task_id = excluded.task_id,
+  node_id = excluded.node_id,
+  state = excluded.state,
+  state_version = excluded.state_version,
+  reserved_slots = excluded.reserved_slots,
+  workspace_id = excluded.workspace_id,
+  failure_code = excluded.failure_code,
+  updated_at_epoch = excluded.updated_at_epoch,
+  started_at_epoch = excluded.started_at_epoch,
+  finished_at_epoch = excluded.finished_at_epoch
+"#;
+
+const HARNESS_RESERVATION_UPSERT_SQL: &str = r#"
+insert into public.harness_capacity_reservations (
+  reservation_id, task_id, attempt_id, node_id, slots, state,
+  created_at_epoch, expires_at_epoch, released_at_epoch
+) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+on conflict (reservation_id) do update set
+  state = excluded.state,
+  expires_at_epoch = excluded.expires_at_epoch,
+  released_at_epoch = excluded.released_at_epoch
+"#;
+
+const HARNESS_APPROVAL_UPSERT_SQL: &str = r#"
+insert into public.harness_approvals (
+  approval_id, task_id, artifact_digest, target, scope, approver,
+  created_at_epoch, expires_at_epoch
+) values ($1, $2, $3, $4, $5, $6, $7, $8)
+on conflict (approval_id) do update set
+  artifact_digest = excluded.artifact_digest,
+  target = excluded.target,
+  scope = excluded.scope,
+  approver = excluded.approver,
+  expires_at_epoch = excluded.expires_at_epoch
+"#;
+
+const HARNESS_AUDIT_UPSERT_SQL: &str = r#"
+insert into public.harness_audit_events (
+  event_id, task_id, attempt_id, actor, event_type, code, metadata,
+  created_at_epoch
+) values ($1, $2, $3, $4, $5, $6, $7::text::jsonb, $8)
+on conflict (event_id) do nothing
+"#;
+
 #[cfg(test)]
 mod tests {
     use super::{
         PostgresStore, CHAT_MESSAGE_INSERT_SQL, CREDITS_UPSERT_SQL, DEVICES_UPSERT_SQL,
+        HARNESS_AUDIT_UPSERT_SQL, HARNESS_RESERVATION_UPSERT_SQL, HARNESS_TASK_UPSERT_SQL,
         JOBS_UPSERT_SQL, JOB_EVENTS_UPSERT_SQL,
     };
 
@@ -724,6 +1184,9 @@ mod tests {
             CREDITS_UPSERT_SQL,
             JOB_EVENTS_UPSERT_SQL,
             CHAT_MESSAGE_INSERT_SQL,
+            HARNESS_TASK_UPSERT_SQL,
+            HARNESS_RESERVATION_UPSERT_SQL,
+            HARNESS_AUDIT_UPSERT_SQL,
         ] {
             for token in sql.split_whitespace() {
                 if token.starts_with('$') && token.contains("::jsonb") {
