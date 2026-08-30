@@ -86,6 +86,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /data-starter-prompt="Help me write and debug code"/);
   assert.match(html, /mainEl\.addEventListener\("pointermove"/);
   assert.match(html, /function createConstellation\(\)/);
+  assert.match(html, /\["phone", "spark", "watch", "laptop", "computer", "car", "nodes"\]/);
+  assert.match(html, /label: index < deviceLabels\.length \? deviceLabels\[index\] : ""/);
   assert.match(html, /constellationEdges\.forEach/);
   assert.doesNotMatch(html, /createRadialGradient\(pulseX/);
   assert.doesNotMatch(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
