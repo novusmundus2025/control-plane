@@ -3214,6 +3214,9 @@ fn render_harness_console(state: &ControlPlaneState) -> String {
         <section class="panel warning-panel">
           <h2>UAT authority boundary</h2>
           <p>These controls authorize bounded UAT implementation and testing only. They do not authorize merge, a UAT deployment, or any production deployment.</p>
+          <label><span>Harness or operator token</span><input id="harness-operator-token" type="password" autocomplete="off" placeholder="Required for every change"></label>
+          <p class="meta">The token stays in this tab's memory, is sent only as an authorization header, and is never stored in the page or browser storage.</p>
+          <output id="harness-action-status" class="meta" aria-live="polite"></output>
         </section>
         <section class="panel">
           <h2>Create bounded coding task</h2>
@@ -3701,6 +3704,41 @@ fn control_plane_operator_page(
         {body}
       </main>
     </div>
+    <script>
+      (() => {{
+        const tokenInput = document.getElementById("harness-operator-token");
+        const status = document.getElementById("harness-action-status");
+        document.querySelectorAll('form[action^="/actions/harness/"]').forEach((form) => {{
+          form.addEventListener("submit", async (event) => {{
+            event.preventDefault();
+            const token = tokenInput?.value.trim() || "";
+            if (!token) {{
+              if (status) status.textContent = "Enter the Harness or operator token first.";
+              tokenInput?.focus();
+              return;
+            }}
+            if (status) status.textContent = "Applying authenticated Harness action...";
+            try {{
+              const response = await fetch(form.action, {{
+                method: "POST",
+                headers: {{
+                  "Authorization": "Bearer " + token,
+                  "Content-Type": "application/x-www-form-urlencoded",
+                }},
+                body: new URLSearchParams(new FormData(form)),
+              }});
+              if (!response.ok) {{
+                const payload = await response.json().catch(() => ({{}}));
+                throw new Error(payload.error || "Harness action failed");
+              }}
+              window.location.reload();
+            }} catch (error) {{
+              if (status) status.textContent = error.message || "Harness action failed";
+            }}
+          }});
+        }});
+      }})();
+    </script>
   </body>
 </html>"#,
         title = page.title(),
@@ -6312,9 +6350,10 @@ fn authorize_harness_request(
     route_path: &str,
     headers: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    if !route_path.starts_with("/internal/harness/")
-        || route_path.starts_with("/internal/harness/node/")
-    {
+    let internal_service_route = route_path.starts_with("/internal/harness/")
+        && !route_path.starts_with("/internal/harness/node/");
+    let operator_action_route = route_path.starts_with("/actions/harness/");
+    if !internal_service_route && !operator_action_route {
         return Ok(());
     }
     authorize_harness_request_from_values(
@@ -6333,11 +6372,15 @@ fn authorize_harness_request_from_values(
     service_token: Option<&str>,
     operator_token: Option<&str>,
 ) -> Result<(), String> {
-    let expected = service_token
-        .or(operator_token)
+    let expected = [service_token, operator_token]
+        .into_iter()
+        .flatten()
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .ok_or_else(|| "harness service authentication is not configured".to_string())?;
+        .collect::<Vec<_>>();
+    if expected.is_empty() {
+        return Err("harness service authentication is not configured".to_string());
+    }
     let authorization = header_value(headers, "authorization")
         .or_else(|| header_value(headers, "x-mundusx-harness-token"))
         .ok_or_else(|| "missing harness service authorization".to_string())?;
@@ -6346,7 +6389,10 @@ fn authorize_harness_request_from_values(
         .or_else(|| authorization.strip_prefix("bearer "))
         .unwrap_or(authorization)
         .trim();
-    if presented.as_bytes().ct_eq(expected.as_bytes()).unwrap_u8() == 0 {
+    if !expected
+        .iter()
+        .any(|candidate| presented.as_bytes().ct_eq(candidate.as_bytes()).unwrap_u8() == 1)
+    {
         return Err("invalid harness service token".to_string());
     }
     Ok(())
@@ -11314,6 +11360,9 @@ mod tests {
         assert!(html.contains("repository.status"));
         assert!(html.contains("patch.apply"));
         assert!(html.contains("validation.run"));
+        assert!(html.contains("harness-operator-token"));
+        assert!(html.contains("Authorization"));
+        assert!(html.contains("never stored"));
         assert!(html.contains("Approve UAT run") || html.contains("UAT authority boundary"));
         assert!(html.to_ascii_lowercase().contains("do not authorize merge"));
         assert!(!html.contains("shell.exec"));
@@ -12171,6 +12220,22 @@ mod tests {
             None,
         )
         .is_ok());
+        headers.insert(
+            "authorization".to_string(),
+            "Bearer operator-secret".to_string(),
+        );
+        assert!(authorize_harness_request_from_values(
+            "POST",
+            "/actions/harness/tasks",
+            &headers,
+            Some("service-secret"),
+            Some("operator-secret"),
+        )
+        .is_ok());
+        assert!(requires_operator_auth(
+            "POST",
+            "/actions/harness/tasks/htask_abc/approve-uat"
+        ));
     }
 
     #[test]
