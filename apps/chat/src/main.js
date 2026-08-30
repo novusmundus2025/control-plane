@@ -5253,7 +5253,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     capacityProfile,
     codeTransformationFollowUp,
   );
-  const resolvedMaxTokens = body?.qualityRetryReason === "output_token_limit" &&
+  const resolvedMaxTokens = ["output_token_limit", "invalid_complete_code"].includes(body?.qualityRetryReason) &&
     positiveInteger(body?.maxTokens, 0) === 0
     ? expandedAutoRetryBudget(inferredMaxTokens, capacityProfile)
     : inferredMaxTokens;
@@ -5454,6 +5454,9 @@ function chooseChatExecutionMode(message, requestedMode = "auto", codeTransforma
   if (shouldUseCodeWithExplanationDecomposition(text)) {
     return "decompose";
   }
+  if (looksLikeProductionCodeProjectRequest(text.toLowerCase())) {
+    return "decompose";
+  }
   if (shouldUseSingleCodeExecution(text)) {
     return "single";
   }
@@ -5472,12 +5475,6 @@ function shouldUseSingleCodeExecution(message) {
   const lower = String(message ?? "").toLowerCase();
   if (!looksLikeCompleteProgramRequest(lower)) {
     return false;
-  }
-  if (looksLikeProductionCodeProjectRequest(lower) && !looksLikeMultiDeliverableRequest(lower)) {
-    return true;
-  }
-  if (looksLikeNaturalCodeProjectRequest(lower) && !looksLikeMultiDeliverableRequest(lower)) {
-    return true;
   }
   if (message.length <= 420 && looksLikeCodeProjectRequest(lower) && /\b(?:simple|example)\b/i.test(lower)) {
     return true;
@@ -9743,8 +9740,12 @@ function expandedAutoRetryBudget(currentBudget, capacityProfile) {
     capacityProfile?.contextWindowTokens,
     DEFAULT_CONTEXT_WINDOW_TOKENS,
   );
-  const contextCeiling = Math.max(current, Math.floor(contextWindow / 2));
-  return Math.min(current * 2, contextCeiling, 8192);
+  // A retry is a fresh generation, so it may safely use most of the advertised
+  // context after reserving room for the prompt. Do not repeat an incomplete
+  // code request with the same ceiling merely because its first budget already
+  // exceeded half of the model context.
+  const contextCeiling = Math.max(current, Math.floor(contextWindow * .8));
+  return Math.min(current * 2, contextCeiling, 32768);
 }
 
 function classifyChatRequestComplexity(message) {
