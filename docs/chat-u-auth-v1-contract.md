@@ -1,7 +1,7 @@
 # Chat-U Per-User Authentication v1
 
-Status: UAT implementation contract  
-Scope: browser Chat-U and Coding Harness submission  
+Status: UAT implementation contract
+Scope: browser Chat-U and Coding Harness submission
 Production authority: none
 
 ## Identity and session authority
