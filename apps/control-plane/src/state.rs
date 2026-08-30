@@ -76,6 +76,8 @@ pub struct ControlPlaneState {
     pub credits_ledger: Vec<CreditsLedgerRecord>,
     #[serde(default)]
     pub local_slot_leases: BTreeMap<String, LocalSlotLeaseRecord>,
+    #[serde(default)]
+    pub harness: crate::harness::HarnessState,
 }
 
 #[derive(Clone, Debug, Default)]

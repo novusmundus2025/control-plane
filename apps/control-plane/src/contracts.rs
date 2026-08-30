@@ -898,11 +898,27 @@ pub struct NodeCapabilityAdvertisement {
     #[serde(default)]
     pub supported_tools: Vec<String>,
     #[serde(default)]
+    pub harness: Option<HarnessCapabilityAdvertisement>,
+    #[serde(default)]
     pub active_model: Option<ModelCapability>,
     #[serde(default)]
     pub ready_for_jobs: bool,
     #[serde(default)]
     pub readiness_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+pub struct HarnessCapabilityAdvertisement {
+    #[serde(default)]
+    pub execution_modes: Vec<String>,
+    #[serde(default)]
+    pub supported_operations: Vec<String>,
+    #[serde(default)]
+    pub sandbox_runtime: Option<String>,
+    #[serde(default)]
+    pub network_default_disabled: bool,
+    #[serde(default)]
+    pub max_workspace_mb: u32,
 }
 
 /// Validate only the stable v1 registration boundary. Scheduler eligibility
@@ -944,6 +960,37 @@ pub fn validate_capability_registration(
         .is_some_and(|model| model.name.trim().is_empty())
     {
         return Err("CAPABILITY_MODEL_INVALID");
+    }
+    if let Some(harness) = manifest.harness.as_ref() {
+        let allowed_modes = ["sandbox", "hybrid"];
+        let allowed_operations = [
+            "repository.status",
+            "repository.diff",
+            "file.read",
+            "file.search",
+            "patch.apply",
+            "validation.run",
+            "artifact.publish",
+        ];
+        if harness.execution_modes.is_empty()
+            || harness
+                .execution_modes
+                .iter()
+                .any(|mode| !allowed_modes.contains(&mode.as_str()))
+        {
+            return Err("HARNESS_EXECUTION_MODE_INVALID");
+        }
+        if harness.supported_operations.is_empty()
+            || harness
+                .supported_operations
+                .iter()
+                .any(|operation| !allowed_operations.contains(&operation.as_str()))
+        {
+            return Err("HARNESS_OPERATION_INVALID");
+        }
+        if !harness.network_default_disabled || harness.max_workspace_mb == 0 {
+            return Err("HARNESS_ISOLATION_INVALID");
+        }
     }
     Ok(())
 }
@@ -1953,6 +2000,7 @@ mod tests {
                 capacity_class: "server".to_string(),
                 supported_roles: vec![NodeRole::Chat, NodeRole::Coding],
                 supported_tools: vec!["repository".to_string()],
+                harness: None,
                 active_model: Some(ModelCapability {
                     name: "qwen3-coder".to_string(),
                     active: true,
