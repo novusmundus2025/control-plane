@@ -1839,12 +1839,13 @@ export function page(config = configFromEnv()) {
 
       function createConstellation() {
         const count = Math.max(54, Math.min(96, Math.round(width / 17)));
+        const deviceLabels = ["phone", "spark", "watch", "laptop", "computer", "car", "nodes"];
         constellationNodes = Array.from({ length: count }, (_, index) => ({
           x: seededValue(index, 1),
           y: .10 + seededValue(index, 2) * .82,
           drift: seededValue(index, 3) * Math.PI * 2,
           size: .55 + seededValue(index, 4) * 1.25,
-          label: index % 29 === 0 ? ["phone", "spark", "watch", "node"][index % 4] : "",
+          label: index < deviceLabels.length ? deviceLabels[index] : "",
         }));
         constellationEdges = [];
         constellationNodes.forEach((node, index) => {
