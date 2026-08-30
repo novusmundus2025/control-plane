@@ -172,15 +172,26 @@ export function normalizeAssistantDisplayText(text) {
 }
 
 export function page(config = configFromEnv()) {
+  const repositoryLauncher = `<button class="header-action" id="repository-open" type="button">Repositories</button>
+    <dialog class="harness-dialog" id="repository-dialog">
+      <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
+      <h2>Your repositories</h2>
+      <p>Only repositories available to both your GitHub account and the installed MundusX GitHub App appear here.</p>
+      <label>Repository<select id="repository-select"></select></label>
+      <div class="repository-path"><button id="repository-up" type="button">Up</button><code id="repository-path">/</code></div>
+      <div class="repository-entries" id="repository-entries"></div>
+      <pre class="repository-file" id="repository-file" hidden></pre>
+      <output id="repository-result" aria-live="polite"></output>
+    </dialog>`;
   const harnessLauncher = config.harnessUiEnabled
     ? `<button class="header-action" id="harness-open" type="button">Coding Harness</button>
       <dialog class="harness-dialog" id="harness-dialog">
         <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
         <h2>Coding Harness</h2>
         <p>Submit a bounded coding task for operator review. This does not approve execution, merge, or deployment.</p>
-        <div class="harness-boundary"><strong>${escapeHtml(config.harnessRepositorySourceId || "Repository not configured")}</strong><span>Base ${escapeHtml(config.harnessBaseRevision || "not configured")}</span></div>
+        <div class="harness-boundary"><strong>Live GitHub permission check</strong><span>EHDA pins the selected repository's current default-branch commit</span></div>
         <form id="harness-form" class="harness-form">
-          <label>Repository grant<select name="grant_id" id="harness-grant" required></select></label>
+          <label>Repository<select name="repository_id" id="harness-grant" required></select></label>
           <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="Describe one bounded coding change"></textarea></label>
           <label>Execution mode<select name="execution_mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted node only)</option></select></label>
           <fieldset><legend>Allowed tools</legend>
@@ -1450,6 +1461,10 @@ export function page(config = configFromEnv()) {
     .auth-email { display: grid; gap: 9px; }
     .auth-email input { min-height: 42px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 0 12px; font: inherit; }
     .auth-message { min-height: 20px; font-size: 13px; color: var(--muted); }
+    .repository-path { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
+    .repository-entries { display: grid; gap: 6px; max-height: 320px; overflow: auto; }
+    .repository-entry { border: 1px solid var(--line); border-radius: 8px; background: white; padding: 9px 11px; text-align: left; cursor: pointer; }
+    .repository-file { max-height: 420px; overflow: auto; white-space: pre; border-radius: 10px; background: #111827; color: #e5e7eb; padding: 14px; font-size: 12px; }
     .voice-controls {
       display: contents;
     }
@@ -1634,6 +1649,7 @@ export function page(config = configFromEnv()) {
     <main id="chat-main" class="is-empty-chat">
       <header>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
+        ${repositoryLauncher}
         ${harnessLauncher}
       </header>
       <section class="messages" id="messages" aria-live="polite">
@@ -1693,7 +1709,17 @@ export function page(config = configFromEnv()) {
     const authEmailFormEl = document.getElementById("auth-email-form");
     const accountLogoutEl = document.getElementById("account-logout");
     const harnessGrantEl = document.getElementById("harness-grant");
+    const repositoryOpenEl = document.getElementById("repository-open");
+    const repositoryDialogEl = document.getElementById("repository-dialog");
+    const repositorySelectEl = document.getElementById("repository-select");
+    const repositoryEntriesEl = document.getElementById("repository-entries");
+    const repositoryFileEl = document.getElementById("repository-file");
+    const repositoryPathEl = document.getElementById("repository-path");
+    const repositoryResultEl = document.getElementById("repository-result");
+    const repositoryUpEl = document.getElementById("repository-up");
     let authCsrfToken = null;
+    let currentUser = null;
+    let currentRepositoryPath = "";
     let historyKey = "mundusx.chat.pending.history.v1";
     let conversationIdKey = "mundusx.chat.pending.conversationId.v1";
     let conversationCachePrefix = "mundusx.chat.pending.conversation.v1:";
@@ -1730,13 +1756,17 @@ export function page(config = configFromEnv()) {
     };
 
     async function bootstrapAuthentication() {
-      if (document.body.dataset.authRequired !== "true") { authGateEl.hidden = true; return; }
+      const providers = await nativeFetch("/api/auth/providers").then((value) => value.json()).catch(() => ({}));
+      document.getElementById("auth-github").hidden = !providers.github;
+      authEmailFormEl.hidden = !providers.email;
+      repositoryOpenEl.hidden = !providers.github;
       try {
         const response = await nativeFetch("/api/auth/session");
         if (!response.ok) throw new Error("Sign in required");
         const payload = await response.json();
         authCsrfToken = payload.csrf_token;
         const user = payload.user;
+        currentUser = user;
         const namespace = String(user.id).replace(/[^a-zA-Z0-9-]/g, "");
         historyKey = "mundusx.chat.history.v1:" + namespace;
         conversationIdKey = "mundusx.chat.conversationId.v1:" + namespace;
@@ -1746,24 +1776,88 @@ export function page(config = configFromEnv()) {
         document.querySelectorAll("[data-account-name]").forEach((node) => node.textContent = name);
         document.querySelectorAll("[data-account-email]").forEach((node) => node.textContent = user.email);
         document.querySelectorAll("[data-account-avatar]").forEach((node) => node.textContent = name.split(/\\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase());
-        if (harnessGrantEl) {
-          harnessGrantEl.replaceChildren(...payload.harness_grants.map((grant) => {
-            const option = document.createElement("option");
-            option.value = grant.grant_id;
-            option.textContent = grant.repository_source_id + " (" + grant.tenant_id + ")";
-            return option;
-          }));
-          if (!payload.harness_grants.length && harnessOpenEl) harnessOpenEl.hidden = true;
-        }
+        if (!user.github_connected && harnessOpenEl) harnessOpenEl.hidden = true;
+        if (user.github_connected) loadRepositories().catch(() => {
+          if (harnessOpenEl) harnessOpenEl.hidden = true;
+        });
         renderHistory();
         authGateEl.hidden = true;
       } catch {
-        const providers = await nativeFetch("/api/auth/providers").then((value) => value.json()).catch(() => ({}));
-        document.getElementById("auth-github").hidden = !providers.github;
-        authEmailFormEl.hidden = !providers.email;
-        authMessageEl.textContent = providers.github || providers.email ? "Choose a secure sign-in method." : "Authentication is not configured yet.";
+        currentUser = null;
+        if (document.body.dataset.authRequired === "true") {
+          authMessageEl.textContent = providers.github || providers.email ? "Choose a secure sign-in method." : "Authentication is not configured yet.";
+        } else {
+          authGateEl.hidden = true;
+        }
       }
     }
+
+    async function loadRepositories() {
+      repositoryResultEl.textContent = "Loading repositories allowed by GitHub…";
+      const response = await window.fetch("/api/github/repositories");
+      if (response.status === 401 || response.status === 403) {
+        location.href = "/api/auth/github/start?return_to=/";
+        return [];
+      }
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Repositories could not be loaded");
+      const options = payload.repositories.map((repo) => {
+        const option = document.createElement("option");
+        option.value = String(repo.id);
+        option.textContent = repo.full_name + (repo.permissions.push ? " · write" : " · read");
+        return option;
+      });
+      repositorySelectEl.replaceChildren(...options.map((option) => option.cloneNode(true)));
+      harnessGrantEl?.replaceChildren(...options.map((option) => option.cloneNode(true)));
+      if (harnessOpenEl) harnessOpenEl.hidden = !payload.repositories.length;
+      repositoryResultEl.textContent = payload.repositories.length ? "Select a repository to browse." : "No GitHub App repositories are available to this account.";
+      return payload.repositories;
+    }
+
+    async function loadRepositoryContents(path = "") {
+      const repositoryId = repositorySelectEl.value;
+      if (!repositoryId) return;
+      repositoryResultEl.textContent = "Checking live GitHub access…";
+      const params = new URLSearchParams({ path });
+      const response = await window.fetch("/api/github/repositories/" + encodeURIComponent(repositoryId) + "/contents?" + params);
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Repository content could not be loaded");
+      currentRepositoryPath = payload.path || "";
+      repositoryPathEl.textContent = "/" + currentRepositoryPath;
+      repositoryFileEl.hidden = true;
+      if (payload.file) {
+        repositoryEntriesEl.replaceChildren();
+        repositoryFileEl.textContent = payload.file.content;
+        repositoryFileEl.hidden = false;
+        repositoryResultEl.textContent = payload.file.path + " · " + payload.file.size + " bytes" + (payload.file.redacted ? " · obvious credentials masked" : "");
+        return;
+      }
+      repositoryEntriesEl.replaceChildren(...payload.entries.map((entry) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "repository-entry";
+        button.dataset.path = entry.path;
+        button.textContent = (entry.type === "dir" ? "📁 " : "📄 ") + entry.name;
+        return button;
+      }));
+      repositoryResultEl.textContent = payload.entries.length + " entries";
+    }
+
+    repositoryOpenEl?.addEventListener("click", async () => {
+      if (!currentUser?.github_connected) { location.href = "/api/auth/github/start?return_to=/"; return; }
+      repositoryDialogEl.showModal();
+      try { const repositories = await loadRepositories(); if (repositories.length) await loadRepositoryContents(""); }
+      catch (error) { repositoryResultEl.textContent = error.message; }
+    });
+    repositorySelectEl?.addEventListener("change", () => loadRepositoryContents("").catch((error) => repositoryResultEl.textContent = error.message));
+    repositoryEntriesEl?.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-path]");
+      if (button) loadRepositoryContents(button.dataset.path).catch((error) => repositoryResultEl.textContent = error.message);
+    });
+    repositoryUpEl?.addEventListener("click", () => {
+      const parent = currentRepositoryPath.split("/").slice(0, -1).join("/");
+      loadRepositoryContents(parent).catch((error) => repositoryResultEl.textContent = error.message);
+    });
 
     authEmailFormEl?.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -1903,7 +1997,7 @@ export function page(config = configFromEnv()) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             objective: String(data.get("objective") || ""),
-            grant_id: String(data.get("grant_id") || ""),
+            repository_id: String(data.get("repository_id") || ""),
             execution_mode: String(data.get("execution_mode") || "sandbox"),
             allowed_operations: allowedOperations,
           }),
@@ -4094,8 +4188,7 @@ export function createServerApp(config = configFromEnv()) {
         const session = await authStore.session(request);
         if (!session) throw httpError(401, "Authentication required");
         return sendJson(response, 200, {
-          user: { id: session.id, email: session.email, display_name: session.display_name, role: session.role },
-          harness_grants: session.harness_grants,
+          user: { id: session.id, email: session.email, display_name: session.display_name, role: session.role, github_connected: session.github_connected },
           csrf_token: csrfToken(request),
         });
       }
@@ -4131,9 +4224,25 @@ export function createServerApp(config = configFromEnv()) {
         await authStore.logout(request, response, session);
         return sendJson(response, 200, { status: "signed_out" });
       }
+      if (request.method === "GET" && url.pathname === "/api/github/repositories") {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "GitHub sign-in is required");
+        return sendJson(response, 200, { repositories: await authStore.repositories(session.id) });
+      }
+      const githubContentsMatch = url.pathname.match(/^\/api\/github\/repositories\/(\d+)\/contents$/);
+      if (request.method === "GET" && githubContentsMatch) {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "GitHub sign-in is required");
+        const result = await authStore.repositoryContents(session.id, githubContentsMatch[1], url.searchParams.get("path") || "", url.searchParams.get("ref") || "");
+        return sendJson(response, 200, result);
+      }
       if (request.method === "POST" && url.pathname === "/api/harness/tasks") {
         const body = await readJsonBody(request);
-        const result = await submitHarnessTask(body, config, fetch, request.mundusxSession);
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "GitHub sign-in is required for Harness work");
+        authStore.requireCsrf(request, session);
+        const authority = await authStore.harnessAuthority(session.id, body?.repository_id, String(body?.execution_mode || "sandbox"), body?.allowed_operations);
+        const result = await submitHarnessTask(body, config, fetch, session, authority);
         return sendJson(response, 201, result);
       }
       if (request.method === "GET" && url.pathname.startsWith("/api/conversations/") && url.pathname.endsWith("/messages")) {
@@ -4193,22 +4302,23 @@ const CHAT_HARNESS_OPERATIONS = new Set([
   "validation.run",
 ]);
 
-export async function submitHarnessTask(body, config = configFromEnv(), fetchImpl = fetch, session = null) {
+export async function submitHarnessTask(body, config = configFromEnv(), fetchImpl = fetch, session = null, authority = null) {
   if (!config.harnessUiEnabled) throw httpError(404, "Coding Harness is not enabled");
   const token = config.harnessServiceToken || config.operatorToken;
   if (!token) throw httpError(503, "Coding Harness service authentication is not configured");
-  const grant = session
+  const grant = !authority && session
     ? session.harness_grants?.find((candidate) => candidate.grant_id === body?.grant_id)
     : null;
-  if (session && !grant) throw httpError(403, "No active repository grant permits this Harness request");
-  const tenantId = grant?.tenant_id ?? config.harnessTenantId;
-  const repositorySourceId = grant?.repository_source_id ?? config.harnessRepositorySourceId;
-  const allowedPathPrefixes = grant?.allowed_path_prefixes ?? config.harnessAllowedPathPrefixes?.split(",").map((value) => value.trim()).filter(Boolean);
-  const validationProfiles = grant?.validation_profiles ?? config.harnessValidationProfiles?.split(",").map((value) => value.trim()).filter(Boolean);
+  if (session && !grant && !authority) throw httpError(403, "No repository authority permits this Harness request");
+  const tenantId = authority?.tenant_id ?? grant?.tenant_id ?? config.harnessTenantId;
+  const repositorySourceId = authority?.repository_source_id ?? grant?.repository_source_id ?? config.harnessRepositorySourceId;
+  const allowedPathPrefixes = authority?.allowed_path_prefixes ?? grant?.allowed_path_prefixes ?? config.harnessAllowedPathPrefixes?.split(",").map((value) => value.trim()).filter(Boolean);
+  const validationProfiles = authority?.validation_profiles ?? grant?.validation_profiles ?? config.harnessValidationProfiles?.split(",").map((value) => value.trim()).filter(Boolean);
+  const baseRevision = authority?.base_revision ?? config.harnessBaseRevision;
   if (
     !tenantId ||
     !repositorySourceId ||
-    !/^[0-9a-f]{40}$/.test(config.harnessBaseRevision) ||
+    !/^[0-9a-f]{40}$/.test(baseRevision) ||
     !allowedPathPrefixes?.length ||
     !validationProfiles?.length
   ) {
@@ -4222,7 +4332,7 @@ export async function submitHarnessTask(body, config = configFromEnv(), fetchImp
   if (!["sandbox", "hybrid"].includes(executionMode)) {
     throw httpError(400, "execution_mode must be sandbox or hybrid");
   }
-  if (grant && !grant.allowed_execution_modes?.includes(executionMode)) {
+  if ((authority || grant) && !(authority?.allowed_execution_modes ?? grant?.allowed_execution_modes)?.includes(executionMode)) {
     throw httpError(403, "The repository grant does not permit this execution mode");
   }
   const allowedOperations = Array.isArray(body?.allowed_operations)
@@ -4246,7 +4356,7 @@ export async function submitHarnessTask(body, config = configFromEnv(), fetchImp
       tenant_id: tenantId,
       repository_source_id: repositorySourceId,
       objective,
-      base_revision: config.harnessBaseRevision,
+      base_revision: baseRevision,
       allowed_path_prefixes: allowedPathPrefixes,
       execution_mode: executionMode,
       allowed_operations: allowedOperations,
