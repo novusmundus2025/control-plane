@@ -279,7 +279,7 @@ export function page(config = configFromEnv()) {
       background: var(--rail);
       padding: 22px 16px 18px;
       display: grid;
-      grid-template-rows: auto auto auto minmax(0, 1fr) auto auto;
+      grid-template-rows: auto auto minmax(0, 1fr) auto;
       gap: 16px;
     }
     .brand-block {
@@ -525,6 +525,8 @@ export function page(config = configFromEnv()) {
 
     .account-widget {
       position: relative;
+      align-self: end;
+      width: 100%;
       border-top: 1px solid var(--line);
       padding-top: 14px;
     }
