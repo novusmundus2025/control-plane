@@ -172,7 +172,7 @@ export function normalizeAssistantDisplayText(text) {
 }
 
 export function page(config = configFromEnv()) {
-  const repositoryLauncher = `<button class="header-action" id="repository-open" type="button">Repositories</button>
+  const repositoryLauncher = `<button class="header-action" id="repository-open" type="button" hidden>Repositories</button>
     <dialog class="harness-dialog" id="repository-dialog">
       <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
       <h2>Your repositories</h2>
@@ -184,7 +184,7 @@ export function page(config = configFromEnv()) {
       <output id="repository-result" aria-live="polite"></output>
     </dialog>`;
   const harnessLauncher = config.harnessUiEnabled
-    ? `<button class="header-action" id="harness-open" type="button">Coding Harness</button>
+    ? `<button class="header-action" id="harness-open" type="button" hidden>Coding Harness</button>
       <dialog class="harness-dialog" id="harness-dialog">
         <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
         <h2>Coding Harness</h2>
