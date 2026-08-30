@@ -426,6 +426,41 @@ test("submits Harness work only inside the configured repository boundary", asyn
   assert.deepEqual(result, { task_id: "htask_abc", state: "created", approval: "required" });
 });
 
+test("authenticated Harness submission derives authority from the selected user grant", async () => {
+  let submitted;
+  const config = configFromEnv({
+    MUNDUSX_HARNESS_UI_ENABLED: "true",
+    MUNDUSX_HARNESS_SERVICE_TOKEN: "server-secret",
+    MUNDUSX_HARNESS_BASE_REVISION: "b".repeat(40),
+  });
+  const session = {
+    id: "ad36260d-40bc-44a9-b637-d03093e1f310",
+    harness_grants: [{
+      grant_id: "grant-1",
+      tenant_id: "tenant-authorized",
+      repository_source_id: "github:mundusx/authorized",
+      allowed_path_prefixes: ["apps/chat"],
+      validation_profiles: ["chat-tests"],
+      allowed_execution_modes: ["sandbox"],
+    }],
+  };
+  await submitHarnessTask({
+    grant_id: "grant-1",
+    objective: "Test account-bound submission",
+    execution_mode: "sandbox",
+    allowed_operations: ["file.read", "validation.run"],
+    tenant_id: "tenant-attacker",
+  }, config, async (_url, options) => {
+    submitted = JSON.parse(options.body);
+    return jsonResponse({ task_id: "htask_user", state: "created" });
+  }, session);
+
+  assert.equal(submitted.tenant_id, "tenant-authorized");
+  assert.equal(submitted.repository_source_id, "github:mundusx/authorized");
+  assert.equal(submitted.requested_by_user_id, session.id);
+  assert.equal(submitted.submitted_via, "chat-u");
+});
+
 test("accepts an explicit chat model override without making it a default", () => {
   const config = configFromEnv({
     MUNDUSX_CHAT_MODEL: " Qwen/Explicit ",
