@@ -4269,14 +4269,23 @@ export function page(config = configFromEnv()) {
 
     async function deleteHistoryItem(item) {
       const items = readHistory();
+      const conversationId = item.conversationId || item.id;
+      const isActiveConversation = conversationId === activeHistoryId;
       writeHistory(items.filter((entry) => entry.id !== item.id));
-      const cachedId = item.conversationId || item.id;
-      if (cachedId) {
-        localStorage.removeItem(conversationCachePrefix + cachedId);
+      if (conversationId) {
+        localStorage.removeItem(conversationCachePrefix + conversationId);
+        conversationStreamStates.delete(conversationId);
       }
-      if (item.conversationId && item.conversationId === localStorage.getItem(conversationIdKey)) {
+      if (isActiveConversation) {
+        activeHistoryLoadToken += 1;
+        loadingHistoryConversationId = null;
         localStorage.setItem(conversationIdKey, crypto.randomUUID());
         activeHistoryId = localStorage.getItem(conversationIdKey);
+        clearConversation();
+        messagesEl.prepend(createWelcome());
+        setEmptyChatMode(true);
+        renderHistory();
+        syncNetworkRuntimeStatus(true);
       }
       try {
         const result = await deleteConversationRecord(item.conversationId);
@@ -10548,7 +10557,7 @@ export async function deleteChatConversation(conversationId, config = configFrom
       method: "DELETE",
     });
   } catch (error) {
-    if ([404, 503].includes(error.statusCode)) {
+    if ([404, 502, 503].includes(error.statusCode)) {
       return {
         conversation_id: id,
         deleted: false,
