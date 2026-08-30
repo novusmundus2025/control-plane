@@ -87,6 +87,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /mainEl\.addEventListener\("pointermove"/);
   assert.match(html, /function createConstellation\(\)/);
   assert.match(html, /constellationEdges\.forEach/);
+  assert.doesNotMatch(html, /createRadialGradient\(pulseX/);
   assert.doesNotMatch(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
   assert.doesNotMatch(html, /Example Questions/);
   assert.match(html, /id="chat-form"/);
