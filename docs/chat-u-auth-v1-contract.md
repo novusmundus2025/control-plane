@@ -8,7 +8,7 @@ Production authority: none
 
 - Every browser chat, conversation, and Harness request requires one active `public.users` record.
 - GitHub and verified email are linked identities for the same internal user; provider identifiers are never used as authorization decisions by themselves.
-- GitHub sign-in uses the OAuth web flow with an unguessable `state` and PKCE S256. The callback revalidates the user through GitHub's API. Access tokens are discarded after identity verification.
+- GitHub sign-in uses the GitHub App user authorization flow with an unguessable `state` and PKCE S256. User and refresh tokens are encrypted with AES-256-GCM, never returned to the browser, refreshed with bounded lifetimes, and deleted when no longer usable.
 - Email sign-in uses a single-use, short-lived random link. Only a SHA-256 digest is stored. Responses do not reveal whether an account already exists.
 - Browser sessions are opaque random values. PostgreSQL stores only their SHA-256 digests. Cookies are host-only, `Secure`, `HttpOnly`, `SameSite=Lax`, and have a bounded absolute lifetime.
 - Logout and expiry revoke server-side authority. Session identifiers are never stored in local storage.
@@ -16,8 +16,9 @@ Production authority: none
 ## Authorization
 
 - Chat access and Harness access are separate decisions.
-- A signed-in user may chat, but may submit Harness work only through an active `user_repository_grants` row.
-- Tenant, repository, path prefixes, validation profiles, and execution modes come from that server-side grant. Browser payloads cannot override them.
+- Repository discovery is the intersection of GitHub App installation access and the signed-in user's live GitHub rights. Every repository read revalidates those rights.
+- A signed-in user may chat, but may submit Harness work only when live GitHub rights also intersect an active `repository_harness_policies` row.
+- Tenant, repository id, immutable base revision, path prefixes, validation profiles, and execution modes come from GitHub plus EHDA policy. Browser payloads cannot override them.
 - A Harness task records `requested_by_user_id` and `submitted_via=chat-u` immutably.
 - Users may read only their own Harness tasks and cannot create execution approvals.
 - EHDA operator UAT approval remains separate. Merge and deployment remain separate approvals.

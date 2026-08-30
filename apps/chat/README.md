@@ -58,14 +58,18 @@ MUNDUSX_DATABASE_POOL_URL=<PgBouncer DATABASE_URL reference>
 MUNDUSX_PUBLIC_ORIGIN=https://chat-u.mundusx.ai
 MUNDUSX_GITHUB_CLIENT_ID=<GitHub OAuth application client id>
 MUNDUSX_GITHUB_CLIENT_SECRET=<GitHub OAuth application secret>
+MUNDUSX_AUTH_ENCRYPTION_KEY=<base64-encoded 32-byte key>
 RESEND_API_KEY=<optional, enables verified-email links>
 MUNDUSX_AUTH_EMAIL_FROM=MundusX <login@your-verified-domain.example>
 ```
 
-The GitHub OAuth callback is `${MUNDUSX_PUBLIC_ORIGIN}/api/auth/github/callback`. Authenticated
-users may chat; Coding Harness access additionally requires an active `user_repository_grants`
-row provisioned by an operator. A browser cannot choose its own tenant, repository, path, validation,
-or execution-mode boundary.
+The GitHub App callback is `${MUNDUSX_PUBLIC_ORIGIN}/api/auth/github/callback`. Configure the App
+with account permission `Email addresses: read` and repository permission `Contents: read`. Chat-U
+uses the App's user-to-server token so repository visibility is restricted by both the installation
+and the signed-in user's current GitHub rights. Tokens are encrypted at rest and never returned to
+the browser. Coding Harness access additionally requires an active `repository_harness_policies`
+row provisioned by an EHDA operator. A browser cannot choose its own tenant, path, validation,
+execution mode, or base revision.
 
 The Coding Harness launcher is disabled by default. To expose it, provide the server-side Harness
 token and current full base revision (never browser variables):
@@ -96,6 +100,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_PUBLIC_ORIGIN` | `https://chat-u.mundusx.ai` | Exact browser origin and OAuth callback base; also enforced for CSRF checks |
 | `MUNDUSX_GITHUB_CLIENT_ID` | unset | Enables GitHub OAuth when paired with its secret |
 | `MUNDUSX_GITHUB_CLIENT_SECRET` | unset | Server-only GitHub OAuth secret |
+| `MUNDUSX_AUTH_ENCRYPTION_KEY` | unset | Base64-encoded 32-byte AES key required to encrypt GitHub user/refresh tokens at rest |
 | `RESEND_API_KEY` | unset | Enables verified-email single-use login links when paired with a sender |
 | `MUNDUSX_AUTH_EMAIL_FROM` | unset | Verified sender used for sign-in links |
 | `MUNDUSX_CHAT_MODEL` | unset | Optional explicit model override; unset means control-plane routed contributor models |
