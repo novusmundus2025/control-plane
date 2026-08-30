@@ -83,15 +83,32 @@ test("Harness authority intersects GitHub write rights with EHDA repository poli
   const store = new PostgresAuthStore({}, { pool });
   store.authorizeRepository = async () => ({ id: 42, full_name: "owner/repo", default_branch: "main", permissions: { pull: true, push: true, admin: false } });
   store.githubJson = async () => ({ sha: "a".repeat(40) });
+  store.harnessRunners = async () => [{ ready: true, fresh: true }];
   const authority = await store.harnessAuthority("user-1", "42", "sandbox", ["patch.apply"]);
   assert.equal(authority.repository_source_id, "github:42:owner/repo");
   assert.equal(authority.base_revision, "a".repeat(40));
   assert.deepEqual(authority.allowed_path_prefixes, ["src"]);
 });
 
+test("runner pairing stores only a one-time code digest", async () => {
+  const queries = [];
+  const client = {
+    async query(sql, values = []) { queries.push({ sql, values }); return { rows: [] }; },
+    release() {},
+  };
+  const store = new PostgresAuthStore({}, { pool: { async connect() { return client; } } });
+  const result = await store.createHarnessRunnerPairing("user-1");
+  assert.match(result.pairing_code, /^MX-[A-Za-z0-9_-]{32}$/);
+  const insert = queries.find((query) => query.sql.includes("insert into public.harness_runner_pairings"));
+  assert.equal(insert.values[0].length, 64);
+  assert.notEqual(insert.values[0], result.pairing_code);
+  assert.equal(result.expires_in_seconds, 600);
+});
+
 test("Harness authority rejects repositories without an active EHDA policy", async () => {
   const store = new PostgresAuthStore({}, { pool: { async query() { return { rows: [] }; } } });
   store.authorizeRepository = async () => ({ id: 42, full_name: "owner/repo", default_branch: "main", permissions: { pull: true, push: true, admin: false } });
+  store.githubJson = async () => [];
   await assert.rejects(
     store.harnessAuthority("user-1", "42", "sandbox", ["repository.status"]),
     (error) => error.statusCode === 403,

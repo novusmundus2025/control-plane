@@ -56,8 +56,8 @@ configure at least one login provider, and keep the database and provider secret
 MUNDUSX_CHAT_AUTH_REQUIRED=true
 MUNDUSX_DATABASE_POOL_URL=<PgBouncer DATABASE_URL reference>
 MUNDUSX_PUBLIC_ORIGIN=https://chat-u.mundusx.ai
-MUNDUSX_GITHUB_CLIENT_ID=<GitHub OAuth application client id>
-MUNDUSX_GITHUB_CLIENT_SECRET=<GitHub OAuth application secret>
+MUNDUSX_GITHUB_CLIENT_ID=<GitHub App client id>
+MUNDUSX_GITHUB_CLIENT_SECRET=<GitHub App client secret>
 MUNDUSX_AUTH_ENCRYPTION_KEY=<base64-encoded 32-byte key>
 RESEND_API_KEY=<optional, enables verified-email links>
 MUNDUSX_AUTH_EMAIL_FROM=MundusX <login@your-verified-domain.example>
@@ -67,23 +67,24 @@ The GitHub App callback is `${MUNDUSX_PUBLIC_ORIGIN}/api/auth/github/callback`. 
 with account permission `Email addresses: read` and repository permission `Contents: read`. Chat-U
 uses the App's user-to-server token so repository visibility is restricted by both the installation
 and the signed-in user's current GitHub rights. Tokens are encrypted at rest and never returned to
-the browser. Coding Harness access additionally requires an active `repository_harness_policies`
-row provisioned by an EHDA operator. A browser cannot choose its own tenant, path, validation,
-execution mode, or base revision.
+the browser. On first Harness use, Chat-U creates a bounded repository policy from the safe
+top-level paths visible through that installed App and pins the current default-branch commit. A
+browser cannot choose its own tenant, unverified repository, validation command, or base revision.
 
 The Coding Harness launcher is disabled by default. To expose it, provide the server-side Harness
-token and current full base revision (never browser variables):
+token and runner download page:
 
 ```text
 MUNDUSX_HARNESS_UI_ENABLED=true
 MUNDUSX_HARNESS_SERVICE_TOKEN=<same secret configured on the control plane>
-MUNDUSX_HARNESS_BASE_REVISION=<full 40-character git commit SHA>
+MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL=https://github.com/mundusx/mundusx/releases
 ```
 
 Chat users can submit only a repository, path, validation, mode, and tool boundary granted to their
 internal user id. A submitted
-task remains in `created` state until an operator separately approves UAT execution in EHDA. The
-launcher cannot approve merge or deployment.
+task remains in `created` state until an operator separately approves UAT execution in EHDA. Users
+pair their local runner with a hashed, one-use, ten-minute code; no user UUID or GitHub token is
+copied into runner configuration. The launcher cannot approve merge or deployment.
 
 Railway provides `PORT`; the app reads it automatically.
 
@@ -98,8 +99,8 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_CHAT_AUTH_REQUIRED` | `true` | Requires an active individual session for browser `/api/*` routes; fail-closed when storage is unavailable |
 | `MUNDUSX_DATABASE_POOL_URL` | unset | PgBouncer runtime URL used for identity, session, conversation-owner, and grant checks |
 | `MUNDUSX_PUBLIC_ORIGIN` | `https://chat-u.mundusx.ai` | Exact browser origin and OAuth callback base; also enforced for CSRF checks |
-| `MUNDUSX_GITHUB_CLIENT_ID` | unset | Enables GitHub OAuth when paired with its secret |
-| `MUNDUSX_GITHUB_CLIENT_SECRET` | unset | Server-only GitHub OAuth secret |
+| `MUNDUSX_GITHUB_CLIENT_ID` | unset | Enables GitHub App user authorization when paired with its secret |
+| `MUNDUSX_GITHUB_CLIENT_SECRET` | unset | Server-only GitHub App client secret |
 | `MUNDUSX_AUTH_ENCRYPTION_KEY` | unset | Base64-encoded 32-byte AES key required to encrypt GitHub user/refresh tokens at rest |
 | `RESEND_API_KEY` | unset | Enables verified-email single-use login links when paired with a sender |
 | `MUNDUSX_AUTH_EMAIL_FROM` | unset | Verified sender used for sign-in links |
@@ -120,7 +121,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEB_SEARCH_DAILY_BUDGET` | unset (unlimited) | Optional daily call cap for the web search tool, tracked in the same Redis/Valkey cache; once exceeded the tool declines until the next UTC day |
 | `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes the repository-bound Coding Harness launcher when set to `true` |
 | `MUNDUSX_HARNESS_SERVICE_TOKEN` | unset | Server-only token used to submit Harness tasks to the control plane |
-| `MUNDUSX_HARNESS_BASE_REVISION` | unset | Fixed full 40-character UAT git commit SHA |
+| `MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL` | unset | Download or release page shown in the runner connection panel |
 
 ## Current Flow
 
