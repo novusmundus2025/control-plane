@@ -85,6 +85,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /prefers-reduced-motion: reduce/);
   assert.match(html, /data-starter-prompt="Help me write and debug code"/);
   assert.match(html, /mainEl\.addEventListener\("pointermove"/);
+  assert.match(html, /const stagger = row % 2 \? \.5 : 0/);
+  assert.match(html, /context\.lineTo\(d\.x, d\.y\)/);
   assert.doesNotMatch(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
   assert.doesNotMatch(html, /Example Questions/);
   assert.match(html, /id="chat-form"/);

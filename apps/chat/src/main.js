@@ -1849,16 +1849,21 @@ export function page(config = configFromEnv()) {
       }
 
       function meshPoint(column, row, columns, rows) {
-        const baseX = column * width / (columns - 1);
-        const baseY = height * .43 + row * height * .085;
+        const stagger = row % 2 ? .5 : 0;
+        const baseX = (column + stagger) * width / (columns - 1);
+        const depth = row / (rows - 1);
+        const ridge = Math.sin(column * .34 + phase + row * .13) * (32 - depth * 12)
+          + Math.cos(column * .13 - phase * .54 + row * .38) * 22
+          + Math.sin(column * .08 + phase * .32) * 34;
+        const jitter = Math.sin(column * 12.9898 + row * 78.233) * 7;
+        const baseY = height * .38 + ridge + row * height * .045 + jitter;
         const nx = baseX / width;
         const ny = baseY / height;
-        const distance = Math.hypot(nx - pointer.x, (ny - pointer.y) * 1.25);
-        const influence = Math.max(0, 1 - distance * 3.1) * pointer.active;
-        const wave = Math.sin(column * .54 + phase + row * .72) * 18
-          + Math.cos(column * .2 - phase * .62 + row) * 12;
-        const hoverLift = influence * Math.sin(distance * 18 - phase * 2.2) * 42;
-        return { x: baseX + influence * (nx - pointer.x) * 26, y: baseY + wave + hoverLift };
+        const distance = Math.hypot(nx - pointer.x, (ny - pointer.y) * 1.18);
+        const influence = Math.pow(Math.max(0, 1 - distance * 3), 1.7) * pointer.active;
+        const hoverLift = influence * Math.cos(distance * 22 - phase * 3) * 56;
+        const hoverPull = influence * (pointer.x - nx) * 36;
+        return { x: baseX + hoverPull, y: baseY + hoverLift, depth, influence };
       }
 
       function drawMesh() {
@@ -1867,37 +1872,54 @@ export function page(config = configFromEnv()) {
         pointer.y += (pointer.targetY - pointer.y) * .045;
         pointer.active += (pointer.targetActive - pointer.active) * .055;
         phase += reduceMotion ? 0 : .0035 + pointer.active * .008;
-        const columns = Math.max(18, Math.min(46, Math.round(width / 42)));
-        const rows = 9;
+        const columns = Math.max(24, Math.min(52, Math.round(width / 32)));
+        const rows = 13;
         const dark = document.documentElement.dataset.theme === "dark";
-        const primary = dark ? "104,92,255" : "94,99,245";
-        const secondary = dark ? "38,105,255" : "116,126,255";
+        const primary = dark ? "129,77,255" : "101,91,246";
+        const secondary = dark ? "42,105,255" : "103,135,255";
+        const points = Array.from({ length: rows }, (_, row) =>
+          Array.from({ length: columns }, (_, column) => meshPoint(column, row, columns, rows)),
+        );
 
-        context.lineWidth = .7;
-        for (let row = 0; row < rows; row += 1) {
-          context.beginPath();
-          for (let column = 0; column < columns; column += 1) {
-            const point = meshPoint(column, row, columns, rows);
-            if (column === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
-          }
-          context.strokeStyle = "rgba(" + primary + "," + (.10 + row * .012) + ")";
-          context.stroke();
-        }
-        for (let column = 0; column < columns; column += 1) {
-          context.beginPath();
-          for (let row = 0; row < rows; row += 1) {
-            const point = meshPoint(column, row, columns, rows);
-            if (row === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
-          }
-          context.strokeStyle = "rgba(" + secondary + ",.10)";
-          context.stroke();
-        }
-        for (let row = 0; row < rows; row += 2) {
-          for (let column = 0; column < columns; column += 2) {
-            const point = meshPoint(column, row, columns, rows);
+        const glow = context.createLinearGradient(0, height * .3, 0, height);
+        glow.addColorStop(0, "rgba(" + primary + ",0)");
+        glow.addColorStop(.32, "rgba(" + primary + (dark ? ",.07)" : ",.035)"));
+        glow.addColorStop(1, "rgba(" + secondary + ",0)");
+        context.fillStyle = glow;
+        context.fillRect(0, height * .24, width, height * .76);
+
+        context.lineWidth = .62;
+        for (let row = 0; row < rows - 1; row += 1) {
+          for (let column = 0; column < columns - 1; column += 1) {
+            const a = points[row][column];
+            const b = points[row][column + 1];
+            const c = points[row + 1][column];
+            const d = points[row + 1][column + 1];
             context.beginPath();
-            context.arc(point.x, point.y, 1.2 + pointer.active * .5, 0, Math.PI * 2);
-            context.fillStyle = "rgba(" + primary + "," + (.24 + pointer.active * .16) + ")";
+            context.moveTo(a.x, a.y);
+            context.lineTo(b.x, b.y);
+            context.moveTo(a.x, a.y);
+            context.lineTo(c.x, c.y);
+            if ((row + column) % 2 === 0) {
+              context.moveTo(a.x, a.y);
+              context.lineTo(d.x, d.y);
+            } else {
+              context.moveTo(b.x, b.y);
+              context.lineTo(c.x, c.y);
+            }
+            const alpha = .055 + (1 - a.depth) * .06 + a.influence * .15;
+            context.strokeStyle = "rgba(" + (column % 3 ? primary : secondary) + "," + alpha + ")";
+            context.stroke();
+          }
+        }
+        for (let row = 0; row < rows; row += 1) {
+          for (let column = 0; column < columns; column += 1) {
+            if ((column * 3 + row * 5) % 4 !== 0) continue;
+            const point = points[row][column];
+            const sparkle = .7 + ((column * 17 + row * 11) % 9) / 10;
+            context.beginPath();
+            context.arc(point.x, point.y, sparkle + point.influence * 1.2, 0, Math.PI * 2);
+            context.fillStyle = "rgba(" + (column % 2 ? primary : secondary) + "," + (.20 + point.influence * .30) + ")";
             context.fill();
           }
         }
