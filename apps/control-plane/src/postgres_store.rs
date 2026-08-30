@@ -510,6 +510,7 @@ impl PostgresStore {
                         &attempt.attempt_id,
                         &attempt.task_id,
                         &attempt.node_id,
+                        &enum_value(attempt.execution_mode)?,
                         &state,
                         &(attempt.state_version as i64),
                         &(attempt.reserved_slots as i32),
@@ -1089,17 +1090,18 @@ on conflict (task_id) do update set
 
 const HARNESS_ATTEMPT_UPSERT_SQL: &str = r#"
 insert into public.harness_attempts (
-  attempt_id, task_id, node_id, state, state_version, reserved_slots,
+  attempt_id, task_id, node_id, execution_mode, state, state_version, reserved_slots,
   workspace_id, failure_code, created_at_epoch, updated_at_epoch,
   started_at_epoch, finished_at_epoch
 ) values (
-  $1, $2, $3, $4, $5, $6,
-  $7, $8, $9, $10,
-  $11, $12
+  $1, $2, $3, $4, $5, $6, $7,
+  $8, $9, $10, $11,
+  $12, $13
 )
 on conflict (attempt_id) do update set
   task_id = excluded.task_id,
   node_id = excluded.node_id,
+  execution_mode = excluded.execution_mode,
   state = excluded.state,
   state_version = excluded.state_version,
   reserved_slots = excluded.reserved_slots,
