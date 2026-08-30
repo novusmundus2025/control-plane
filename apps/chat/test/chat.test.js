@@ -219,6 +219,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /\.header-actions \{\s*display: none;/);
   assert.match(html, /class="runtime-status-sentinel" id="runtime-status"/);
+  assert.doesNotMatch(html, /class="network-card"/);
+  assert.doesNotMatch(html, /All systems operational/);
   assert.match(html, /id="runtime-status" data-state="working"/);
   assert.match(html, /id="runtime-status-text">Checking/);
   assert.match(html, /\.runtime-status-sentinel\[data-state="standby"\]/);
@@ -276,6 +278,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /\/api\/conversations\//);
   assert.match(html, /\.rail-list \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   assert.match(html, /\.history-item \{[\s\S]*?overflow: hidden;/);
+  assert.match(html, /\.history-item \{[\s\S]*?border: 0;/);
+  assert.match(html, /\.history-item\.active \{[\s\S]*?background: rgba\(124, 108, 246, 0\.09\);/);
   assert.match(html, /\.history-context-menu \{/);
   assert.match(html, /\.history-time \{[\s\S]*?text-overflow: ellipsis;/);
   assert.match(html, /html \{[\s\S]*?overflow-x: hidden;/);
@@ -300,7 +304,7 @@ test("renders a usable chat page", () => {
 
 test("anchors the account profile below the flexible conversation rail", () => {
   const html = page(configFromEnv({}));
-  assert.match(html, /grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto;/);
+  assert.match(html, /grid-template-rows:\s*auto auto minmax\(0, ?1fr\) auto;/);
   assert.match(html, /\.account-widget\s*\{[^}]*align-self:\s*end;[^}]*width:\s*100%;/s);
 });
 
