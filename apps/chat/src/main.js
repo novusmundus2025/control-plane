@@ -1917,18 +1917,6 @@ export function page(config = configFromEnv()) {
           context.lineWidth = active ? 1.05 : .55;
           context.strokeStyle = "rgba(" + (active ? primary : neutral) + "," + (active ? .34 : .09) + ")";
           context.stroke();
-          if (edge.signal) {
-            const travel = (phase * 10 + edge.offset) % 1;
-            const pulseX = from.x + (to.x - from.x) * travel;
-            const pulseY = from.y + (to.y - from.y) * travel;
-            const glow = context.createRadialGradient(pulseX, pulseY, 0, pulseX, pulseY, 12);
-            glow.addColorStop(0, "rgba(" + primary + ",.95)");
-            glow.addColorStop(1, "rgba(" + primary + ",0)");
-            context.fillStyle = glow;
-            context.beginPath();
-            context.arc(pulseX, pulseY, 12, 0, Math.PI * 2);
-            context.fill();
-          }
         });
 
         positions.forEach((point, index) => {
