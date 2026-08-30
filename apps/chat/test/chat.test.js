@@ -283,6 +283,9 @@ test("renders a usable chat page", () => {
   assert.match(html, /\.history-item \{[\s\S]*?border: 0;/);
   assert.match(html, /\.history-item\.active \{[\s\S]*?background: rgba\(124, 108, 246, 0\.09\);/);
   assert.match(html, /\.history-context-menu \{/);
+  assert.match(html, /\.history-item:hover,[\s\S]*?background: var\(--panel-2\);/);
+  assert.match(html, /\.history-menu-button:hover,[\s\S]*?background: var\(--panel\);/);
+  assert.match(html, /\.history-context-menu \{[\s\S]*?background: var\(--panel\);/);
   assert.match(html, /\.history-time \{[\s\S]*?text-overflow: ellipsis;/);
   assert.match(html, /html \{[\s\S]*?overflow-x: hidden;/);
   assert.match(html, /\.messages \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
