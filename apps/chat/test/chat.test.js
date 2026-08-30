@@ -289,6 +289,12 @@ test("renders a usable chat page", () => {
   assert.match(html, /MundusX may produce inaccurate information/);
 });
 
+test("anchors the account profile below the flexible conversation rail", () => {
+  const html = page(configFromEnv({}));
+  assert.match(html, /grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto;/);
+  assert.match(html, /\.account-widget\s*\{[^}]*align-self:\s*end;[^}]*width:\s*100%;/s);
+});
+
 test("normalizes streamed emoji headings and list boundaries", () => {
   const output = normalizeAssistantDisplayText(
     "Intro. --- ### ✅ Features - Concurrent requests - Configurable concurrency --- ### 📁 Project Structure",
