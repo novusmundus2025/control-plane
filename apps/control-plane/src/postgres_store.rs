@@ -4,8 +4,8 @@ use crate::contracts::{
 };
 use crate::harness::{
     HarnessApproval, HarnessArtifact, HarnessAttempt, HarnessAuditEvent,
-    HarnessCapacityReservation, HarnessOperationalEvent, HarnessOperationalPolicy, HarnessState,
-    HarnessTask, HarnessToolCall, HarnessValidation,
+    HarnessCapacityReservation, HarnessOperationalEvent, HarnessOperationalPolicy, HarnessRunner,
+    HarnessState, HarnessTask, HarnessToolCall, HarnessValidation,
 };
 use crate::state::ControlPlaneState;
 use native_tls::TlsConnector;
@@ -55,6 +55,8 @@ impl PostgresStore {
         }
         state.job_events = dedupe_job_events(job_events);
         state.credits_ledger = dedupe_credits_ledger(credits_ledger);
+        let harness_runners: Vec<HarnessRunner> =
+            query_json_array_optional(&mut client, HARNESS_RUNNERS_RESTORE_SQL)?;
         let harness_tasks: Vec<HarnessTask> =
             query_json_array_optional(&mut client, HARNESS_TASKS_RESTORE_SQL)?;
         let harness_attempts: Vec<HarnessAttempt> =
@@ -76,6 +78,10 @@ impl PostgresStore {
         let harness_operational_events: Vec<HarnessOperationalEvent> =
             query_json_array_optional(&mut client, HARNESS_OPERATIONAL_EVENTS_RESTORE_SQL)?;
         state.harness = HarnessState {
+            runners: harness_runners
+                .into_iter()
+                .map(|runner| (runner.runner_id.clone(), runner))
+                .collect(),
             operational_policy: harness_operational_policy
                 .into_iter()
                 .next()
@@ -157,6 +163,38 @@ impl PostgresStore {
             )
             .map(|_| ())
             .map_err(|error| format!("postgres registration sync failed: {error}"))
+    }
+
+    pub fn record_harness_runner(&self, runner: &HarnessRunner) -> Result<(), String> {
+        let mut client = self.connect()?;
+        client
+            .execute(
+                HARNESS_RUNNER_UPSERT_SQL,
+                &[
+                    &runner.runner_id,
+                    &runner.device_id,
+                    &runner.public_key_hex,
+                    &enum_value(&runner.kind)?,
+                    &runner.owner_user_id,
+                    &serde_json::to_string(&runner.tenant_ids)
+                        .map_err(|error| error.to_string())?,
+                    &serde_json::to_string(&runner.repository_source_ids)
+                        .map_err(|error| error.to_string())?,
+                    &serde_json::to_string(&runner.execution_modes)
+                        .map_err(|error| error.to_string())?,
+                    &serde_json::to_string(&runner.supported_operations)
+                        .map_err(|error| error.to_string())?,
+                    &runner.network_default_disabled,
+                    &(runner.max_workspace_mb as i32),
+                    &(runner.usable_memory_mb as i32),
+                    &(runner.parallel_slots as i32),
+                    &runner.trusted_identity,
+                    &runner.ready,
+                    &(runner.last_seen_epoch as i64),
+                ],
+            )
+            .map_err(|error| format!("postgres harness runner sync failed: {error}"))?;
+        Ok(())
     }
 
     pub fn record_node_snapshot(&self, node: &NodeRecord) -> Result<(), String> {
@@ -339,14 +377,14 @@ impl PostgresStore {
         let mut transaction = client
             .transaction()
             .map_err(|error| format!("failed to start harness policy transaction: {error}"))?;
-        let drained_nodes = serde_json::to_string(&harness.operational_policy.drained_nodes)
+        let drained_runners = serde_json::to_string(&harness.operational_policy.drained_runners)
             .map_err(|error| format!("failed to serialize drained nodes: {error}"))?;
         transaction
             .execute(
                 HARNESS_OPERATIONAL_POLICY_UPSERT_SQL,
                 &[
                     &harness.operational_policy.kill_switch,
-                    &drained_nodes,
+                    &drained_runners,
                     &(harness.operational_policy.tenant_max_active_attempts as i32),
                     &(harness.operational_policy.tenant_max_queued_tasks as i32),
                     &(harness.operational_policy.tenant_max_artifact_bytes as i64),
@@ -494,7 +532,7 @@ impl PostgresStore {
             transaction
                 .query_one(
                     "select pg_advisory_xact_lock(hashtext($1))",
-                    &[&reservation.node_id],
+                    &[&reservation.runner_id],
                 )
                 .map_err(|error| format!("postgres harness capacity lock failed: {error}"))?;
             let durable_state = transaction
@@ -522,8 +560,8 @@ impl PostgresStore {
             }
             let active_slots = transaction
                 .query_one(
-                    "select coalesce(sum(slots), 0)::bigint from public.harness_capacity_reservations where node_id = $1 and state = 'active' and expires_at_epoch > $2",
-                    &[&reservation.node_id, &(now_epoch as i64)],
+                    "select coalesce(sum(slots), 0)::bigint from public.harness_capacity_reservations where runner_id = $1 and state = 'active' and expires_at_epoch > $2",
+                    &[&reservation.runner_id, &(now_epoch as i64)],
                 )
                 .map_err(|error| format!("postgres harness capacity check failed: {error}"))?
                 .get::<_, i64>(0);
@@ -580,7 +618,7 @@ impl PostgresStore {
                     &[
                         &attempt.attempt_id,
                         &attempt.task_id,
-                        &attempt.node_id,
+                        &attempt.runner_id,
                         &enum_value(attempt.execution_mode)?,
                         &state,
                         &(attempt.state_version as i64),
@@ -613,7 +651,7 @@ impl PostgresStore {
                         &reservation.reservation_id,
                         &reservation.task_id,
                         &reservation.attempt_id,
-                        &reservation.node_id,
+                        &reservation.runner_id,
                         &(reservation.slots as i32),
                         &reservation.state,
                         &(reservation.created_at_epoch as i64),
@@ -1194,6 +1232,11 @@ select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.task_id)::t
 from public.harness_tasks t
 "#;
 
+const HARNESS_RUNNERS_RESTORE_SQL: &str = r#"
+select coalesce(jsonb_agg(to_jsonb(t) order by t.runner_id)::text, '[]')
+from public.harness_runners t
+"#;
+
 const HARNESS_ATTEMPTS_RESTORE_SQL: &str = r#"
 select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.attempt_id)::text, '[]')
 from public.harness_attempts t
@@ -1226,7 +1269,7 @@ select coalesce(jsonb_agg(to_jsonb(t) order by t.created_at_epoch, t.artifact_id
 const HARNESS_OPERATIONAL_POLICY_RESTORE_SQL: &str = r#"
 select coalesce(jsonb_agg(jsonb_build_object(
   'kill_switch', kill_switch,
-  'drained_nodes', drained_nodes,
+  'drained_runners', drained_runners,
   'tenant_max_active_attempts', tenant_max_active_attempts,
   'tenant_max_queued_tasks', tenant_max_queued_tasks,
   'tenant_max_artifact_bytes', tenant_max_artifact_bytes
@@ -1272,9 +1315,38 @@ on conflict (task_id) do update set
   submitted_via = coalesce(public.harness_tasks.submitted_via, excluded.submitted_via)
 "#;
 
+const HARNESS_RUNNER_UPSERT_SQL: &str = r#"
+insert into public.harness_runners (
+  runner_id, device_id, public_key_hex, kind, owner_user_id, tenant_ids,
+  repository_source_ids, execution_modes, supported_operations,
+  network_default_disabled, max_workspace_mb, usable_memory_mb, parallel_slots,
+  trusted_identity, ready, last_seen_epoch
+) values (
+  $1, $2, $3, $4, $5::uuid, $6::text::jsonb,
+  $7::text::jsonb, $8::text::jsonb, $9::text::jsonb,
+  $10, $11, $12, $13, $14, $15, $16
+)
+on conflict (runner_id) do update set
+  device_id = excluded.device_id,
+  public_key_hex = excluded.public_key_hex,
+  kind = excluded.kind,
+  owner_user_id = excluded.owner_user_id,
+  tenant_ids = excluded.tenant_ids,
+  repository_source_ids = excluded.repository_source_ids,
+  execution_modes = excluded.execution_modes,
+  supported_operations = excluded.supported_operations,
+  network_default_disabled = excluded.network_default_disabled,
+  max_workspace_mb = excluded.max_workspace_mb,
+  usable_memory_mb = excluded.usable_memory_mb,
+  parallel_slots = excluded.parallel_slots,
+  trusted_identity = excluded.trusted_identity,
+  ready = excluded.ready,
+  last_seen_epoch = excluded.last_seen_epoch
+"#;
+
 const HARNESS_ATTEMPT_UPSERT_SQL: &str = r#"
 insert into public.harness_attempts (
-  attempt_id, task_id, node_id, execution_mode, state, state_version, reserved_slots,
+  attempt_id, task_id, runner_id, execution_mode, state, state_version, reserved_slots,
   workspace_id, failure_code, created_at_epoch, updated_at_epoch,
   started_at_epoch, finished_at_epoch, model_turns, tool_calls, output_bytes,
   repair_attempts, last_progress_sha256, repeated_progress_count
@@ -1285,7 +1357,7 @@ insert into public.harness_attempts (
 )
 on conflict (attempt_id) do update set
   task_id = excluded.task_id,
-  node_id = excluded.node_id,
+  runner_id = excluded.runner_id,
   execution_mode = excluded.execution_mode,
   state = excluded.state,
   state_version = excluded.state_version,
@@ -1305,7 +1377,7 @@ on conflict (attempt_id) do update set
 
 const HARNESS_RESERVATION_UPSERT_SQL: &str = r#"
 insert into public.harness_capacity_reservations (
-  reservation_id, task_id, attempt_id, node_id, slots, state,
+  reservation_id, task_id, attempt_id, runner_id, slots, state,
   created_at_epoch, expires_at_epoch, released_at_epoch
 ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 on conflict (reservation_id) do update set
@@ -1365,12 +1437,12 @@ on conflict (artifact_id) do nothing
 
 const HARNESS_OPERATIONAL_POLICY_UPSERT_SQL: &str = r#"
 insert into public.harness_operational_policy (
-  singleton, kill_switch, drained_nodes, tenant_max_active_attempts,
+  singleton, kill_switch, drained_runners, tenant_max_active_attempts,
   tenant_max_queued_tasks, tenant_max_artifact_bytes, updated_at
 ) values (true, $1, $2::text::jsonb, $3, $4, $5, now())
 on conflict (singleton) do update set
   kill_switch = excluded.kill_switch,
-  drained_nodes = excluded.drained_nodes,
+  drained_runners = excluded.drained_runners,
   tenant_max_active_attempts = excluded.tenant_max_active_attempts,
   tenant_max_queued_tasks = excluded.tenant_max_queued_tasks,
   tenant_max_artifact_bytes = excluded.tenant_max_artifact_bytes,
