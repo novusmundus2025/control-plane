@@ -5,6 +5,7 @@ import { createConnection } from "node:net";
 import { dirname, resolve } from "node:path";
 import { connect as createTlsConnection } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { PostgresAuthStore, authConfigFromEnv, csrfToken } from "./auth.js";
 import {
   detectChatQualityFlags,
   detectCompleteCodeQualityFlags,
@@ -104,6 +105,7 @@ export function configFromEnv(env = process.env) {
     String(env.MUNDUSX_HARNESS_UI_ENABLED ?? "").trim().toLowerCase(),
   );
   return {
+    auth: authConfigFromEnv(env),
     port: Number(env.PORT ?? "3002"),
     controlPlaneUrl: normalizeOrigin(env.MUNDUSX_CONTROL_PLANE_URL ?? DEFAULT_CONTROL_PLANE_URL),
     operatorToken: (env.MUNDUSX_OPERATOR_TOKEN ?? env.OPENGPU_OPERATOR_TOKEN ?? "").trim(),
@@ -178,6 +180,7 @@ export function page(config = configFromEnv()) {
         <p>Submit a bounded coding task for operator review. This does not approve execution, merge, or deployment.</p>
         <div class="harness-boundary"><strong>${escapeHtml(config.harnessRepositorySourceId || "Repository not configured")}</strong><span>Base ${escapeHtml(config.harnessBaseRevision || "not configured")}</span></div>
         <form id="harness-form" class="harness-form">
+          <label>Repository grant<select name="grant_id" id="harness-grant" required></select></label>
           <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="Describe one bounded coding change"></textarea></label>
           <label>Execution mode<select name="execution_mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted node only)</option></select></label>
           <fieldset><legend>Allowed tools</legend>
@@ -1437,6 +1440,16 @@ export function page(config = configFromEnv()) {
     .harness-form fieldset { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 10px; }
     .harness-form fieldset label { display: flex; align-items: center; gap: 8px; }
     .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
+    .auth-gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(246,247,252,.96); }
+    .auth-gate[hidden] { display: none; }
+    .auth-card { width: min(420px, calc(100vw - 32px)); padding: 30px; border: 1px solid var(--line); border-radius: 18px; background: white; box-shadow: 0 18px 60px rgba(28,31,60,.12); display: grid; gap: 16px; }
+    .auth-card h1,.auth-card p { margin: 0; }
+    .auth-card p { color: var(--muted); }
+    .auth-github,.auth-email button { min-height: 44px; border: 1px solid var(--line-strong); border-radius: 10px; font: inherit; font-weight: 700; cursor: pointer; }
+    .auth-github { display: grid; place-items: center; color: white; background: #17171f; text-decoration: none; }
+    .auth-email { display: grid; gap: 9px; }
+    .auth-email input { min-height: 42px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 0 12px; font: inherit; }
+    .auth-message { min-height: 20px; font-size: 13px; color: var(--muted); }
     .voice-controls {
       display: contents;
     }
@@ -1563,7 +1576,16 @@ export function page(config = configFromEnv()) {
     }
   </style>
 </head>
-<body>
+<body data-auth-required="${config.auth?.required ? "true" : "false"}">
+  <div class="auth-gate" id="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+    <div class="auth-card">
+      <h1 id="auth-title">Sign in to MundusX</h1>
+      <p>Your chats and Coding Harness permissions are tied to your individual account.</p>
+      <a class="auth-github" id="auth-github" href="/api/auth/github/start">Continue with GitHub</a>
+      <form class="auth-email" id="auth-email-form"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="email" required><button type="submit">Email me a sign-in link</button></form>
+      <div class="auth-message" id="auth-message">Checking your session…</div>
+    </div>
+  </div>
   <div class="shell" data-control-plane="${escapeHtml(config.controlPlaneUrl)}">
     <aside>
       <div class="brand-block">
@@ -1583,10 +1605,10 @@ export function page(config = configFromEnv()) {
       <div class="account-widget">
         <div class="account-menu" id="account-menu">
           <button class="account-menu-header" type="button">
-            <span class="account-avatar">LB</span>
+            <span class="account-avatar" data-account-avatar>MX</span>
             <span class="account-menu-header-text">
-              <span class="account-menu-name">Lichard Baliuag</span>
-              <span class="account-menu-plan">Free</span>
+              <span class="account-menu-name" data-account-name>MundusX user</span>
+              <span class="account-menu-plan" data-account-email></span>
             </span>
             <span class="chevron">${ICON_CHEVRON_RIGHT}</span>
           </button>
@@ -1597,13 +1619,13 @@ export function page(config = configFromEnv()) {
           <button class="account-menu-item" type="button">${ICON_SETTINGS}<span>Settings</span></button>
           <div class="account-menu-divider"></div>
           <button class="account-menu-item" type="button">${ICON_HELP_RING}<span>Help</span><span class="chevron">${ICON_CHEVRON_RIGHT}</span></button>
-          <button class="account-menu-item" type="button">${ICON_LOGOUT}<span>Log out</span></button>
+          <button class="account-menu-item" id="account-logout" type="button">${ICON_LOGOUT}<span>Log out</span></button>
         </div>
         <button class="account-bar" id="account-bar" type="button" aria-haspopup="true" aria-expanded="false">
-          <span class="account-avatar">LB</span>
+          <span class="account-avatar" data-account-avatar>MX</span>
           <span class="account-info">
-            <span class="account-name">Lichard Baliuag</span>
-            <span class="account-plan">Free</span>
+            <span class="account-name" data-account-name>MundusX user</span>
+            <span class="account-plan" data-account-email></span>
           </span>
           <span class="account-upgrade">Upgrade</span>
         </button>
@@ -1666,9 +1688,15 @@ export function page(config = configFromEnv()) {
     const voiceMicEl = document.getElementById("voice-mic");
     const voiceSpeakEl = document.getElementById("voice-speak");
     const voiceStatusEl = document.getElementById("voice-status");
-    const historyKey = "mundusx.chat.history.v1";
-    const conversationIdKey = "mundusx.chat.conversationId.v1";
-    const conversationCachePrefix = "mundusx.chat.conversation.v1:";
+    const authGateEl = document.getElementById("auth-gate");
+    const authMessageEl = document.getElementById("auth-message");
+    const authEmailFormEl = document.getElementById("auth-email-form");
+    const accountLogoutEl = document.getElementById("account-logout");
+    const harnessGrantEl = document.getElementById("harness-grant");
+    let authCsrfToken = null;
+    let historyKey = "mundusx.chat.pending.history.v1";
+    let conversationIdKey = "mundusx.chat.pending.conversationId.v1";
+    let conversationCachePrefix = "mundusx.chat.pending.conversation.v1:";
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let isListening = false;
@@ -1690,6 +1718,67 @@ export function page(config = configFromEnv()) {
     let chatScrollFrame = null;
     let draggingChatScrollbar = false;
     let lastChatTouchY = null;
+
+    const nativeFetch = window.fetch.bind(window);
+    window.fetch = (input, init = {}) => {
+      const method = String(init.method || "GET").toUpperCase();
+      const url = typeof input === "string" ? input : input?.url || "";
+      if (authCsrfToken && url.startsWith("/api/") && ["POST", "PUT", "PATCH", "DELETE"].includes(method) && url !== "/api/auth/email/start") {
+        init = { ...init, headers: { ...(init.headers || {}), "X-MundusX-CSRF": authCsrfToken } };
+      }
+      return nativeFetch(input, init);
+    };
+
+    async function bootstrapAuthentication() {
+      if (document.body.dataset.authRequired !== "true") { authGateEl.hidden = true; return; }
+      try {
+        const response = await nativeFetch("/api/auth/session");
+        if (!response.ok) throw new Error("Sign in required");
+        const payload = await response.json();
+        authCsrfToken = payload.csrf_token;
+        const user = payload.user;
+        const namespace = String(user.id).replace(/[^a-zA-Z0-9-]/g, "");
+        historyKey = "mundusx.chat.history.v1:" + namespace;
+        conversationIdKey = "mundusx.chat.conversationId.v1:" + namespace;
+        conversationCachePrefix = "mundusx.chat.conversation.v1:" + namespace + ":";
+        activeHistoryId = localStorage.getItem(conversationIdKey);
+        const name = user.display_name || user.email;
+        document.querySelectorAll("[data-account-name]").forEach((node) => node.textContent = name);
+        document.querySelectorAll("[data-account-email]").forEach((node) => node.textContent = user.email);
+        document.querySelectorAll("[data-account-avatar]").forEach((node) => node.textContent = name.split(/\\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase());
+        if (harnessGrantEl) {
+          harnessGrantEl.replaceChildren(...payload.harness_grants.map((grant) => {
+            const option = document.createElement("option");
+            option.value = grant.grant_id;
+            option.textContent = grant.repository_source_id + " (" + grant.tenant_id + ")";
+            return option;
+          }));
+          if (!payload.harness_grants.length && harnessOpenEl) harnessOpenEl.hidden = true;
+        }
+        renderHistory();
+        authGateEl.hidden = true;
+      } catch {
+        const providers = await nativeFetch("/api/auth/providers").then((value) => value.json()).catch(() => ({}));
+        document.getElementById("auth-github").hidden = !providers.github;
+        authEmailFormEl.hidden = !providers.email;
+        authMessageEl.textContent = providers.github || providers.email ? "Choose a secure sign-in method." : "Authentication is not configured yet.";
+      }
+    }
+
+    authEmailFormEl?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      authMessageEl.textContent = "Sending a single-use link…";
+      const response = await nativeFetch("/api/auth/email/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: new FormData(authEmailFormEl).get("email") }) });
+      const payload = await response.json().catch(() => ({}));
+      authMessageEl.textContent = payload.message || payload.error || "Request complete.";
+    });
+
+    accountLogoutEl?.addEventListener("click", async () => {
+      await window.fetch("/api/auth/logout", { method: "POST" });
+      location.reload();
+    });
+
+    bootstrapAuthentication();
 
     function isChatNearBottom() {
       if (!messagesViewportEl) return true;
@@ -1814,6 +1903,7 @@ export function page(config = configFromEnv()) {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             objective: String(data.get("objective") || ""),
+            grant_id: String(data.get("grant_id") || ""),
             execution_mode: String(data.get("execution_mode") || "sandbox"),
             allowed_operations: allowedOperations,
           }),
@@ -3955,6 +4045,7 @@ export function page(config = configFromEnv()) {
 }
 
 export function createServerApp(config = configFromEnv()) {
+  const authStore = config.authStore ?? new PostgresAuthStore(config.auth ?? authConfigFromEnv());
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -3996,41 +4087,91 @@ export function createServerApp(config = configFromEnv()) {
         const result = await fetchNetworkSummary(config);
         return sendJson(response, 200, result);
       }
+      if (request.method === "GET" && url.pathname === "/api/auth/providers") {
+        return sendJson(response, 200, authStore.providers());
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/session") {
+        const session = await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        return sendJson(response, 200, {
+          user: { id: session.id, email: session.email, display_name: session.display_name, role: session.role },
+          harness_grants: session.harness_grants,
+          csrf_token: csrfToken(request),
+        });
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/github/start") {
+        const location = await authStore.startGithub(url.searchParams.get("return_to") || "/");
+        response.writeHead(302, { Location: location });
+        return response.end();
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/github/callback") {
+        const location = await authStore.finishGithub(url.searchParams, response);
+        response.writeHead(302, { Location: location });
+        return response.end();
+      }
+      if (request.method === "POST" && url.pathname === "/api/auth/email/start") {
+        const body = await readJsonBody(request);
+        await authStore.startEmail(body?.email);
+        return sendJson(response, 202, { message: "If the address can receive mail, a sign-in link has been sent." });
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/email/verify") {
+        const location = await authStore.finishEmail(url.searchParams.get("token") || "", response);
+        response.writeHead(302, { Location: location });
+        return response.end();
+      }
+      if (config.auth?.required && url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/auth/")) {
+        const session = await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        request.mundusxSession = session;
+        if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) authStore.requireCsrf(request, session);
+      }
+      if (request.method === "POST" && url.pathname === "/api/auth/logout") {
+        const session = await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        await authStore.logout(request, response, session);
+        return sendJson(response, 200, { status: "signed_out" });
+      }
       if (request.method === "POST" && url.pathname === "/api/harness/tasks") {
         const body = await readJsonBody(request);
-        const result = await submitHarnessTask(body, config);
+        const result = await submitHarnessTask(body, config, fetch, request.mundusxSession);
         return sendJson(response, 201, result);
       }
       if (request.method === "GET" && url.pathname.startsWith("/api/conversations/") && url.pathname.endsWith("/messages")) {
         const conversationId = decodeURIComponent(
           url.pathname.slice("/api/conversations/".length, -"/messages".length),
         );
+        if (request.mundusxSession) await authStore.authorizeConversation(request.mundusxSession.id, conversationId);
         const limit = Number.parseInt(url.searchParams.get("limit") || "80", 10);
         const result = await fetchChatConversation(conversationId, config, fetch, Number.isFinite(limit) ? limit : 80);
         return sendJson(response, 200, result);
       }
       if (request.method === "DELETE" && url.pathname.startsWith("/api/conversations/")) {
         const conversationId = decodeURIComponent(url.pathname.slice("/api/conversations/".length));
+        if (request.mundusxSession) await authStore.authorizeConversation(request.mundusxSession.id, conversationId);
         const result = await deleteChatConversation(conversationId, config, fetch);
         return sendJson(response, 200, result);
       }
       if (request.method === "POST" && url.pathname === "/api/chat") {
         const body = await readJsonBody(request);
+        if (request.mundusxSession) await authStore.authorizeConversation(request.mundusxSession.id, body?.conversationId, true);
         const result = await submitChatTurn(body, config);
         return sendJson(response, 200, result);
       }
       if (request.method === "POST" && url.pathname === "/api/chat/stream") {
         const body = await readJsonBody(request);
+        if (request.mundusxSession) await authStore.authorizeConversation(request.mundusxSession.id, body?.conversationId, true);
         return await streamChatTurn(response, body, config);
       }
       if (request.method === "POST" && url.pathname === "/api/chat/jobs") {
         const body = await readJsonBody(request);
+        if (request.mundusxSession) await authStore.authorizeConversation(request.mundusxSession.id, body?.conversationId, true);
         const result = await submitChatJob(body, config);
         return sendJson(response, 202, result);
       }
       if (request.method === "GET" && url.pathname.startsWith("/api/chat/jobs/")) {
         const jobId = decodeURIComponent(url.pathname.slice("/api/chat/jobs/".length));
         const conversationId = url.searchParams.get("conversationId") || null;
+        if (request.mundusxSession) await authStore.authorizeConversation(request.mundusxSession.id, conversationId);
         const message = url.searchParams.get("prompt") || null;
         const result = await pollChatJob(jobId, config, fetch, { conversationId, message });
         return sendJson(response, 200, result);
@@ -4052,16 +4193,24 @@ const CHAT_HARNESS_OPERATIONS = new Set([
   "validation.run",
 ]);
 
-export async function submitHarnessTask(body, config = configFromEnv(), fetchImpl = fetch) {
+export async function submitHarnessTask(body, config = configFromEnv(), fetchImpl = fetch, session = null) {
   if (!config.harnessUiEnabled) throw httpError(404, "Coding Harness is not enabled");
   const token = config.harnessServiceToken || config.operatorToken;
   if (!token) throw httpError(503, "Coding Harness service authentication is not configured");
+  const grant = session
+    ? session.harness_grants?.find((candidate) => candidate.grant_id === body?.grant_id)
+    : null;
+  if (session && !grant) throw httpError(403, "No active repository grant permits this Harness request");
+  const tenantId = grant?.tenant_id ?? config.harnessTenantId;
+  const repositorySourceId = grant?.repository_source_id ?? config.harnessRepositorySourceId;
+  const allowedPathPrefixes = grant?.allowed_path_prefixes ?? config.harnessAllowedPathPrefixes?.split(",").map((value) => value.trim()).filter(Boolean);
+  const validationProfiles = grant?.validation_profiles ?? config.harnessValidationProfiles?.split(",").map((value) => value.trim()).filter(Boolean);
   if (
-    !config.harnessTenantId ||
-    !config.harnessRepositorySourceId ||
+    !tenantId ||
+    !repositorySourceId ||
     !/^[0-9a-f]{40}$/.test(config.harnessBaseRevision) ||
-    !config.harnessAllowedPathPrefixes ||
-    !config.harnessValidationProfiles
+    !allowedPathPrefixes?.length ||
+    !validationProfiles?.length
   ) {
     throw httpError(503, "Coding Harness repository boundary is incomplete");
   }
@@ -4072,6 +4221,9 @@ export async function submitHarnessTask(body, config = configFromEnv(), fetchImp
   const executionMode = String(body?.execution_mode ?? "sandbox");
   if (!["sandbox", "hybrid"].includes(executionMode)) {
     throw httpError(400, "execution_mode must be sandbox or hybrid");
+  }
+  if (grant && !grant.allowed_execution_modes?.includes(executionMode)) {
+    throw httpError(403, "The repository grant does not permit this execution mode");
   }
   const allowedOperations = Array.isArray(body?.allowed_operations)
     ? [...new Set(body.allowed_operations.map(String))]
@@ -4091,20 +4243,16 @@ export async function submitHarnessTask(body, config = configFromEnv(), fetchImp
     },
     body: JSON.stringify({
       harness_contract_version: "1.0",
-      tenant_id: config.harnessTenantId,
-      repository_source_id: config.harnessRepositorySourceId,
+      tenant_id: tenantId,
+      repository_source_id: repositorySourceId,
       objective,
       base_revision: config.harnessBaseRevision,
-      allowed_path_prefixes: config.harnessAllowedPathPrefixes
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean),
+      allowed_path_prefixes: allowedPathPrefixes,
       execution_mode: executionMode,
       allowed_operations: allowedOperations,
-      validation_profiles: config.harnessValidationProfiles
-        .split(",")
-        .map((value) => value.trim())
-        .filter(Boolean),
+      validation_profiles: validationProfiles,
+      requested_by_user_id: session?.id ?? null,
+      submitted_via: session ? "chat-u" : "service",
     }),
   });
   const text = await upstream.text();

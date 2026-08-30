@@ -49,20 +49,35 @@ MUNDUSX_WEB_SEARCH_TTL_SECONDS=1800
 MUNDUSX_WEB_SEARCH_DAILY_BUDGET=<optional daily call cap; 0 or unset means unlimited>
 ```
 
-The Coding Harness launcher is disabled by default. To expose it in `chat-u`, bind it to one
-UAT repository boundary and provide the server-side Harness token (never a browser variable):
+Browser Chat-U uses per-user PostgreSQL sessions by default. Run migration `0020_chat_user_auth.sql`,
+configure at least one login provider, and keep the database and provider secrets server-side:
+
+```text
+MUNDUSX_CHAT_AUTH_REQUIRED=true
+MUNDUSX_DATABASE_POOL_URL=<PgBouncer DATABASE_URL reference>
+MUNDUSX_PUBLIC_ORIGIN=https://chat-u.mundusx.ai
+MUNDUSX_GITHUB_CLIENT_ID=<GitHub OAuth application client id>
+MUNDUSX_GITHUB_CLIENT_SECRET=<GitHub OAuth application secret>
+RESEND_API_KEY=<optional, enables verified-email links>
+MUNDUSX_AUTH_EMAIL_FROM=MundusX <login@your-verified-domain.example>
+```
+
+The GitHub OAuth callback is `${MUNDUSX_PUBLIC_ORIGIN}/api/auth/github/callback`. Authenticated
+users may chat; Coding Harness access additionally requires an active `user_repository_grants`
+row provisioned by an operator. A browser cannot choose its own tenant, repository, path, validation,
+or execution-mode boundary.
+
+The Coding Harness launcher is disabled by default. To expose it, provide the server-side Harness
+token and current full base revision (never browser variables):
 
 ```text
 MUNDUSX_HARNESS_UI_ENABLED=true
 MUNDUSX_HARNESS_SERVICE_TOKEN=<same secret configured on the control plane>
-MUNDUSX_HARNESS_TENANT_ID=ehda-uat
-MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID=github:mundusx/control-plane
 MUNDUSX_HARNESS_BASE_REVISION=<full 40-character git commit SHA>
-MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES=apps/control-plane,docs
-MUNDUSX_HARNESS_VALIDATION_PROFILES=control-plane-tests
 ```
 
-Chat users can submit only the fixed repository, path, validation, and tool boundary. A submitted
+Chat users can submit only a repository, path, validation, mode, and tool boundary granted to their
+internal user id. A submitted
 task remains in `created` state until an operator separately approves UAT execution in EHDA. The
 launcher cannot approve merge or deployment.
 
@@ -76,6 +91,13 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_CONTROL_PLANE_URL` | `https://uat.mundusx.ai` | Control-plane API origin |
 | `MUNDUSX_OPERATOR_TOKEN` | unset | Optional bearer token for protected UAT/API deployments |
 | `OPENGPU_OPERATOR_TOKEN` | unset | Deprecated fallback token name |
+| `MUNDUSX_CHAT_AUTH_REQUIRED` | `true` | Requires an active individual session for browser `/api/*` routes; fail-closed when storage is unavailable |
+| `MUNDUSX_DATABASE_POOL_URL` | unset | PgBouncer runtime URL used for identity, session, conversation-owner, and grant checks |
+| `MUNDUSX_PUBLIC_ORIGIN` | `https://chat-u.mundusx.ai` | Exact browser origin and OAuth callback base; also enforced for CSRF checks |
+| `MUNDUSX_GITHUB_CLIENT_ID` | unset | Enables GitHub OAuth when paired with its secret |
+| `MUNDUSX_GITHUB_CLIENT_SECRET` | unset | Server-only GitHub OAuth secret |
+| `RESEND_API_KEY` | unset | Enables verified-email single-use login links when paired with a sender |
+| `MUNDUSX_AUTH_EMAIL_FROM` | unset | Verified sender used for sign-in links |
 | `MUNDUSX_CHAT_MODEL` | unset | Optional explicit model override; unset means control-plane routed contributor models |
 | `MUNDUSX_CHAT_DEFAULT_MODEL` | unset | Deprecated alias for `MUNDUSX_CHAT_MODEL` |
 | `MUNDUSX_CHAT_TIMEOUT_SECONDS` | `90` | Default server-side poll timeout for one chat turn |
@@ -93,11 +115,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEB_SEARCH_DAILY_BUDGET` | unset (unlimited) | Optional daily call cap for the web search tool, tracked in the same Redis/Valkey cache; once exceeded the tool declines until the next UTC day |
 | `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes the repository-bound Coding Harness launcher when set to `true` |
 | `MUNDUSX_HARNESS_SERVICE_TOKEN` | unset | Server-only token used to submit Harness tasks to the control plane |
-| `MUNDUSX_HARNESS_TENANT_ID` | unset | Fixed tenant for all tasks submitted through chat-u |
-| `MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID` | unset | Fixed repository source identifier; users cannot override it |
 | `MUNDUSX_HARNESS_BASE_REVISION` | unset | Fixed full 40-character UAT git commit SHA |
-| `MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES` | unset | Comma-separated repository-relative path boundary |
-| `MUNDUSX_HARNESS_VALIDATION_PROFILES` | unset | Comma-separated named validation profiles |
 
 ## Current Flow
 
