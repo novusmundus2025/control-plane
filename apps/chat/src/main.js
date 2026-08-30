@@ -383,9 +383,9 @@ export function page(config = configFromEnv()) {
       justify-content: space-between;
       gap: 10px;
       overflow: hidden;
-      border: 1px solid transparent;
-      border-radius: 7px;
-      padding: 9px 10px;
+      border: 0;
+      border-radius: 6px;
+      padding: 8px 6px;
       color: #414a5a;
       font-size: 13px;
       background: transparent;
@@ -482,8 +482,7 @@ export function page(config = configFromEnv()) {
     }
     .history-item.active {
       color: var(--purple);
-      border-color: rgba(124, 108, 246, 0.4);
-      background: linear-gradient(90deg, rgba(124, 108, 246, 0.14), rgba(59, 130, 246, 0.06));
+      background: rgba(124, 108, 246, 0.09);
     }
     .history-title {
       min-width: 0;
@@ -1604,13 +1603,7 @@ export function page(config = configFromEnv()) {
     html[data-theme="dark"] { color-scheme:dark; --bg:#070a15; --rail:rgba(8,11,24,.94); --panel:rgba(17,21,40,.82); --panel-2:rgba(20,24,45,.72); --line:rgba(170,182,230,.14); --line-strong:rgba(170,182,230,.24); --text:#f4f5ff; --muted:#b1b7ca; --muted-2:#7f89a6; --mesh-a:68,103,255; --mesh-b:143,56,255; --surface-shadow:0 22px 70px rgba(0,0,0,.38); }
     body { background:var(--bg); transition:background .28s ease,color .28s ease; }
     .shell { position:relative; isolation:isolate; }
-    aside { position:relative; z-index:4; backdrop-filter:blur(22px); grid-template-rows:auto auto auto minmax(0,1fr) auto; gap:14px; }
-    .network-card { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; border:1px solid var(--line); border-radius:12px; padding:11px 12px; background:var(--panel); }
-    .network-card .status-dot { color:#43c767; box-shadow:0 0 12px rgba(67,199,103,.7); }
-    .network-copy { display:grid; gap:3px; }
-    .network-copy strong { font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
-    .network-copy span { color:var(--muted); font-size:11px; }
-    .network-wave { color:#43c767; font-size:20px; letter-spacing:-4px; transform:rotate(-8deg); }
+    aside { position:relative; z-index:4; backdrop-filter:blur(22px); grid-template-rows:auto auto minmax(0,1fr) auto; gap:14px; }
     .rail-primary { display:grid; gap:8px; }
     .new-chat { color:white; border:0; background:var(--gradient); box-shadow:0 10px 24px rgba(84,71,244,.22); }
     .new-chat:hover,.new-chat:focus-visible { background:var(--gradient); transform:translateY(-1px); }
@@ -1673,7 +1666,6 @@ export function page(config = configFromEnv()) {
           <div class="brand-kicker">Decentralized AI Network</div>
         </div>
       </div>
-      <div class="network-card" aria-label="Network status"><span class="status-dot"></span><span class="network-copy"><strong>Network status</strong><span>All systems operational</span></span><span class="network-wave" aria-hidden="true">⌁⌁</span></div>
       <div class="rail-primary">
         <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
         <nav class="rail-tabs" aria-label="Workspace"><button class="rail-tab is-active" type="button">Chats</button><button class="rail-tab" type="button">Agents</button><button class="rail-tab" type="button">Nodes</button></nav>
