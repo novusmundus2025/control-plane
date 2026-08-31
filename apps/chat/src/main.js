@@ -1403,11 +1403,14 @@ export function page(config = configFromEnv()) {
       padding: 5px 7px 5px 12px;
       box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
     }
-    .active-project-context { width: fit-content; max-width: 100%; display: flex; align-items: center; gap: 2px; margin: 0 0 7px 12px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--panel); color: var(--muted); }
+    .composer-left-actions { grid-column:1; grid-row:1; align-self:center; display:flex; align-items:center; gap:2px; min-width:0; }
+    .active-project-context { min-width:0; display:flex; align-items:center; color:var(--muted-2); }
     .active-project-context[hidden] { display: none; }
-    .active-project-context button { border: 0; padding: 6px 9px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
-    .active-project-context button:first-child { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
-    .active-project-context strong { display: inline-block; max-width: 240px; overflow: hidden; color: var(--text); text-overflow: ellipsis; vertical-align: bottom; white-space: nowrap; }
+    .active-project-context .project-context-open { min-width:0; }
+    .active-project-context .project-context-open[aria-pressed="true"] { color:var(--blue); }
+    .active-project-context strong { display:block; max-width:150px; overflow:hidden; color:inherit; text-overflow:ellipsis; white-space:nowrap; }
+    .active-project-context .project-context-clear { border:0; padding:5px 3px; background:transparent; color:var(--muted-2); font:inherit; cursor:pointer; }
+    .active-project-context .project-context-clear[hidden] { display:none; }
     textarea {
       grid-column: 2;
       grid-row: 1;
@@ -1441,11 +1444,7 @@ export function page(config = configFromEnv()) {
       font-size: 12px;
       cursor: pointer;
     }
-    #web-search-toggle {
-      grid-column: 1;
-      grid-row: 1;
-      align-self: center;
-    }
+    #web-search-toggle { flex:0 0 auto; }
     #enter-to-send-toggle { display: none; }
     .tool-toggle:hover,
     .tool-toggle:focus-visible {
@@ -1713,7 +1712,7 @@ export function page(config = configFromEnv()) {
     html[data-theme="dark"] .message-retry-button { background:var(--panel); }
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
-    @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px} }
+    @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px}.active-project-context strong{max-width:90px}#web-search-label{display:none} }
     @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px);padding:20px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
   </style>
@@ -1796,14 +1795,13 @@ export function page(config = configFromEnv()) {
         </div>
       </section>
       <form id="chat-form">
-        <div class="active-project-context" id="active-project-context" hidden>
-          <button id="active-project-open" type="button" title="Open Projects"><span aria-hidden="true">⌁</span><span>Project: <strong id="active-project-name"></strong></span></button>
-          <button id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project">&times;</button>
-        </div>
         <div class="composer">
           <textarea id="prompt" name="prompt" rows="1" placeholder="Ask everyone..." autocomplete="off" required></textarea>
           <div class="composer-actions">
-            <button class="tool-toggle" id="web-search-toggle" type="button" aria-pressed="false" title="Use grounded tools when available"><span class="kbd">@</span><span id="web-search-label">Web Search</span></button>
+            <span class="composer-left-actions">
+              ${config.harnessUiEnabled ? `<span class="active-project-context" id="active-project-context"><button class="tool-toggle project-context-open" id="active-project-open" type="button" aria-pressed="false" title="Choose a project"><span class="kbd" aria-hidden="true">⌁</span><strong id="active-project-name">Project</strong></button><button class="project-context-clear" id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project" hidden>&times;</button></span>` : ""}
+              <button class="tool-toggle" id="web-search-toggle" type="button" aria-pressed="false" title="Use grounded tools when available"><span class="kbd">@</span><span id="web-search-label">Web Search</span></button>
+            </span>
             <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
             <span class="voice-controls" id="voice-controls">
               <button class="voice-button" id="voice-mic" type="button" aria-label="Start voice input" title="Voice input">${ICON_MIC}</button>
@@ -2274,8 +2272,11 @@ export function page(config = configFromEnv()) {
       const valid = activeProject
         && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(activeProject.slug || "");
       if (!valid) activeProject = null;
-      if (activeProjectContextEl) activeProjectContextEl.hidden = !activeProject;
-      if (activeProjectNameEl) activeProjectNameEl.textContent = activeProject?.slug || "";
+      if (activeProjectContextEl) activeProjectContextEl.hidden = false;
+      if (activeProjectNameEl) activeProjectNameEl.textContent = activeProject?.slug || "Project";
+      if (activeProjectOpenEl) activeProjectOpenEl.setAttribute("aria-pressed", String(Boolean(activeProject)));
+      if (activeProjectOpenEl) activeProjectOpenEl.title = activeProject ? "Change active project" : "Choose a project";
+      if (activeProjectClearEl) activeProjectClearEl.hidden = !activeProject;
       if (promptEl) promptEl.placeholder = activeProject
         ? "Ask Atlas to work on " + activeProject.slug + "..."
         : "Ask everyone...";
