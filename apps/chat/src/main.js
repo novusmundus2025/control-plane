@@ -194,37 +194,17 @@ export function page(config = configFromEnv()) {
       </header>
       ${config.harnessUiEnabled ? `
       <form id="harness-form" class="harness-form">
-        <section class="project-section">
-          <div class="project-section-heading"><span><strong>Create a local project</strong><small>GitHub is optional and can be connected later.</small></span></div>
-        <section class="harness-project-fields">
-          <div class="project-field-grid">
-            <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-java-program" autocomplete="off" required></label>
-            <label>Project type<select name="project_template"><option value="java-maven">Java (Maven)</option><option value="generic">Generic project</option></select></label>
-          </div>
-          <div class="project-local-path"><span>Local folder</span><code id="project-local-path">documents\\mundusx\\projects\\my-java-program</code></div>
-          <small class="project-ownership">Files stay on your device. MundusX does not publish them or send them to contributor nodes.</small>
+        <section class="project-section project-create-fields">
+          <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-project" autocomplete="off" required></label>
+          <div class="project-local-path"><span>Local folder</span><code id="project-local-path">documents\\mundusx\\projects\\my-project</code></div>
+          <details class="project-options">
+            <summary><span>Project options</span><small>Generic or Java</small></summary>
+            <div class="project-options-body"><label>Project type<select name="project_template"><option value="generic">Generic project</option><option value="java-maven">Java (Maven)</option></select></label></div>
+          </details>
         </section>
-        </section>
-        <details class="project-advanced">
-          <summary><span><strong>Advanced controls</strong><small>Execution mode and allowed tools</small></span><span class="project-advanced-chevron" aria-hidden="true">⌄</span></summary>
-          <div class="project-advanced-body">
-            <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid" selected>Hybrid (trusted local runner only)</option></select></label>
-            <fieldset><legend>Allowed tools</legend>
-              <div class="project-tool-grid">
-                <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
-                <label><input type="checkbox" name="allowed_operations" value="repository.diff" checked> Repository diff</label>
-                <label><input type="checkbox" name="allowed_operations" value="file.read" checked> Read files</label>
-                <label><input type="checkbox" name="allowed_operations" value="file.search" checked> Search files</label>
-                <label><input type="checkbox" name="allowed_operations" value="patch.apply" checked> Apply bounded patches</label>
-                <label><input type="checkbox" name="allowed_operations" value="validation.run" checked> Run named validations</label>
-              </div>
-            </fieldset>
-          </div>
-        </details>
         <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
           <span class="readiness-dot" aria-hidden="true"></span>
           <span><strong id="project-readiness-title">Checking local runner…</strong><small id="project-readiness-text">Looking for your project workspace service.</small></span>
-          <button id="project-readiness-refresh" type="button" aria-label="Refresh local runner status">Refresh</button>
         </div>
         <details class="project-runner-setup" id="project-runner-setup">
           <summary><span><strong>Local runner setup</strong><small>Required once on this device</small></span><span aria-hidden="true">⌄</span></summary>
@@ -237,7 +217,7 @@ export function page(config = configFromEnv()) {
           </div>
         </details>
         <footer class="project-actions">
-          <span><small>Creates a lowercase local project. Publishing to GitHub is a separate action.</small><output id="harness-result" aria-live="polite"></output></span>
+          <output id="harness-result" aria-live="polite"></output>
           <button class="harness-submit" type="submit">Create project</button>
         </footer>
       </form>` : ""}
@@ -1505,6 +1485,7 @@ export function page(config = configFromEnv()) {
     .credential-note strong { color: var(--text); }
     .setup-unavailable { color: var(--muted); font-size: 13px; }
     .project-readiness { margin: 2px 0; padding: 10px 12px; border-radius: 10px; }
+    .project-readiness[hidden],.project-runner-setup[hidden] { display:none; }
     .project-readiness > span:nth-child(2) { display:grid; gap:2px; flex: 1; }
     .project-readiness small { color:var(--muted); }
     .harness-form label { display: grid; gap: 6px; }
@@ -1512,8 +1493,6 @@ export function page(config = configFromEnv()) {
     .harness-form textarea { min-height: 120px; max-height: 320px; resize: vertical; }
     .harness-form fieldset { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 10px; }
     .harness-form fieldset label { display: flex; align-items: center; gap: 8px; }
-    .harness-project-fields { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
-    .harness-project-fields[hidden] { display: none; }
     .project-browser { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
     .project-browser summary { font-weight: 700; cursor: pointer; }
     .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
@@ -1527,37 +1506,17 @@ export function page(config = configFromEnv()) {
     .project-mark svg { width: 23px; height: 23px; }
     .projects-dialog .harness-form { gap: 13px; }
     .project-section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); }
-    .project-section-heading { display: flex; align-items: center; gap: 10px; }
-    .project-section-heading > span:last-child { display: grid; gap: 2px; }
-    .project-section-heading small { color: var(--muted); }
-    .project-section-number { width: 26px; height: 26px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 999px; color: var(--purple); background: color-mix(in srgb,var(--purple) 11%,transparent); font-size: 12px; font-weight: 800; }
-    .harness-project-source { display: grid!important; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px!important; padding: 0!important; border: 0!important; }
-    .harness-project-source .project-source-card { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 9px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--panel); cursor: pointer; }
-    .harness-project-source .project-source-card:has(input:checked) { border-color: var(--purple); box-shadow: 0 0 0 3px color-mix(in srgb,var(--purple) 10%,transparent); }
-    .project-source-card input { margin-top: 3px; accent-color: var(--purple); }
-    .project-source-card > span { display: grid; gap: 3px; }
-    .project-source-card small { color: var(--muted); line-height: 1.35; }
-    .projects-dialog .harness-project-fields { gap: 10px; padding: 0; border: 0; background: transparent; }
-    .project-field-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
     .project-field-wide { grid-column: 1 / -1; }
-    .project-ownership { color: var(--muted); }
     .project-local-path { display:grid; gap:5px; padding:11px 12px; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
     .project-local-path span { color:var(--muted); font-size:12px; }
     .project-local-path code { overflow-wrap:anywhere; color:var(--purple); font-size:13px; }
-    .project-objective textarea { min-height: 104px; }
-    .project-advanced { border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); overflow: hidden; }
-    .project-advanced > summary { display: flex; align-items: center; gap: 12px; padding: 13px 16px; cursor: pointer; list-style: none; }
-    .project-advanced > summary::-webkit-details-marker { display: none; }
-    .project-advanced > summary > span:first-child { display: grid; gap: 2px; flex: 1; }
-    .project-advanced > summary small { color: var(--muted); }
-    .project-advanced-chevron { color: var(--muted); transition: transform var(--motion-fast); }
-    .project-advanced[open] .project-advanced-chevron { transform: rotate(180deg); }
-    .project-advanced-body { display: grid; gap: 13px; padding: 0 16px 16px; border-top: 1px solid var(--line); }
-    .project-advanced-body > label { margin-top: 14px; }
-    .project-tool-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+    .project-options { border-top:1px solid var(--line); padding-top:10px; }
+    .project-options > summary { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--muted); cursor:pointer; list-style:none; font-size:13px; }
+    .project-options > summary::-webkit-details-marker { display:none; }
+    .project-options > summary small { color:var(--muted-2); }
+    .project-options-body { padding-top:12px; }
     .project-actions { display: flex; align-items: center; gap: 16px; padding: 4px 0 0; border: 0; }
-    .project-actions > span { display: grid; gap: 4px; min-width: 0; flex: 1; color: var(--muted); }
-    .project-actions output { color: var(--text); font-size: 12px; }
+    .project-actions output { min-width:0; flex:1; color: var(--text); font-size: 12px; }
     .project-actions .harness-submit { min-width: 142px; }
     .project-actions .harness-submit:disabled { cursor:not-allowed; filter:grayscale(.45); opacity:.55; }
     .project-runner-setup { border:1px solid var(--line); border-radius:13px; background:var(--panel-2); overflow:hidden; }
@@ -1764,7 +1723,7 @@ export function page(config = configFromEnv()) {
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
     @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px} }
-    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px);padding:20px 16px 16px}.project-field-grid,.harness-project-source,.project-tool-grid{grid-template-columns:1fr}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%} }
+    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px);padding:20px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
   </style>
 </head>
@@ -1893,7 +1852,6 @@ export function page(config = configFromEnv()) {
     const harnessPairingCommandEl = document.getElementById("harness-pairing-command");
     const harnessPairingCommandRowEl = document.getElementById("harness-pairing-command-row");
     const projectReadinessTitleEl = document.getElementById("project-readiness-title");
-    const projectReadinessRefreshEl = document.getElementById("project-readiness-refresh");
     const projectReadinessEl = document.getElementById("project-readiness");
     const projectReadinessTextEl = document.getElementById("project-readiness-text");
     const projectRunnerSetupEl = document.getElementById("project-runner-setup");
@@ -1902,9 +1860,7 @@ export function page(config = configFromEnv()) {
     const activeProjectNameEl = document.getElementById("active-project-name");
     const activeProjectOpenEl = document.getElementById("active-project-open");
     const activeProjectClearEl = document.getElementById("active-project-clear");
-    const harnessExecutionModeEl = document.getElementById("harness-execution-mode");
     const harnessSubmitEl = harnessFormEl?.querySelector(".harness-submit");
-    const harnessTemplateEl = harnessFormEl?.elements.namedItem("project_template");
     const enterToSendToggleEl = document.getElementById("enter-to-send-toggle");
     const enterToSendLabelEl = document.getElementById("enter-to-send-label");
     const voiceMicEl = document.getElementById("voice-mic");
@@ -1927,7 +1883,9 @@ export function page(config = configFromEnv()) {
     let conversationIdKey = "mundusx.chat.pending.conversationId.v1";
     let conversationCachePrefix = "mundusx.chat.pending.conversation.v1:";
     const activeProjectKey = "mundusx.chat.activeProject.v1";
+    const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
     let activeProject = null;
+    let readyHarnessModes = new Set();
     try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
@@ -2151,7 +2109,9 @@ export function page(config = configFromEnv()) {
       repositoryDialogEl.showModal();
       loadHarnessRunners().catch((error) => {
         if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
+        if (projectReadinessEl) projectReadinessEl.hidden = false;
         if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Local runner status unavailable";
+        if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = false;
       });
     }
 
@@ -2289,18 +2249,14 @@ export function page(config = configFromEnv()) {
       if (!harnessRunnerStatusEl) return [];
       harnessRunnerStatusEl.textContent = "Checking runner connection…";
       if (projectReadinessEl) projectReadinessEl.dataset.state = "checking";
+      if (projectReadinessEl) projectReadinessEl.hidden = true;
       if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = "Checking local runner…";
       const response = await fetch("/api/harness/runners");
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Runner status could not be loaded");
       const ready = payload.runners.find((runner) => runner.ready && runner.fresh);
       const paired = payload.runners.length > 0;
-      if (ready && harnessExecutionModeEl) {
-        const supported = new Set(ready.execution_modes);
-        for (const option of harnessExecutionModeEl.options) option.disabled = !supported.has(option.value);
-        const preferred = supported.has("sandbox") ? "sandbox" : supported.has("hybrid") ? "hybrid" : "";
-        if (preferred) harnessExecutionModeEl.value = preferred;
-      }
+      readyHarnessModes = new Set(ready?.execution_modes || []);
       const statusText = ready
         ? "Ready · " + ready.parallel_slots + " local slot" + (ready.parallel_slots === 1 ? "" : "s")
         : payload.runners.length
@@ -2308,7 +2264,9 @@ export function page(config = configFromEnv()) {
           : "No runner paired yet.";
       harnessRunnerStatusEl.textContent = statusText;
       if (projectReadinessEl) projectReadinessEl.dataset.state = ready ? "ready" : paired ? "offline" : "setup";
+      if (projectReadinessEl) projectReadinessEl.hidden = Boolean(ready);
       if (projectReadinessTextEl) projectReadinessTextEl.textContent = ready ? "New projects will be created under documents\\\\mundusx\\\\projects" : paired ? "Start the paired runner to create this project" : "Set up the runner once on this device";
+      if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = Boolean(ready);
       if (projectRunnerSetupEl) projectRunnerSetupEl.open = !ready;
       if (harnessSubmitEl) harnessSubmitEl.disabled = !ready;
       return payload.runners;
@@ -2350,16 +2308,10 @@ export function page(config = configFromEnv()) {
       if (projectSlugEl.value !== slug) projectSlugEl.value = slug;
       if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\" + (slug || "my-project");
     });
-    harnessFormEl?.addEventListener("change", (event) => {
-      if (event.target?.name === "project_template" && harnessExecutionModeEl) {
-        harnessExecutionModeEl.value = event.target.value === "java-maven" ? "hybrid" : "sandbox";
-      }
-    });
-    projectReadinessRefreshEl?.addEventListener("click", async () => {
-      projectReadinessRefreshEl.disabled = true;
-      try { await loadHarnessRunners(); } catch (error) { harnessRunnerStatusEl.textContent = error.message; }
-      finally { projectReadinessRefreshEl.disabled = false; }
-    });
+    function projectExecutionMode(template) {
+      const preferred = template === "java-maven" ? ["hybrid", "sandbox"] : ["sandbox", "hybrid"];
+      return preferred.find((mode) => readyHarnessModes.has(mode)) || preferred[0];
+    }
     document.querySelectorAll(".copy-command").forEach((button) => button.addEventListener("click", async () => {
       const target = document.getElementById(button.dataset.copyTarget || "");
       const value = target?.textContent?.trim() || "";
@@ -2393,7 +2345,6 @@ export function page(config = configFromEnv()) {
     harnessFormEl?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = new FormData(harnessFormEl);
-      const allowedOperations = data.getAll("allowed_operations").map(String);
       const projectSlug = normalizeProjectSlug(data.get("project_slug"));
       harnessResultEl.textContent = "Queuing local project creation…";
       try {
@@ -2406,8 +2357,8 @@ export function page(config = configFromEnv()) {
             objective: "Initialize the local " + projectTemplate + " project workspace and validate its scaffold. Do not add application-specific functionality.",
             project_slug: projectSlug,
             project_template: projectTemplate,
-            execution_mode: String(data.get("execution_mode") || "sandbox"),
-            allowed_operations: allowedOperations,
+            execution_mode: projectExecutionMode(projectTemplate),
+            allowed_operations: PROJECT_ALLOWED_OPERATIONS,
           }),
         });
         const payload = await response.json();
@@ -2804,8 +2755,8 @@ export function page(config = configFromEnv()) {
           objective: message,
           project_slug: project.slug,
           project_template: project.template || "generic",
-          execution_mode: project.template === "java-maven" ? "hybrid" : "sandbox",
-          allowed_operations: ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"],
+          execution_mode: projectExecutionMode(project.template || "generic"),
+          allowed_operations: PROJECT_ALLOWED_OPERATIONS,
         }),
       });
       const payload = await readApiPayload(response, "project task submission failed");
