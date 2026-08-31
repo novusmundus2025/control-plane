@@ -190,15 +190,14 @@ export function page(config = configFromEnv()) {
   const repositoryDialog = `<dialog class="harness-dialog projects-dialog" id="repository-dialog">
       <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
       <header class="project-heading">
-        <span class="project-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span>
-        <span><h2>Projects</h2><p>Create and run code in a local workspace you own.</p></span>
+        <h2>Create project</h2>
       </header>
       ${config.harnessUiEnabled ? `
       <form id="harness-form" class="harness-form">
         <section class="project-section project-create-fields">
           <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-project" autocomplete="off" required></label>
-          <p class="project-local-path">Local files will use <code id="project-local-path">documents\\mundusx\\projects\\my-project</code> when coding starts.</p>
         </section>
+        <p class="project-purpose-note"><span aria-hidden="true">✦</span><span>Projects keep chats and files together so you can continue where you left off.</span></p>
         <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
           <span class="readiness-dot" aria-hidden="true"></span>
           <span><strong id="project-readiness-title">Checking local runner…</strong><small id="project-readiness-text">Looking for your project workspace service.</small></span>
@@ -215,7 +214,7 @@ export function page(config = configFromEnv()) {
         </details>
         <footer class="project-actions">
           <output id="harness-result" aria-live="polite"></output>
-          <button class="harness-submit" type="submit">Create project</button>
+          <button class="harness-submit" type="submit" disabled>Create project</button>
         </footer>
       </form>` : ""}
     </dialog>`;
@@ -1506,24 +1505,19 @@ export function page(config = configFromEnv()) {
     .project-browser summary { font-weight: 700; cursor: pointer; }
     .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
     .sr-only { position: absolute!important; width: 1px!important; height: 1px!important; padding: 0!important; margin: -1px!important; overflow: hidden!important; clip: rect(0,0,0,0)!important; white-space: nowrap!important; border: 0!important; }
-    .projects-dialog { width:min(780px,calc(100vw - 20px)); padding:0; overflow-x:hidden; border-color:var(--line); border-radius:18px; background:color-mix(in srgb,var(--bg) 86%,var(--panel)); box-shadow:0 28px 80px rgba(18,19,28,.24); backdrop-filter:blur(24px); }
+    .projects-dialog { width:min(520px,calc(100vw - 20px)); padding:0; overflow-x:hidden; border-color:var(--line); border-radius:16px; background:color-mix(in srgb,var(--bg) 86%,var(--panel)); box-shadow:0 28px 80px rgba(18,19,28,.24); backdrop-filter:blur(24px); }
     .projects-dialog::backdrop { background:rgba(38,44,62,.42); backdrop-filter:blur(2px); }
-    .projects-dialog .dialog-close { position:absolute; top:24px; right:28px; z-index:3; width:36px; height:36px; float:none; margin:0; }
+    .projects-dialog .dialog-close { position:absolute; top:14px; right:14px; z-index:3; width:36px; height:36px; float:none; margin:0; }
     .projects-dialog .dialog-close button { width:36px; height:36px; display:grid; place-items:center; border-radius:9px; color:var(--text); line-height:1; transition:background var(--motion-fast),transform var(--motion-fast); }
     .projects-dialog .dialog-close button:hover,.projects-dialog .dialog-close button:focus-visible { background:var(--panel); outline:0; transform:scale(1.04); }
-    .project-heading { display:flex; align-items:flex-start; justify-content:center; gap:13px; min-height:116px; padding:28px 82px 20px; margin:0; border:0; text-align:left; }
-    .project-heading > span:last-child { display:grid; gap:4px; min-width:0; }
-    .project-heading h2,.project-heading p { margin:0; }
-    .project-heading h2 { line-height:1.1; }
-    .project-heading p { color:var(--muted); line-height:1.35; }
-    .project-mark { width: 44px; height: 44px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 13px; color: white; background: var(--gradient); box-shadow: 0 9px 22px rgba(86,70,246,.24); }
-    .project-mark svg { width: 23px; height: 23px; }
-    .projects-dialog .harness-form { gap:18px; padding:0 46px 38px; }
-    .project-section { display:grid; gap:10px; padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--panel); box-shadow:0 9px 28px rgba(42,48,82,.04); }
+    .project-heading { display:block; padding:20px 58px 12px 18px; margin:0; border:0; text-align:left; }
+    .project-heading h2 { margin:0; font-size:19px; font-weight:500; line-height:1.2; }
+    .projects-dialog .harness-form { gap:16px; padding:10px 18px 18px; }
+    .project-section { display:grid; gap:10px; padding:0; border:0; background:transparent; box-shadow:none; }
     .project-field-wide { grid-column:1 / -1; line-height:1.25; }
     .project-field-wide input { line-height:1.3; }
-    .project-local-path { display:flex; align-items:center; flex-wrap:wrap; gap:4px; margin:0; color:var(--muted); font-size:12px; line-height:1.35; }
-    .project-local-path code { display:inline-flex; align-items:center; overflow-wrap:anywhere; color:var(--purple); font-size:12px; line-height:1.25; }
+    .project-purpose-note { display:flex; align-items:flex-start; gap:10px; margin:0; padding:12px 13px; border-radius:11px; color:var(--muted); background:color-mix(in srgb,var(--text) 7%,transparent); font-size:13px; line-height:1.4; }
+    .project-purpose-note > span:first-child { color:var(--purple); font-size:16px; line-height:1.1; }
     .project-actions { display:flex; align-items:center; justify-content:flex-end; gap:16px; padding:0; border:0; }
     .project-actions output { min-width:0; flex:1; color: var(--text); font-size: 12px; }
     .project-actions .harness-submit { min-width:142px; min-height:44px; padding:11px 16px; border-radius:11px; box-shadow:0 10px 24px rgba(86,70,246,.22); }
@@ -1731,12 +1725,12 @@ export function page(config = configFromEnv()) {
     html[data-theme="dark"] code { color:#c6bcff; }
     html[data-theme="dark"] .projects-dialog { border-color:rgba(170,182,230,.18); background:color-mix(in srgb,var(--bg) 76%,#171b31); box-shadow:0 30px 90px rgba(0,0,0,.58); }
     html[data-theme="dark"] .projects-dialog::backdrop { background:rgba(2,5,15,.72); }
-    html[data-theme="dark"] .project-section { border-color:rgba(170,182,230,.16); background:rgba(20,24,45,.88); box-shadow:0 12px 34px rgba(0,0,0,.18); }
+    html[data-theme="dark"] .project-purpose-note { color:#d4d8e8; background:rgba(255,255,255,.12); }
     html[data-theme="dark"] .message-retry-button { background:var(--panel); }
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
     @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px}.active-project-context strong{max-width:90px}#web-search-label{display:none} }
-    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:14px;right:14px}.project-heading{min-height:104px;padding:20px 54px 14px}.project-heading p{font-size:13px}.projects-dialog .harness-form{padding:0 16px 18px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%} }
+    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:10px;right:10px}.project-heading{padding:18px 52px 10px 16px}.projects-dialog .harness-form{padding:8px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
   </style>
 </head>
@@ -1868,7 +1862,6 @@ export function page(config = configFromEnv()) {
     const projectReadinessEl = document.getElementById("project-readiness");
     const projectReadinessTextEl = document.getElementById("project-readiness-text");
     const projectRunnerSetupEl = document.getElementById("project-runner-setup");
-    const projectLocalPathEl = document.getElementById("project-local-path");
     const activeProjectContextEl = document.getElementById("active-project-context");
     const activeProjectNameEl = document.getElementById("active-project-name");
     const activeProjectOpenEl = document.getElementById("active-project-open");
@@ -2149,7 +2142,7 @@ export function page(config = configFromEnv()) {
         if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = !runnerSetupRequested;
         if (projectRunnerSetupEl) projectRunnerSetupEl.open = runnerSetupRequested;
         if (harnessRunnerStatusEl) harnessRunnerStatusEl.textContent = error.message || "Local runner status unavailable";
-        if (harnessSubmitEl) harnessSubmitEl.disabled = false;
+        updateProjectCreateAvailability();
       });
     }
 
@@ -2313,7 +2306,7 @@ export function page(config = configFromEnv()) {
       if (projectReadinessTextEl) projectReadinessTextEl.textContent = ready ? "New projects will be created under documents\\\\mundusx\\\\projects" : paired ? "Start the paired runner to create this project" : "Set up the runner once on this device";
       if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = Boolean(ready) || !runnerSetupRequested;
       if (projectRunnerSetupEl) projectRunnerSetupEl.open = !ready && runnerSetupRequested;
-      if (harnessSubmitEl) harnessSubmitEl.disabled = false;
+      updateProjectCreateAvailability();
       return payload.runners;
     }
 
@@ -2412,8 +2405,11 @@ export function page(config = configFromEnv()) {
     projectSlugEl?.addEventListener("input", () => {
       const slug = normalizeProjectSlug(projectSlugEl.value);
       if (projectSlugEl.value !== slug) projectSlugEl.value = slug;
-      if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\" + (slug || "my-project");
+      updateProjectCreateAvailability();
     });
+    function updateProjectCreateAvailability() {
+      if (harnessSubmitEl) harnessSubmitEl.disabled = !projectSlugEl?.value.trim();
+    }
     function projectExecutionMode(template) {
       const preferred = template === "java-maven" ? ["hybrid", "sandbox"] : ["sandbox", "hybrid"];
       return preferred.find((mode) => readyHarnessModes.has(mode)) || preferred[0];
@@ -2462,7 +2458,7 @@ export function page(config = configFromEnv()) {
       setActiveProject({ slug: projectSlug });
       harnessResultEl.textContent = "";
       harnessFormEl.reset();
-      if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\my-project";
+      updateProjectCreateAvailability();
       repositoryDialogEl?.close();
       setWorkspaceDestination("chats");
       addMessage("Project " + projectSlug + " is active. You can plan and chat now; local files are created only when you request file, build, or test work.", "assistant", "Project ready");
