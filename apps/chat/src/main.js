@@ -179,39 +179,30 @@ export function normalizeAssistantDisplayText(text) {
 }
 
 export function page(config = configFromEnv()) {
-  const repositoryLauncher = `<button class="rail-destination" id="repository-open" type="button" hidden>
+  const repositoryLauncher = `<button class="rail-destination" id="repository-open" type="button"${config.harnessUiEnabled ? "" : " hidden"}>
       <span class="rail-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span>
       <span>Projects</span><span class="rail-destination-chevron" aria-hidden="true">›</span>
     </button>`;
-  const repositoryMobileLauncher = `<button class="header-projects" id="repository-open-mobile" type="button" aria-label="Open Projects" hidden>
+  const repositoryMobileLauncher = `<button class="header-projects" id="repository-open-mobile" type="button" aria-label="Open Projects"${config.harnessUiEnabled ? "" : " hidden"}>
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Projects</span>
     </button>`;
   const repositoryDialog = `<dialog class="harness-dialog projects-dialog" id="repository-dialog">
       <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
       <header class="project-heading">
         <span class="project-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span>
-        <span><h2>Projects</h2><p>Create something new or continue from one of your repositories.</p></span>
+        <span><h2>Projects</h2><p>Create and run code in a local workspace you own.</p></span>
       </header>
       ${config.harnessUiEnabled ? `
       <form id="harness-form" class="harness-form">
         <section class="project-section">
-          <div class="project-section-heading"><span class="project-section-number">1</span><span><strong>Choose a repository</strong><small>Your GitHub permissions remain the source of truth.</small></span></div>
-        <fieldset class="harness-project-source"><legend class="sr-only">Project destination</legend>
-          <label class="project-source-card"><input type="radio" name="project_source" value="new" checked><span><strong>New repository</strong><small>Create a repository in my GitHub account</small></span></label>
-          <label class="project-source-card"><input type="radio" name="project_source" value="existing"><span><strong>Existing repository</strong><small>Work on one of my existing repositories</small></span></label>
-        </fieldset>
-        <section id="harness-new-project" class="harness-project-fields">
+          <div class="project-section-heading"><span class="project-section-number">1</span><span><strong>Create a local project</strong><small>GitHub is optional and can be connected later.</small></span></div>
+        <section class="harness-project-fields">
           <div class="project-field-grid">
-            <label class="project-field-wide">Repository name<input name="repository_name" maxlength="100" pattern="[A-Za-z0-9._-]+" placeholder="my-java-program" required></label>
+            <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-java-program" autocomplete="off" required></label>
             <label>Project type<select name="project_template"><option value="java-maven">Java (Maven)</option><option value="generic">Generic project</option></select></label>
-            <label>Visibility<select name="repository_visibility"><option value="private" selected>Private</option><option value="public">Public</option></select></label>
-            <label class="project-field-wide">Description<input name="repository_description" maxlength="350" placeholder="Optional description"></label>
           </div>
-          <small class="project-ownership">Created under your signed-in GitHub identity. MundusX does not own the repository.</small>
-        </section>
-        <section id="harness-existing-project" class="harness-project-fields" hidden>
-          <label>Your repository<select name="repository_id" id="harness-grant"></select></label>
-          <small>Only repositories granted to the GitHub App are shown.</small>
+          <div class="project-local-path"><span>Local folder</span><code id="project-local-path">documents\\mundusx\\projects\\my-java-program</code></div>
+          <small class="project-ownership">Files stay on your device. MundusX does not publish them or send them to contributor nodes.</small>
         </section>
         </section>
         <section class="project-section">
@@ -221,7 +212,7 @@ export function page(config = configFromEnv()) {
         <details class="project-advanced">
           <summary><span><strong>Advanced controls</strong><small>Execution mode and allowed tools</small></span><span class="project-advanced-chevron" aria-hidden="true">⌄</span></summary>
           <div class="project-advanced-body">
-            <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted computer only)</option></select></label>
+            <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted local runner only)</option></select></label>
             <fieldset><legend>Allowed tools</legend>
               <div class="project-tool-grid">
                 <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
@@ -234,70 +225,27 @@ export function page(config = configFromEnv()) {
             </fieldset>
           </div>
         </details>
-        <div class="project-readiness" id="project-readiness" data-state="checking">
+        <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
           <span class="readiness-dot" aria-hidden="true"></span>
-          <span id="project-readiness-text">Checking your Computer…</span>
-          <button id="project-open-computer" type="button">Open Computer</button>
+          <span><strong id="project-readiness-title">Checking local runner…</strong><small id="project-readiness-text">Looking for your project workspace service.</small></span>
+          <button id="project-readiness-refresh" type="button" aria-label="Refresh local runner status">Refresh</button>
         </div>
+        <details class="project-runner-setup" id="project-runner-setup">
+          <summary><span><strong>Local runner setup</strong><small>Required once on this device</small></span><span aria-hidden="true">⌄</span></summary>
+          <div class="project-runner-setup-body">
+            <p>The runner creates projects in your Documents folder and executes bounded tools locally. It is separate from inference contributor nodes.</p>
+            <div class="inline-actions">${config.harnessRunnerDownloadUrl ? `<a class="harness-download primary" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" target="_blank" rel="noopener">Download local runner</a>` : `<span class="setup-unavailable">Runner download is not configured yet.</span>`}<button id="harness-pair" type="button">Create pairing code</button></div>
+            <code id="harness-pairing-code" class="pairing-code" hidden></code>
+            <div class="command-row" id="harness-pairing-command-row" hidden><code id="harness-pairing-command"></code><button class="copy-command" type="button" data-copy-target="harness-pairing-command">Copy</button></div>
+            <p id="harness-runner-status">Start the runner, pair it once, and keep it available while a project task runs.</p>
+          </div>
+        </details>
         <footer class="project-actions">
-          <span><small>Creates UAT work only. Merge and deployment require separate approval.</small><output id="harness-result" aria-live="polite"></output></span>
+          <span><small>Creates a lowercase local project. Publishing to GitHub is a separate action.</small><output id="harness-result" aria-live="polite"></output></span>
           <button class="harness-submit" type="submit">Create project</button>
         </footer>
       </form>` : ""}
-      <details class="project-browser">
-        <summary>Browse repository files</summary>
-        <p>Only projects available to both your GitHub account and the installed MundusX GitHub App appear here.</p>
-        <label>Project<select id="repository-select"></select></label>
-        <div class="repository-path"><button id="repository-up" type="button">Up</button><code id="repository-path">/</code></div>
-        <div class="repository-entries" id="repository-entries"></div>
-        <pre class="repository-file" id="repository-file" hidden></pre>
-        <output id="repository-result" aria-live="polite"></output>
-      </details>
     </dialog>`;
-  const harnessLauncher = config.harnessUiEnabled
-    ? `<button class="header-action" id="harness-open" type="button" hidden>Computer</button>
-      <dialog class="harness-dialog" id="harness-dialog">
-        <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
-        <header class="computer-heading">
-          <span class="computer-mark" aria-hidden="true">⌘</span>
-          <span><h2>Computer</h2><p>Run coding tasks safely on a computer you control.</p></span>
-        </header>
-        <section class="computer-summary" id="computer-summary" data-state="checking" aria-live="polite">
-          <span class="readiness-dot" aria-hidden="true"></span>
-          <span><strong id="computer-summary-title">Checking connection…</strong><small id="harness-runner-status">Looking for a paired runner.</small></span>
-          <button id="computer-refresh" type="button" aria-label="Refresh Computer status">Refresh</button>
-        </section>
-        <ol class="computer-steps" aria-label="Computer setup">
-          <li class="computer-step" id="computer-step-install" data-state="current">
-            <span class="step-index" aria-hidden="true">1</span>
-            <div class="step-content"><h3>Install the runner</h3><p>The runner creates isolated workspaces on this computer. It is separate from inference contributor nodes.</p>
-              <div class="inline-actions">${config.harnessRunnerDownloadUrl ? `<a class="harness-download primary" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" target="_blank" rel="noopener">Download runner</a>` : `<span class="setup-unavailable">Download is not configured yet.</span>`}</div>
-            </div>
-          </li>
-          <li class="computer-step" id="computer-step-github" data-state="pending">
-            <span class="step-index" aria-hidden="true">2</span>
-            <div class="step-content"><h3>Connect GitHub on this computer</h3><p>Sign in through GitHub in your browser. Your credential stays in the local GitHub CLI.</p>
-              <div class="command-row"><code id="harness-github-command">gh auth login --hostname github.com --git-protocol https --web</code><button class="copy-command" type="button" data-copy-target="harness-github-command">Copy</button></div>
-              <div class="command-row"><code id="harness-git-command">gh auth setup-git</code><button class="copy-command" type="button" data-copy-target="harness-git-command">Copy</button></div>
-            </div>
-          </li>
-          <li class="computer-step" id="computer-step-pair" data-state="pending">
-            <span class="step-index" aria-hidden="true">3</span>
-            <div class="step-content"><h3>Pair with Chat-U</h3><p>Create a one-use code, then run the displayed command locally.</p>
-              <div class="inline-actions"><button id="harness-pair" class="primary" type="button">Create pairing code</button></div>
-              <code id="harness-pairing-code" class="pairing-code" hidden></code>
-              <div class="command-row" id="harness-pairing-command-row" hidden><code id="harness-pairing-command"></code><button class="copy-command" type="button" data-copy-target="harness-pairing-command">Copy</button></div>
-            </div>
-          </li>
-          <li class="computer-step" id="computer-step-ready" data-state="pending">
-            <span class="step-index" aria-hidden="true">4</span>
-            <div class="step-content"><h3>Ready for projects</h3><p id="computer-ready-description">Start the runner and leave it available while a project task runs.</p></div>
-          </li>
-        </ol>
-        <p class="credential-note"><strong>Your credentials stay yours.</strong> Never paste a GitHub token into Chat-U. Chat-U uses encrypted GitHub App authorization; the runner uses your local GitHub CLI. Inference contributor nodes receive neither credential.</p>
-        <div class="harness-boundary"><strong>Security boundary</strong><span>Only this paired computer receives an isolated project workspace. Inference contributor nodes do not.</span></div>
-      </dialog>`
-    : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1541,31 +1489,11 @@ export function page(config = configFromEnv()) {
     .dialog-close button { border: 0; background: transparent; font-size: 28px; cursor: pointer; }
     .harness-boundary,.harness-form { display: grid; gap: 14px; }
     .harness-boundary { padding: 12px; border-radius: 10px; background: var(--bg); }
-    .computer-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
-    .computer-heading h2,.computer-heading p { margin: 0; }
-    .computer-heading p { margin-top: 3px; color: var(--muted); }
-    .computer-mark { width: 42px; height: 42px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 12px; color: white; background: var(--gradient); font-weight: 800; }
-    .computer-summary,.project-readiness { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--bg); }
-    .computer-summary { padding: 13px 14px; border-radius: 12px; margin-bottom: 14px; }
-    .computer-summary > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; flex: 1; }
-    .computer-summary small { color: var(--muted); }
-    .computer-summary button,.project-readiness button { border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--text); padding: 7px 10px; font: inherit; cursor: pointer; }
+    .project-readiness { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--bg); }
+    .project-readiness button { border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--text); padding: 7px 10px; font: inherit; cursor: pointer; }
     .readiness-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 999px; background: var(--muted-2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted-2) 15%, transparent); }
     [data-state="ready"] > .readiness-dot { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 15%, transparent); }
     [data-state="offline"] > .readiness-dot { background: #d98c16; box-shadow: 0 0 0 4px rgba(217,140,22,.14); }
-    .computer-steps { list-style: none; display: grid; gap: 0; margin: 0; padding: 0; }
-    .computer-step { position: relative; display: grid; grid-template-columns: 34px 1fr; gap: 12px; padding: 9px 0 18px; }
-    .computer-step:not(:last-child)::after { content: ""; position: absolute; left: 16px; top: 42px; bottom: 0; width: 1px; background: var(--line-strong); }
-    .step-index { position: relative; z-index: 1; width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 13px; font-weight: 800; }
-    .computer-step[data-state="complete"] .step-index { border-color: var(--green); background: var(--green); color: white; font-size: 0; }
-    .computer-step[data-state="complete"] .step-index::after { content: "✓"; font-size: 15px; }
-    .computer-step[data-state="current"] .step-index { border-color: var(--blue); color: var(--blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 12%, transparent); }
-    .step-content { min-width: 0; padding-top: 4px; }
-    .step-content h3,.step-content p { margin: 0; }
-    .step-content p { margin-top: 4px; color: var(--muted); line-height: 1.45; }
-    .step-content .inline-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 11px; }
-    .step-content button,.harness-download { border: 1px solid var(--line-strong); border-radius: 9px; padding: 9px 12px; background: var(--panel); color: var(--text); font: inherit; text-decoration: none; cursor: pointer; }
-    .step-content .primary { border-color: transparent; background: var(--gradient); color: white; font-weight: 700; }
     .command-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; margin-top: 9px; }
     .command-row[hidden] { display: none; }
     .command-row code,.pairing-code { min-width: 0; overflow-wrap: anywhere; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); user-select: all; font-size: 12px; }
@@ -1576,7 +1504,8 @@ export function page(config = configFromEnv()) {
     .credential-note strong { color: var(--text); }
     .setup-unavailable { color: var(--muted); font-size: 13px; }
     .project-readiness { margin: 2px 0; padding: 10px 12px; border-radius: 10px; }
-    .project-readiness > span:nth-child(2) { flex: 1; }
+    .project-readiness > span:nth-child(2) { display:grid; gap:2px; flex: 1; }
+    .project-readiness small { color:var(--muted); }
     .harness-form label { display: grid; gap: 6px; }
     .harness-form textarea,.harness-form select,.harness-form input[type="text"],.harness-form input:not([type]) { grid-column: auto; grid-row: auto; width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; background: white; font: inherit; }
     .harness-form textarea { min-height: 120px; max-height: 320px; resize: vertical; }
@@ -1611,6 +1540,9 @@ export function page(config = configFromEnv()) {
     .project-field-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
     .project-field-wide { grid-column: 1 / -1; }
     .project-ownership { color: var(--muted); }
+    .project-local-path { display:grid; gap:5px; padding:11px 12px; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+    .project-local-path span { color:var(--muted); font-size:12px; }
+    .project-local-path code { overflow-wrap:anywhere; color:var(--purple); font-size:13px; }
     .project-objective textarea { min-height: 104px; }
     .project-advanced { border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); overflow: hidden; }
     .project-advanced > summary { display: flex; align-items: center; gap: 12px; padding: 13px 16px; cursor: pointer; list-style: none; }
@@ -1626,6 +1558,16 @@ export function page(config = configFromEnv()) {
     .project-actions > span { display: grid; gap: 4px; min-width: 0; flex: 1; color: var(--muted); }
     .project-actions output { color: var(--text); font-size: 12px; }
     .project-actions .harness-submit { min-width: 142px; }
+    .project-actions .harness-submit:disabled { cursor:not-allowed; filter:grayscale(.45); opacity:.55; }
+    .project-runner-setup { border:1px solid var(--line); border-radius:13px; background:var(--panel-2); overflow:hidden; }
+    .project-runner-setup > summary { display:flex; align-items:center; gap:12px; padding:13px 16px; cursor:pointer; list-style:none; }
+    .project-runner-setup > summary::-webkit-details-marker { display:none; }
+    .project-runner-setup > summary > span:first-child { display:grid; gap:2px; flex:1; }
+    .project-runner-setup summary small,.project-runner-setup-body { color:var(--muted); }
+    .project-runner-setup-body { display:grid; gap:10px; padding:14px 16px 16px; border-top:1px solid var(--line); line-height:1.45; }
+    .project-runner-setup-body p { margin:0; }
+    .project-runner-setup-body .inline-actions { display:flex; flex-wrap:wrap; gap:8px; }
+    .project-runner-setup-body button,.project-runner-setup-body .harness-download { border:1px solid var(--line-strong); border-radius:9px; padding:9px 12px; color:var(--text); background:var(--panel); font:inherit; text-decoration:none; cursor:pointer; }
     .projects-dialog .harness-form textarea,.projects-dialog .harness-form select,.projects-dialog .harness-form input[type="text"],.projects-dialog .harness-form input:not([type]) { color: var(--text); background: var(--panel); }
     .projects-dialog .project-browser { margin-top: 16px; padding: 13px 2px 0; }
     .auth-gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(246,247,252,.96); }
@@ -1829,7 +1771,7 @@ export function page(config = configFromEnv()) {
   <div class="auth-gate" id="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title">
     <div class="auth-card">
       <h1 id="auth-title">Sign in to MundusX</h1>
-      <p>Your chats, Projects, and Computer permissions are tied to your individual account.</p>
+      <p>Your chats and local Projects permissions are tied to your individual account.</p>
       <a class="auth-github" id="auth-github" href="/api/auth/github/start">Continue with GitHub</a>
       <form class="auth-email" id="auth-email-form"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="email" required><button type="submit">Email me a sign-in link</button></form>
       <div class="auth-message" id="auth-message">Checking your session…</div>
@@ -1894,7 +1836,6 @@ export function page(config = configFromEnv()) {
         <div class="theme-switch" role="group" aria-label="Color theme"><button class="theme-option" id="theme-light" type="button" aria-label="Use light theme" aria-pressed="true">☀</button><button class="theme-option" id="theme-dark" type="button" aria-label="Use dark theme" aria-pressed="false">☾</button></div>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
         ${repositoryMobileLauncher}
-        ${harnessLauncher}
       </header>
       <section class="messages" id="messages" aria-live="polite">
         <div class="conversation" id="conversation">
@@ -1939,8 +1880,6 @@ export function page(config = configFromEnv()) {
     const accountMenuEl = document.getElementById("account-menu");
     const webSearchToggleEl = document.getElementById("web-search-toggle");
     const webSearchLabelEl = document.getElementById("web-search-label");
-    const harnessOpenEl = document.getElementById("harness-open");
-    const harnessDialogEl = document.getElementById("harness-dialog");
     const harnessFormEl = document.getElementById("harness-form");
     const harnessResultEl = document.getElementById("harness-result");
     const harnessRunnerStatusEl = document.getElementById("harness-runner-status");
@@ -1948,20 +1887,13 @@ export function page(config = configFromEnv()) {
     const harnessPairingCodeEl = document.getElementById("harness-pairing-code");
     const harnessPairingCommandEl = document.getElementById("harness-pairing-command");
     const harnessPairingCommandRowEl = document.getElementById("harness-pairing-command-row");
-    const computerSummaryEl = document.getElementById("computer-summary");
-    const computerSummaryTitleEl = document.getElementById("computer-summary-title");
-    const computerRefreshEl = document.getElementById("computer-refresh");
-    const computerReadyDescriptionEl = document.getElementById("computer-ready-description");
-    const computerStepInstallEl = document.getElementById("computer-step-install");
-    const computerStepGithubEl = document.getElementById("computer-step-github");
-    const computerStepPairEl = document.getElementById("computer-step-pair");
-    const computerStepReadyEl = document.getElementById("computer-step-ready");
+    const projectReadinessTitleEl = document.getElementById("project-readiness-title");
+    const projectReadinessRefreshEl = document.getElementById("project-readiness-refresh");
     const projectReadinessEl = document.getElementById("project-readiness");
     const projectReadinessTextEl = document.getElementById("project-readiness-text");
-    const projectOpenComputerEl = document.getElementById("project-open-computer");
+    const projectRunnerSetupEl = document.getElementById("project-runner-setup");
+    const projectLocalPathEl = document.getElementById("project-local-path");
     const harnessExecutionModeEl = document.getElementById("harness-execution-mode");
-    const harnessNewProjectEl = document.getElementById("harness-new-project");
-    const harnessExistingProjectEl = document.getElementById("harness-existing-project");
     const harnessSubmitEl = harnessFormEl?.querySelector(".harness-submit");
     const harnessTemplateEl = harnessFormEl?.elements.namedItem("project_template");
     const enterToSendToggleEl = document.getElementById("enter-to-send-toggle");
@@ -1973,23 +1905,15 @@ export function page(config = configFromEnv()) {
     const authMessageEl = document.getElementById("auth-message");
     const authEmailFormEl = document.getElementById("auth-email-form");
     const accountLogoutEl = document.getElementById("account-logout");
-    const harnessGrantEl = document.getElementById("harness-grant");
     const chatsOpenEl = document.getElementById("chats-open");
     const repositoryOpenEl = document.getElementById("repository-open");
     const repositoryOpenMobileEl = document.getElementById("repository-open-mobile");
     const repositoryDialogEl = document.getElementById("repository-dialog");
-    const repositorySelectEl = document.getElementById("repository-select");
-    const repositoryEntriesEl = document.getElementById("repository-entries");
-    const repositoryFileEl = document.getElementById("repository-file");
-    const repositoryPathEl = document.getElementById("repository-path");
-    const repositoryResultEl = document.getElementById("repository-result");
-    const repositoryUpEl = document.getElementById("repository-up");
     const meshCanvasEl = document.getElementById("mesh-canvas");
     const themeLightEl = document.getElementById("theme-light");
     const themeDarkEl = document.getElementById("theme-dark");
     let authCsrfToken = null;
     let currentUser = null;
-    let currentRepositoryPath = "";
     let historyKey = "mundusx.chat.pending.history.v1";
     let conversationIdKey = "mundusx.chat.pending.conversationId.v1";
     let conversationCachePrefix = "mundusx.chat.pending.conversation.v1:";
@@ -2169,8 +2093,6 @@ export function page(config = configFromEnv()) {
       const providers = await nativeFetch("/api/auth/providers").then((value) => value.json()).catch(() => ({}));
       document.getElementById("auth-github").hidden = !providers.github;
       authEmailFormEl.hidden = !providers.email;
-      repositoryOpenEl.hidden = !providers.github;
-      repositoryOpenMobileEl.hidden = !providers.github;
       try {
         const response = await nativeFetch("/api/auth/session");
         if (!response.ok) throw new Error("Sign in required");
@@ -2187,10 +2109,6 @@ export function page(config = configFromEnv()) {
         document.querySelectorAll("[data-account-name]").forEach((node) => node.textContent = name);
         document.querySelectorAll("[data-account-email]").forEach((node) => node.textContent = user.email);
         document.querySelectorAll("[data-account-avatar]").forEach((node) => node.textContent = name.split(/\\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase());
-        if (!user.github_connected && harnessOpenEl) harnessOpenEl.hidden = true;
-        if (user.github_connected) loadRepositories().catch(() => {
-          if (harnessOpenEl) harnessOpenEl.hidden = true;
-        });
         renderHistory();
         authGateEl.hidden = true;
       } catch {
@@ -2201,59 +2119,6 @@ export function page(config = configFromEnv()) {
           authGateEl.hidden = true;
         }
       }
-    }
-
-    async function loadRepositories() {
-      repositoryResultEl.textContent = "Loading repositories allowed by GitHub…";
-      const response = await window.fetch("/api/github/repositories");
-      if (response.status === 401 || response.status === 403) {
-        location.href = "/api/auth/github/start?return_to=/";
-        return [];
-      }
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Repositories could not be loaded");
-      const options = payload.repositories.map((repo) => {
-        const option = document.createElement("option");
-        option.value = String(repo.id);
-        option.textContent = repo.full_name + (repo.permissions.push ? " · write" : " · read");
-        return option;
-      });
-      repositorySelectEl.replaceChildren(...options.map((option) => option.cloneNode(true)));
-      harnessGrantEl?.replaceChildren(...options.map((option) => option.cloneNode(true)));
-      if (harnessOpenEl) harnessOpenEl.hidden = false;
-      if (repositoryOpenEl) repositoryOpenEl.hidden = false;
-      if (repositoryOpenMobileEl) repositoryOpenMobileEl.hidden = false;
-      repositoryResultEl.textContent = payload.repositories.length ? "Select a project to browse." : "No existing GitHub App projects are available. You can create a new project above.";
-      return payload.repositories;
-    }
-
-    async function loadRepositoryContents(path = "") {
-      const repositoryId = repositorySelectEl.value;
-      if (!repositoryId) return;
-      repositoryResultEl.textContent = "Checking live GitHub access…";
-      const params = new URLSearchParams({ path });
-      const response = await window.fetch("/api/github/repositories/" + encodeURIComponent(repositoryId) + "/contents?" + params);
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Repository content could not be loaded");
-      currentRepositoryPath = payload.path || "";
-      repositoryPathEl.textContent = "/" + currentRepositoryPath;
-      repositoryFileEl.hidden = true;
-      if (payload.file) {
-        repositoryEntriesEl.replaceChildren();
-        repositoryFileEl.textContent = payload.file.content;
-        repositoryFileEl.hidden = false;
-        repositoryResultEl.textContent = payload.file.path + " · " + payload.file.size + " bytes" + (payload.file.redacted ? " · obvious credentials masked" : "");
-        return;
-      }
-      repositoryEntriesEl.replaceChildren(...payload.entries.map((entry) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "repository-entry";
-        button.dataset.path = entry.path;
-        button.textContent = (entry.type === "dir" ? "📁 " : "📄 ") + entry.name;
-        return button;
-      }));
-      repositoryResultEl.textContent = payload.entries.length + " entries";
     }
 
     function setWorkspaceDestination(destination) {
@@ -2270,29 +2135,17 @@ export function page(config = configFromEnv()) {
     }
 
     async function openProjects() {
-      if (!currentUser?.github_connected) { location.href = "/api/auth/github/start?return_to=/"; return; }
       setWorkspaceDestination("projects");
       repositoryDialogEl.showModal();
       loadHarnessRunners().catch((error) => {
         if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
-        if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Computer status unavailable";
+        if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Local runner status unavailable";
       });
-      try { const repositories = await loadRepositories(); if (repositories.length) await loadRepositoryContents(""); }
-      catch (error) { repositoryResultEl.textContent = error.message; }
     }
 
     repositoryOpenEl?.addEventListener("click", openProjects);
     repositoryOpenMobileEl?.addEventListener("click", openProjects);
     repositoryDialogEl?.addEventListener("close", () => setWorkspaceDestination("chats"));
-    repositorySelectEl?.addEventListener("change", () => loadRepositoryContents("").catch((error) => repositoryResultEl.textContent = error.message));
-    repositoryEntriesEl?.addEventListener("click", (event) => {
-      const button = event.target.closest("button[data-path]");
-      if (button) loadRepositoryContents(button.dataset.path).catch((error) => repositoryResultEl.textContent = error.message);
-    });
-    repositoryUpEl?.addEventListener("click", () => {
-      const parent = currentRepositoryPath.split("/").slice(0, -1).join("/");
-      loadRepositoryContents(parent).catch((error) => repositoryResultEl.textContent = error.message);
-    });
 
     authEmailFormEl?.addEventListener("submit", async (event) => {
       event.preventDefault();
@@ -2423,8 +2276,8 @@ export function page(config = configFromEnv()) {
     async function loadHarnessRunners() {
       if (!harnessRunnerStatusEl) return [];
       harnessRunnerStatusEl.textContent = "Checking runner connection…";
-      if (computerSummaryEl) computerSummaryEl.dataset.state = "checking";
-      if (computerSummaryTitleEl) computerSummaryTitleEl.textContent = "Checking connection…";
+      if (projectReadinessEl) projectReadinessEl.dataset.state = "checking";
+      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = "Checking local runner…";
       const response = await fetch("/api/harness/runners");
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Runner status could not be loaded");
@@ -2437,55 +2290,35 @@ export function page(config = configFromEnv()) {
         if (preferred) harnessExecutionModeEl.value = preferred;
       }
       const statusText = ready
-        ? "Connected: " + ready.runner_id + " · " + ready.parallel_slots + " slot" + (ready.parallel_slots === 1 ? "" : "s")
+        ? "Ready · " + ready.parallel_slots + " local slot" + (ready.parallel_slots === 1 ? "" : "s")
         : payload.runners.length
           ? "Runner paired but offline. Start mundusx-harness-runner run."
           : "No runner paired yet.";
       harnessRunnerStatusEl.textContent = statusText;
-      if (computerSummaryEl) computerSummaryEl.dataset.state = ready ? "ready" : paired ? "offline" : "setup";
-      if (computerSummaryTitleEl) computerSummaryTitleEl.textContent = ready ? "Computer ready" : paired ? "Computer offline" : "Setup required";
-      if (computerStepInstallEl) computerStepInstallEl.dataset.state = paired ? "complete" : "current";
-      if (computerStepGithubEl) computerStepGithubEl.dataset.state = paired ? "complete" : "pending";
-      if (computerStepPairEl) computerStepPairEl.dataset.state = paired ? "complete" : "pending";
-      if (computerStepReadyEl) computerStepReadyEl.dataset.state = ready ? "complete" : paired ? "current" : "pending";
-      if (computerReadyDescriptionEl) computerReadyDescriptionEl.textContent = ready
-        ? "This computer can receive bounded project work now."
-        : paired ? "Run mundusx-harness-runner run on the paired computer." : "Complete the steps above, then start the runner.";
       if (projectReadinessEl) projectReadinessEl.dataset.state = ready ? "ready" : paired ? "offline" : "setup";
-      if (projectReadinessTextEl) projectReadinessTextEl.textContent = ready ? "Computer ready for project execution" : paired ? "Computer paired but offline" : "Connect a Computer before running this project";
+      if (projectReadinessTextEl) projectReadinessTextEl.textContent = ready ? "New projects will be created under documents\\\\mundusx\\\\projects" : paired ? "Start the paired runner to create this project" : "Set up the runner once on this device";
+      if (projectRunnerSetupEl) projectRunnerSetupEl.open = !ready;
+      if (harnessSubmitEl) harnessSubmitEl.disabled = !ready;
       return payload.runners;
     }
 
-    function setHarnessProjectSource(source) {
-      const creating = source !== "existing";
-      if (harnessNewProjectEl) harnessNewProjectEl.hidden = !creating;
-      if (harnessExistingProjectEl) harnessExistingProjectEl.hidden = creating;
-      const nameInput = harnessFormEl?.elements.namedItem("repository_name");
-      if (nameInput) nameInput.required = creating;
-      if (harnessGrantEl) harnessGrantEl.required = !creating;
-      if (harnessSubmitEl) harnessSubmitEl.textContent = creating ? "Create project" : "Start project task";
-      if (creating && harnessTemplateEl?.value === "java-maven" && harnessExecutionModeEl) harnessExecutionModeEl.value = "hybrid";
+    function normalizeProjectSlug(value) {
+      return String(value || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
     }
 
+    const projectSlugEl = harnessFormEl?.elements.namedItem("project_slug");
+    projectSlugEl?.addEventListener("input", () => {
+      const slug = normalizeProjectSlug(projectSlugEl.value);
+      if (projectSlugEl.value !== slug) projectSlugEl.value = slug;
+      if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\" + (slug || "my-project");
+    });
     harnessFormEl?.addEventListener("change", (event) => {
-      if (event.target?.name === "project_source") setHarnessProjectSource(String(event.target.value));
       if (event.target?.name === "project_template" && event.target.value === "java-maven" && harnessExecutionModeEl) harnessExecutionModeEl.value = "hybrid";
     });
-    setHarnessProjectSource("new");
-
-    harnessOpenEl?.addEventListener("click", async () => {
-      harnessDialogEl?.showModal();
+    projectReadinessRefreshEl?.addEventListener("click", async () => {
+      projectReadinessRefreshEl.disabled = true;
       try { await loadHarnessRunners(); } catch (error) { harnessRunnerStatusEl.textContent = error.message; }
-    });
-    computerRefreshEl?.addEventListener("click", async () => {
-      computerRefreshEl.disabled = true;
-      try { await loadHarnessRunners(); } catch (error) { harnessRunnerStatusEl.textContent = error.message; }
-      finally { computerRefreshEl.disabled = false; }
-    });
-    projectOpenComputerEl?.addEventListener("click", () => {
-      repositoryDialogEl?.close();
-      harnessDialogEl?.showModal();
-      loadHarnessRunners().catch((error) => { harnessRunnerStatusEl.textContent = error.message; });
+      finally { projectReadinessRefreshEl.disabled = false; }
     });
     document.querySelectorAll(".copy-command").forEach((button) => button.addEventListener("click", async () => {
       const target = document.getElementById(button.dataset.copyTarget || "");
@@ -2510,9 +2343,6 @@ export function page(config = configFromEnv()) {
         harnessPairingCodeEl.hidden = false;
         harnessPairingCommandEl.textContent = "mundusx-harness-runner pair " + payload.pairing_code;
         harnessPairingCommandRowEl.hidden = false;
-        if (computerStepInstallEl) computerStepInstallEl.dataset.state = "complete";
-        if (computerStepGithubEl) computerStepGithubEl.dataset.state = "complete";
-        if (computerStepPairEl) computerStepPairEl.dataset.state = "current";
         harnessRunnerStatusEl.textContent = "Pairing code expires in 10 minutes and works once.";
       } catch (error) {
         harnessRunnerStatusEl.textContent = error.message;
@@ -2524,53 +2354,29 @@ export function page(config = configFromEnv()) {
       event.preventDefault();
       const data = new FormData(harnessFormEl);
       const allowedOperations = data.getAll("allowed_operations").map(String);
-      const projectSource = String(data.get("project_source") || "new");
-      let repositoryId = String(data.get("repository_id") || "");
-      let createdRepository = "";
-      harnessResultEl.textContent = projectSource === "new" ? "Creating your GitHub repository…" : "Submitting bounded task…";
+      const projectSlug = normalizeProjectSlug(data.get("project_slug"));
+      harnessResultEl.textContent = "Queuing local project creation…";
       try {
-        if (projectSource === "new") {
-          const createResponse = await fetch("/api/github/repositories", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              name: String(data.get("repository_name") || ""),
-              description: String(data.get("repository_description") || ""),
-              visibility: String(data.get("repository_visibility") || "private"),
-              template: String(data.get("project_template") || "java-maven"),
-            }),
-          });
-          const created = await createResponse.json();
-          if (!createResponse.ok) throw new Error(created.error || "GitHub repository creation failed");
-          repositoryId = String(created.repository.id);
-          createdRepository = created.repository.full_name;
-          const option = document.createElement("option");
-          option.value = repositoryId;
-          option.textContent = createdRepository + " · write";
-          option.selected = true;
-          harnessGrantEl?.append(option);
-          repositorySelectEl?.append(option.cloneNode(true));
-          harnessResultEl.textContent = "Created " + createdRepository + ". Submitting bounded task…";
-        }
-        if (!repositoryId) throw new Error("Select a repository for this Harness task");
+        if (!projectSlug) throw new Error("Enter a lowercase project name");
         const response = await fetch("/api/harness/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             objective: String(data.get("objective") || ""),
-            repository_id: repositoryId,
+            project_slug: projectSlug,
+            project_template: String(data.get("project_template") || "generic"),
             execution_mode: String(data.get("execution_mode") || "sandbox"),
             allowed_operations: allowedOperations,
           }),
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Harness submission failed");
-        harnessResultEl.textContent = (createdRepository ? "Created " + createdRepository + " · " : "") + "Task " + payload.task_id + " · " + payload.state + " · UAT approval required";
+        harnessResultEl.textContent = "Project " + projectSlug + " · task " + payload.task_id + " · " + payload.state + " · UAT approval required";
         harnessFormEl.reset();
-        setHarnessProjectSource("new");
+        if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\my-project";
         trackHarnessTask(payload.task_id);
       } catch (error) {
-        harnessResultEl.textContent = (createdRepository ? "Repository " + createdRepository + " was created, but the task was not submitted: " : "") + (error.message || "Harness submission failed");
+        harnessResultEl.textContent = error.message || "Local project creation failed";
       }
     });
 
@@ -4848,9 +4654,11 @@ export function createServerApp(config = configFromEnv()) {
       if (request.method === "POST" && url.pathname === "/api/harness/tasks") {
         const body = await readJsonBody(request);
         const session = request.mundusxSession ?? await authStore.session(request);
-        if (!session) throw httpError(401, "GitHub sign-in is required for Harness work");
+        if (!session) throw httpError(401, "Authentication is required for Harness work");
         authStore.requireCsrf(request, session);
-        const authority = await authStore.harnessAuthority(session.id, body?.repository_id, String(body?.execution_mode || "sandbox"), body?.allowed_operations);
+        const authority = body?.project_slug
+          ? localProjectAuthority(session, body)
+          : await authStore.harnessAuthority(session.id, body?.repository_id, String(body?.execution_mode || "sandbox"), body?.allowed_operations);
         const result = await submitHarnessTask(body, config, fetch, session, authority);
         return sendJson(response, 201, result);
       }
@@ -4917,6 +4725,28 @@ const CHAT_HARNESS_OPERATIONS = new Set([
   "validation.run",
 ]);
 
+export function localProjectAuthority(session, body) {
+  const slug = String(body?.project_slug || "").trim();
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 80) {
+    throw httpError(400, "project_slug must be a lowercase hyphenated name");
+  }
+  const template = String(body?.project_template || "generic");
+  if (!new Set(["generic", "java-maven"]).has(template)) {
+    throw httpError(400, "project_template is not supported");
+  }
+  const prefixes = template === "java-maven"
+    ? ["src", "pom.xml", "README.md", ".gitignore", ".mundusx"]
+    : ["src", "tests", "docs", "README.md", ".gitignore", ".mundusx", "package.json", "Cargo.toml", "pyproject.toml", "go.mod", "Makefile"];
+  return {
+    tenant_id: `owner:${session.id}`,
+    repository_source_id: `local-project:${session.id}:${template}:${slug}`,
+    allowed_path_prefixes: prefixes,
+    validation_profiles: [template === "java-maven" ? "java-maven-test" : "repository-default"],
+    base_revision: "0".repeat(40),
+    allowed_execution_modes: ["sandbox", "hybrid"],
+  };
+}
+
 export async function submitHarnessTask(body, config = configFromEnv(), fetchImpl = fetch, session = null, authority = null) {
   if (!config.harnessUiEnabled) throw httpError(404, "Coding Harness is not enabled");
   const token = config.harnessServiceToken || config.operatorToken;
@@ -4937,7 +4767,7 @@ export async function submitHarnessTask(body, config = configFromEnv(), fetchImp
     !allowedPathPrefixes?.length ||
     !validationProfiles?.length
   ) {
-    throw httpError(503, "Coding Harness repository boundary is incomplete");
+    throw httpError(503, "Coding Harness project boundary is incomplete");
   }
   const objective = String(body?.objective ?? "").trim();
   if (!objective || objective.length > 4000) {

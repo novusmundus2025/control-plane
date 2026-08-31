@@ -63,7 +63,8 @@ RESEND_API_KEY=<optional, enables verified-email links>
 MUNDUSX_AUTH_EMAIL_FROM=MundusX <login@your-verified-domain.example>
 ```
 
-The GitHub App callback is `${MUNDUSX_PUBLIC_ORIGIN}/api/auth/github/callback`. Configure the App
+GitHub is optional for creating and testing local projects. When import or publication is enabled,
+the GitHub App callback is `${MUNDUSX_PUBLIC_ORIGIN}/api/auth/github/callback`. Configure the App
 with account permission `Email addresses: read`, repository permission `Contents: read`, and
 repository permission `Administration: read and write`. The Administration permission lets an
 authenticated user explicitly create a repository in their own account; it does not create a
@@ -71,12 +72,12 @@ MundusX-owned repository. Install the App for all repositories if newly created 
 be immediately available to the Harness. Chat-U
 uses the App's user-to-server token so repository visibility is restricted by both the installation
 and the signed-in user's current GitHub rights. Tokens are encrypted at rest and never returned to
-the browser. New projects default to private and receive a bounded policy for their selected project
-template. Existing repositories derive a policy from safe top-level paths. Chat-U then pins the
+the browser. New Projects are local-first; publication creates a private repository by default.
+Imported repositories derive a policy from safe top-level paths. Chat-U then pins the
 current default-branch commit. A
 browser cannot choose its own tenant, unverified repository, validation command, or base revision.
 
-The **Projects** workspace and **Computer** runner control are disabled by default. To expose them,
+The local-first **Projects** workspace is disabled by default. To expose it,
 provide the server-side Harness token and runner download page:
 
 ```text
@@ -85,18 +86,18 @@ MUNDUSX_HARNESS_SERVICE_TOKEN=<same secret configured on the control plane>
 MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL=https://github.com/mundusx/mundusx/releases
 ```
 
-Chat users can submit only a repository, path, validation, mode, and tool boundary granted to their
+Chat users can submit only a local project, path, validation, mode, and tool boundary granted to their
 internal user id. A submitted
 task remains in `created` state until an operator separately approves UAT execution in EHDA. Users
 pair their local runner with a hashed, one-use, ten-minute code; no user UUID or GitHub token is
 copied into runner configuration. The launcher cannot approve merge or deployment.
 
-The **Computer** panel guides each user through four local steps: install the runner, authenticate
-the GitHub CLI through GitHub's browser flow, pair the computer, and verify that it is ready. The
-copyable commands are `gh auth login --hostname github.com --git-protocol https --web` and
-`gh auth setup-git`; Chat-U never provides a token input. Pairing succeeds only after the runner
-verifies local GitHub CLI authentication. **Projects** shows the same runner readiness and links
-back to Computer when execution is unavailable.
+The **Projects** panel contains the local runner setup: install the runner, pair the device, and
+verify that it is ready. GitHub CLI authentication is optional until the user asks to publish. The
+optional publication commands are `gh auth login --hostname github.com --git-protocol https --web`
+and `gh auth setup-git`; Chat-U never provides a token input. Pairing does not require GitHub.
+New projects use lowercase slugs and live
+under `documents/mundusx/projects/<slug>` on the user's device.
 
 Railway provides `PORT`; the app reads it automatically.
 
@@ -131,7 +132,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEB_SEARCH_MAX_RESULTS` | `4` | Number of search snippets fetched and injected into the grounded prompt |
 | `MUNDUSX_WEB_SEARCH_TTL_SECONDS` | `1800` | Web search cache TTL when `MUNDUSX_WEATHER_CACHE_URL`/`VALKEY_URL`/`REDIS_URL` is configured |
 | `MUNDUSX_WEB_SEARCH_DAILY_BUDGET` | unset (unlimited) | Optional daily call cap for the web search tool, tracked in the same Redis/Valkey cache; once exceeded the tool declines until the next UTC day |
-| `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes user-owned Projects and the paired local Computer control when set to `true` |
+| `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes user-owned local-first Projects and inline runner setup when set to `true` |
 | `MUNDUSX_HARNESS_SERVICE_TOKEN` | unset | Server-only token used to submit Harness tasks to the control plane |
 | `MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL` | unset | Download or release page shown in the runner connection panel |
 
