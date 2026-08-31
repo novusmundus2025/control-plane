@@ -122,6 +122,7 @@ export function configFromEnv(env = process.env) {
     harnessBaseRevision: (env.MUNDUSX_HARNESS_BASE_REVISION ?? "").trim().toLowerCase(),
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
+    harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim(),
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
@@ -195,11 +196,22 @@ export function page(config = configFromEnv()) {
         <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
         <h2>Coding Harness</h2>
         <p>Submit a bounded coding task for operator review. This does not approve execution, merge, or deployment.</p>
+        <section class="harness-connection" aria-labelledby="harness-connection-title">
+          <h3 id="harness-connection-title">Your local runner</h3>
+          <p id="harness-runner-status">Checking runner connection…</p>
+          <div class="inline-actions">
+            ${config.harnessRunnerDownloadUrl ? `<a class="harness-download" href="${escapeHtml(config.harnessRunnerDownloadUrl)}">Download runner</a>` : ""}
+            <button id="harness-pair" type="button">Create pairing code</button>
+          </div>
+          <code id="harness-pairing-code" hidden></code>
+          <p id="harness-pairing-command" hidden></p>
+          <small>GitHub credentials stay on this machine. Never paste a GitHub token into Chat-U.</small>
+        </section>
         <div class="harness-boundary"><strong>Live GitHub permission check</strong><span>EHDA pins the selected repository's current default-branch commit</span></div>
         <form id="harness-form" class="harness-form">
           <label>Repository<select name="repository_id" id="harness-grant" required></select></label>
           <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="Describe one bounded coding change"></textarea></label>
-          <label>Execution mode<select name="execution_mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted node only)</option></select></label>
+          <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted runner only)</option></select></label>
           <fieldset><legend>Allowed tools</legend>
             <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
             <label><input type="checkbox" name="allowed_operations" value="repository.diff" checked> Repository diff</label>
@@ -1453,6 +1465,11 @@ export function page(config = configFromEnv()) {
     .dialog-close button { border: 0; background: transparent; font-size: 28px; cursor: pointer; }
     .harness-boundary,.harness-form { display: grid; gap: 14px; }
     .harness-boundary { padding: 12px; border-radius: 10px; background: var(--bg); }
+    .harness-connection { display: grid; gap: 10px; margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+    .harness-connection h3,.harness-connection p { margin: 0; }
+    .harness-connection .inline-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+    .harness-connection button,.harness-download { border: 1px solid var(--line-strong); border-radius: 9px; padding: 9px 12px; background: var(--panel); color: var(--text); font: inherit; text-decoration: none; cursor: pointer; }
+    #harness-pairing-code { overflow-wrap: anywhere; padding: 10px; border-radius: 8px; background: var(--panel); user-select: all; }
     .harness-form label { display: grid; gap: 6px; }
     .harness-form textarea,.harness-form select { grid-column: auto; grid-row: auto; width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; background: white; font: inherit; }
     .harness-form textarea { min-height: 120px; max-height: 320px; resize: vertical; }
@@ -1760,6 +1777,11 @@ export function page(config = configFromEnv()) {
     const harnessDialogEl = document.getElementById("harness-dialog");
     const harnessFormEl = document.getElementById("harness-form");
     const harnessResultEl = document.getElementById("harness-result");
+    const harnessRunnerStatusEl = document.getElementById("harness-runner-status");
+    const harnessPairEl = document.getElementById("harness-pair");
+    const harnessPairingCodeEl = document.getElementById("harness-pairing-code");
+    const harnessPairingCommandEl = document.getElementById("harness-pairing-command");
+    const harnessExecutionModeEl = document.getElementById("harness-execution-mode");
     const enterToSendToggleEl = document.getElementById("enter-to-send-toggle");
     const enterToSendLabelEl = document.getElementById("enter-to-send-label");
     const voiceMicEl = document.getElementById("voice-mic");
@@ -2189,7 +2211,48 @@ export function page(config = configFromEnv()) {
       renderToolMode();
       promptEl.focus();
     });
-    harnessOpenEl?.addEventListener("click", () => harnessDialogEl?.showModal());
+    async function loadHarnessRunners() {
+      if (!harnessRunnerStatusEl) return [];
+      harnessRunnerStatusEl.textContent = "Checking runner connection…";
+      const response = await fetch("/api/harness/runners");
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Runner status could not be loaded");
+      const ready = payload.runners.find((runner) => runner.ready && runner.fresh);
+      if (ready && harnessExecutionModeEl) {
+        const supported = new Set(ready.execution_modes);
+        for (const option of harnessExecutionModeEl.options) option.disabled = !supported.has(option.value);
+        const preferred = supported.has("sandbox") ? "sandbox" : supported.has("hybrid") ? "hybrid" : "";
+        if (preferred) harnessExecutionModeEl.value = preferred;
+      }
+      harnessRunnerStatusEl.textContent = ready
+        ? "Connected: " + ready.runner_id + " · " + ready.parallel_slots + " slot" + (ready.parallel_slots === 1 ? "" : "s")
+        : payload.runners.length
+          ? "Runner paired but offline. Start mundusx-harness-runner run."
+          : "No runner paired yet.";
+      return payload.runners;
+    }
+
+    harnessOpenEl?.addEventListener("click", async () => {
+      harnessDialogEl?.showModal();
+      try { await loadHarnessRunners(); } catch (error) { harnessRunnerStatusEl.textContent = error.message; }
+    });
+    harnessPairEl?.addEventListener("click", async () => {
+      harnessPairEl.disabled = true;
+      try {
+        const response = await fetch("/api/harness/runners/pairing", { method: "POST" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "Pairing code could not be created");
+        harnessPairingCodeEl.textContent = payload.pairing_code;
+        harnessPairingCodeEl.hidden = false;
+        harnessPairingCommandEl.textContent = "Run: mundusx-harness-runner pair " + payload.pairing_code;
+        harnessPairingCommandEl.hidden = false;
+        harnessRunnerStatusEl.textContent = "Pairing code expires in 10 minutes and works once.";
+      } catch (error) {
+        harnessRunnerStatusEl.textContent = error.message;
+      } finally {
+        harnessPairEl.disabled = false;
+      }
+    });
     harnessFormEl?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = new FormData(harnessFormEl);
@@ -2208,12 +2271,30 @@ export function page(config = configFromEnv()) {
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Harness submission failed");
-        harnessResultEl.textContent = "Task " + payload.task_id + " is awaiting operator UAT approval.";
+        harnessResultEl.textContent = "Task " + payload.task_id + " · " + payload.state + " · UAT approval required";
         harnessFormEl.reset();
+        trackHarnessTask(payload.task_id);
       } catch (error) {
         harnessResultEl.textContent = error.message || "Harness submission failed";
       }
     });
+
+    async function trackHarnessTask(taskId) {
+      for (let attempt = 0; attempt < 24 && harnessDialogEl?.open; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, 5_000));
+        const response = await fetch("/api/harness/tasks/" + encodeURIComponent(taskId));
+        const payload = await response.json();
+        if (!response.ok) {
+          harnessResultEl.textContent = payload.error || "Task status could not be loaded";
+          return;
+        }
+        const validations = payload.validations || [];
+        const latestValidation = validations.at(-1);
+        harnessResultEl.textContent = "Task " + taskId + " · " + payload.task.state
+          + (latestValidation ? " · validation " + latestValidation.status : "");
+        if (["completed", "failed", "cancelled", "expired"].includes(payload.task.state)) return;
+      }
+    }
     enterToSendToggleEl?.addEventListener("click", () => {
       enterToSendEnabled = !enterToSendEnabled;
       localStorage.setItem("mundusx.chat.enterToSend", String(enterToSendEnabled));
@@ -4450,6 +4531,17 @@ export function createServerApp(config = configFromEnv()) {
         const result = await authStore.repositoryContents(session.id, githubContentsMatch[1], url.searchParams.get("path") || "", url.searchParams.get("ref") || "");
         return sendJson(response, 200, result);
       }
+      if (request.method === "GET" && url.pathname === "/api/harness/runners") {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        return sendJson(response, 200, { runners: await authStore.harnessRunners(session.id) });
+      }
+      if (request.method === "POST" && url.pathname === "/api/harness/runners/pairing") {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        authStore.requireCsrf(request, session);
+        return sendJson(response, 201, await authStore.createHarnessRunnerPairing(session.id));
+      }
       if (request.method === "POST" && url.pathname === "/api/harness/tasks") {
         const body = await readJsonBody(request);
         const session = request.mundusxSession ?? await authStore.session(request);
@@ -4458,6 +4550,12 @@ export function createServerApp(config = configFromEnv()) {
         const authority = await authStore.harnessAuthority(session.id, body?.repository_id, String(body?.execution_mode || "sandbox"), body?.allowed_operations);
         const result = await submitHarnessTask(body, config, fetch, session, authority);
         return sendJson(response, 201, result);
+      }
+      const harnessTaskMatch = url.pathname.match(/^\/api\/harness\/tasks\/(htask_[A-Za-z0-9_-]+)$/);
+      if (request.method === "GET" && harnessTaskMatch) {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        return sendJson(response, 200, await fetchHarnessTask(harnessTaskMatch[1], config, fetch, session));
       }
       if (request.method === "GET" && url.pathname.startsWith("/api/conversations/") && url.pathname.endsWith("/messages")) {
         const conversationId = decodeURIComponent(
@@ -4591,6 +4689,20 @@ export async function submitHarnessTask(body, config = configFromEnv(), fetchImp
   }
   if (!payload.task_id) throw httpError(502, "control plane did not return a Harness task id");
   return { task_id: payload.task_id, state: payload.state ?? "created", approval: "required" };
+}
+
+export async function fetchHarnessTask(taskId, config = configFromEnv(), fetchImpl = fetch, session = null) {
+  const token = config.harnessServiceToken || config.operatorToken;
+  if (!token) throw httpError(503, "Coding Harness service authentication is not configured");
+  const upstream = await fetchImpl(`${config.controlPlaneUrl}/internal/harness/tasks/${encodeURIComponent(taskId)}`, {
+    headers: { Authorization: `Bearer ${token}`, "X-MundusX-Actor": "chat-u" },
+  });
+  const payload = await upstream.json().catch(() => ({}));
+  if (!upstream.ok) throw httpError(upstream.status, payload.error || `control plane returned ${upstream.status}`);
+  if (!payload.task || (session && payload.task.requested_by_user_id !== session.id)) {
+    throw httpError(404, "Harness task is not available to this user");
+  }
+  return payload;
 }
 
 export async function submitChatTurn(body, config = configFromEnv(), fetchImpl = fetch) {

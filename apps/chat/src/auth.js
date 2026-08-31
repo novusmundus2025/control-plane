@@ -5,6 +5,7 @@ const SESSION_COOKIE = "__Host-mx_session";
 const CSRF_COOKIE = "__Host-mx_csrf";
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 const CHALLENGE_SECONDS = 10 * 60;
+const RUNNER_PAIRING_SECONDS = 10 * 60;
 const GITHUB_API_VERSION = "2026-03-10";
 const MAX_GITHUB_PAGES = 5;
 const MAX_GITHUB_INSTALLATIONS = 20;
@@ -300,15 +301,37 @@ export class PostgresAuthStore {
     if (!Array.isArray(operations)) throw Object.assign(new Error("allowed operations must be a list"), { statusCode: 400 });
     const requirePush = operations.some((operation) => ["patch.apply", "validation.run"].includes(String(operation)));
     const repo = await this.authorizeRepository(userId, repositoryId, { requirePush });
-    const policyResult = await this.pool.query(`select * from public.repository_harness_policies
+    let policyResult = await this.pool.query(`select * from public.repository_harness_policies
       where repository_id = $1 and status = 'active'`, [repo.id]);
+    if (!policyResult.rows[0]) {
+      const root = await this.githubJson(userId, `https://api.github.com/repos/${repo.full_name}/contents/?ref=${encodeURIComponent(repo.default_branch)}`);
+      const allowedPathPrefixes = Array.isArray(root)
+        ? root.filter((entry) => ["dir", "file"].includes(entry.type) && !sensitiveRepositoryPath(entry.path)).slice(0, 200).map((entry) => entry.path)
+        : [];
+      if (!allowedPathPrefixes.length) throw Object.assign(new Error("Repository has no safe paths available for Harness work"), { statusCode: 403 });
+      await this.pool.query(`insert into public.repository_harness_policies
+        (repository_id, repository_full_name, tenant_id, allowed_path_prefixes,
+         validation_profiles, allowed_execution_modes, require_write_permission, created_by)
+        values ($1, $2, $3, $4, $5, $6, true, $7)
+        on conflict (repository_id) do nothing`, [
+        repo.id,
+        repo.full_name,
+        `user:${userId}`,
+        allowedPathPrefixes,
+        ["repository-default"],
+        ["sandbox", "hybrid"],
+        `chat-user:${userId}`,
+      ]);
+      policyResult = await this.pool.query(`select * from public.repository_harness_policies
+        where repository_id = $1 and status = 'active'`, [repo.id]);
+    }
     const policy = policyResult.rows[0];
     if (!policy || policy.repository_full_name.toLowerCase() !== repo.full_name.toLowerCase()) throw Object.assign(new Error("This repository is not enabled for EHDA Harness work"), { statusCode: 403 });
     if (!policy.allowed_execution_modes.includes(executionMode)) throw Object.assign(new Error("EHDA policy does not permit this execution mode"), { statusCode: 403 });
     if (policy.require_write_permission && !repo.permissions.push) throw Object.assign(new Error("Write permission is required by EHDA policy"), { statusCode: 403 });
     const commit = await this.githubJson(userId, `https://api.github.com/repos/${repo.full_name}/commits/${encodeURIComponent(repo.default_branch)}`);
     if (!/^[0-9a-f]{40}$/i.test(String(commit.sha || ""))) throw Object.assign(new Error("GitHub did not return an immutable base revision"), { statusCode: 502 });
-    return {
+    const authority = {
       user_id: userId,
       tenant_id: policy.tenant_id,
       repository_source_id: `github:${repo.id}:${repo.full_name}`,
@@ -317,6 +340,61 @@ export class PostgresAuthStore {
       validation_profiles: policy.validation_profiles,
       allowed_execution_modes: policy.allowed_execution_modes,
     };
+    const runners = await this.harnessRunners(userId);
+    if (!runners.some((runner) => runner.ready && runner.fresh)) {
+      throw Object.assign(new Error("Pair and start your Harness runner before submitting repository work"), { statusCode: 409 });
+    }
+    return authority;
+  }
+
+  async createHarnessRunnerPairing(userId) {
+    this.ensureReady();
+    const pairingCode = `MX-${token(24)}`;
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "delete from public.harness_runner_pairings where user_id = $1 and consumed_at is null",
+        [userId],
+      );
+      await client.query(`insert into public.harness_runner_pairings
+        (pairing_hash, user_id, expires_at)
+        values ($1, $2, now() + ($3 * interval '1 second'))`,
+        [digest(pairingCode), userId, RUNNER_PAIRING_SECONDS],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+    return {
+      pairing_code: pairingCode,
+      expires_in_seconds: RUNNER_PAIRING_SECONDS,
+    };
+  }
+
+  async harnessRunners(userId) {
+    this.ensureReady();
+    const result = await this.pool.query(`select runner_id, device_id, execution_modes,
+      supported_operations, parallel_slots, ready, trusted_identity, last_seen_epoch
+      from public.harness_runners
+      where owner_user_id = $1
+      order by last_seen_epoch desc
+      limit 20`, [userId]);
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    return result.rows.map((runner) => ({
+      runner_id: runner.runner_id,
+      device_id: runner.device_id,
+      execution_modes: Array.isArray(runner.execution_modes) ? runner.execution_modes : [],
+      supported_operations: Array.isArray(runner.supported_operations) ? runner.supported_operations : [],
+      parallel_slots: Number(runner.parallel_slots),
+      ready: Boolean(runner.ready),
+      trusted_identity: Boolean(runner.trusted_identity),
+      last_seen_epoch: Number(runner.last_seen_epoch),
+      fresh: nowEpoch - Number(runner.last_seen_epoch) <= 60,
+    }));
   }
 
   async startGithub(redirectPath = "/") {

@@ -306,6 +306,32 @@ impl DatabaseMirror {
         }
     }
 
+    fn record_harness_runner(&self, runner: &harness::HarnessRunner) -> Result<(), String> {
+        match self {
+            Self::Postgres(store) => store.record_harness_runner(runner),
+            Self::Supabase(_) => Err(
+                "Coding Harness v1 requires provider-neutral PostgreSQL runtime storage"
+                    .to_string(),
+            ),
+        }
+    }
+
+    fn consume_harness_runner_pairing(
+        &self,
+        pairing_code: &str,
+        runner_id: &str,
+        public_key_hex: &str,
+    ) -> Result<String, String> {
+        match self {
+            Self::Postgres(store) => {
+                store.consume_harness_runner_pairing(pairing_code, runner_id, public_key_hex)
+            }
+            Self::Supabase(_) => Err(
+                "Harness runner pairing requires provider-neutral PostgreSQL storage".to_string(),
+            ),
+        }
+    }
+
     fn record_harness_operational_policy(
         &self,
         harness: &harness::HarnessState,
@@ -3111,16 +3137,16 @@ fn render_harness_console(state: &ControlPlaneState) -> String {
             )
         })
         .collect::<String>();
-    let drained_nodes = if policy.drained_nodes.is_empty() {
-        r#"<div class="empty">No Harness nodes are drained.</div>"#.to_string()
+    let drained_runners = if policy.drained_runners.is_empty() {
+        r#"<div class="empty">No Harness runners are drained.</div>"#.to_string()
     } else {
         policy
-            .drained_nodes
+            .drained_runners
             .iter()
-            .map(|node_id| {
+            .map(|runner_id| {
                 format!(
-                    r#"<form method="post" action="/actions/harness/operations" class="inline-control"><code>{node}</code><input type="hidden" name="undrain_node_id" value="{node}"><button class="button" type="submit">Undrain</button></form>"#,
-                    node = escape_html(node_id)
+                    r#"<form method="post" action="/actions/harness/operations" class="inline-control"><code>{runner}</code><input type="hidden" name="undrain_runner_id" value="{runner}"><button class="button" type="submit">Undrain</button></form>"#,
+                    runner = escape_html(runner_id)
                 )
             })
             .collect::<String>()
@@ -3252,11 +3278,11 @@ fn render_harness_console(state: &ControlPlaneState) -> String {
               <label><span>Active attempts / tenant</span><input type="number" name="tenant_max_active_attempts" min="1" value="{active_limit}"></label>
               <label><span>Queued tasks / tenant</span><input type="number" name="tenant_max_queued_tasks" min="1" value="{queued_limit}"></label>
               <label><span>Artifact bytes / tenant</span><input type="number" name="tenant_max_artifact_bytes" min="1" value="{artifact_limit}"></label>
-              <label><span>Drain node ID</span><input name="drain_node_id" placeholder="node-..."></label>
+              <label><span>Drain runner ID</span><input name="drain_runner_id" placeholder="runner-..."></label>
             </div>
             <button class="button" type="submit">Apply Harness policy</button>
           </form>
-          <h3>Drained nodes</h3>{drained_nodes}
+          <h3>Drained runners</h3>{drained_runners}
         </section>
         <section class="panel"><h2>Harness tasks and evidence</h2>{task_rows}</section>"#,
         kill_switch = if policy.kill_switch { "ACTIVE" } else { "off" },
@@ -5381,8 +5407,11 @@ fn harness_policy_request_from_form(body: &str) -> harness::UpdateHarnessOperati
     let policy_update = form_flag(body, "policy_update");
     harness::UpdateHarnessOperationalPolicyRequest {
         kill_switch: policy_update.then(|| form_flag(body, "kill_switch")),
-        drain_node_id: form_text(body, "drain_node_id").filter(|value| !value.trim().is_empty()),
-        undrain_node_id: form_text(body, "undrain_node_id")
+        drain_runner_id: form_text(body, "drain_runner_id")
+            .or_else(|| form_text(body, "drain_node_id"))
+            .filter(|value| !value.trim().is_empty()),
+        undrain_runner_id: form_text(body, "undrain_runner_id")
+            .or_else(|| form_text(body, "undrain_node_id"))
             .filter(|value| !value.trim().is_empty()),
         tenant_max_active_attempts: policy_update
             .then(|| form_u32(body, "tenant_max_active_attempts")),
@@ -5868,12 +5897,15 @@ fn header_value<'a>(headers: &'a BTreeMap<String, String>, key: &str) -> Option<
 }
 
 fn requires_device_signature(method: &str, path: &str) -> bool {
-    if method == "GET" && path == "/internal/harness/node/attempts/next" {
+    if method == "POST" && path == "/internal/harness/runners/register" {
+        return true;
+    }
+    if method == "GET" && path == "/internal/harness/runners/attempts/next" {
         return true;
     }
     if method == "POST"
         && parse_harness_attempt_route(path).is_some()
-        && path.starts_with("/internal/harness/node/attempts/")
+        && path.starts_with("/internal/harness/runners/attempts/")
     {
         return true;
     }
@@ -5935,6 +5967,16 @@ fn node_public_key_hex(state: &Arc<Mutex<ControlPlaneState>>, node_id: &str) -> 
         .map(|node| node.public_key_hex.clone())
 }
 
+fn runner_public_key_hex(state: &Arc<Mutex<ControlPlaneState>>, runner_id: &str) -> Option<String> {
+    state
+        .lock()
+        .expect("state lock")
+        .harness
+        .runners
+        .get(runner_id)
+        .map(|runner| runner.public_key_hex.clone())
+}
+
 fn verify_signature(
     public_key_hex: &str,
     method: &str,
@@ -5989,8 +6031,14 @@ fn authorize_device_request(
         return Ok(());
     }
 
-    let node_id = header_value(headers, "x-mundusx-node-id")
-        .ok_or_else(|| "missing x-mundusx-node-id".to_string())?;
+    let runner_route = route_path.starts_with("/internal/harness/runners/");
+    let identity_header = if runner_route {
+        "x-mundusx-runner-id"
+    } else {
+        "x-mundusx-node-id"
+    };
+    let identity_id = header_value(headers, identity_header)
+        .ok_or_else(|| format!("missing {identity_header}"))?;
     let timestamp = header_value(headers, "x-mundusx-timestamp")
         .ok_or_else(|| "missing x-mundusx-timestamp".to_string())?;
     let signature = header_value(headers, "x-mundusx-signature")
@@ -6006,15 +6054,31 @@ fn authorize_device_request(
         return Err("signature timestamp expired".to_string());
     }
 
-    let public_key_hex = if route_path == "/v1/register" {
+    let public_key_hex = if route_path == "/internal/harness/runners/register" {
+        let registration: harness::RegisterHarnessRunnerRequest =
+            serde_json::from_str(body).map_err(|error| error.to_string())?;
+        if registration.runner_id != identity_id {
+            return Err("runner id header mismatch".to_string());
+        }
+        if let Some(existing_key) = runner_public_key_hex(state, identity_id) {
+            if existing_key != registration.public_key_hex {
+                return Err("runner identity key mismatch".to_string());
+            }
+            existing_key
+        } else {
+            registration.public_key_hex
+        }
+    } else if runner_route {
+        runner_public_key_hex(state, identity_id).ok_or_else(|| "unknown runner".to_string())?
+    } else if route_path == "/v1/register" {
         let registration: AgentRegistration =
             serde_json::from_str(body).map_err(|error| error.to_string())?;
-        if registration.node_id != node_id {
+        if registration.node_id != identity_id {
             return Err("node id header mismatch".to_string());
         }
         registration.public_key_hex
     } else {
-        node_public_key_hex(state, node_id).ok_or_else(|| "unknown node".to_string())?
+        node_public_key_hex(state, identity_id).ok_or_else(|| "unknown node".to_string())?
     };
 
     verify_signature(
@@ -6353,7 +6417,7 @@ fn authorize_harness_request(
     headers: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     let internal_service_route = route_path.starts_with("/internal/harness/")
-        && !route_path.starts_with("/internal/harness/node/");
+        && !route_path.starts_with("/internal/harness/runners/");
     let operator_action_route = route_path.starts_with("/actions/harness/");
     if !internal_service_route && !operator_action_route {
         return Ok(());
@@ -6603,7 +6667,7 @@ enum HarnessAttemptRoute<'a> {
 fn parse_harness_attempt_route(path: &str) -> Option<HarnessAttemptRoute<'_>> {
     let remainder = path
         .strip_prefix("/internal/harness/attempts/")
-        .or_else(|| path.strip_prefix("/internal/harness/node/attempts/"))?;
+        .or_else(|| path.strip_prefix("/internal/harness/runners/attempts/"))?;
     let (attempt_id, action) = remainder.split_once('/')?;
     if !attempt_id.starts_with("hattempt_") {
         None
@@ -6619,124 +6683,102 @@ fn parse_harness_attempt_route(path: &str) -> Option<HarnessAttemptRoute<'_>> {
     }
 }
 
-fn harness_node_slots(node: &contracts::NodeRecord) -> Result<u32, harness::HarnessError> {
-    let eligible = node.state == AgentState::Ready
-        && node.policy_allowed
-        && node.capability_fabric_version.as_deref() == Some(contracts::CAPABILITY_FABRIC_V1);
-    let Some(capabilities) = node.capabilities.as_ref() else {
-        return Err(harness::HarnessError::new(
-            "HARNESS_NODE_INELIGIBLE",
-            "node has no Capability Fabric manifest",
-        ));
-    };
-    if !eligible || !capabilities.ready_for_jobs || capabilities.parallel_slots == 0 {
-        return Err(harness::HarnessError::new(
-            "HARNESS_NODE_INELIGIBLE",
-            "node is not ready and policy-eligible for harness work",
-        ));
-    }
-    if !capabilities
-        .supported_roles
-        .contains(&contracts::NodeRole::Coding)
-        || !capabilities
-            .supported_roles
-            .contains(&contracts::NodeRole::ToolUse)
-    {
-        return Err(harness::HarnessError::new(
-            "HARNESS_NODE_INELIGIBLE",
-            "node does not advertise coding and tool-use roles",
-        ));
-    }
-    Ok(u32::from(capabilities.parallel_slots))
-}
-
 #[derive(Clone, Debug, Serialize)]
-struct HarnessNodeRejection {
-    node_id: String,
+struct HarnessRunnerRejection {
+    runner_id: String,
     code: String,
     reason: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
 struct HarnessRoutingSelection {
-    node_id: String,
+    runner_id: String,
     execution_mode: harness::HarnessExecutionMode,
-    node_total_slots: u32,
+    runner_total_slots: u32,
     fallback_used: bool,
-    rejected_nodes: Vec<HarnessNodeRejection>,
+    rejected_runners: Vec<HarnessRunnerRejection>,
 }
 
-fn select_harness_node(
+fn select_harness_runner(
     task: &harness::HarnessTask,
     request: &harness::ReserveHarnessAttemptRequest,
-    nodes: &BTreeMap<String, contracts::NodeRecord>,
+    runners: &BTreeMap<String, harness::HarnessRunner>,
+    now_epoch: u64,
 ) -> Result<HarnessRoutingSelection, harness::HarnessError> {
-    let mut rejected_nodes = Vec::new();
+    let mut rejected_runners = Vec::new();
     let mut eligible = Vec::new();
-    for node in nodes.values().filter(|node| {
+    for runner in runners.values().filter(|runner| {
         request
-            .node_id
+            .runner_id
             .as_deref()
-            .is_none_or(|requested| requested == node.node_id)
+            .is_none_or(|requested| requested == runner.runner_id)
     }) {
-        let reject = |code: &str, reason: &str| HarnessNodeRejection {
-            node_id: node.node_id.clone(),
+        let reject = |code: &str, reason: &str| HarnessRunnerRejection {
+            runner_id: runner.runner_id.clone(),
             code: code.to_string(),
             reason: reason.to_string(),
         };
-        let slots = match harness_node_slots(node) {
-            Ok(slots) => slots,
-            Err(error) => {
-                rejected_nodes.push(reject(&error.code, &error.message));
-                continue;
-            }
-        };
-        let capabilities = node
-            .capabilities
-            .as_ref()
-            .expect("node slots checked manifest");
-        let Some(node_harness) = capabilities.harness.as_ref() else {
-            rejected_nodes.push(reject(
-                "HARNESS_TOOLS_UNSUPPORTED",
-                "node does not advertise Coding Harness capabilities",
+        if !runner.ready || now_epoch.saturating_sub(runner.last_seen_epoch) > 60 {
+            rejected_runners.push(reject(
+                "HARNESS_RUNNER_UNAVAILABLE",
+                "runner is not ready or its heartbeat is stale",
             ));
             continue;
-        };
+        }
+        if runner.kind == harness::HarnessRunnerKind::LocalUser
+            && runner.owner_user_id.as_deref() != task.requested_by_user_id.as_deref()
+        {
+            rejected_runners.push(reject(
+                "HARNESS_RUNNER_OWNER_MISMATCH",
+                "local runner belongs to a different requesting user",
+            ));
+            continue;
+        }
+        let owner_scoped = runner.kind == harness::HarnessRunnerKind::LocalUser
+            && runner.owner_user_id.as_deref() == task.requested_by_user_id.as_deref();
+        let tenant_allowed = runner.tenant_ids.contains(&task.tenant_id)
+            || (owner_scoped && runner.tenant_ids.iter().any(|scope| scope == "owner:any"));
+        let repository_allowed = runner
+            .repository_source_ids
+            .contains(&task.repository_source_id)
+            || (owner_scoped
+                && runner.repository_source_ids.iter().any(|scope| {
+                    scope.ends_with(':') && task.repository_source_id.starts_with(scope)
+                }));
+        if !tenant_allowed || !repository_allowed {
+            rejected_runners.push(reject(
+                "HARNESS_RUNNER_SCOPE_DENIED",
+                "runner is not authorized for the task tenant and repository source",
+            ));
+            continue;
+        }
         if task
             .allowed_operations
             .iter()
-            .any(|operation| !node_harness.supported_operations.contains(operation))
+            .any(|operation| !runner.supported_operations.contains(operation))
         {
-            rejected_nodes.push(reject(
+            rejected_runners.push(reject(
                 "HARNESS_TOOLS_UNSUPPORTED",
-                "node is missing one or more task operations",
+                "runner is missing one or more task operations",
             ));
             continue;
         }
-        if task.budgets.max_disk_mb > node_harness.max_workspace_mb
-            || capabilities
-                .usable_memory_mb
-                .is_some_and(|memory| task.budgets.max_memory_mb > memory)
+        if task.budgets.max_disk_mb > runner.max_workspace_mb
+            || task.budgets.max_memory_mb > runner.usable_memory_mb
         {
-            rejected_nodes.push(reject(
+            rejected_runners.push(reject(
                 "HARNESS_RESOURCE_EXHAUSTED",
-                "task workspace or memory budget exceeds node limits",
+                "task workspace or memory budget exceeds runner limits",
             ));
             continue;
         }
-        let supports = |mode: &str| {
-            node_harness
-                .execution_modes
-                .iter()
-                .any(|value| value == mode)
-        };
+        let supports = |mode: &str| runner.execution_modes.iter().any(|value| value == mode);
         let (execution_mode, fallback_used) = match task.execution_mode {
             harness::HarnessExecutionMode::Sandbox if supports("sandbox") => {
                 (harness::HarnessExecutionMode::Sandbox, false)
             }
             harness::HarnessExecutionMode::Hybrid
-                if supports("hybrid")
-                    && contracts::is_trusted_identity_path(&node.identity_trust_path) =>
+                if supports("hybrid") && runner.trusted_identity =>
             {
                 (harness::HarnessExecutionMode::Hybrid, false)
             }
@@ -6746,64 +6788,65 @@ fn select_harness_node(
                 (harness::HarnessExecutionMode::Sandbox, true)
             }
             harness::HarnessExecutionMode::Hybrid if supports("hybrid") => {
-                rejected_nodes.push(reject(
+                rejected_runners.push(reject(
                     "HARNESS_HYBRID_TRUST_REQUIRED",
-                    "hybrid execution requires a trusted node identity",
+                    "hybrid execution requires a trusted runner identity",
                 ));
                 continue;
             }
             _ => {
-                rejected_nodes.push(reject(
+                rejected_runners.push(reject(
                     "HARNESS_EXECUTION_MODE_UNSUPPORTED",
-                    "node cannot satisfy the requested isolation mode",
+                    "runner cannot satisfy the requested isolation mode",
                 ));
                 continue;
             }
         };
         eligible.push((
             fallback_used,
-            std::cmp::Reverse(node.trust.score),
-            std::cmp::Reverse(slots),
-            node.node_id.clone(),
+            matches!(runner.kind, harness::HarnessRunnerKind::EhdaHosted),
+            std::cmp::Reverse(runner.parallel_slots),
+            runner.runner_id.clone(),
             execution_mode,
-            slots,
+            runner.parallel_slots,
         ));
     }
     if eligible.is_empty() {
-        let evidence = rejected_nodes
+        let evidence = rejected_runners
             .iter()
-            .map(|item| format!("{}:{}", item.node_id, item.code))
+            .map(|item| format!("{}:{}", item.runner_id, item.code))
             .collect::<Vec<_>>()
             .join(",");
-        let code = if rejected_nodes
+        let code = if rejected_runners
             .iter()
             .any(|item| item.code == "HARNESS_RESOURCE_EXHAUSTED")
         {
             "HARNESS_RESOURCE_EXHAUSTED"
         } else {
-            "HARNESS_NODE_INELIGIBLE"
+            "HARNESS_RUNNER_UNAVAILABLE"
         };
         return Err(harness::HarnessError::new(
             code,
-            format!("no eligible harness node; rejections={evidence}"),
+            format!("no eligible harness runner; rejections={evidence}"),
         ));
     }
     eligible.sort_by(|left, right| {
         (left.0, left.1, left.2, &left.3).cmp(&(right.0, right.1, right.2, &right.3))
     });
-    let (fallback_used, _, _, node_id, execution_mode, node_total_slots) = eligible.remove(0);
+    let (fallback_used, _, _, runner_id, execution_mode, runner_total_slots) = eligible.remove(0);
     Ok(HarnessRoutingSelection {
-        node_id,
+        runner_id,
         execution_mode,
-        node_total_slots,
+        runner_total_slots,
         fallback_used,
-        rejected_nodes,
+        rejected_runners,
     })
 }
 
 fn harness_actor(headers: &BTreeMap<String, String>) -> String {
     header_value(headers, "x-mundusx-actor")
         .or_else(|| header_value(headers, "x-mundusx-node-id"))
+        .or_else(|| header_value(headers, "x-mundusx-runner-id"))
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .unwrap_or("harness-service")
@@ -6818,20 +6861,20 @@ fn authorize_harness_attempt_owner(
     harness: &harness::HarnessState,
     attempt_id: &str,
 ) -> Result<(), harness::HarnessError> {
-    if !path.starts_with("/internal/harness/node/attempts/") {
+    if !path.starts_with("/internal/harness/runners/attempts/") {
         return Ok(());
     }
-    let node_id = header_value(headers, "x-mundusx-node-id").unwrap_or_default();
+    let runner_id = header_value(headers, "x-mundusx-runner-id").unwrap_or_default();
     let attempt = harness.attempts.get(attempt_id).ok_or_else(|| {
         harness::HarnessError::new(
             "HARNESS_ATTEMPT_NOT_FOUND",
             "harness attempt does not exist",
         )
     })?;
-    if attempt.node_id != node_id {
+    if attempt.runner_id != runner_id {
         return Err(harness::HarnessError::new(
             "HARNESS_AUTH_REQUIRED",
-            "node does not own this harness attempt",
+            "runner does not own this harness attempt",
         ));
     }
     Ok(())
@@ -7000,18 +7043,22 @@ fn handle_connection_with_streams(
             }
         }
 
-        let unavailable_node_ids = maintenance
-            .changed_nodes
-            .iter()
-            .filter(|node| node.state == AgentState::Stopped)
-            .map(|node| node.node_id.clone())
+        let now_epoch = now_unix_seconds_u64();
+        let unavailable_runner_ids = state
+            .lock()
+            .expect("state lock")
+            .harness
+            .runners
+            .values()
+            .filter(|runner| !runner.ready || now_epoch.saturating_sub(runner.last_seen_epoch) > 60)
+            .map(|runner| runner.runner_id.clone())
             .collect::<Vec<_>>();
-        if !unavailable_node_ids.is_empty() {
+        if !unavailable_runner_ids.is_empty() {
             if let Some(database) = supabase {
                 let mut guard = state.lock().expect("state lock");
                 let mut candidate = guard.harness.clone();
-                let reconciled = candidate
-                    .reconcile_unavailable_nodes(&unavailable_node_ids, now_unix_seconds_u64());
+                let reconciled =
+                    candidate.reconcile_unavailable_runners(&unavailable_runner_ids, now_epoch);
                 let persisted = reconciled.iter().try_for_each(|item| {
                     database.record_harness_attempt_transition(
                         &candidate,
@@ -7063,6 +7110,92 @@ fn handle_connection_with_streams(
     }
 
     let response = match (request.method.as_str(), clean_path) {
+        ("POST", "/internal/harness/runners/register") => {
+            match serde_json::from_str::<harness::RegisterHarnessRunnerRequest>(&request.body) {
+                Ok(mut registration) => {
+                    let pairing_code = registration.pairing_code.take();
+                    if registration.kind == harness::HarnessRunnerKind::LocalUser {
+                        let existing_owner = state
+                            .lock()
+                            .expect("state lock")
+                            .harness
+                            .runners
+                            .get(&registration.runner_id)
+                            .and_then(|runner| runner.owner_user_id.clone());
+                        let owner_user_id = if let Some(owner) = existing_owner {
+                            owner
+                        } else {
+                            let Some(database) = supabase.as_ref() else {
+                                return stream
+                                    .write_all(
+                                        harness_storage_response(
+                                            "Harness runner pairing requires PostgreSQL storage",
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .unwrap_or(());
+                            };
+                            let Some(pairing_code) = pairing_code.as_deref() else {
+                                return stream
+                                    .write_all(
+                                        harness_error_response(harness::HarnessError::new(
+                                            "HARNESS_PAIRING_REQUIRED",
+                                            "pair this runner from an authenticated Chat-U session before registration",
+                                        ))
+                                        .as_bytes(),
+                                    )
+                                    .unwrap_or(());
+                            };
+                            match database.consume_harness_runner_pairing(
+                                pairing_code,
+                                &registration.runner_id,
+                                &registration.public_key_hex,
+                            ) {
+                                Ok(owner) => owner,
+                                Err(error) => {
+                                    return stream
+                                        .write_all(harness_storage_response(error).as_bytes())
+                                        .unwrap_or(());
+                                }
+                            }
+                        };
+                        // The authenticated pairing record, never a client field, owns this bind.
+                        registration.owner_user_id = Some(owner_user_id);
+                    }
+                    let mut guard = state.lock().expect("state lock");
+                    let mut candidate = guard.harness.clone();
+                    match candidate.register_runner(registration, now_unix_seconds_u64()) {
+                        Ok(runner) => {
+                            let Some(database) = supabase.as_ref() else {
+                                return stream
+                                    .write_all(
+                                        harness_storage_response(
+                                            "Harness runner registration requires PostgreSQL storage",
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .unwrap_or(());
+                            };
+                            if let Err(error) = database.record_harness_runner(&runner) {
+                                note_supabase_failure(&sync_status, error.clone());
+                                harness_storage_response(error)
+                            } else {
+                                guard.harness = candidate;
+                                if let Err(error) = save_state(&guard) {
+                                    eprintln!("failed to save harness runner checkpoint: {error}");
+                                }
+                                json_response("200 OK", serde_json::to_value(runner).expect("json"))
+                            }
+                        }
+                        Err(error) => harness_error_response(error),
+                    }
+                }
+                Err(error) => json_response(
+                    "400 Bad Request",
+                    serde_json::json!({ "error": error.to_string(), "code": "HARNESS_RUNNER_INVALID" }),
+                ),
+            }
+        }
         ("GET", "/v1/models") => {
             let environment = control_plane_environment_from_env(
                 std::env::var(CONTROL_PLANE_ENVIRONMENT_ENV).ok().as_deref(),
@@ -7282,7 +7415,7 @@ fn handle_connection_with_streams(
             serde_json::to_value(planner_service_status_from_env())
                 .expect("planner service status json"),
         ),
-        ("GET", "/internal/harness/node/attempts/next") => {
+        ("GET", "/internal/harness/runners/attempts/next") => {
             let Some(database) = supabase else {
                 let response = harness_storage_response(
                     "Coding Harness v1 requires configured PostgreSQL storage",
@@ -7290,14 +7423,14 @@ fn handle_connection_with_streams(
                 let _ = stream.write_all(response.as_bytes());
                 return;
             };
-            let node_id = query_param(query, "node_id").unwrap_or_default();
-            if node_id.is_empty()
-                || header_value(&request.headers, "x-mundusx-node-id") != Some(node_id)
+            let runner_id = query_param(query, "runner_id").unwrap_or_default();
+            if runner_id.is_empty()
+                || header_value(&request.headers, "x-mundusx-runner-id") != Some(runner_id)
             {
                 json_response(
                     "401 Unauthorized",
                     serde_json::json!({
-                        "error": "node id query/header mismatch",
+                        "error": "runner id query/header mismatch",
                         "code": "HARNESS_AUTH_REQUIRED"
                     }),
                 )
@@ -7309,7 +7442,7 @@ fn handle_connection_with_streams(
                     .harness
                     .attempts
                     .values()
-                    .find(|attempt| attempt.node_id == node_id && !attempt.state.is_terminal())
+                    .find(|attempt| attempt.runner_id == runner_id && !attempt.state.is_terminal())
                     .cloned()
                 {
                     let task = guard.harness.tasks.get(&attempt.task_id).cloned();
@@ -7330,13 +7463,14 @@ fn handle_connection_with_streams(
                     for task in queued {
                         let reserve = harness::ReserveHarnessAttemptRequest {
                             expected_task_state_version: task.state_version,
-                            node_id: Some(node_id.to_string()),
+                            runner_id: Some(runner_id.to_string()),
                             allow_sandbox_fallback: true,
                             slots: 1,
                             reservation_ttl_seconds: 900,
                             actor: actor.clone(),
                         };
-                        let Ok(selection) = select_harness_node(&task, &reserve, &guard.nodes)
+                        let Ok(selection) =
+                            select_harness_runner(&task, &reserve, &guard.harness.runners, now)
                         else {
                             continue;
                         };
@@ -7344,10 +7478,10 @@ fn handle_connection_with_streams(
                         let Ok((attempt, reservation)) = candidate.reserve_attempt(
                             &task.task_id,
                             task.state_version,
-                            &selection.node_id,
+                            &selection.runner_id,
                             selection.execution_mode,
                             reserve.slots,
-                            selection.node_total_slots,
+                            selection.runner_total_slots,
                             reserve.reservation_ttl_seconds,
                             &actor,
                             now,
@@ -7366,7 +7500,7 @@ fn handle_connection_with_streams(
                             &task.task_id,
                             &reservation.reservation_id,
                             task.state_version,
-                            selection.node_total_slots,
+                            selection.runner_total_slots,
                             now,
                         ) {
                             Ok(()) => {
@@ -7740,17 +7874,19 @@ fn handle_connection_with_streams(
                                 "harness task does not exist",
                             )
                         })
-                        .and_then(|task| select_harness_node(task, &reserve, &guard.nodes));
+                        .and_then(|task| {
+                            select_harness_runner(task, &reserve, &guard.harness.runners, now)
+                        });
                     match selection {
                         Ok(selection) => {
                             let mut candidate = guard.harness.clone();
                             match candidate.reserve_attempt(
                                 task_id,
                                 reserve.expected_task_state_version,
-                                &selection.node_id,
+                                &selection.runner_id,
                                 selection.execution_mode,
                                 reserve.slots,
-                                selection.node_total_slots,
+                                selection.runner_total_slots,
                                 reserve.reservation_ttl_seconds,
                                 &actor,
                                 now,
@@ -7769,7 +7905,7 @@ fn handle_connection_with_streams(
                                         task_id,
                                         &reservation.reservation_id,
                                         reserve.expected_task_state_version,
-                                        selection.node_total_slots,
+                                        selection.runner_total_slots,
                                         now,
                                     ) {
                                         Ok(()) => {
@@ -9651,7 +9787,7 @@ mod tests {
         parse_conversation_path, parse_harness_attempt_route,
         parse_harness_attempt_transition_route, parse_harness_task_route, parse_request,
         read_http_request, requires_device_signature, requires_operator_auth, resume_token_matches,
-        resume_token_sha256, select_harness_node, should_enable_live_stream,
+        resume_token_sha256, select_harness_runner, should_enable_live_stream,
         status_snapshot_with_deploy_fingerprint, trust_grade, trust_grade_badge,
         HarnessAttemptRoute, HttpRequestReadError, OperatorAuthMode, OperatorPage, StorageSource,
         SupabaseSyncStatus, AUTH_DISABLED_ENV, CONTROL_PLANE_ENVIRONMENT_ENV,
@@ -11388,10 +11524,10 @@ mod tests {
         );
 
         let update = harness_policy_request_from_form(
-            "policy_update=1&kill_switch=1&tenant_max_active_attempts=3&tenant_max_queued_tasks=20&tenant_max_artifact_bytes=1024&drain_node_id=node-1",
+            "policy_update=1&kill_switch=1&tenant_max_active_attempts=3&tenant_max_queued_tasks=20&tenant_max_artifact_bytes=1024&drain_runner_id=runner-1",
         );
         assert_eq!(update.kill_switch, Some(true));
-        assert_eq!(update.drain_node_id.as_deref(), Some("node-1"));
+        assert_eq!(update.drain_runner_id.as_deref(), Some("runner-1"));
         assert_eq!(update.tenant_max_active_attempts, Some(3));
     }
 
@@ -12242,70 +12378,49 @@ mod tests {
 
     #[test]
     fn harness_routing_prefers_trusted_hybrid_and_uses_explicit_sandbox_fallback() {
-        use crate::contracts::{
-            HarnessCapabilityAdvertisement, NodeCapabilityAdvertisement, NodeRole,
-            CAPABILITY_FABRIC_V1, IDENTITY_TRUST_KEYCHAIN, IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
-        };
         use crate::harness::{
-            CreateHarnessTaskRequest, HarnessExecutionMode, HarnessState,
-            ReserveHarnessAttemptRequest,
+            CreateHarnessTaskRequest, HarnessExecutionMode, HarnessRunner, HarnessRunnerKind,
+            HarnessState, ReserveHarnessAttemptRequest,
         };
 
-        let mut state = ControlPlaneState::default();
-        register_ready_node(&mut state, "trusted", "TRUSTED", "1");
-        register_ready_node(&mut state, "fallback", "FALLBACK", "1");
-        for (node_id, trust_path, modes) in [
-            (
-                "trusted",
-                IDENTITY_TRUST_KEYCHAIN,
-                vec!["hybrid", "sandbox"],
-            ),
-            (
-                "fallback",
-                IDENTITY_TRUST_LOCAL_ENCRYPTED_FALLBACK,
-                vec!["sandbox"],
-            ),
+        let owner = "78a1c06a-861c-43b4-b7db-b54a51fc912d".to_string();
+        let mut harness = HarnessState::default();
+        for (runner_id, trusted, modes) in [
+            ("trusted", true, vec!["hybrid", "sandbox"]),
+            ("fallback", false, vec!["sandbox"]),
         ] {
-            let node = state.nodes.get_mut(node_id).unwrap();
-            node.identity_trust_path = trust_path.to_string();
-            node.capability_fabric_version = Some(CAPABILITY_FABRIC_V1.to_string());
-            node.capabilities = Some(NodeCapabilityAdvertisement {
-                schema_version: 4,
-                backend: Backend::M,
-                contribution_percent: 50,
-                physical_memory_mb: Some(32_768),
-                usable_memory_mb: Some(24_576),
-                available_memory_mb: Some(20_000),
-                physical_vram_mb: None,
-                usable_vram_mb: None,
-                runtime_mode: "local".to_string(),
-                parallel_slots: 4,
-                capacity_class: "workstation".to_string(),
-                supported_roles: vec![NodeRole::Coding, NodeRole::ToolUse],
-                supported_tools: vec!["repository".to_string()],
-                harness: Some(HarnessCapabilityAdvertisement {
+            harness.runners.insert(
+                runner_id.to_string(),
+                HarnessRunner {
+                    runner_id: runner_id.to_string(),
+                    device_id: format!("device-{runner_id}"),
+                    public_key_hex: "a".repeat(64),
+                    kind: HarnessRunnerKind::LocalUser,
+                    owner_user_id: Some(owner.clone()),
+                    tenant_ids: vec!["owner:any".to_string()],
+                    repository_source_ids: vec!["github:".to_string()],
                     execution_modes: modes.into_iter().map(str::to_string).collect(),
                     supported_operations: vec![
                         "file.read".to_string(),
                         "validation.run".to_string(),
                     ],
-                    sandbox_runtime: Some("docker".to_string()),
                     network_default_disabled: true,
                     max_workspace_mb: 8_192,
-                }),
-                active_model: None,
-                ready_for_jobs: true,
-                readiness_reason: None,
-            });
+                    usable_memory_mb: 24_576,
+                    parallel_slots: 4,
+                    trusted_identity: trusted,
+                    ready: true,
+                    last_seen_epoch: 1_000,
+                },
+            );
         }
-        let mut harness = HarnessState::default();
         let task = harness
             .create_task(
                 CreateHarnessTaskRequest {
                     harness_contract_version: "1.0".to_string(),
                     tenant_id: "tenant-1".to_string(),
-                    repository_source_id: "repo-1".to_string(),
-                    requested_by_user_id: None,
+                    repository_source_id: "github:42:owner/repo".to_string(),
+                    requested_by_user_id: Some(owner),
                     submitted_via: None,
                     objective: "Update the bounded test fixture.".to_string(),
                     base_revision: "a".repeat(40),
@@ -12322,22 +12437,39 @@ mod tests {
             .unwrap();
         let request = ReserveHarnessAttemptRequest {
             expected_task_state_version: task.state_version,
-            node_id: None,
+            runner_id: None,
             allow_sandbox_fallback: true,
             slots: 1,
             reservation_ttl_seconds: 300,
             actor: "scheduler".to_string(),
         };
-        let selection = select_harness_node(&task, &request, &state.nodes).unwrap();
-        assert_eq!(selection.node_id, "trusted");
+        let selection = select_harness_runner(&task, &request, &harness.runners, 1_000).unwrap();
+        assert_eq!(selection.runner_id, "trusted");
         assert_eq!(selection.execution_mode, HarnessExecutionMode::Hybrid);
         assert!(!selection.fallback_used);
 
-        let mut fallback_only = request;
-        fallback_only.node_id = Some("fallback".to_string());
-        let selection = select_harness_node(&task, &fallback_only, &state.nodes).unwrap();
+        let mut fallback_only = request.clone();
+        fallback_only.runner_id = Some("fallback".to_string());
+        let selection =
+            select_harness_runner(&task, &fallback_only, &harness.runners, 1_000).unwrap();
         assert_eq!(selection.execution_mode, HarnessExecutionMode::Sandbox);
         assert!(selection.fallback_used);
+
+        let no_runner =
+            select_harness_runner(&task, &request, &std::collections::BTreeMap::new(), 1_000)
+                .expect_err("contributor nodes must never be an implicit Harness fallback");
+        assert_eq!(no_runner.code, "HARNESS_RUNNER_UNAVAILABLE");
+
+        harness.runners.get_mut("trusted").unwrap().owner_user_id =
+            Some("bc219dc4-a12c-4486-84be-73fe379db35d".to_string());
+        let mut trusted_only = request;
+        trusted_only.runner_id = Some("trusted".to_string());
+        let wrong_owner =
+            select_harness_runner(&task, &trusted_only, &harness.runners, 1_000).unwrap_err();
+        assert_eq!(wrong_owner.code, "HARNESS_RUNNER_UNAVAILABLE");
+        assert!(wrong_owner
+            .message
+            .contains("HARNESS_RUNNER_OWNER_MISMATCH"));
     }
 
     #[test]
@@ -12356,29 +12488,31 @@ mod tests {
         .is_none());
         assert_eq!(
             parse_harness_attempt_transition_route(
-                "/internal/harness/node/attempts/hattempt_abc/transition"
+                "/internal/harness/runners/attempts/hattempt_abc/transition"
             ),
             Some("hattempt_abc")
         );
         assert!(matches!(
-            parse_harness_attempt_route("/internal/harness/node/attempts/hattempt_abc/tool-calls"),
+            parse_harness_attempt_route(
+                "/internal/harness/runners/attempts/hattempt_abc/tool-calls"
+            ),
             Some(HarnessAttemptRoute::ToolCalls("hattempt_abc"))
         ));
     }
 
     #[test]
-    fn protects_node_harness_routes_with_device_signatures() {
+    fn protects_runner_harness_routes_with_device_signatures() {
         assert!(requires_device_signature(
             "GET",
-            "/internal/harness/node/attempts/next"
+            "/internal/harness/runners/attempts/next"
         ));
         assert!(requires_device_signature(
             "POST",
-            "/internal/harness/node/attempts/hattempt_abc/transition"
+            "/internal/harness/runners/attempts/hattempt_abc/transition"
         ));
         assert!(requires_device_signature(
             "POST",
-            "/internal/harness/node/attempts/hattempt_abc/model-turns"
+            "/internal/harness/runners/attempts/hattempt_abc/model-turns"
         ));
         assert!(!requires_device_signature(
             "POST",
