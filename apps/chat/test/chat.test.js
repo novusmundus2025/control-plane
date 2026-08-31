@@ -452,6 +452,11 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(projects, /project-readiness-refresh|class="project-advanced"|Advanced controls|Allowed tools/);
   assert.doesNotMatch(html, /id="harness-open"|id="harness-dialog"|>Computer<\/button>/);
   assert.match(projects, /class="harness-submit"[^>]*>Create project/);
+  assert.match(html, /\.projects-dialog \.dialog-close \{ position:absolute; top:24px; left:28px;/);
+  assert.match(html, /\.project-heading \{ display:flex; align-items:center; justify-content:center;/);
+  assert.match(html, /\.projects-dialog \.harness-form \{ gap:18px; padding:0 46px 38px;/);
+  assert.match(html, /html\[data-theme="dark"\] \.projects-dialog \{/);
+  assert.match(html, /html\[data-theme="dark"\] \.project-section \{/);
   assert.doesNotMatch(projects, /Publishing to GitHub is a separate action/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-open"/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-form"/);
