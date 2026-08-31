@@ -411,8 +411,12 @@ test("separates user Projects from the local Computer runner", () => {
 
   const projects = html.match(/<dialog class="harness-dialog" id="repository-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
   const computer = html.match(/<dialog class="harness-dialog" id="harness-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
+  const workspaceNav = html.match(/<nav class="rail-tabs" aria-label="Workspace">[\s\S]*?<\/nav>/)?.[0] || "";
+  const mainHeader = html.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   assert.match(html, /id="repository-open"[^>]*hidden>Projects<\/button>/);
   assert.match(html, /id="harness-open"[^>]*hidden>Computer<\/button>/);
+  assert.match(workspaceNav, /Chats[\s\S]*id="repository-open"[\s\S]*Projects[\s\S]*Agents[\s\S]*Nodes/);
+  assert.doesNotMatch(mainHeader, /id="repository-open"|>Projects<\/button>/);
   assert.match(projects, /name="repository_id"/);
   assert.match(projects, /Create a repository in my GitHub account/);
   assert.match(projects, /name="repository_name"/);
