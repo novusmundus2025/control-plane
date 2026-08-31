@@ -415,7 +415,8 @@ test("separates user Projects from the local Computer runner", () => {
   const mainHeader = html.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   assert.match(html, /id="repository-open"[^>]*hidden>Projects<\/button>/);
   assert.match(html, /id="harness-open"[^>]*hidden>Computer<\/button>/);
-  assert.match(workspaceNav, /Chats[\s\S]*id="repository-open"[\s\S]*Projects[\s\S]*Agents[\s\S]*Nodes/);
+  assert.match(workspaceNav, /Chats[\s\S]*id="repository-open"[\s\S]*Projects/);
+  assert.doesNotMatch(workspaceNav, />Agents<|>Nodes</);
   assert.doesNotMatch(mainHeader, /id="repository-open"|>Projects<\/button>/);
   assert.match(projects, /name="repository_id"/);
   assert.match(projects, /Create a repository in my GitHub account/);
