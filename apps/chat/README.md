@@ -91,6 +91,13 @@ task remains in `created` state until an operator separately approves UAT execut
 pair their local runner with a hashed, one-use, ten-minute code; no user UUID or GitHub token is
 copied into runner configuration. The launcher cannot approve merge or deployment.
 
+The **Computer** panel guides each user through four local steps: install the runner, authenticate
+the GitHub CLI through GitHub's browser flow, pair the computer, and verify that it is ready. The
+copyable commands are `gh auth login --hostname github.com --git-protocol https --web` and
+`gh auth setup-git`; Chat-U never provides a token input. Pairing succeeds only after the runner
+verifies local GitHub CLI authentication. **Projects** shows the same runner readiness and links
+back to Computer when execution is unavailable.
+
 Railway provides `PORT`; the app reads it automatically.
 
 ## Environment

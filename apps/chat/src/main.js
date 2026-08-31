@@ -212,6 +212,11 @@ export function page(config = configFromEnv()) {
           <label><input type="checkbox" name="allowed_operations" value="patch.apply" checked> Apply bounded patches</label>
           <label><input type="checkbox" name="allowed_operations" value="validation.run" checked> Run named validations</label>
         </fieldset>
+        <aside class="project-readiness" id="project-readiness" data-state="checking">
+          <span class="readiness-dot" aria-hidden="true"></span>
+          <span id="project-readiness-text">Checking your Computer…</span>
+          <button id="project-open-computer" type="button">Open Computer</button>
+        </aside>
         <small>Project execution requires a connected Computer. Submission does not approve merge or deployment.</small>
         <button class="harness-submit" type="submit">Create project and submit for review</button>
         <output id="harness-result" aria-live="polite"></output>
@@ -230,19 +235,43 @@ export function page(config = configFromEnv()) {
     ? `<button class="header-action" id="harness-open" type="button" hidden>Computer</button>
       <dialog class="harness-dialog" id="harness-dialog">
         <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
-        <h2>Computer</h2>
-        <p>Connect and inspect the local computer that runs your isolated project workspace and approved tools.</p>
-        <section class="harness-connection" aria-labelledby="harness-connection-title">
-          <h3 id="harness-connection-title">Local project runner</h3>
-          <p id="harness-runner-status">Checking runner connection…</p>
-          <div class="inline-actions">
-            ${config.harnessRunnerDownloadUrl ? `<a class="harness-download" href="${escapeHtml(config.harnessRunnerDownloadUrl)}">Download runner</a>` : ""}
-            <button id="harness-pair" type="button">Create pairing code</button>
-          </div>
-          <code id="harness-pairing-code" hidden></code>
-          <p id="harness-pairing-command" hidden></p>
-          <small>Never paste a GitHub token into Chat-U. Chat-U uses encrypted GitHub App authorization; this runner uses your local GitHub CLI. Contributor nodes receive neither credential.</small>
+        <header class="computer-heading">
+          <span class="computer-mark" aria-hidden="true">⌘</span>
+          <span><h2>Computer</h2><p>Run coding tasks safely on a computer you control.</p></span>
+        </header>
+        <section class="computer-summary" id="computer-summary" data-state="checking" aria-live="polite">
+          <span class="readiness-dot" aria-hidden="true"></span>
+          <span><strong id="computer-summary-title">Checking connection…</strong><small id="harness-runner-status">Looking for a paired runner.</small></span>
+          <button id="computer-refresh" type="button" aria-label="Refresh Computer status">Refresh</button>
         </section>
+        <ol class="computer-steps" aria-label="Computer setup">
+          <li class="computer-step" id="computer-step-install" data-state="current">
+            <span class="step-index" aria-hidden="true">1</span>
+            <div class="step-content"><h3>Install the runner</h3><p>The runner creates isolated workspaces on this computer. It is separate from inference contributor nodes.</p>
+              <div class="inline-actions">${config.harnessRunnerDownloadUrl ? `<a class="harness-download primary" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" target="_blank" rel="noopener">Download runner</a>` : `<span class="setup-unavailable">Download is not configured yet.</span>`}</div>
+            </div>
+          </li>
+          <li class="computer-step" id="computer-step-github" data-state="pending">
+            <span class="step-index" aria-hidden="true">2</span>
+            <div class="step-content"><h3>Connect GitHub on this computer</h3><p>Sign in through GitHub in your browser. Your credential stays in the local GitHub CLI.</p>
+              <div class="command-row"><code id="harness-github-command">gh auth login --hostname github.com --git-protocol https --web</code><button class="copy-command" type="button" data-copy-target="harness-github-command">Copy</button></div>
+              <div class="command-row"><code id="harness-git-command">gh auth setup-git</code><button class="copy-command" type="button" data-copy-target="harness-git-command">Copy</button></div>
+            </div>
+          </li>
+          <li class="computer-step" id="computer-step-pair" data-state="pending">
+            <span class="step-index" aria-hidden="true">3</span>
+            <div class="step-content"><h3>Pair with Chat-U</h3><p>Create a one-use code, then run the displayed command locally.</p>
+              <div class="inline-actions"><button id="harness-pair" class="primary" type="button">Create pairing code</button></div>
+              <code id="harness-pairing-code" class="pairing-code" hidden></code>
+              <div class="command-row" id="harness-pairing-command-row" hidden><code id="harness-pairing-command"></code><button class="copy-command" type="button" data-copy-target="harness-pairing-command">Copy</button></div>
+            </div>
+          </li>
+          <li class="computer-step" id="computer-step-ready" data-state="pending">
+            <span class="step-index" aria-hidden="true">4</span>
+            <div class="step-content"><h3>Ready for projects</h3><p id="computer-ready-description">Start the runner and leave it available while a project task runs.</p></div>
+          </li>
+        </ol>
+        <p class="credential-note"><strong>Your credentials stay yours.</strong> Never paste a GitHub token into Chat-U. Chat-U uses encrypted GitHub App authorization; the runner uses your local GitHub CLI. Inference contributor nodes receive neither credential.</p>
         <div class="harness-boundary"><strong>Security boundary</strong><span>Only this paired computer receives an isolated project workspace. Inference contributor nodes do not.</span></div>
       </dialog>`
     : "";
@@ -1486,11 +1515,42 @@ export function page(config = configFromEnv()) {
     .dialog-close button { border: 0; background: transparent; font-size: 28px; cursor: pointer; }
     .harness-boundary,.harness-form { display: grid; gap: 14px; }
     .harness-boundary { padding: 12px; border-radius: 10px; background: var(--bg); }
-    .harness-connection { display: grid; gap: 10px; margin: 14px 0; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
-    .harness-connection h3,.harness-connection p { margin: 0; }
-    .harness-connection .inline-actions { display: flex; flex-wrap: wrap; gap: 8px; }
-    .harness-connection button,.harness-download { border: 1px solid var(--line-strong); border-radius: 9px; padding: 9px 12px; background: var(--panel); color: var(--text); font: inherit; text-decoration: none; cursor: pointer; }
-    #harness-pairing-code { overflow-wrap: anywhere; padding: 10px; border-radius: 8px; background: var(--panel); user-select: all; }
+    .computer-heading { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; }
+    .computer-heading h2,.computer-heading p { margin: 0; }
+    .computer-heading p { margin-top: 3px; color: var(--muted); }
+    .computer-mark { width: 42px; height: 42px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 12px; color: white; background: var(--gradient); font-weight: 800; }
+    .computer-summary,.project-readiness { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--bg); }
+    .computer-summary { padding: 13px 14px; border-radius: 12px; margin-bottom: 14px; }
+    .computer-summary > span:nth-child(2) { display: grid; gap: 2px; min-width: 0; flex: 1; }
+    .computer-summary small { color: var(--muted); }
+    .computer-summary button,.project-readiness button { border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--text); padding: 7px 10px; font: inherit; cursor: pointer; }
+    .readiness-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 999px; background: var(--muted-2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted-2) 15%, transparent); }
+    [data-state="ready"] > .readiness-dot { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 15%, transparent); }
+    [data-state="offline"] > .readiness-dot { background: #d98c16; box-shadow: 0 0 0 4px rgba(217,140,22,.14); }
+    .computer-steps { list-style: none; display: grid; gap: 0; margin: 0; padding: 0; }
+    .computer-step { position: relative; display: grid; grid-template-columns: 34px 1fr; gap: 12px; padding: 9px 0 18px; }
+    .computer-step:not(:last-child)::after { content: ""; position: absolute; left: 16px; top: 42px; bottom: 0; width: 1px; background: var(--line-strong); }
+    .step-index { position: relative; z-index: 1; width: 34px; height: 34px; display: grid; place-items: center; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--panel); color: var(--muted); font-size: 13px; font-weight: 800; }
+    .computer-step[data-state="complete"] .step-index { border-color: var(--green); background: var(--green); color: white; font-size: 0; }
+    .computer-step[data-state="complete"] .step-index::after { content: "✓"; font-size: 15px; }
+    .computer-step[data-state="current"] .step-index { border-color: var(--blue); color: var(--blue); box-shadow: 0 0 0 4px color-mix(in srgb, var(--blue) 12%, transparent); }
+    .step-content { min-width: 0; padding-top: 4px; }
+    .step-content h3,.step-content p { margin: 0; }
+    .step-content p { margin-top: 4px; color: var(--muted); line-height: 1.45; }
+    .step-content .inline-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 11px; }
+    .step-content button,.harness-download { border: 1px solid var(--line-strong); border-radius: 9px; padding: 9px 12px; background: var(--panel); color: var(--text); font: inherit; text-decoration: none; cursor: pointer; }
+    .step-content .primary { border-color: transparent; background: var(--gradient); color: white; font-weight: 700; }
+    .command-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; margin-top: 9px; }
+    .command-row[hidden] { display: none; }
+    .command-row code,.pairing-code { min-width: 0; overflow-wrap: anywhere; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); user-select: all; font-size: 12px; }
+    .command-row button { padding: 8px 10px; }
+    .pairing-code { display: block; margin-top: 9px; color: var(--blue); font-size: 15px; font-weight: 800; letter-spacing: .06em; }
+    .pairing-code[hidden] { display: none; }
+    .credential-note { margin: 3px 0 14px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--blue) 22%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--blue) 5%, var(--panel)); color: var(--muted); line-height: 1.45; }
+    .credential-note strong { color: var(--text); }
+    .setup-unavailable { color: var(--muted); font-size: 13px; }
+    .project-readiness { margin: 2px 0; padding: 10px 12px; border-radius: 10px; }
+    .project-readiness > span:nth-child(2) { flex: 1; }
     .harness-form label { display: grid; gap: 6px; }
     .harness-form textarea,.harness-form select,.harness-form input[type="text"],.harness-form input:not([type]) { grid-column: auto; grid-row: auto; width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; background: white; font: inherit; }
     .harness-form textarea { min-height: 120px; max-height: 320px; resize: vertical; }
@@ -1806,6 +1866,18 @@ export function page(config = configFromEnv()) {
     const harnessPairEl = document.getElementById("harness-pair");
     const harnessPairingCodeEl = document.getElementById("harness-pairing-code");
     const harnessPairingCommandEl = document.getElementById("harness-pairing-command");
+    const harnessPairingCommandRowEl = document.getElementById("harness-pairing-command-row");
+    const computerSummaryEl = document.getElementById("computer-summary");
+    const computerSummaryTitleEl = document.getElementById("computer-summary-title");
+    const computerRefreshEl = document.getElementById("computer-refresh");
+    const computerReadyDescriptionEl = document.getElementById("computer-ready-description");
+    const computerStepInstallEl = document.getElementById("computer-step-install");
+    const computerStepGithubEl = document.getElementById("computer-step-github");
+    const computerStepPairEl = document.getElementById("computer-step-pair");
+    const computerStepReadyEl = document.getElementById("computer-step-ready");
+    const projectReadinessEl = document.getElementById("project-readiness");
+    const projectReadinessTextEl = document.getElementById("project-readiness-text");
+    const projectOpenComputerEl = document.getElementById("project-open-computer");
     const harnessExecutionModeEl = document.getElementById("harness-execution-mode");
     const harnessNewProjectEl = document.getElementById("harness-new-project");
     const harnessExistingProjectEl = document.getElementById("harness-existing-project");
@@ -2102,6 +2174,10 @@ export function page(config = configFromEnv()) {
     repositoryOpenEl?.addEventListener("click", async () => {
       if (!currentUser?.github_connected) { location.href = "/api/auth/github/start?return_to=/"; return; }
       repositoryDialogEl.showModal();
+      loadHarnessRunners().catch((error) => {
+        if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
+        if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Computer status unavailable";
+      });
       try { const repositories = await loadRepositories(); if (repositories.length) await loadRepositoryContents(""); }
       catch (error) { repositoryResultEl.textContent = error.message; }
     });
@@ -2244,21 +2320,36 @@ export function page(config = configFromEnv()) {
     async function loadHarnessRunners() {
       if (!harnessRunnerStatusEl) return [];
       harnessRunnerStatusEl.textContent = "Checking runner connection…";
+      if (computerSummaryEl) computerSummaryEl.dataset.state = "checking";
+      if (computerSummaryTitleEl) computerSummaryTitleEl.textContent = "Checking connection…";
       const response = await fetch("/api/harness/runners");
       const payload = await response.json();
       if (!response.ok) throw new Error(payload.error || "Runner status could not be loaded");
       const ready = payload.runners.find((runner) => runner.ready && runner.fresh);
+      const paired = payload.runners.length > 0;
       if (ready && harnessExecutionModeEl) {
         const supported = new Set(ready.execution_modes);
         for (const option of harnessExecutionModeEl.options) option.disabled = !supported.has(option.value);
         const preferred = supported.has("sandbox") ? "sandbox" : supported.has("hybrid") ? "hybrid" : "";
         if (preferred) harnessExecutionModeEl.value = preferred;
       }
-      harnessRunnerStatusEl.textContent = ready
+      const statusText = ready
         ? "Connected: " + ready.runner_id + " · " + ready.parallel_slots + " slot" + (ready.parallel_slots === 1 ? "" : "s")
         : payload.runners.length
           ? "Runner paired but offline. Start mundusx-harness-runner run."
           : "No runner paired yet.";
+      harnessRunnerStatusEl.textContent = statusText;
+      if (computerSummaryEl) computerSummaryEl.dataset.state = ready ? "ready" : paired ? "offline" : "setup";
+      if (computerSummaryTitleEl) computerSummaryTitleEl.textContent = ready ? "Computer ready" : paired ? "Computer offline" : "Setup required";
+      if (computerStepInstallEl) computerStepInstallEl.dataset.state = paired ? "complete" : "current";
+      if (computerStepGithubEl) computerStepGithubEl.dataset.state = paired ? "complete" : "pending";
+      if (computerStepPairEl) computerStepPairEl.dataset.state = paired ? "complete" : "pending";
+      if (computerStepReadyEl) computerStepReadyEl.dataset.state = ready ? "complete" : paired ? "current" : "pending";
+      if (computerReadyDescriptionEl) computerReadyDescriptionEl.textContent = ready
+        ? "This computer can receive bounded project work now."
+        : paired ? "Run mundusx-harness-runner run on the paired computer." : "Complete the steps above, then start the runner.";
+      if (projectReadinessEl) projectReadinessEl.dataset.state = ready ? "ready" : paired ? "offline" : "setup";
+      if (projectReadinessTextEl) projectReadinessTextEl.textContent = ready ? "Computer ready for project execution" : paired ? "Computer paired but offline" : "Connect a Computer before running this project";
       return payload.runners;
     }
 
@@ -2283,6 +2374,29 @@ export function page(config = configFromEnv()) {
       harnessDialogEl?.showModal();
       try { await loadHarnessRunners(); } catch (error) { harnessRunnerStatusEl.textContent = error.message; }
     });
+    computerRefreshEl?.addEventListener("click", async () => {
+      computerRefreshEl.disabled = true;
+      try { await loadHarnessRunners(); } catch (error) { harnessRunnerStatusEl.textContent = error.message; }
+      finally { computerRefreshEl.disabled = false; }
+    });
+    projectOpenComputerEl?.addEventListener("click", () => {
+      repositoryDialogEl?.close();
+      harnessDialogEl?.showModal();
+      loadHarnessRunners().catch((error) => { harnessRunnerStatusEl.textContent = error.message; });
+    });
+    document.querySelectorAll(".copy-command").forEach((button) => button.addEventListener("click", async () => {
+      const target = document.getElementById(button.dataset.copyTarget || "");
+      const value = target?.textContent?.trim() || "";
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        const previous = button.textContent;
+        button.textContent = "Copied";
+        window.setTimeout(() => { button.textContent = previous; }, 1400);
+      } catch {
+        window.getSelection()?.selectAllChildren(target);
+      }
+    }));
     harnessPairEl?.addEventListener("click", async () => {
       harnessPairEl.disabled = true;
       try {
@@ -2291,8 +2405,11 @@ export function page(config = configFromEnv()) {
         if (!response.ok) throw new Error(payload.error || "Pairing code could not be created");
         harnessPairingCodeEl.textContent = payload.pairing_code;
         harnessPairingCodeEl.hidden = false;
-        harnessPairingCommandEl.textContent = "Run: mundusx-harness-runner pair " + payload.pairing_code;
-        harnessPairingCommandEl.hidden = false;
+        harnessPairingCommandEl.textContent = "mundusx-harness-runner pair " + payload.pairing_code;
+        harnessPairingCommandRowEl.hidden = false;
+        if (computerStepInstallEl) computerStepInstallEl.dataset.state = "complete";
+        if (computerStepGithubEl) computerStepGithubEl.dataset.state = "complete";
+        if (computerStepPairEl) computerStepPairEl.dataset.state = "current";
         harnessRunnerStatusEl.textContent = "Pairing code expires in 10 minutes and works once.";
       } catch (error) {
         harnessRunnerStatusEl.textContent = error.message;

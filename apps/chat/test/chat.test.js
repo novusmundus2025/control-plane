@@ -420,7 +420,16 @@ test("separates user Projects from the local Computer runner", () => {
   assert.match(projects, /MundusX does not own it/);
   assert.doesNotMatch(projects, /id="harness-pair"/);
   assert.match(computer, /id="harness-pair"/);
-  assert.match(computer, /Local project runner/);
+  assert.match(computer, /Install the runner/);
+  assert.match(computer, /Connect GitHub on this computer/);
+  assert.match(computer, /gh auth login --hostname github\.com --git-protocol https --web/);
+  assert.match(computer, /gh auth setup-git/);
+  assert.match(computer, /Pair with Chat-U/);
+  assert.match(computer, /Ready for projects/);
+  assert.match(computer, /data-copy-target="harness-github-command"/);
+  assert.match(computer, /Your credentials stay yours/);
+  assert.match(projects, /id="project-readiness"/);
+  assert.match(projects, /id="project-open-computer"/);
   assert.doesNotMatch(computer, /name="repository_name"|name="objective"|id="harness-form"/);
   assert.doesNotMatch(html, /github:mundusx\/control-plane/);
   assert.match(projects, /Create project and submit for review/);
