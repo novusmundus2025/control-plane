@@ -16,6 +16,7 @@ Production authority: none
 ## Authorization
 
 - Chat access and Harness access are separate decisions.
+- The browser separates **Projects** (creation, selection, browsing, objective, and bounded task submission) from **Computer** (local runner download, pairing, readiness, and capability status). Computer never selects a repository or coding objective.
 - Repository discovery is the intersection of GitHub App installation access and the signed-in user's live GitHub rights. Every repository read revalidates those rights.
 - Repository creation uses the GitHub App user-to-server token and GitHub's authenticated-user endpoint. The authenticated GitHub identity is the owner; the browser cannot provide or override an owner. Private is the default.
 - A new project receives only the path prefixes, validation profile, and execution modes declared by its server-side project template. Java/Maven projects use trusted hybrid execution until a separately approved offline sandbox image exists.
