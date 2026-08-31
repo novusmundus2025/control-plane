@@ -179,50 +179,73 @@ export function normalizeAssistantDisplayText(text) {
 }
 
 export function page(config = configFromEnv()) {
-  const repositoryLauncher = `<button class="rail-tab rail-tab-projects" id="repository-open" type="button" hidden>Projects</button>`;
-  const repositoryDialog = `<dialog class="harness-dialog" id="repository-dialog">
+  const repositoryLauncher = `<button class="rail-destination" id="repository-open" type="button" hidden>
+      <span class="rail-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span>
+      <span>Projects</span><span class="rail-destination-chevron" aria-hidden="true">›</span>
+    </button>`;
+  const repositoryMobileLauncher = `<button class="header-projects" id="repository-open-mobile" type="button" aria-label="Open Projects" hidden>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Projects</span>
+    </button>`;
+  const repositoryDialog = `<dialog class="harness-dialog projects-dialog" id="repository-dialog">
       <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
-      <h2>Projects</h2>
-      <p>Create a project in your GitHub account or continue work in one of your existing repositories.</p>
+      <header class="project-heading">
+        <span class="project-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span>
+        <span><h2>Projects</h2><p>Create something new or continue from one of your repositories.</p></span>
+      </header>
       ${config.harnessUiEnabled ? `
-      <div class="harness-boundary"><strong>User-owned GitHub project</strong><span>EHDA pins the selected repository's current default-branch commit</span></div>
       <form id="harness-form" class="harness-form">
-        <fieldset class="harness-project-source"><legend>Project destination</legend>
-          <label><input type="radio" name="project_source" value="new" checked> Create a repository in my GitHub account</label>
-          <label><input type="radio" name="project_source" value="existing"> Work on one of my existing repositories</label>
+        <section class="project-section">
+          <div class="project-section-heading"><span class="project-section-number">1</span><span><strong>Choose a repository</strong><small>Your GitHub permissions remain the source of truth.</small></span></div>
+        <fieldset class="harness-project-source"><legend class="sr-only">Project destination</legend>
+          <label class="project-source-card"><input type="radio" name="project_source" value="new" checked><span><strong>New repository</strong><small>Create a repository in my GitHub account</small></span></label>
+          <label class="project-source-card"><input type="radio" name="project_source" value="existing"><span><strong>Existing repository</strong><small>Work on one of my existing repositories</small></span></label>
         </fieldset>
         <section id="harness-new-project" class="harness-project-fields">
-          <label>Repository name<input name="repository_name" maxlength="100" pattern="[A-Za-z0-9._-]+" placeholder="my-java-program" required></label>
-          <label>Project type<select name="project_template"><option value="java-maven">Java (Maven)</option><option value="generic">Generic project</option></select></label>
-          <label>Visibility<select name="repository_visibility"><option value="private" selected>Private</option><option value="public">Public</option></select></label>
-          <label>Description<input name="repository_description" maxlength="350" placeholder="Optional GitHub repository description"></label>
-          <small>The repository is created under your signed-in GitHub identity. MundusX does not own it.</small>
+          <div class="project-field-grid">
+            <label class="project-field-wide">Repository name<input name="repository_name" maxlength="100" pattern="[A-Za-z0-9._-]+" placeholder="my-java-program" required></label>
+            <label>Project type<select name="project_template"><option value="java-maven">Java (Maven)</option><option value="generic">Generic project</option></select></label>
+            <label>Visibility<select name="repository_visibility"><option value="private" selected>Private</option><option value="public">Public</option></select></label>
+            <label class="project-field-wide">Description<input name="repository_description" maxlength="350" placeholder="Optional description"></label>
+          </div>
+          <small class="project-ownership">Created under your signed-in GitHub identity. MundusX does not own the repository.</small>
         </section>
         <section id="harness-existing-project" class="harness-project-fields" hidden>
           <label>Your repository<select name="repository_id" id="harness-grant"></select></label>
           <small>Only repositories granted to the GitHub App are shown.</small>
         </section>
-        <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="For example: create a Java program with unit tests"></textarea></label>
-        <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted computer only)</option></select></label>
-        <fieldset><legend>Allowed tools</legend>
-          <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
-          <label><input type="checkbox" name="allowed_operations" value="repository.diff" checked> Repository diff</label>
-          <label><input type="checkbox" name="allowed_operations" value="file.read" checked> Read files</label>
-          <label><input type="checkbox" name="allowed_operations" value="file.search" checked> Search files</label>
-          <label><input type="checkbox" name="allowed_operations" value="patch.apply" checked> Apply bounded patches</label>
-          <label><input type="checkbox" name="allowed_operations" value="validation.run" checked> Run named validations</label>
-        </fieldset>
-        <aside class="project-readiness" id="project-readiness" data-state="checking">
+        </section>
+        <section class="project-section">
+          <div class="project-section-heading"><span class="project-section-number">2</span><span><strong>Describe the work</strong><small>Tell the harness what a successful result looks like.</small></span></div>
+          <label class="project-objective"><span class="sr-only">Objective</span><textarea name="objective" rows="4" maxlength="4000" required placeholder="For example: create a Java program with unit tests"></textarea></label>
+        </section>
+        <details class="project-advanced">
+          <summary><span><strong>Advanced controls</strong><small>Execution mode and allowed tools</small></span><span class="project-advanced-chevron" aria-hidden="true">⌄</span></summary>
+          <div class="project-advanced-body">
+            <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted computer only)</option></select></label>
+            <fieldset><legend>Allowed tools</legend>
+              <div class="project-tool-grid">
+                <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
+                <label><input type="checkbox" name="allowed_operations" value="repository.diff" checked> Repository diff</label>
+                <label><input type="checkbox" name="allowed_operations" value="file.read" checked> Read files</label>
+                <label><input type="checkbox" name="allowed_operations" value="file.search" checked> Search files</label>
+                <label><input type="checkbox" name="allowed_operations" value="patch.apply" checked> Apply bounded patches</label>
+                <label><input type="checkbox" name="allowed_operations" value="validation.run" checked> Run named validations</label>
+              </div>
+            </fieldset>
+          </div>
+        </details>
+        <div class="project-readiness" id="project-readiness" data-state="checking">
           <span class="readiness-dot" aria-hidden="true"></span>
           <span id="project-readiness-text">Checking your Computer…</span>
           <button id="project-open-computer" type="button">Open Computer</button>
-        </aside>
-        <small>Project execution requires a connected Computer. Submission does not approve merge or deployment.</small>
-        <button class="harness-submit" type="submit">Create project and submit for review</button>
-        <output id="harness-result" aria-live="polite"></output>
+        </div>
+        <footer class="project-actions">
+          <span><small>Creates UAT work only. Merge and deployment require separate approval.</small><output id="harness-result" aria-live="polite"></output></span>
+          <button class="harness-submit" type="submit">Create project</button>
+        </footer>
       </form>` : ""}
       <details class="project-browser">
-        <summary>Browse existing project files</summary>
+        <summary>Browse repository files</summary>
         <p>Only projects available to both your GitHub account and the installed MundusX GitHub App appear here.</p>
         <label>Project<select id="repository-select"></select></label>
         <div class="repository-path"><button id="repository-up" type="button">Up</button><code id="repository-path">/</code></div>
@@ -781,6 +804,9 @@ export function page(config = configFromEnv()) {
     .header-actions {
       display: none;
     }
+    .header-projects { display:none; align-items:center; gap:7px; border:1px solid var(--line); border-radius:10px; padding:7px 10px; color:var(--text); background:var(--panel); font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+    .header-projects[hidden] { display:none; }
+    .header-projects svg { width:17px; height:17px; color:var(--accent); }
 
     .messages {
       min-height: 0;
@@ -1509,7 +1535,7 @@ export function page(config = configFromEnv()) {
       color: var(--green);
     }
     .header-action { border: 1px solid var(--line-strong); border-radius: 999px; background: white; color: var(--blue); padding: 8px 14px; font: inherit; font-weight: 700; cursor: pointer; }
-    .harness-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; border: 1px solid var(--line-strong); border-radius: 18px; padding: 24px; color: var(--text); box-shadow: 0 28px 80px rgba(18,19,28,.24); }
+    .harness-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; border: 1px solid var(--line-strong); border-radius: 18px; padding: 24px; color: var(--text); background: var(--panel); box-shadow: 0 28px 80px rgba(18,19,28,.24); }
     .harness-dialog::backdrop { background: rgba(15,23,42,.48); }
     .dialog-close { float: right; padding: 0; }
     .dialog-close button { border: 0; background: transparent; font-size: 28px; cursor: pointer; }
@@ -1561,6 +1587,47 @@ export function page(config = configFromEnv()) {
     .project-browser { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
     .project-browser summary { font-weight: 700; cursor: pointer; }
     .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
+    .sr-only { position: absolute!important; width: 1px!important; height: 1px!important; padding: 0!important; margin: -1px!important; overflow: hidden!important; clip: rect(0,0,0,0)!important; white-space: nowrap!important; border: 0!important; }
+    .projects-dialog { width: min(780px,calc(100vw - 32px)); padding: 26px 28px 22px; }
+    .projects-dialog .dialog-close { position: sticky; top: 0; z-index: 3; margin: -8px -10px 0 0; }
+    .project-heading { display: flex; align-items: center; gap: 13px; padding-right: 44px; margin-bottom: 20px; border: 0; }
+    .project-heading h2,.project-heading p { margin: 0; }
+    .project-heading p { margin-top: 3px; color: var(--muted); line-height: 1.4; }
+    .project-mark { width: 44px; height: 44px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 13px; color: white; background: var(--gradient); box-shadow: 0 9px 22px rgba(86,70,246,.24); }
+    .project-mark svg { width: 23px; height: 23px; }
+    .projects-dialog .harness-form { gap: 13px; }
+    .project-section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); }
+    .project-section-heading { display: flex; align-items: center; gap: 10px; }
+    .project-section-heading > span:last-child { display: grid; gap: 2px; }
+    .project-section-heading small { color: var(--muted); }
+    .project-section-number { width: 26px; height: 26px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 999px; color: var(--purple); background: color-mix(in srgb,var(--purple) 11%,transparent); font-size: 12px; font-weight: 800; }
+    .harness-project-source { display: grid!important; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 9px!important; padding: 0!important; border: 0!important; }
+    .harness-project-source .project-source-card { display: grid; grid-template-columns: auto 1fr; align-items: start; gap: 9px; padding: 12px; border: 1px solid var(--line-strong); border-radius: 11px; background: var(--panel); cursor: pointer; }
+    .harness-project-source .project-source-card:has(input:checked) { border-color: var(--purple); box-shadow: 0 0 0 3px color-mix(in srgb,var(--purple) 10%,transparent); }
+    .project-source-card input { margin-top: 3px; accent-color: var(--purple); }
+    .project-source-card > span { display: grid; gap: 3px; }
+    .project-source-card small { color: var(--muted); line-height: 1.35; }
+    .projects-dialog .harness-project-fields { gap: 10px; padding: 0; border: 0; background: transparent; }
+    .project-field-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 10px; }
+    .project-field-wide { grid-column: 1 / -1; }
+    .project-ownership { color: var(--muted); }
+    .project-objective textarea { min-height: 104px; }
+    .project-advanced { border: 1px solid var(--line); border-radius: 13px; background: var(--panel-2); overflow: hidden; }
+    .project-advanced > summary { display: flex; align-items: center; gap: 12px; padding: 13px 16px; cursor: pointer; list-style: none; }
+    .project-advanced > summary::-webkit-details-marker { display: none; }
+    .project-advanced > summary > span:first-child { display: grid; gap: 2px; flex: 1; }
+    .project-advanced > summary small { color: var(--muted); }
+    .project-advanced-chevron { color: var(--muted); transition: transform var(--motion-fast); }
+    .project-advanced[open] .project-advanced-chevron { transform: rotate(180deg); }
+    .project-advanced-body { display: grid; gap: 13px; padding: 0 16px 16px; border-top: 1px solid var(--line); }
+    .project-advanced-body > label { margin-top: 14px; }
+    .project-tool-grid { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+    .project-actions { display: flex; align-items: center; gap: 16px; padding: 4px 0 0; border: 0; }
+    .project-actions > span { display: grid; gap: 4px; min-width: 0; flex: 1; color: var(--muted); }
+    .project-actions output { color: var(--text); font-size: 12px; }
+    .project-actions .harness-submit { min-width: 142px; }
+    .projects-dialog .harness-form textarea,.projects-dialog .harness-form select,.projects-dialog .harness-form input[type="text"],.projects-dialog .harness-form input:not([type]) { color: var(--text); background: var(--panel); }
+    .projects-dialog .project-browser { margin-top: 16px; padding: 13px 2px 0; }
     .auth-gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(246,247,252,.96); }
     .auth-gate[hidden] { display: none; }
     .auth-card { width: min(420px, calc(100vw - 32px)); padding: 30px; border: 1px solid var(--line); border-radius: 18px; background: white; box-shadow: 0 18px 60px rgba(28,31,60,.12); display: grid; gap: 16px; }
@@ -1692,6 +1759,9 @@ export function page(config = configFromEnv()) {
     @media (max-width: 860px) {
       .shell { grid-template-columns: 1fr; }
       aside { display: none; }
+      header { justify-content:flex-start; padding:0 14px; gap:10px; }
+      .header-projects:not([hidden]) { display:inline-flex; }
+      .theme-switch { margin-left:auto; }
       .conversation { padding: 24px 14px 20px; }
       main.is-empty-chat { grid-template-rows: 58px minmax(0, 0.9fr) minmax(0, 1.1fr); }
       form { padding: 12px 14px 18px; }
@@ -1710,10 +1780,14 @@ export function page(config = configFromEnv()) {
     .new-chat { color:white; border:0; background:var(--gradient); box-shadow:0 10px 24px rgba(84,71,244,.22); }
     .new-chat:hover,.new-chat:focus-visible { background:var(--gradient); transform:translateY(-1px); }
     .new-chat .kbd-hint { color:white; border-color:rgba(255,255,255,.25); background:rgba(255,255,255,.12); }
-    .rail-tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; }
-    .rail-tab { min-width:0; border:0; border-bottom:2px solid transparent; padding:8px 1px; color:var(--muted); background:transparent; font-size:11px; cursor:pointer; transition:color var(--motion-fast),border-color var(--motion-fast),background var(--motion-fast); }
-    .rail-tab:hover,.rail-tab:focus-visible { color:var(--text); background:color-mix(in srgb,var(--purple) 7%,transparent); outline:0; }
-    .rail-tab.is-active { color:var(--purple); border-color:var(--purple); font-weight:700; }
+    .workspace-nav { display:grid; gap:4px; margin-top:4px; }
+    .workspace-label { padding:4px 10px 2px; color:var(--muted-2); font-size:10px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; }
+    .rail-destination { width:100%; min-width:0; display:grid; grid-template-columns:30px minmax(0,1fr) auto; align-items:center; gap:9px; border:1px solid transparent; border-radius:10px; padding:8px 10px; color:var(--muted); background:transparent; font:inherit; font-size:13px; font-weight:650; text-align:left; cursor:pointer; transition:color var(--motion-fast),border-color var(--motion-fast),background var(--motion-fast),transform var(--motion-fast); }
+    .rail-destination:hover,.rail-destination:focus-visible { color:var(--text); background:var(--panel-2); border-color:var(--line); outline:0; transform:translateX(2px); }
+    .rail-destination.is-active { color:var(--text); background:var(--panel); border-color:var(--line); box-shadow:0 8px 22px rgba(50,45,120,.08); }
+    .rail-destination-icon { width:28px; height:28px; display:grid; place-items:center; border-radius:8px; color:var(--purple); background:color-mix(in srgb,var(--purple) 9%,transparent); }
+    .rail-destination-icon svg { width:17px; height:17px; }
+    .rail-destination-chevron { color:var(--muted-2); font-size:18px; line-height:1; }
     main { position:relative; z-index:1; background:radial-gradient(circle at 55% 18%,rgba(var(--mesh-a),.06),transparent 42%); }
     .mesh-canvas { position:absolute; z-index:-1; inset:58px 0 0; width:100%; height:calc(100% - 58px); pointer-events:none; opacity:.78; transition:opacity .4s ease; }
     main:not(.is-empty-chat) .mesh-canvas { opacity:.10; }
@@ -1747,6 +1821,7 @@ export function page(config = configFromEnv()) {
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
     @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px} }
+    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px);padding:20px 16px 16px}.project-field-grid,.harness-project-source,.project-tool-grid{grid-template-columns:1fr}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
   </style>
 </head>
@@ -1771,9 +1846,12 @@ export function page(config = configFromEnv()) {
       </div>
       <div class="rail-primary">
         <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
-        <nav class="rail-tabs" aria-label="Workspace"><button class="rail-tab is-active" type="button">Chats</button>${repositoryLauncher}</nav>
+        <nav class="workspace-nav" aria-label="Workspace">
+          <span class="workspace-label">Workspace</span>
+          <button class="rail-destination is-active" id="chats-open" type="button" aria-current="page"><span class="rail-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 3v-13a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span>Chats</span></button>
+          ${repositoryLauncher}
+        </nav>
       </div>
-      ${repositoryDialog}
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
       <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
         <button type="button" data-action="rename" role="menuitem">Rename</button>
@@ -1809,11 +1887,13 @@ export function page(config = configFromEnv()) {
         </button>
       </div>
     </aside>
+    ${repositoryDialog}
     <main id="chat-main" class="is-empty-chat">
       <canvas class="mesh-canvas" id="mesh-canvas" aria-hidden="true"></canvas>
       <header>
         <div class="theme-switch" role="group" aria-label="Color theme"><button class="theme-option" id="theme-light" type="button" aria-label="Use light theme" aria-pressed="true">☀</button><button class="theme-option" id="theme-dark" type="button" aria-label="Use dark theme" aria-pressed="false">☾</button></div>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
+        ${repositoryMobileLauncher}
         ${harnessLauncher}
       </header>
       <section class="messages" id="messages" aria-live="polite">
@@ -1894,7 +1974,9 @@ export function page(config = configFromEnv()) {
     const authEmailFormEl = document.getElementById("auth-email-form");
     const accountLogoutEl = document.getElementById("account-logout");
     const harnessGrantEl = document.getElementById("harness-grant");
+    const chatsOpenEl = document.getElementById("chats-open");
     const repositoryOpenEl = document.getElementById("repository-open");
+    const repositoryOpenMobileEl = document.getElementById("repository-open-mobile");
     const repositoryDialogEl = document.getElementById("repository-dialog");
     const repositorySelectEl = document.getElementById("repository-select");
     const repositoryEntriesEl = document.getElementById("repository-entries");
@@ -2088,6 +2170,7 @@ export function page(config = configFromEnv()) {
       document.getElementById("auth-github").hidden = !providers.github;
       authEmailFormEl.hidden = !providers.email;
       repositoryOpenEl.hidden = !providers.github;
+      repositoryOpenMobileEl.hidden = !providers.github;
       try {
         const response = await nativeFetch("/api/auth/session");
         if (!response.ok) throw new Error("Sign in required");
@@ -2139,6 +2222,7 @@ export function page(config = configFromEnv()) {
       harnessGrantEl?.replaceChildren(...options.map((option) => option.cloneNode(true)));
       if (harnessOpenEl) harnessOpenEl.hidden = false;
       if (repositoryOpenEl) repositoryOpenEl.hidden = false;
+      if (repositoryOpenMobileEl) repositoryOpenMobileEl.hidden = false;
       repositoryResultEl.textContent = payload.repositories.length ? "Select a project to browse." : "No existing GitHub App projects are available. You can create a new project above.";
       return payload.repositories;
     }
@@ -2172,8 +2256,22 @@ export function page(config = configFromEnv()) {
       repositoryResultEl.textContent = payload.entries.length + " entries";
     }
 
-    repositoryOpenEl?.addEventListener("click", async () => {
+    function setWorkspaceDestination(destination) {
+      const projectsActive = destination === "projects";
+      chatsOpenEl?.classList.toggle("is-active", !projectsActive);
+      repositoryOpenEl?.classList.toggle("is-active", projectsActive);
+      if (projectsActive) {
+        repositoryOpenEl?.setAttribute("aria-current", "page");
+        chatsOpenEl?.removeAttribute("aria-current");
+      } else {
+        chatsOpenEl?.setAttribute("aria-current", "page");
+        repositoryOpenEl?.removeAttribute("aria-current");
+      }
+    }
+
+    async function openProjects() {
       if (!currentUser?.github_connected) { location.href = "/api/auth/github/start?return_to=/"; return; }
+      setWorkspaceDestination("projects");
       repositoryDialogEl.showModal();
       loadHarnessRunners().catch((error) => {
         if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
@@ -2181,7 +2279,11 @@ export function page(config = configFromEnv()) {
       });
       try { const repositories = await loadRepositories(); if (repositories.length) await loadRepositoryContents(""); }
       catch (error) { repositoryResultEl.textContent = error.message; }
-    });
+    }
+
+    repositoryOpenEl?.addEventListener("click", openProjects);
+    repositoryOpenMobileEl?.addEventListener("click", openProjects);
+    repositoryDialogEl?.addEventListener("close", () => setWorkspaceDestination("chats"));
     repositorySelectEl?.addEventListener("change", () => loadRepositoryContents("").catch((error) => repositoryResultEl.textContent = error.message));
     repositoryEntriesEl?.addEventListener("click", (event) => {
       const button = event.target.closest("button[data-path]");
@@ -2361,7 +2463,7 @@ export function page(config = configFromEnv()) {
       const nameInput = harnessFormEl?.elements.namedItem("repository_name");
       if (nameInput) nameInput.required = creating;
       if (harnessGrantEl) harnessGrantEl.required = !creating;
-      if (harnessSubmitEl) harnessSubmitEl.textContent = creating ? "Create project and submit for review" : "Submit existing project for review";
+      if (harnessSubmitEl) harnessSubmitEl.textContent = creating ? "Create project" : "Start project task";
       if (creating && harnessTemplateEl?.value === "java-maven" && harnessExecutionModeEl) harnessExecutionModeEl.value = "hybrid";
     }
 
@@ -2794,6 +2896,7 @@ export function page(config = configFromEnv()) {
     }
 
     newChatEl?.addEventListener("click", () => {
+      setWorkspaceDestination("chats");
       activeHistoryLoadToken += 1;
       loadingHistoryConversationId = null;
       followLatestMessage = true;
