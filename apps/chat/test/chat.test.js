@@ -420,9 +420,9 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(mainHeader, /id="repository-open-mobile"[^>]*aria-label="Open Projects"/);
   assert.match(projects, /name="project_slug"[^>]*pattern="\[a-z0-9\]/);
   assert.match(projects, /Java \(Maven\)/);
-  assert.match(projects, /documents\\mundusx\\projects\\my-java-program/);
-  assert.match(projects, /GitHub is optional and can be connected later/);
-  assert.match(projects, /Files stay on your device/);
+  assert.match(projects, /documents\\mundusx\\projects\\my-project/);
+  assert.match(projects, /Project options/);
+  assert.doesNotMatch(projects, /Files stay on your device|GitHub is optional/);
   assert.doesNotMatch(projects, /Describe the work|name="objective"/);
   assert.match(html, /id="active-project-context"/);
   assert.match(html, /Ask Atlas to work on/);
@@ -430,11 +430,10 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(projects, /id="harness-pair"/);
   assert.match(projects, /Local runner setup/);
   assert.match(projects, /id="project-readiness"/);
-  assert.match(projects, /class="project-advanced"/);
-  assert.match(projects, /Advanced controls/);
+  assert.doesNotMatch(projects, /project-readiness-refresh|class="project-advanced"|Advanced controls|Allowed tools/);
   assert.doesNotMatch(html, /id="harness-open"|id="harness-dialog"|>Computer<\/button>/);
   assert.match(projects, /class="harness-submit"[^>]*>Create project/);
-  assert.match(projects, /Publishing to GitHub is a separate action/);
+  assert.doesNotMatch(projects, /Publishing to GitHub is a separate action/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-open"/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-form"/);
 });
