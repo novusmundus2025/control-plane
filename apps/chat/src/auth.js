@@ -11,6 +11,18 @@ const MAX_GITHUB_PAGES = 5;
 const MAX_GITHUB_INSTALLATIONS = 20;
 const MAX_GITHUB_REPOSITORIES = 1000;
 const MAX_REPOSITORY_FILE_BYTES = 256 * 1024;
+const PROJECT_TEMPLATES = Object.freeze({
+  "java-maven": {
+    allowedPathPrefixes: ["src", "pom.xml", "README.md", ".gitignore"],
+    validationProfiles: ["java-maven-test"],
+    allowedExecutionModes: ["hybrid"],
+  },
+  generic: {
+    allowedPathPrefixes: ["src", "test", "tests", "README.md", ".gitignore"],
+    validationProfiles: ["repository-default"],
+    allowedExecutionModes: ["sandbox", "hybrid"],
+  },
+});
 
 function digest(value) {
   return createHash("sha256").update(String(value)).digest("hex");
@@ -223,15 +235,74 @@ export class PostgresAuthStore {
     return payload.access_token;
   }
 
-  async githubJson(userId, url) {
+  async githubJson(userId, url, { method = "GET", body } = {}) {
     const accessToken = await this.githubToken(userId);
-    const response = await this.fetch(url, { headers: githubHeaders(accessToken) });
+    const response = await this.fetch(url, {
+      method,
+      headers: { ...githubHeaders(accessToken), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
     const payload = await response.json().catch(() => ({}));
     if (response.status === 401) throw Object.assign(new Error("GitHub access expired; reconnect your account"), { statusCode: 401 });
     if (response.status === 403) throw Object.assign(new Error("GitHub denied this repository operation"), { statusCode: 403 });
     if (response.status === 404) throw Object.assign(new Error("Repository resource was not found"), { statusCode: 404 });
+    if (response.status === 422) throw Object.assign(new Error(String(payload.message || "Repository name or settings were rejected by GitHub")), { statusCode: 422 });
     if (!response.ok) throw Object.assign(new Error(`GitHub returned ${response.status}`), { statusCode: 502 });
     return payload;
+  }
+
+  async createRepository(userId, input = {}) {
+    const name = String(input.name || "").trim();
+    const description = String(input.description || "").trim();
+    const visibility = String(input.visibility || "private").toLowerCase();
+    const template = String(input.template || "java-maven").toLowerCase();
+    if (!/^(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/.test(name)) {
+      throw Object.assign(new Error("Repository name must use 1-100 letters, numbers, dots, dashes, or underscores"), { statusCode: 400 });
+    }
+    if (description.length > 350) throw Object.assign(new Error("Repository description is too long"), { statusCode: 400 });
+    if (!["private", "public"].includes(visibility)) throw Object.assign(new Error("Repository visibility must be private or public"), { statusCode: 400 });
+    const projectPolicy = PROJECT_TEMPLATES[template];
+    if (!projectPolicy) throw Object.assign(new Error("Project template is not supported"), { statusCode: 400 });
+
+    const created = await this.githubJson(userId, "https://api.github.com/user/repos", {
+      method: "POST",
+      body: {
+        name,
+        description,
+        private: visibility === "private",
+        auto_init: true,
+      },
+    });
+    const repo = this.normalizeRepository(created);
+    if (!repo.id || !repo.full_name || !created.owner?.login) {
+      throw Object.assign(new Error("GitHub did not return the created user repository"), { statusCode: 502 });
+    }
+    await this.pool.query(`with stale_policy as (
+      delete from public.repository_harness_policies
+      where repository_id <> $1 and lower(repository_full_name) = lower($2)
+    )
+      insert into public.repository_harness_policies
+      (repository_id, repository_full_name, tenant_id, allowed_path_prefixes,
+       validation_profiles, allowed_execution_modes, require_write_permission, created_by)
+      values ($1, $2, $3, $4, $5, $6, true, $7)
+      on conflict (repository_id) do update set
+        repository_full_name = excluded.repository_full_name,
+        tenant_id = excluded.tenant_id,
+        allowed_path_prefixes = excluded.allowed_path_prefixes,
+        validation_profiles = excluded.validation_profiles,
+        allowed_execution_modes = excluded.allowed_execution_modes,
+        require_write_permission = true,
+        status = 'active',
+        updated_at = now()`, [
+      repo.id,
+      repo.full_name,
+      `user:${userId}`,
+      projectPolicy.allowedPathPrefixes,
+      projectPolicy.validationProfiles,
+      projectPolicy.allowedExecutionModes,
+      `chat-user:${userId}`,
+    ]);
+    return { repository: repo, template };
   }
 
   async repositories(userId) {

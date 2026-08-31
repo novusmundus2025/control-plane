@@ -209,8 +209,22 @@ export function page(config = configFromEnv()) {
         </section>
         <div class="harness-boundary"><strong>Live GitHub permission check</strong><span>EHDA pins the selected repository's current default-branch commit</span></div>
         <form id="harness-form" class="harness-form">
-          <label>Repository<select name="repository_id" id="harness-grant" required></select></label>
-          <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="Describe one bounded coding change"></textarea></label>
+          <fieldset class="harness-project-source"><legend>Project destination</legend>
+            <label><input type="radio" name="project_source" value="new" checked> Create a repository in my GitHub account</label>
+            <label><input type="radio" name="project_source" value="existing"> Work on one of my existing repositories</label>
+          </fieldset>
+          <section id="harness-new-project" class="harness-project-fields">
+            <label>Repository name<input name="repository_name" maxlength="100" pattern="[A-Za-z0-9._-]+" placeholder="my-java-program" required></label>
+            <label>Project type<select name="project_template"><option value="java-maven">Java (Maven)</option><option value="generic">Generic project</option></select></label>
+            <label>Visibility<select name="repository_visibility"><option value="private" selected>Private</option><option value="public">Public</option></select></label>
+            <label>Description<input name="repository_description" maxlength="350" placeholder="Optional GitHub repository description"></label>
+            <small>The repository is created under your signed-in GitHub identity. MundusX does not own it.</small>
+          </section>
+          <section id="harness-existing-project" class="harness-project-fields" hidden>
+            <label>Your repository<select name="repository_id" id="harness-grant"></select></label>
+            <small>Only repositories granted to the GitHub App are shown.</small>
+          </section>
+          <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="For example: create a Java program with unit tests"></textarea></label>
           <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted runner only)</option></select></label>
           <fieldset><legend>Allowed tools</legend>
             <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
@@ -220,7 +234,7 @@ export function page(config = configFromEnv()) {
             <label><input type="checkbox" name="allowed_operations" value="patch.apply" checked> Apply bounded patches</label>
             <label><input type="checkbox" name="allowed_operations" value="validation.run" checked> Run named validations</label>
           </fieldset>
-          <button class="harness-submit" type="submit">Submit for review</button>
+          <button class="harness-submit" type="submit">Create project and submit for review</button>
           <output id="harness-result" aria-live="polite"></output>
         </form>
       </dialog>`
@@ -1471,10 +1485,12 @@ export function page(config = configFromEnv()) {
     .harness-connection button,.harness-download { border: 1px solid var(--line-strong); border-radius: 9px; padding: 9px 12px; background: var(--panel); color: var(--text); font: inherit; text-decoration: none; cursor: pointer; }
     #harness-pairing-code { overflow-wrap: anywhere; padding: 10px; border-radius: 8px; background: var(--panel); user-select: all; }
     .harness-form label { display: grid; gap: 6px; }
-    .harness-form textarea,.harness-form select { grid-column: auto; grid-row: auto; width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; background: white; font: inherit; }
+    .harness-form textarea,.harness-form select,.harness-form input[type="text"],.harness-form input:not([type]) { grid-column: auto; grid-row: auto; width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; background: white; font: inherit; }
     .harness-form textarea { min-height: 120px; max-height: 320px; resize: vertical; }
     .harness-form fieldset { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 10px; }
     .harness-form fieldset label { display: flex; align-items: center; gap: 8px; }
+    .harness-project-fields { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
+    .harness-project-fields[hidden] { display: none; }
     .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
     .auth-gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(246,247,252,.96); }
     .auth-gate[hidden] { display: none; }
@@ -1782,6 +1798,10 @@ export function page(config = configFromEnv()) {
     const harnessPairingCodeEl = document.getElementById("harness-pairing-code");
     const harnessPairingCommandEl = document.getElementById("harness-pairing-command");
     const harnessExecutionModeEl = document.getElementById("harness-execution-mode");
+    const harnessNewProjectEl = document.getElementById("harness-new-project");
+    const harnessExistingProjectEl = document.getElementById("harness-existing-project");
+    const harnessSubmitEl = harnessFormEl?.querySelector(".harness-submit");
+    const harnessTemplateEl = harnessFormEl?.elements.namedItem("project_template");
     const enterToSendToggleEl = document.getElementById("enter-to-send-toggle");
     const enterToSendLabelEl = document.getElementById("enter-to-send-label");
     const voiceMicEl = document.getElementById("voice-mic");
@@ -2035,7 +2055,8 @@ export function page(config = configFromEnv()) {
       });
       repositorySelectEl.replaceChildren(...options.map((option) => option.cloneNode(true)));
       harnessGrantEl?.replaceChildren(...options.map((option) => option.cloneNode(true)));
-      if (harnessOpenEl) harnessOpenEl.hidden = !payload.repositories.length;
+      if (harnessOpenEl) harnessOpenEl.hidden = false;
+      if (repositoryOpenEl) repositoryOpenEl.hidden = !payload.repositories.length;
       repositoryResultEl.textContent = payload.repositories.length ? "Select a repository to browse." : "No GitHub App repositories are available to this account.";
       return payload.repositories;
     }
@@ -2232,6 +2253,23 @@ export function page(config = configFromEnv()) {
       return payload.runners;
     }
 
+    function setHarnessProjectSource(source) {
+      const creating = source !== "existing";
+      if (harnessNewProjectEl) harnessNewProjectEl.hidden = !creating;
+      if (harnessExistingProjectEl) harnessExistingProjectEl.hidden = creating;
+      const nameInput = harnessFormEl?.elements.namedItem("repository_name");
+      if (nameInput) nameInput.required = creating;
+      if (harnessGrantEl) harnessGrantEl.required = !creating;
+      if (harnessSubmitEl) harnessSubmitEl.textContent = creating ? "Create project and submit for review" : "Submit existing project for review";
+      if (creating && harnessTemplateEl?.value === "java-maven" && harnessExecutionModeEl) harnessExecutionModeEl.value = "hybrid";
+    }
+
+    harnessFormEl?.addEventListener("change", (event) => {
+      if (event.target?.name === "project_source") setHarnessProjectSource(String(event.target.value));
+      if (event.target?.name === "project_template" && event.target.value === "java-maven" && harnessExecutionModeEl) harnessExecutionModeEl.value = "hybrid";
+    });
+    setHarnessProjectSource("new");
+
     harnessOpenEl?.addEventListener("click", async () => {
       harnessDialogEl?.showModal();
       try { await loadHarnessRunners(); } catch (error) { harnessRunnerStatusEl.textContent = error.message; }
@@ -2257,25 +2295,53 @@ export function page(config = configFromEnv()) {
       event.preventDefault();
       const data = new FormData(harnessFormEl);
       const allowedOperations = data.getAll("allowed_operations").map(String);
-      harnessResultEl.textContent = "Submitting bounded task...";
+      const projectSource = String(data.get("project_source") || "new");
+      let repositoryId = String(data.get("repository_id") || "");
+      let createdRepository = "";
+      harnessResultEl.textContent = projectSource === "new" ? "Creating your GitHub repository…" : "Submitting bounded task…";
       try {
+        if (projectSource === "new") {
+          const createResponse = await fetch("/api/github/repositories", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              name: String(data.get("repository_name") || ""),
+              description: String(data.get("repository_description") || ""),
+              visibility: String(data.get("repository_visibility") || "private"),
+              template: String(data.get("project_template") || "java-maven"),
+            }),
+          });
+          const created = await createResponse.json();
+          if (!createResponse.ok) throw new Error(created.error || "GitHub repository creation failed");
+          repositoryId = String(created.repository.id);
+          createdRepository = created.repository.full_name;
+          const option = document.createElement("option");
+          option.value = repositoryId;
+          option.textContent = createdRepository + " · write";
+          option.selected = true;
+          harnessGrantEl?.append(option);
+          repositorySelectEl?.append(option.cloneNode(true));
+          harnessResultEl.textContent = "Created " + createdRepository + ". Submitting bounded task…";
+        }
+        if (!repositoryId) throw new Error("Select a repository for this Harness task");
         const response = await fetch("/api/harness/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             objective: String(data.get("objective") || ""),
-            repository_id: String(data.get("repository_id") || ""),
+            repository_id: repositoryId,
             execution_mode: String(data.get("execution_mode") || "sandbox"),
             allowed_operations: allowedOperations,
           }),
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Harness submission failed");
-        harnessResultEl.textContent = "Task " + payload.task_id + " · " + payload.state + " · UAT approval required";
+        harnessResultEl.textContent = (createdRepository ? "Created " + createdRepository + " · " : "") + "Task " + payload.task_id + " · " + payload.state + " · UAT approval required";
         harnessFormEl.reset();
+        setHarnessProjectSource("new");
         trackHarnessTask(payload.task_id);
       } catch (error) {
-        harnessResultEl.textContent = error.message || "Harness submission failed";
+        harnessResultEl.textContent = (createdRepository ? "Repository " + createdRepository + " was created, but the task was not submitted: " : "") + (error.message || "Harness submission failed");
       }
     });
 
@@ -4523,6 +4589,13 @@ export function createServerApp(config = configFromEnv()) {
         const session = request.mundusxSession ?? await authStore.session(request);
         if (!session) throw httpError(401, "GitHub sign-in is required");
         return sendJson(response, 200, { repositories: await authStore.repositories(session.id) });
+      }
+      if (request.method === "POST" && url.pathname === "/api/github/repositories") {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "GitHub sign-in is required");
+        authStore.requireCsrf(request, session);
+        const body = await readJsonBody(request);
+        return sendJson(response, 201, await authStore.createRepository(session.id, body));
       }
       const githubContentsMatch = url.pathname.match(/^\/api\/github\/repositories\/(\d+)\/contents$/);
       if (request.method === "GET" && githubContentsMatch) {

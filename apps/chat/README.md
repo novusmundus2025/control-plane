@@ -64,11 +64,16 @@ MUNDUSX_AUTH_EMAIL_FROM=MundusX <login@your-verified-domain.example>
 ```
 
 The GitHub App callback is `${MUNDUSX_PUBLIC_ORIGIN}/api/auth/github/callback`. Configure the App
-with account permission `Email addresses: read` and repository permission `Contents: read`. Chat-U
+with account permission `Email addresses: read`, repository permission `Contents: read`, and
+repository permission `Administration: read and write`. The Administration permission lets an
+authenticated user explicitly create a repository in their own account; it does not create a
+MundusX-owned repository. Install the App for all repositories if newly created repositories must
+be immediately available to the Harness. Chat-U
 uses the App's user-to-server token so repository visibility is restricted by both the installation
 and the signed-in user's current GitHub rights. Tokens are encrypted at rest and never returned to
-the browser. On first Harness use, Chat-U creates a bounded repository policy from the safe
-top-level paths visible through that installed App and pins the current default-branch commit. A
+the browser. New projects default to private and receive a bounded policy for their selected project
+template. Existing repositories derive a policy from safe top-level paths. Chat-U then pins the
+current default-branch commit. A
 browser cannot choose its own tenant, unverified repository, validation command, or base revision.
 
 The Coding Harness launcher is disabled by default. To expose it, provide the server-side Harness
