@@ -181,6 +181,8 @@ impl PostgresStore {
                         .map_err(|error| error.to_string())?,
                     &serde_json::to_string(&runner.repository_source_ids)
                         .map_err(|error| error.to_string())?,
+                    &serde_json::to_string(&runner.local_projects)
+                        .map_err(|error| error.to_string())?,
                     &serde_json::to_string(&runner.execution_modes)
                         .map_err(|error| error.to_string())?,
                     &serde_json::to_string(&runner.supported_operations)
@@ -1366,13 +1368,13 @@ on conflict (task_id) do update set
 const HARNESS_RUNNER_UPSERT_SQL: &str = r#"
 insert into public.harness_runners (
   runner_id, device_id, public_key_hex, kind, owner_user_id, tenant_ids,
-  repository_source_ids, execution_modes, supported_operations,
+  repository_source_ids, local_projects, execution_modes, supported_operations,
   network_default_disabled, max_workspace_mb, usable_memory_mb, parallel_slots,
   trusted_identity, ready, last_seen_epoch
 ) values (
   $1, $2, $3, $4, $5::uuid, $6::text::jsonb,
-  $7::text::jsonb, $8::text::jsonb, $9::text::jsonb,
-  $10, $11, $12, $13, $14, $15, $16
+  $7::text::jsonb, $8::text::jsonb, $9::text::jsonb, $10::text::jsonb,
+  $11, $12, $13, $14, $15, $16, $17
 )
 on conflict (runner_id) do update set
   device_id = excluded.device_id,
@@ -1381,6 +1383,7 @@ on conflict (runner_id) do update set
   owner_user_id = excluded.owner_user_id,
   tenant_ids = excluded.tenant_ids,
   repository_source_ids = excluded.repository_source_ids,
+  local_projects = excluded.local_projects,
   execution_modes = excluded.execution_modes,
   supported_operations = excluded.supported_operations,
   network_default_disabled = excluded.network_default_disabled,

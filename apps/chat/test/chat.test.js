@@ -426,6 +426,14 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /id="active-project-context"/);
   assert.match(html, /composer-left-actions[\s\S]*id="active-project-open"[\s\S]*id="web-search-toggle"/);
   assert.match(html, /id="active-project-name">Project<\/strong>/);
+  assert.match(html, /id="project-context-menu"/);
+  assert.match(html, /id="project-context-new"[^>]*>\+ New project/);
+  assert.match(html, /id="project-context-list"/);
+  assert.match(html, /id="project-context-none"/);
+  assert.match(html, /mundusx\.chat\.localProjects\.v1:" \+ namespace/);
+  assert.match(html, /loadStoredProjectContext\(namespace\)/);
+  assert.match(html, /Array\.isArray\(payload\.projects\)/);
+  assert.match(html, /button\.dataset\.projectSlug = slug/);
   assert.match(html, /activeProjectNameEl\.textContent = activeProject\?\.slug \|\| "Project"/);
   assert.match(html, /activeProjectOpenEl\.setAttribute\("aria-pressed"/);
   assert.match(html, /Ask Atlas to work on/);

@@ -449,7 +449,7 @@ export class PostgresAuthStore {
   async harnessRunners(userId) {
     this.ensureReady();
     const result = await this.pool.query(`select runner_id, device_id, execution_modes,
-      supported_operations, parallel_slots, ready, trusted_identity, last_seen_epoch
+      supported_operations, local_projects, parallel_slots, ready, trusted_identity, last_seen_epoch
       from public.harness_runners
       where owner_user_id = $1
       order by last_seen_epoch desc
@@ -460,6 +460,9 @@ export class PostgresAuthStore {
       device_id: runner.device_id,
       execution_modes: Array.isArray(runner.execution_modes) ? runner.execution_modes : [],
       supported_operations: Array.isArray(runner.supported_operations) ? runner.supported_operations : [],
+      local_projects: Array.isArray(runner.local_projects)
+        ? runner.local_projects.filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)).slice(0, 100)
+        : [],
       parallel_slots: Number(runner.parallel_slots),
       ready: Boolean(runner.ready),
       trusted_identity: Boolean(runner.trusted_identity),

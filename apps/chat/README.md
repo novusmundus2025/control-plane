@@ -104,6 +104,10 @@ under `documents/mundusx/projects/<slug>` on the user's device.
 Creation asks only for the local project identity; coding objectives are entered in the normal chat
 after the project becomes active. While a project is active, chat messages become bounded Harness
 tasks for that project instead of ordinary unscoped chat requests.
+The composer Project control lists the authenticated user's runner-reported local projects, marks
+the active project, switches context, creates a new project, or returns to unscoped chat. A bounded
+per-user browser-local recent list keeps previously selected names usable while the runner is
+temporarily offline; the runner inventory remains the authoritative on-device source.
 
 Railway provides `PORT`; the app reads it automatically.
 
