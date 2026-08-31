@@ -424,6 +424,10 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(projects, /Files stay on your device|GitHub is optional/);
   assert.doesNotMatch(projects, /Describe the work|name="objective"/);
   assert.match(html, /id="active-project-context"/);
+  assert.match(html, /composer-left-actions[\s\S]*id="active-project-open"[\s\S]*id="web-search-toggle"/);
+  assert.match(html, /id="active-project-name">Project<\/strong>/);
+  assert.match(html, /activeProjectNameEl\.textContent = activeProject\?\.slug \|\| "Project"/);
+  assert.match(html, /activeProjectOpenEl\.setAttribute\("aria-pressed"/);
   assert.match(html, /Ask Atlas to work on/);
   assert.match(html, /Initialize the local.*project workspace/);
   assert.match(html, /inferProjectTemplate[\s\S]*java\|maven\|spring\|junit\|gradle/);
