@@ -452,7 +452,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(projects, /project-readiness-refresh|class="project-advanced"|Advanced controls|Allowed tools/);
   assert.doesNotMatch(html, /id="harness-open"|id="harness-dialog"|>Computer<\/button>/);
   assert.match(projects, /class="harness-submit"[^>]*>Create project/);
-  assert.match(html, /\.projects-dialog \.dialog-close \{ position:absolute; top:24px; left:28px;/);
+  assert.match(html, /\.projects-dialog \.dialog-close \{ position:absolute; top:24px; right:28px; z-index:3; width:36px; height:36px;/);
   assert.match(html, /\.project-heading \{ display:flex; align-items:flex-start; justify-content:center;/);
   assert.match(html, /\.project-heading h2 \{ line-height:1\.1; \}/);
   assert.match(html, /\.project-local-path \{ display:flex; align-items:center; flex-wrap:wrap; gap:4px;/);
