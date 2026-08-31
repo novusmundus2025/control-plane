@@ -1710,7 +1710,7 @@ export function page(config = configFromEnv()) {
     .new-chat { color:white; border:0; background:var(--gradient); box-shadow:0 10px 24px rgba(84,71,244,.22); }
     .new-chat:hover,.new-chat:focus-visible { background:var(--gradient); transform:translateY(-1px); }
     .new-chat .kbd-hint { color:white; border-color:rgba(255,255,255,.25); background:rgba(255,255,255,.12); }
-    .rail-tabs { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:2px; }
+    .rail-tabs { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:4px; }
     .rail-tab { min-width:0; border:0; border-bottom:2px solid transparent; padding:8px 1px; color:var(--muted); background:transparent; font-size:11px; cursor:pointer; transition:color var(--motion-fast),border-color var(--motion-fast),background var(--motion-fast); }
     .rail-tab:hover,.rail-tab:focus-visible { color:var(--text); background:color-mix(in srgb,var(--purple) 7%,transparent); outline:0; }
     .rail-tab.is-active { color:var(--purple); border-color:var(--purple); font-weight:700; }
@@ -1771,7 +1771,7 @@ export function page(config = configFromEnv()) {
       </div>
       <div class="rail-primary">
         <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
-        <nav class="rail-tabs" aria-label="Workspace"><button class="rail-tab is-active" type="button">Chats</button>${repositoryLauncher}<button class="rail-tab" type="button">Agents</button><button class="rail-tab" type="button">Nodes</button></nav>
+        <nav class="rail-tabs" aria-label="Workspace"><button class="rail-tab is-active" type="button">Chats</button>${repositoryLauncher}</nav>
       </div>
       ${repositoryDialog}
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
