@@ -195,7 +195,7 @@ export function page(config = configFromEnv()) {
       ${config.harnessUiEnabled ? `
       <form id="harness-form" class="harness-form">
         <section class="project-section">
-          <div class="project-section-heading"><span class="project-section-number">1</span><span><strong>Create a local project</strong><small>GitHub is optional and can be connected later.</small></span></div>
+          <div class="project-section-heading"><span><strong>Create a local project</strong><small>GitHub is optional and can be connected later.</small></span></div>
         <section class="harness-project-fields">
           <div class="project-field-grid">
             <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-java-program" autocomplete="off" required></label>
@@ -205,14 +205,10 @@ export function page(config = configFromEnv()) {
           <small class="project-ownership">Files stay on your device. MundusX does not publish them or send them to contributor nodes.</small>
         </section>
         </section>
-        <section class="project-section">
-          <div class="project-section-heading"><span class="project-section-number">2</span><span><strong>Describe the work</strong><small>Tell the harness what a successful result looks like.</small></span></div>
-          <label class="project-objective"><span class="sr-only">Objective</span><textarea name="objective" rows="4" maxlength="4000" required placeholder="For example: create a Java program with unit tests"></textarea></label>
-        </section>
         <details class="project-advanced">
           <summary><span><strong>Advanced controls</strong><small>Execution mode and allowed tools</small></span><span class="project-advanced-chevron" aria-hidden="true">⌄</span></summary>
           <div class="project-advanced-body">
-            <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted local runner only)</option></select></label>
+            <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid" selected>Hybrid (trusted local runner only)</option></select></label>
             <fieldset><legend>Allowed tools</legend>
               <div class="project-tool-grid">
                 <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
@@ -1430,6 +1426,11 @@ export function page(config = configFromEnv()) {
       padding: 5px 7px 5px 12px;
       box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
     }
+    .active-project-context { width: fit-content; max-width: 100%; display: flex; align-items: center; gap: 2px; margin: 0 0 7px 12px; border: 1px solid var(--line-strong); border-radius: 999px; background: var(--panel); color: var(--muted); }
+    .active-project-context[hidden] { display: none; }
+    .active-project-context button { border: 0; padding: 6px 9px; background: transparent; color: inherit; font: inherit; cursor: pointer; }
+    .active-project-context button:first-child { display: inline-flex; align-items: center; gap: 6px; min-width: 0; }
+    .active-project-context strong { display: inline-block; max-width: 240px; overflow: hidden; color: var(--text); text-overflow: ellipsis; vertical-align: bottom; white-space: nowrap; }
     textarea {
       grid-column: 2;
       grid-row: 1;
@@ -1845,6 +1846,10 @@ export function page(config = configFromEnv()) {
         </div>
       </section>
       <form id="chat-form">
+        <div class="active-project-context" id="active-project-context" hidden>
+          <button id="active-project-open" type="button" title="Open Projects"><span aria-hidden="true">⌁</span><span>Project: <strong id="active-project-name"></strong></span></button>
+          <button id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project">&times;</button>
+        </div>
         <div class="composer">
           <textarea id="prompt" name="prompt" rows="1" placeholder="Ask everyone..." autocomplete="off" required></textarea>
           <div class="composer-actions">
@@ -1893,6 +1898,10 @@ export function page(config = configFromEnv()) {
     const projectReadinessTextEl = document.getElementById("project-readiness-text");
     const projectRunnerSetupEl = document.getElementById("project-runner-setup");
     const projectLocalPathEl = document.getElementById("project-local-path");
+    const activeProjectContextEl = document.getElementById("active-project-context");
+    const activeProjectNameEl = document.getElementById("active-project-name");
+    const activeProjectOpenEl = document.getElementById("active-project-open");
+    const activeProjectClearEl = document.getElementById("active-project-clear");
     const harnessExecutionModeEl = document.getElementById("harness-execution-mode");
     const harnessSubmitEl = harnessFormEl?.querySelector(".harness-submit");
     const harnessTemplateEl = harnessFormEl?.elements.namedItem("project_template");
@@ -1917,6 +1926,9 @@ export function page(config = configFromEnv()) {
     let historyKey = "mundusx.chat.pending.history.v1";
     let conversationIdKey = "mundusx.chat.pending.conversationId.v1";
     let conversationCachePrefix = "mundusx.chat.pending.conversation.v1:";
+    const activeProjectKey = "mundusx.chat.activeProject.v1";
+    let activeProject = null;
+    try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let isListening = false;
@@ -2306,6 +2318,32 @@ export function page(config = configFromEnv()) {
       return String(value || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
     }
 
+    function renderActiveProject() {
+      const valid = activeProject
+        && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(activeProject.slug || "")
+        && ["generic", "java-maven"].includes(activeProject.template);
+      if (!valid) activeProject = null;
+      if (activeProjectContextEl) activeProjectContextEl.hidden = !activeProject;
+      if (activeProjectNameEl) activeProjectNameEl.textContent = activeProject?.slug || "";
+      if (promptEl) promptEl.placeholder = activeProject
+        ? "Ask Atlas to work on " + activeProject.slug + "..."
+        : "Ask everyone...";
+    }
+
+    function setActiveProject(project) {
+      activeProject = project;
+      if (project) localStorage.setItem(activeProjectKey, JSON.stringify(project));
+      else localStorage.removeItem(activeProjectKey);
+      renderActiveProject();
+    }
+
+    activeProjectOpenEl?.addEventListener("click", () => repositoryDialogEl?.showModal());
+    activeProjectClearEl?.addEventListener("click", () => {
+      setActiveProject(null);
+      promptEl?.focus();
+    });
+    renderActiveProject();
+
     const projectSlugEl = harnessFormEl?.elements.namedItem("project_slug");
     projectSlugEl?.addEventListener("input", () => {
       const slug = normalizeProjectSlug(projectSlugEl.value);
@@ -2313,7 +2351,9 @@ export function page(config = configFromEnv()) {
       if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\" + (slug || "my-project");
     });
     harnessFormEl?.addEventListener("change", (event) => {
-      if (event.target?.name === "project_template" && event.target.value === "java-maven" && harnessExecutionModeEl) harnessExecutionModeEl.value = "hybrid";
+      if (event.target?.name === "project_template" && harnessExecutionModeEl) {
+        harnessExecutionModeEl.value = event.target.value === "java-maven" ? "hybrid" : "sandbox";
+      }
     });
     projectReadinessRefreshEl?.addEventListener("click", async () => {
       projectReadinessRefreshEl.disabled = true;
@@ -2358,22 +2398,26 @@ export function page(config = configFromEnv()) {
       harnessResultEl.textContent = "Queuing local project creation…";
       try {
         if (!projectSlug) throw new Error("Enter a lowercase project name");
+        const projectTemplate = String(data.get("project_template") || "generic");
         const response = await fetch("/api/harness/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            objective: String(data.get("objective") || ""),
+            objective: "Initialize the local " + projectTemplate + " project workspace and validate its scaffold. Do not add application-specific functionality.",
             project_slug: projectSlug,
-            project_template: String(data.get("project_template") || "generic"),
+            project_template: projectTemplate,
             execution_mode: String(data.get("execution_mode") || "sandbox"),
             allowed_operations: allowedOperations,
           }),
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Harness submission failed");
+        setActiveProject({ slug: projectSlug, template: projectTemplate });
         harnessResultEl.textContent = "Project " + projectSlug + " · task " + payload.task_id + " · " + payload.state + " · UAT approval required";
         harnessFormEl.reset();
         if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\my-project";
+        repositoryDialogEl?.close();
+        addMessage("Project " + projectSlug + " is active. Describe the coding work here in chat.", "assistant", "Local project");
         trackHarnessTask(payload.task_id);
       } catch (error) {
         harnessResultEl.textContent = error.message || "Local project creation failed";
@@ -2734,6 +2778,11 @@ export function page(config = configFromEnv()) {
       const pending = addMessage("Submitting to MundusX...", "assistant", "Queued");
 
       try {
+        if (activeProject) {
+          await runActiveProjectTask(pending, message, activeProject);
+          syncNetworkRuntimeStatus(true);
+          return;
+        }
         const streamed = await tryLiveChatTurn(pending, message, conversationId);
         if (!streamed) {
           await runPolledChatTurn(pending, message, conversationId);
@@ -2746,6 +2795,25 @@ export function page(config = configFromEnv()) {
         promptEl.focus();
       }
     });
+
+    async function runActiveProjectTask(pending, message, project) {
+      const response = await fetch("/api/harness/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          objective: message,
+          project_slug: project.slug,
+          project_template: project.template || "generic",
+          execution_mode: project.template === "java-maven" ? "hybrid" : "sandbox",
+          allowed_operations: ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"],
+        }),
+      });
+      const payload = await readApiPayload(response, "project task submission failed");
+      if (!response.ok) throw new Error(payload.error || "Project task submission failed");
+      const body = pending.querySelector(".message-body");
+      if (body) body.textContent = "Queued work for " + project.slug + ". Task " + payload.task_id + " is awaiting UAT execution approval.";
+      setStatus("ready", "Project queued");
+    }
 
     async function runPolledChatTurn(pending, message, conversationId) {
       const created = await fetch("/api/chat/jobs", {

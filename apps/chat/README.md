@@ -98,6 +98,9 @@ optional publication commands are `gh auth login --hostname github.com --git-pro
 and `gh auth setup-git`; Chat-U never provides a token input. Pairing does not require GitHub.
 New projects use lowercase slugs and live
 under `documents/mundusx/projects/<slug>` on the user's device.
+Creation asks only for the local project identity; coding objectives are entered in the normal chat
+after the project becomes active. While a project is active, chat messages become bounded Harness
+tasks for that project instead of ordinary unscoped chat requests.
 
 Railway provides `PORT`; the app reads it automatically.
 

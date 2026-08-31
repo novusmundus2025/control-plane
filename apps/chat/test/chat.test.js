@@ -423,6 +423,10 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(projects, /documents\\mundusx\\projects\\my-java-program/);
   assert.match(projects, /GitHub is optional and can be connected later/);
   assert.match(projects, /Files stay on your device/);
+  assert.doesNotMatch(projects, /Describe the work|name="objective"/);
+  assert.match(html, /id="active-project-context"/);
+  assert.match(html, /Ask Atlas to work on/);
+  assert.match(html, /Initialize the local.*project workspace/);
   assert.match(projects, /id="harness-pair"/);
   assert.match(projects, /Local runner setup/);
   assert.match(projects, /id="project-readiness"/);
