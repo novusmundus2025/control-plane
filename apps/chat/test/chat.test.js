@@ -25,6 +25,7 @@ import {
   inferChatRequestTimeoutSeconds,
   isFocusedQuotedRequest,
   isWeatherResourceRequest,
+  localProjectAuthority,
   normalizeWeatherWordTypos,
   fetchChatConversation,
   fetchHarnessTask,
@@ -400,7 +401,7 @@ test("normalizes chat app environment", () => {
   assert.equal(config.harnessUiEnabled, false);
 });
 
-test("separates user Projects from the local Computer runner", () => {
+test("renders local-first Projects without a separate Computer surface", () => {
   const html = page(
     configFromEnv({
       MUNDUSX_HARNESS_UI_ENABLED: "true",
@@ -410,40 +411,43 @@ test("separates user Projects from the local Computer runner", () => {
   );
 
   const projects = html.match(/<dialog class="harness-dialog projects-dialog" id="repository-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
-  const computer = html.match(/<dialog class="harness-dialog" id="harness-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
   const workspaceNav = html.match(/<nav class="workspace-nav" aria-label="Workspace">[\s\S]*?<\/nav>/)?.[0] || "";
   const mainHeader = html.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
-  assert.match(html, /id="repository-open"[^>]*hidden>[\s\S]*?<span>Projects<\/span>/);
-  assert.match(html, /id="harness-open"[^>]*hidden>Computer<\/button>/);
+  assert.match(html, /id="repository-open"[^>]*>[\s\S]*?<span>Projects<\/span>/);
   assert.match(workspaceNav, /Chats[\s\S]*id="repository-open"[\s\S]*Projects/);
   assert.doesNotMatch(workspaceNav, />Agents<|>Nodes</);
   assert.doesNotMatch(mainHeader, /id="repository-open"|>Projects<\/button>/);
-  assert.match(mainHeader, /id="repository-open-mobile"[^>]*aria-label="Open Projects"[^>]*hidden/);
-  assert.match(projects, /name="repository_id"/);
-  assert.match(projects, /Create a repository in my GitHub account/);
-  assert.match(projects, /name="repository_name"/);
+  assert.match(mainHeader, /id="repository-open-mobile"[^>]*aria-label="Open Projects"/);
+  assert.match(projects, /name="project_slug"[^>]*pattern="\[a-z0-9\]/);
   assert.match(projects, /Java \(Maven\)/);
-  assert.match(projects, /MundusX does not own the repository/);
-  assert.doesNotMatch(projects, /id="harness-pair"/);
-  assert.match(computer, /id="harness-pair"/);
-  assert.match(computer, /Install the runner/);
-  assert.match(computer, /Connect GitHub on this computer/);
-  assert.match(computer, /gh auth login --hostname github\.com --git-protocol https --web/);
-  assert.match(computer, /gh auth setup-git/);
-  assert.match(computer, /Pair with Chat-U/);
-  assert.match(computer, /Ready for projects/);
-  assert.match(computer, /data-copy-target="harness-github-command"/);
-  assert.match(computer, /Your credentials stay yours/);
+  assert.match(projects, /documents\\mundusx\\projects\\my-java-program/);
+  assert.match(projects, /GitHub is optional and can be connected later/);
+  assert.match(projects, /Files stay on your device/);
+  assert.match(projects, /id="harness-pair"/);
+  assert.match(projects, /Local runner setup/);
   assert.match(projects, /id="project-readiness"/);
-  assert.match(projects, /id="project-open-computer"/);
   assert.match(projects, /class="project-advanced"/);
   assert.match(projects, /Advanced controls/);
-  assert.doesNotMatch(computer, /name="repository_name"|name="objective"|id="harness-form"/);
-  assert.doesNotMatch(html, /github:mundusx\/control-plane/);
+  assert.doesNotMatch(html, /id="harness-open"|id="harness-dialog"|>Computer<\/button>/);
   assert.match(projects, /class="harness-submit"[^>]*>Create project/);
-  assert.match(projects, /Merge and deployment require separate approval/);
+  assert.match(projects, /Publishing to GitHub is a separate action/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-open"/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-form"/);
+});
+
+test("derives a bounded local project authority from a lowercase slug", () => {
+  const session = { id: "ad36260d-40bc-44a9-b637-d03093e1f310" };
+  const authority = localProjectAuthority(session, {
+    project_slug: "my-java-program",
+    project_template: "java-maven",
+  });
+
+  assert.equal(authority.tenant_id, `owner:${session.id}`);
+  assert.equal(authority.repository_source_id, `local-project:${session.id}:java-maven:my-java-program`);
+  assert.equal(authority.base_revision, "0".repeat(40));
+  assert.deepEqual(authority.validation_profiles, ["java-maven-test"]);
+  assert.ok(authority.allowed_path_prefixes.includes("src"));
+  assert.throws(() => localProjectAuthority(session, { project_slug: "My Project" }), /lowercase hyphenated/);
 });
 
 test("submits Harness work only inside the configured repository boundary", async () => {
