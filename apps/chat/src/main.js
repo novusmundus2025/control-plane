@@ -179,25 +179,61 @@ export function normalizeAssistantDisplayText(text) {
 }
 
 export function page(config = configFromEnv()) {
-  const repositoryLauncher = `<button class="header-action" id="repository-open" type="button" hidden>Repositories</button>
+  const repositoryLauncher = `<button class="header-action" id="repository-open" type="button" hidden>Projects</button>
     <dialog class="harness-dialog" id="repository-dialog">
       <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
-      <h2>Your repositories</h2>
-      <p>Only repositories available to both your GitHub account and the installed MundusX GitHub App appear here.</p>
-      <label>Repository<select id="repository-select"></select></label>
-      <div class="repository-path"><button id="repository-up" type="button">Up</button><code id="repository-path">/</code></div>
-      <div class="repository-entries" id="repository-entries"></div>
-      <pre class="repository-file" id="repository-file" hidden></pre>
-      <output id="repository-result" aria-live="polite"></output>
+      <h2>Projects</h2>
+      <p>Create a project in your GitHub account or continue work in one of your existing repositories.</p>
+      ${config.harnessUiEnabled ? `
+      <div class="harness-boundary"><strong>User-owned GitHub project</strong><span>EHDA pins the selected repository's current default-branch commit</span></div>
+      <form id="harness-form" class="harness-form">
+        <fieldset class="harness-project-source"><legend>Project destination</legend>
+          <label><input type="radio" name="project_source" value="new" checked> Create a repository in my GitHub account</label>
+          <label><input type="radio" name="project_source" value="existing"> Work on one of my existing repositories</label>
+        </fieldset>
+        <section id="harness-new-project" class="harness-project-fields">
+          <label>Repository name<input name="repository_name" maxlength="100" pattern="[A-Za-z0-9._-]+" placeholder="my-java-program" required></label>
+          <label>Project type<select name="project_template"><option value="java-maven">Java (Maven)</option><option value="generic">Generic project</option></select></label>
+          <label>Visibility<select name="repository_visibility"><option value="private" selected>Private</option><option value="public">Public</option></select></label>
+          <label>Description<input name="repository_description" maxlength="350" placeholder="Optional GitHub repository description"></label>
+          <small>The repository is created under your signed-in GitHub identity. MundusX does not own it.</small>
+        </section>
+        <section id="harness-existing-project" class="harness-project-fields" hidden>
+          <label>Your repository<select name="repository_id" id="harness-grant"></select></label>
+          <small>Only repositories granted to the GitHub App are shown.</small>
+        </section>
+        <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="For example: create a Java program with unit tests"></textarea></label>
+        <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted computer only)</option></select></label>
+        <fieldset><legend>Allowed tools</legend>
+          <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
+          <label><input type="checkbox" name="allowed_operations" value="repository.diff" checked> Repository diff</label>
+          <label><input type="checkbox" name="allowed_operations" value="file.read" checked> Read files</label>
+          <label><input type="checkbox" name="allowed_operations" value="file.search" checked> Search files</label>
+          <label><input type="checkbox" name="allowed_operations" value="patch.apply" checked> Apply bounded patches</label>
+          <label><input type="checkbox" name="allowed_operations" value="validation.run" checked> Run named validations</label>
+        </fieldset>
+        <small>Project execution requires a connected Computer. Submission does not approve merge or deployment.</small>
+        <button class="harness-submit" type="submit">Create project and submit for review</button>
+        <output id="harness-result" aria-live="polite"></output>
+      </form>` : ""}
+      <details class="project-browser">
+        <summary>Browse existing project files</summary>
+        <p>Only projects available to both your GitHub account and the installed MundusX GitHub App appear here.</p>
+        <label>Project<select id="repository-select"></select></label>
+        <div class="repository-path"><button id="repository-up" type="button">Up</button><code id="repository-path">/</code></div>
+        <div class="repository-entries" id="repository-entries"></div>
+        <pre class="repository-file" id="repository-file" hidden></pre>
+        <output id="repository-result" aria-live="polite"></output>
+      </details>
     </dialog>`;
   const harnessLauncher = config.harnessUiEnabled
-    ? `<button class="header-action" id="harness-open" type="button" hidden>Coding Harness</button>
+    ? `<button class="header-action" id="harness-open" type="button" hidden>Computer</button>
       <dialog class="harness-dialog" id="harness-dialog">
         <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
-        <h2>Coding Harness</h2>
-        <p>Submit a bounded coding task for operator review. This does not approve execution, merge, or deployment.</p>
+        <h2>Computer</h2>
+        <p>Connect and inspect the local computer that runs your isolated project workspace and approved tools.</p>
         <section class="harness-connection" aria-labelledby="harness-connection-title">
-          <h3 id="harness-connection-title">Your local runner</h3>
+          <h3 id="harness-connection-title">Local project runner</h3>
           <p id="harness-runner-status">Checking runner connection…</p>
           <div class="inline-actions">
             ${config.harnessRunnerDownloadUrl ? `<a class="harness-download" href="${escapeHtml(config.harnessRunnerDownloadUrl)}">Download runner</a>` : ""}
@@ -207,36 +243,7 @@ export function page(config = configFromEnv()) {
           <p id="harness-pairing-command" hidden></p>
           <small>Never paste a GitHub token into Chat-U. Chat-U uses encrypted GitHub App authorization; this runner uses your local GitHub CLI. Contributor nodes receive neither credential.</small>
         </section>
-        <div class="harness-boundary"><strong>Live GitHub permission check</strong><span>EHDA pins the selected repository's current default-branch commit</span></div>
-        <form id="harness-form" class="harness-form">
-          <fieldset class="harness-project-source"><legend>Project destination</legend>
-            <label><input type="radio" name="project_source" value="new" checked> Create a repository in my GitHub account</label>
-            <label><input type="radio" name="project_source" value="existing"> Work on one of my existing repositories</label>
-          </fieldset>
-          <section id="harness-new-project" class="harness-project-fields">
-            <label>Repository name<input name="repository_name" maxlength="100" pattern="[A-Za-z0-9._-]+" placeholder="my-java-program" required></label>
-            <label>Project type<select name="project_template"><option value="java-maven">Java (Maven)</option><option value="generic">Generic project</option></select></label>
-            <label>Visibility<select name="repository_visibility"><option value="private" selected>Private</option><option value="public">Public</option></select></label>
-            <label>Description<input name="repository_description" maxlength="350" placeholder="Optional GitHub repository description"></label>
-            <small>The repository is created under your signed-in GitHub identity. MundusX does not own it.</small>
-          </section>
-          <section id="harness-existing-project" class="harness-project-fields" hidden>
-            <label>Your repository<select name="repository_id" id="harness-grant"></select></label>
-            <small>Only repositories granted to the GitHub App are shown.</small>
-          </section>
-          <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="For example: create a Java program with unit tests"></textarea></label>
-          <label>Execution mode<select name="execution_mode" id="harness-execution-mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted runner only)</option></select></label>
-          <fieldset><legend>Allowed tools</legend>
-            <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
-            <label><input type="checkbox" name="allowed_operations" value="repository.diff" checked> Repository diff</label>
-            <label><input type="checkbox" name="allowed_operations" value="file.read" checked> Read files</label>
-            <label><input type="checkbox" name="allowed_operations" value="file.search" checked> Search files</label>
-            <label><input type="checkbox" name="allowed_operations" value="patch.apply" checked> Apply bounded patches</label>
-            <label><input type="checkbox" name="allowed_operations" value="validation.run" checked> Run named validations</label>
-          </fieldset>
-          <button class="harness-submit" type="submit">Create project and submit for review</button>
-          <output id="harness-result" aria-live="polite"></output>
-        </form>
+        <div class="harness-boundary"><strong>Security boundary</strong><span>Only this paired computer receives an isolated project workspace. Inference contributor nodes do not.</span></div>
       </dialog>`
     : "";
   return `<!doctype html>
@@ -1473,7 +1480,7 @@ export function page(config = configFromEnv()) {
       color: var(--green);
     }
     .header-action { border: 1px solid var(--line-strong); border-radius: 999px; background: white; color: var(--blue); padding: 8px 14px; font: inherit; font-weight: 700; cursor: pointer; }
-    .harness-dialog { width: min(620px, calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: 18px; padding: 24px; color: var(--text); box-shadow: 0 28px 80px rgba(18,19,28,.24); }
+    .harness-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; border: 1px solid var(--line-strong); border-radius: 18px; padding: 24px; color: var(--text); box-shadow: 0 28px 80px rgba(18,19,28,.24); }
     .harness-dialog::backdrop { background: rgba(15,23,42,.48); }
     .dialog-close { float: right; padding: 0; }
     .dialog-close button { border: 0; background: transparent; font-size: 28px; cursor: pointer; }
@@ -1491,6 +1498,8 @@ export function page(config = configFromEnv()) {
     .harness-form fieldset label { display: flex; align-items: center; gap: 8px; }
     .harness-project-fields { display: grid; gap: 12px; padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--bg); }
     .harness-project-fields[hidden] { display: none; }
+    .project-browser { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .project-browser summary { font-weight: 700; cursor: pointer; }
     .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
     .auth-gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(246,247,252,.96); }
     .auth-gate[hidden] { display: none; }
@@ -1684,7 +1693,7 @@ export function page(config = configFromEnv()) {
   <div class="auth-gate" id="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title">
     <div class="auth-card">
       <h1 id="auth-title">Sign in to MundusX</h1>
-      <p>Your chats and Coding Harness permissions are tied to your individual account.</p>
+      <p>Your chats, Projects, and Computer permissions are tied to your individual account.</p>
       <a class="auth-github" id="auth-github" href="/api/auth/github/start">Continue with GitHub</a>
       <form class="auth-email" id="auth-email-form"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="email" required><button type="submit">Email me a sign-in link</button></form>
       <div class="auth-message" id="auth-message">Checking your session…</div>
@@ -1743,8 +1752,8 @@ export function page(config = configFromEnv()) {
       <header>
         <div class="theme-switch" role="group" aria-label="Color theme"><button class="theme-option" id="theme-light" type="button" aria-label="Use light theme" aria-pressed="true">☀</button><button class="theme-option" id="theme-dark" type="button" aria-label="Use dark theme" aria-pressed="false">☾</button></div>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
-        ${repositoryLauncher}
         ${harnessLauncher}
+        ${repositoryLauncher}
       </header>
       <section class="messages" id="messages" aria-live="polite">
         <div class="conversation" id="conversation">
@@ -2056,8 +2065,8 @@ export function page(config = configFromEnv()) {
       repositorySelectEl.replaceChildren(...options.map((option) => option.cloneNode(true)));
       harnessGrantEl?.replaceChildren(...options.map((option) => option.cloneNode(true)));
       if (harnessOpenEl) harnessOpenEl.hidden = false;
-      if (repositoryOpenEl) repositoryOpenEl.hidden = !payload.repositories.length;
-      repositoryResultEl.textContent = payload.repositories.length ? "Select a repository to browse." : "No GitHub App repositories are available to this account.";
+      if (repositoryOpenEl) repositoryOpenEl.hidden = false;
+      repositoryResultEl.textContent = payload.repositories.length ? "Select a project to browse." : "No existing GitHub App projects are available. You can create a new project above.";
       return payload.repositories;
     }
 
@@ -2346,7 +2355,7 @@ export function page(config = configFromEnv()) {
     });
 
     async function trackHarnessTask(taskId) {
-      for (let attempt = 0; attempt < 24 && harnessDialogEl?.open; attempt += 1) {
+      for (let attempt = 0; attempt < 24 && repositoryDialogEl?.open; attempt += 1) {
         await new Promise((resolve) => setTimeout(resolve, 5_000));
         const response = await fetch("/api/harness/tasks/" + encodeURIComponent(taskId));
         const payload = await response.json();

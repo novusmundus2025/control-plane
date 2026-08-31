@@ -400,7 +400,7 @@ test("normalizes chat app environment", () => {
   assert.equal(config.harnessUiEnabled, false);
 });
 
-test("renders the opt-in repository-bound Harness launcher", () => {
+test("separates user Projects from the local Computer runner", () => {
   const html = page(
     configFromEnv({
       MUNDUSX_HARNESS_UI_ENABLED: "true",
@@ -409,19 +409,24 @@ test("renders the opt-in repository-bound Harness launcher", () => {
     }),
   );
 
-  assert.match(html, /id="harness-open"/);
-  assert.match(html, /id="harness-open"[^>]*hidden/);
-  assert.match(html, /id="repository-open"[^>]*hidden/);
-  assert.match(html, /name="repository_id"/);
-  assert.match(html, /Create a repository in my GitHub account/);
-  assert.match(html, /name="repository_name"/);
-  assert.match(html, /Java \(Maven\)/);
-  assert.match(html, /MundusX does not own it/);
-  assert.match(html, /Live GitHub permission check/);
+  const projects = html.match(/<dialog class="harness-dialog" id="repository-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
+  const computer = html.match(/<dialog class="harness-dialog" id="harness-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
+  assert.match(html, /id="repository-open"[^>]*hidden>Projects<\/button>/);
+  assert.match(html, /id="harness-open"[^>]*hidden>Computer<\/button>/);
+  assert.match(projects, /name="repository_id"/);
+  assert.match(projects, /Create a repository in my GitHub account/);
+  assert.match(projects, /name="repository_name"/);
+  assert.match(projects, /Java \(Maven\)/);
+  assert.match(projects, /MundusX does not own it/);
+  assert.doesNotMatch(projects, /id="harness-pair"/);
+  assert.match(computer, /id="harness-pair"/);
+  assert.match(computer, /Local project runner/);
+  assert.doesNotMatch(computer, /name="repository_name"|name="objective"|id="harness-form"/);
   assert.doesNotMatch(html, /github:mundusx\/control-plane/);
-  assert.match(html, /Create project and submit for review/);
-  assert.match(html, /does not approve execution, merge, or deployment/);
+  assert.match(projects, /Create project and submit for review/);
+  assert.match(projects, /does not approve merge or deployment/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-open"/);
+  assert.doesNotMatch(page(configFromEnv({})), /id="harness-form"/);
 });
 
 test("submits Harness work only inside the configured repository boundary", async () => {

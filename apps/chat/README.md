@@ -76,8 +76,8 @@ template. Existing repositories derive a policy from safe top-level paths. Chat-
 current default-branch commit. A
 browser cannot choose its own tenant, unverified repository, validation command, or base revision.
 
-The Coding Harness launcher is disabled by default. To expose it, provide the server-side Harness
-token and runner download page:
+The **Projects** workspace and **Computer** runner control are disabled by default. To expose them,
+provide the server-side Harness token and runner download page:
 
 ```text
 MUNDUSX_HARNESS_UI_ENABLED=true
@@ -124,7 +124,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEB_SEARCH_MAX_RESULTS` | `4` | Number of search snippets fetched and injected into the grounded prompt |
 | `MUNDUSX_WEB_SEARCH_TTL_SECONDS` | `1800` | Web search cache TTL when `MUNDUSX_WEATHER_CACHE_URL`/`VALKEY_URL`/`REDIS_URL` is configured |
 | `MUNDUSX_WEB_SEARCH_DAILY_BUDGET` | unset (unlimited) | Optional daily call cap for the web search tool, tracked in the same Redis/Valkey cache; once exceeded the tool declines until the next UTC day |
-| `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes the repository-bound Coding Harness launcher when set to `true` |
+| `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes user-owned Projects and the paired local Computer control when set to `true` |
 | `MUNDUSX_HARNESS_SERVICE_TOKEN` | unset | Server-only token used to submit Harness tasks to the control plane |
 | `MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL` | unset | Download or release page shown in the runner connection panel |
 
