@@ -1511,16 +1511,19 @@ export function page(config = configFromEnv()) {
     .projects-dialog .dialog-close { position:absolute; top:24px; left:28px; z-index:3; float:none; margin:0; }
     .projects-dialog .dialog-close button { width:36px; height:36px; display:grid; place-items:center; border-radius:9px; color:var(--text); line-height:1; transition:background var(--motion-fast),transform var(--motion-fast); }
     .projects-dialog .dialog-close button:hover,.projects-dialog .dialog-close button:focus-visible { background:var(--panel); outline:0; transform:scale(1.04); }
-    .project-heading { display:flex; align-items:center; justify-content:center; gap:13px; min-height:116px; padding:28px 82px 20px; margin:0; border:0; text-align:left; }
-    .project-heading h2,.project-heading p { margin: 0; }
-    .project-heading p { margin-top: 3px; color: var(--muted); line-height: 1.4; }
+    .project-heading { display:flex; align-items:flex-start; justify-content:center; gap:13px; min-height:116px; padding:28px 82px 20px; margin:0; border:0; text-align:left; }
+    .project-heading > span:last-child { display:grid; gap:4px; min-width:0; }
+    .project-heading h2,.project-heading p { margin:0; }
+    .project-heading h2 { line-height:1.1; }
+    .project-heading p { color:var(--muted); line-height:1.35; }
     .project-mark { width: 44px; height: 44px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 13px; color: white; background: var(--gradient); box-shadow: 0 9px 22px rgba(86,70,246,.24); }
     .project-mark svg { width: 23px; height: 23px; }
     .projects-dialog .harness-form { gap:18px; padding:0 46px 38px; }
     .project-section { display:grid; gap:10px; padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--panel); box-shadow:0 9px 28px rgba(42,48,82,.04); }
-    .project-field-wide { grid-column: 1 / -1; }
-    .project-local-path { margin:0; color:var(--muted); font-size:12px; }
-    .project-local-path code { overflow-wrap:anywhere; color:var(--purple); font-size:12px; }
+    .project-field-wide { grid-column:1 / -1; line-height:1.25; }
+    .project-field-wide input { line-height:1.3; }
+    .project-local-path { display:flex; align-items:center; flex-wrap:wrap; gap:4px; margin:0; color:var(--muted); font-size:12px; line-height:1.35; }
+    .project-local-path code { display:inline-flex; align-items:center; overflow-wrap:anywhere; color:var(--purple); font-size:12px; line-height:1.25; }
     .project-actions { display:flex; align-items:center; justify-content:flex-end; gap:16px; padding:0; border:0; }
     .project-actions output { min-width:0; flex:1; color: var(--text); font-size: 12px; }
     .project-actions .harness-submit { min-width:142px; min-height:44px; padding:11px 16px; border-radius:11px; box-shadow:0 10px 24px rgba(86,70,246,.22); }
