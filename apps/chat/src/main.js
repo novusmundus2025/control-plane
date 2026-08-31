@@ -1506,21 +1506,24 @@ export function page(config = configFromEnv()) {
     .project-browser summary { font-weight: 700; cursor: pointer; }
     .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
     .sr-only { position: absolute!important; width: 1px!important; height: 1px!important; padding: 0!important; margin: -1px!important; overflow: hidden!important; clip: rect(0,0,0,0)!important; white-space: nowrap!important; border: 0!important; }
-    .projects-dialog { width: min(780px,calc(100vw - 32px)); padding: 26px 28px 22px; }
-    .projects-dialog .dialog-close { position: sticky; top: 0; z-index: 3; margin: -8px -10px 0 0; }
-    .project-heading { display: flex; align-items: center; gap: 13px; padding-right: 44px; margin-bottom: 20px; border: 0; }
+    .projects-dialog { width:min(780px,calc(100vw - 20px)); padding:0; overflow-x:hidden; border-color:var(--line); border-radius:18px; background:color-mix(in srgb,var(--bg) 86%,var(--panel)); box-shadow:0 28px 80px rgba(18,19,28,.24); backdrop-filter:blur(24px); }
+    .projects-dialog::backdrop { background:rgba(38,44,62,.42); backdrop-filter:blur(2px); }
+    .projects-dialog .dialog-close { position:absolute; top:24px; left:28px; z-index:3; float:none; margin:0; }
+    .projects-dialog .dialog-close button { width:36px; height:36px; display:grid; place-items:center; border-radius:9px; color:var(--text); line-height:1; transition:background var(--motion-fast),transform var(--motion-fast); }
+    .projects-dialog .dialog-close button:hover,.projects-dialog .dialog-close button:focus-visible { background:var(--panel); outline:0; transform:scale(1.04); }
+    .project-heading { display:flex; align-items:center; justify-content:center; gap:13px; min-height:116px; padding:28px 82px 20px; margin:0; border:0; text-align:left; }
     .project-heading h2,.project-heading p { margin: 0; }
     .project-heading p { margin-top: 3px; color: var(--muted); line-height: 1.4; }
     .project-mark { width: 44px; height: 44px; display: grid; place-items: center; flex: 0 0 auto; border-radius: 13px; color: white; background: var(--gradient); box-shadow: 0 9px 22px rgba(86,70,246,.24); }
     .project-mark svg { width: 23px; height: 23px; }
-    .projects-dialog .harness-form { gap: 13px; }
-    .project-section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); }
+    .projects-dialog .harness-form { gap:18px; padding:0 46px 38px; }
+    .project-section { display:grid; gap:10px; padding:16px; border:1px solid var(--line); border-radius:14px; background:var(--panel); box-shadow:0 9px 28px rgba(42,48,82,.04); }
     .project-field-wide { grid-column: 1 / -1; }
     .project-local-path { margin:0; color:var(--muted); font-size:12px; }
     .project-local-path code { overflow-wrap:anywhere; color:var(--purple); font-size:12px; }
-    .project-actions { display: flex; align-items: center; gap: 16px; padding: 4px 0 0; border: 0; }
+    .project-actions { display:flex; align-items:center; justify-content:flex-end; gap:16px; padding:0; border:0; }
     .project-actions output { min-width:0; flex:1; color: var(--text); font-size: 12px; }
-    .project-actions .harness-submit { min-width: 142px; }
+    .project-actions .harness-submit { min-width:142px; min-height:44px; padding:11px 16px; border-radius:11px; box-shadow:0 10px 24px rgba(86,70,246,.22); }
     .project-actions .harness-submit:disabled { cursor:not-allowed; filter:grayscale(.45); opacity:.55; }
     .project-runner-setup { border:1px solid var(--line); border-radius:13px; background:var(--panel-2); overflow:hidden; }
     .project-runner-setup > summary { display:flex; align-items:center; gap:12px; padding:13px 16px; cursor:pointer; list-style:none; }
@@ -1531,7 +1534,8 @@ export function page(config = configFromEnv()) {
     .project-runner-setup-body p { margin:0; }
     .project-runner-setup-body .inline-actions { display:flex; flex-wrap:wrap; gap:8px; }
     .project-runner-setup-body button,.project-runner-setup-body .harness-download { border:1px solid var(--line-strong); border-radius:9px; padding:9px 12px; color:var(--text); background:var(--panel); font:inherit; text-decoration:none; cursor:pointer; }
-    .projects-dialog .harness-form textarea,.projects-dialog .harness-form select,.projects-dialog .harness-form input[type="text"],.projects-dialog .harness-form input:not([type]) { color: var(--text); background: var(--panel); }
+    .projects-dialog .harness-form textarea,.projects-dialog .harness-form select,.projects-dialog .harness-form input[type="text"],.projects-dialog .harness-form input:not([type]) { min-height:42px; color:var(--text); background:color-mix(in srgb,var(--panel) 92%,var(--bg)); }
+    .projects-dialog .harness-form input:focus { border-color:color-mix(in srgb,var(--purple) 56%,var(--line-strong)); outline:3px solid color-mix(in srgb,var(--purple) 12%,transparent); }
     .projects-dialog .project-browser { margin-top: 16px; padding: 13px 2px 0; }
     .auth-gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(246,247,252,.96); }
     .auth-gate[hidden] { display: none; }
@@ -1722,11 +1726,14 @@ export function page(config = configFromEnv()) {
     .account-bar,.account-menu,.account-upgrade { background:var(--panel); }
     .account-bar:hover,.account-menu-header:hover,.account-menu-item:hover { background:var(--panel-2); }
     html[data-theme="dark"] code { color:#c6bcff; }
+    html[data-theme="dark"] .projects-dialog { border-color:rgba(170,182,230,.18); background:color-mix(in srgb,var(--bg) 76%,#171b31); box-shadow:0 30px 90px rgba(0,0,0,.58); }
+    html[data-theme="dark"] .projects-dialog::backdrop { background:rgba(2,5,15,.72); }
+    html[data-theme="dark"] .project-section { border-color:rgba(170,182,230,.16); background:rgba(20,24,45,.88); box-shadow:0 12px 34px rgba(0,0,0,.18); }
     html[data-theme="dark"] .message-retry-button { background:var(--panel); }
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
     @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px}.active-project-context strong{max-width:90px}#web-search-label{display:none} }
-    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px);padding:20px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%} }
+    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:14px;left:14px}.project-heading{min-height:104px;padding:20px 54px 14px}.project-heading p{font-size:13px}.projects-dialog .harness-form{padding:0 16px 18px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
   </style>
 </head>
