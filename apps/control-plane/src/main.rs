@@ -314,6 +314,22 @@ impl DatabaseMirror {
         }
     }
 
+    fn consume_harness_runner_pairing(
+        &self,
+        pairing_code: &str,
+        runner_id: &str,
+        public_key_hex: &str,
+    ) -> Result<String, String> {
+        match self {
+            Self::Postgres(store) => {
+                store.consume_harness_runner_pairing(pairing_code, runner_id, public_key_hex)
+            }
+            Self::Supabase(_) => Err(
+                "Harness runner pairing requires provider-neutral PostgreSQL storage".to_string(),
+            ),
+        }
+    }
+
     fn record_harness_operational_policy(
         &self,
         harness: &harness::HarnessState,
@@ -6441,23 +6457,30 @@ fn select_harness_runner(
             ));
             continue;
         }
-        if !runner.tenant_ids.contains(&task.tenant_id)
-            || !runner
-                .repository_source_ids
-                .contains(&task.repository_source_id)
-        {
-            rejected_runners.push(reject(
-                "HARNESS_RUNNER_SCOPE_DENIED",
-                "runner is not authorized for the task tenant and repository source",
-            ));
-            continue;
-        }
         if runner.kind == harness::HarnessRunnerKind::LocalUser
             && runner.owner_user_id.as_deref() != task.requested_by_user_id.as_deref()
         {
             rejected_runners.push(reject(
                 "HARNESS_RUNNER_OWNER_MISMATCH",
                 "local runner belongs to a different requesting user",
+            ));
+            continue;
+        }
+        let owner_scoped = runner.kind == harness::HarnessRunnerKind::LocalUser
+            && runner.owner_user_id.as_deref() == task.requested_by_user_id.as_deref();
+        let tenant_allowed = runner.tenant_ids.contains(&task.tenant_id)
+            || (owner_scoped && runner.tenant_ids.iter().any(|scope| scope == "owner:any"));
+        let repository_allowed = runner
+            .repository_source_ids
+            .contains(&task.repository_source_id)
+            || (owner_scoped
+                && runner.repository_source_ids.iter().any(|scope| {
+                    scope.ends_with(':') && task.repository_source_id.starts_with(scope)
+                }));
+        if !tenant_allowed || !repository_allowed {
+            rejected_runners.push(reject(
+                "HARNESS_RUNNER_SCOPE_DENIED",
+                "runner is not authorized for the task tenant and repository source",
             ));
             continue;
         }
@@ -6817,7 +6840,56 @@ fn handle_connection_with_streams(
     let response = match (request.method.as_str(), clean_path) {
         ("POST", "/internal/harness/runners/register") => {
             match serde_json::from_str::<harness::RegisterHarnessRunnerRequest>(&request.body) {
-                Ok(registration) => {
+                Ok(mut registration) => {
+                    let pairing_code = registration.pairing_code.take();
+                    if registration.kind == harness::HarnessRunnerKind::LocalUser {
+                        let existing_owner = state
+                            .lock()
+                            .expect("state lock")
+                            .harness
+                            .runners
+                            .get(&registration.runner_id)
+                            .and_then(|runner| runner.owner_user_id.clone());
+                        let owner_user_id = if let Some(owner) = existing_owner {
+                            owner
+                        } else {
+                            let Some(database) = supabase.as_ref() else {
+                                return stream
+                                    .write_all(
+                                        harness_storage_response(
+                                            "Harness runner pairing requires PostgreSQL storage",
+                                        )
+                                        .as_bytes(),
+                                    )
+                                    .unwrap_or(());
+                            };
+                            let Some(pairing_code) = pairing_code.as_deref() else {
+                                return stream
+                                    .write_all(
+                                        harness_error_response(harness::HarnessError::new(
+                                            "HARNESS_PAIRING_REQUIRED",
+                                            "pair this runner from an authenticated Chat-U session before registration",
+                                        ))
+                                        .as_bytes(),
+                                    )
+                                    .unwrap_or(());
+                            };
+                            match database.consume_harness_runner_pairing(
+                                pairing_code,
+                                &registration.runner_id,
+                                &registration.public_key_hex,
+                            ) {
+                                Ok(owner) => owner,
+                                Err(error) => {
+                                    return stream
+                                        .write_all(harness_storage_response(error).as_bytes())
+                                        .unwrap_or(());
+                                }
+                            }
+                        };
+                        // The authenticated pairing record, never a client field, owns this bind.
+                        registration.owner_user_id = Some(owner_user_id);
+                    }
                     let mut guard = state.lock().expect("state lock");
                     let mut candidate = guard.harness.clone();
                     match candidate.register_runner(registration, now_unix_seconds_u64()) {
@@ -12022,8 +12094,8 @@ mod tests {
                     public_key_hex: "a".repeat(64),
                     kind: HarnessRunnerKind::LocalUser,
                     owner_user_id: Some(owner.clone()),
-                    tenant_ids: vec!["tenant-1".to_string()],
-                    repository_source_ids: vec!["repo-1".to_string()],
+                    tenant_ids: vec!["owner:any".to_string()],
+                    repository_source_ids: vec!["github:".to_string()],
                     execution_modes: modes.into_iter().map(str::to_string).collect(),
                     supported_operations: vec![
                         "file.read".to_string(),
@@ -12044,7 +12116,7 @@ mod tests {
                 CreateHarnessTaskRequest {
                     harness_contract_version: "1.0".to_string(),
                     tenant_id: "tenant-1".to_string(),
-                    repository_source_id: "repo-1".to_string(),
+                    repository_source_id: "github:42:owner/repo".to_string(),
                     requested_by_user_id: Some(owner),
                     submitted_via: None,
                     objective: "Update the bounded test fixture.".to_string(),

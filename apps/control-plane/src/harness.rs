@@ -275,6 +275,10 @@ pub struct RegisterHarnessRunnerRequest {
     pub kind: HarnessRunnerKind,
     #[serde(default)]
     pub owner_user_id: Option<String>,
+    /// One-time Chat-U pairing secret. It is consumed before registration and
+    /// is never persisted in runner state or returned in API responses.
+    #[serde(default)]
+    pub pairing_code: Option<String>,
     #[serde(default)]
     pub tenant_ids: Vec<String>,
     #[serde(default)]
@@ -2046,6 +2050,7 @@ mod tests {
             public_key_hex: "a".repeat(64),
             kind: HarnessRunnerKind::LocalUser,
             owner_user_id: Some("78a1c06a-861c-43b4-b7db-b54a51fc912d".to_string()),
+            pairing_code: None,
             tenant_ids: vec!["tenant-1".to_string()],
             repository_source_ids: vec!["repo-1".to_string()],
             execution_modes: vec!["sandbox".to_string()],

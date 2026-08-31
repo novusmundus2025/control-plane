@@ -27,6 +27,7 @@ import {
   isWeatherResourceRequest,
   normalizeWeatherWordTypos,
   fetchChatConversation,
+  fetchHarnessTask,
   fetchNetworkSummary,
   needsGrounding,
   normalizeAssistantDisplayText,
@@ -487,6 +488,38 @@ test("authenticated Harness submission derives authority from the selected user 
   assert.equal(submitted.repository_source_id, "github:mundusx/authorized");
   assert.equal(submitted.requested_by_user_id, session.id);
   assert.equal(submitted.submitted_via, "chat-u");
+});
+
+test("Harness task evidence is visible only to the user who submitted it", async () => {
+  const config = configFromEnv({
+    MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
+    MUNDUSX_HARNESS_SERVICE_TOKEN: "server-secret",
+  });
+  const payload = {
+    task: {
+      task_id: "htask_private",
+      requested_by_user_id: "owner-user",
+      state: "completed",
+    },
+    validations: [],
+  };
+
+  const ownTask = await fetchHarnessTask(
+    "htask_private",
+    config,
+    async () => jsonResponse(payload),
+    { id: "owner-user" },
+  );
+  assert.equal(ownTask.task.task_id, "htask_private");
+  await assert.rejects(
+    fetchHarnessTask(
+      "htask_private",
+      config,
+      async () => jsonResponse(payload),
+      { id: "different-user" },
+    ),
+    (error) => error.statusCode === 404,
+  );
 });
 
 test("accepts an explicit chat model override without making it a default", () => {

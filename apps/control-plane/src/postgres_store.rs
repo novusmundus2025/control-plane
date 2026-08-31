@@ -12,6 +12,7 @@ use native_tls::TlsConnector;
 use postgres::{Client, Config};
 use postgres_native_tls::MakeTlsConnector;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::str::FromStr;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -195,6 +196,53 @@ impl PostgresStore {
             )
             .map_err(|error| format!("postgres harness runner sync failed: {error}"))?;
         Ok(())
+    }
+
+    pub fn consume_harness_runner_pairing(
+        &self,
+        pairing_code: &str,
+        runner_id: &str,
+        public_key_hex: &str,
+    ) -> Result<String, String> {
+        let pairing_code = pairing_code.trim();
+        if pairing_code.len() < 20 || pairing_code.len() > 200 {
+            return Err("HARNESS_PAIRING_INVALID: pairing code is invalid".to_string());
+        }
+        let pairing_hash = hex::encode(Sha256::digest(pairing_code.as_bytes()));
+        let mut client = self.connect()?;
+        let mut transaction = client
+            .transaction()
+            .map_err(|error| format!("postgres pairing transaction failed: {error}"))?;
+        let row = transaction
+            .query_opt(
+                r#"update public.harness_runner_pairings
+set consumed_at = coalesce(consumed_at, now()),
+    runner_id = coalesce(runner_id, $2),
+    public_key_hex = coalesce(public_key_hex, $3)
+where pairing_hash = $1
+  and expires_at > now()
+  and (consumed_at is null or (runner_id = $2 and public_key_hex = $3))
+returning user_id::text"#,
+                &[&pairing_hash, &runner_id, &public_key_hex],
+            )
+            .map_err(|error| format!("postgres pairing lookup failed: {error}"))?;
+        let Some(row) = row else {
+            return Err(
+                "HARNESS_PAIRING_INVALID: pairing code is expired, consumed, or belongs to another runner"
+                    .to_string(),
+            );
+        };
+        let owner_user_id: String = row.get(0);
+        transaction
+            .execute(
+                "delete from public.harness_runner_pairings where expires_at < now() - interval '1 day'",
+                &[],
+            )
+            .map_err(|error| format!("postgres pairing cleanup failed: {error}"))?;
+        transaction
+            .commit()
+            .map_err(|error| format!("postgres pairing commit failed: {error}"))?;
+        Ok(owner_user_id)
     }
 
     pub fn record_node_snapshot(&self, node: &NodeRecord) -> Result<(), String> {
