@@ -179,8 +179,8 @@ export function normalizeAssistantDisplayText(text) {
 }
 
 export function page(config = configFromEnv()) {
-  const repositoryLauncher = `<button class="header-action" id="repository-open" type="button" hidden>Projects</button>
-    <dialog class="harness-dialog" id="repository-dialog">
+  const repositoryLauncher = `<button class="rail-tab rail-tab-projects" id="repository-open" type="button" hidden>Projects</button>`;
+  const repositoryDialog = `<dialog class="harness-dialog" id="repository-dialog">
       <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
       <h2>Projects</h2>
       <p>Create a project in your GitHub account or continue work in one of your existing repositories.</p>
@@ -1710,8 +1710,9 @@ export function page(config = configFromEnv()) {
     .new-chat { color:white; border:0; background:var(--gradient); box-shadow:0 10px 24px rgba(84,71,244,.22); }
     .new-chat:hover,.new-chat:focus-visible { background:var(--gradient); transform:translateY(-1px); }
     .new-chat .kbd-hint { color:white; border-color:rgba(255,255,255,.25); background:rgba(255,255,255,.12); }
-    .rail-tabs { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; }
-    .rail-tab { border:0; border-bottom:2px solid transparent; padding:8px 2px; color:var(--muted); background:transparent; font-size:12px; }
+    .rail-tabs { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:2px; }
+    .rail-tab { min-width:0; border:0; border-bottom:2px solid transparent; padding:8px 1px; color:var(--muted); background:transparent; font-size:11px; cursor:pointer; transition:color var(--motion-fast),border-color var(--motion-fast),background var(--motion-fast); }
+    .rail-tab:hover,.rail-tab:focus-visible { color:var(--text); background:color-mix(in srgb,var(--purple) 7%,transparent); outline:0; }
     .rail-tab.is-active { color:var(--purple); border-color:var(--purple); font-weight:700; }
     main { position:relative; z-index:1; background:radial-gradient(circle at 55% 18%,rgba(var(--mesh-a),.06),transparent 42%); }
     .mesh-canvas { position:absolute; z-index:-1; inset:58px 0 0; width:100%; height:calc(100% - 58px); pointer-events:none; opacity:.78; transition:opacity .4s ease; }
@@ -1770,8 +1771,9 @@ export function page(config = configFromEnv()) {
       </div>
       <div class="rail-primary">
         <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
-        <nav class="rail-tabs" aria-label="Workspace"><button class="rail-tab is-active" type="button">Chats</button><button class="rail-tab" type="button">Agents</button><button class="rail-tab" type="button">Nodes</button></nav>
+        <nav class="rail-tabs" aria-label="Workspace"><button class="rail-tab is-active" type="button">Chats</button>${repositoryLauncher}<button class="rail-tab" type="button">Agents</button><button class="rail-tab" type="button">Nodes</button></nav>
       </div>
+      ${repositoryDialog}
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
       <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
         <button type="button" data-action="rename" role="menuitem">Rename</button>
@@ -1813,7 +1815,6 @@ export function page(config = configFromEnv()) {
         <div class="theme-switch" role="group" aria-label="Color theme"><button class="theme-option" id="theme-light" type="button" aria-label="Use light theme" aria-pressed="true">☀</button><button class="theme-option" id="theme-dark" type="button" aria-label="Use dark theme" aria-pressed="false">☾</button></div>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
         ${harnessLauncher}
-        ${repositoryLauncher}
       </header>
       <section class="messages" id="messages" aria-live="polite">
         <div class="conversation" id="conversation">
