@@ -1411,6 +1411,19 @@ export function page(config = configFromEnv()) {
     .active-project-context strong { display:block; max-width:150px; overflow:hidden; color:inherit; text-overflow:ellipsis; white-space:nowrap; }
     .active-project-context .project-context-clear { border:0; padding:5px 3px; background:transparent; color:var(--muted-2); font:inherit; cursor:pointer; }
     .active-project-context .project-context-clear[hidden] { display:none; }
+    #chat-form { position:relative; }
+    .project-context-menu { position:absolute; left:26px; bottom:86px; z-index:8; width:min(320px,calc(100% - 52px)); padding:8px; border:1px solid var(--line-strong); border-radius:14px; background:var(--panel); box-shadow:0 18px 50px rgba(15,23,42,.18); }
+    .project-context-menu[hidden] { display:none; }
+    .project-context-menu-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:5px 7px 8px; }
+    .project-context-menu-header button,.project-context-choice { border:0; background:transparent; color:var(--text); font:inherit; cursor:pointer; }
+    .project-context-menu-header button { color:var(--blue); font-weight:700; }
+    .project-context-list { display:grid; gap:3px; max-height:230px; overflow:auto; }
+    .project-context-choice { width:100%; display:flex; align-items:center; gap:9px; padding:9px 10px; border-radius:9px; text-align:left; }
+    .project-context-choice[hidden] { display:none; }
+    .project-context-choice:hover,.project-context-choice:focus-visible { background:var(--panel-2); outline:none; }
+    .project-context-choice[aria-current="true"] { color:var(--blue); background:color-mix(in srgb,var(--blue) 8%,var(--panel)); font-weight:700; }
+    .project-context-empty { margin:5px 8px 9px; color:var(--muted); font-size:13px; }
+    .project-context-none { margin-top:5px; padding-top:9px; border-top:1px solid var(--line); color:var(--muted); }
     textarea {
       grid-column: 2;
       grid-row: 1;
@@ -1795,6 +1808,7 @@ export function page(config = configFromEnv()) {
         </div>
       </section>
       <form id="chat-form">
+        ${config.harnessUiEnabled ? `<div class="project-context-menu" id="project-context-menu" hidden><div class="project-context-menu-header"><strong>Projects</strong><button id="project-context-new" type="button">+ New project</button></div><div class="project-context-list" id="project-context-list"></div><button class="project-context-choice project-context-none" id="project-context-none" type="button"><span aria-hidden="true">○</span><span>No project</span></button></div>` : ""}
         <div class="composer">
           <textarea id="prompt" name="prompt" rows="1" placeholder="Ask everyone..." autocomplete="off" required></textarea>
           <div class="composer-actions">
@@ -1849,6 +1863,10 @@ export function page(config = configFromEnv()) {
     const activeProjectNameEl = document.getElementById("active-project-name");
     const activeProjectOpenEl = document.getElementById("active-project-open");
     const activeProjectClearEl = document.getElementById("active-project-clear");
+    const projectContextMenuEl = document.getElementById("project-context-menu");
+    const projectContextListEl = document.getElementById("project-context-list");
+    const projectContextNewEl = document.getElementById("project-context-new");
+    const projectContextNoneEl = document.getElementById("project-context-none");
     const harnessSubmitEl = harnessFormEl?.querySelector(".harness-submit");
     const enterToSendToggleEl = document.getElementById("enter-to-send-toggle");
     const enterToSendLabelEl = document.getElementById("enter-to-send-label");
@@ -1871,11 +1889,24 @@ export function page(config = configFromEnv()) {
     let historyKey = "mundusx.chat.pending.history.v1";
     let conversationIdKey = "mundusx.chat.pending.conversationId.v1";
     let conversationCachePrefix = "mundusx.chat.pending.conversation.v1:";
-    const activeProjectKey = "mundusx.chat.activeProject.v1";
+    let activeProjectKey = "mundusx.chat.activeProject.v1:anonymous";
+    let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
     const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
     let activeProject = null;
+    let availableProjectSlugs = [];
     let readyHarnessModes = new Set();
-    try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
+    function loadStoredProjectContext(namespace) {
+      activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
+      recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
+      try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
+      try {
+        availableProjectSlugs = JSON.parse(localStorage.getItem(recentProjectsKey) || "[]")
+          .filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+          .slice(0, 100);
+      } catch { availableProjectSlugs = []; }
+      renderActiveProject();
+    }
+    loadStoredProjectContext("anonymous");
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let isListening = false;
@@ -2063,6 +2094,7 @@ export function page(config = configFromEnv()) {
         historyKey = "mundusx.chat.history.v1:" + namespace;
         conversationIdKey = "mundusx.chat.conversationId.v1:" + namespace;
         conversationCachePrefix = "mundusx.chat.conversation.v1:" + namespace + ":";
+        loadStoredProjectContext(namespace);
         activeHistoryId = localStorage.getItem(conversationIdKey);
         const name = user.display_name || user.email;
         document.querySelectorAll("[data-account-name]").forEach((node) => node.textContent = name);
@@ -2249,6 +2281,12 @@ export function page(config = configFromEnv()) {
       const ready = payload.runners.find((runner) => runner.ready && runner.fresh);
       const paired = payload.runners.length > 0;
       readyHarnessModes = new Set(ready?.execution_modes || []);
+      availableProjectSlugs = Array.from(new Set([
+        ...availableProjectSlugs,
+        ...(Array.isArray(payload.projects) ? payload.projects : []),
+      ])).filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)).sort().slice(0, 100);
+      localStorage.setItem(recentProjectsKey, JSON.stringify(availableProjectSlugs));
+      renderProjectMenu();
       const statusText = ready
         ? "Ready · " + ready.parallel_slots + " local slot" + (ready.parallel_slots === 1 ? "" : "s")
         : payload.runners.length
@@ -2280,19 +2318,78 @@ export function page(config = configFromEnv()) {
       if (promptEl) promptEl.placeholder = activeProject
         ? "Ask Atlas to work on " + activeProject.slug + "..."
         : "Ask everyone...";
+      renderProjectMenu();
+    }
+
+    function renderProjectMenu() {
+      if (!projectContextListEl) return;
+      projectContextListEl.replaceChildren();
+      if (!availableProjectSlugs.length) {
+        const empty = document.createElement("p");
+        empty.className = "project-context-empty";
+        empty.textContent = "No local projects yet.";
+        projectContextListEl.append(empty);
+      }
+      for (const slug of availableProjectSlugs) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "project-context-choice";
+        button.dataset.projectSlug = slug;
+        button.setAttribute("aria-current", String(activeProject?.slug === slug));
+        const icon = document.createElement("span");
+        icon.setAttribute("aria-hidden", "true");
+        icon.textContent = activeProject?.slug === slug ? "●" : "○";
+        const name = document.createElement("span");
+        name.textContent = slug;
+        button.append(icon, name);
+        projectContextListEl.append(button);
+      }
+      if (projectContextNoneEl) projectContextNoneEl.hidden = !activeProject;
+    }
+
+    function rememberProject(slug) {
+      availableProjectSlugs = [slug, ...availableProjectSlugs.filter((value) => value !== slug)].slice(0, 100);
+      localStorage.setItem(recentProjectsKey, JSON.stringify(availableProjectSlugs));
     }
 
     function setActiveProject(project) {
       activeProject = project;
-      if (project) localStorage.setItem(activeProjectKey, JSON.stringify(project));
+      if (project) {
+        rememberProject(project.slug);
+        localStorage.setItem(activeProjectKey, JSON.stringify(project));
+      }
       else localStorage.removeItem(activeProjectKey);
       renderActiveProject();
     }
 
-    activeProjectOpenEl?.addEventListener("click", () => repositoryDialogEl?.showModal());
+    activeProjectOpenEl?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (projectContextMenuEl) projectContextMenuEl.hidden = !projectContextMenuEl.hidden;
+    });
     activeProjectClearEl?.addEventListener("click", () => {
       setActiveProject(null);
       promptEl?.focus();
+    });
+    projectContextNewEl?.addEventListener("click", () => {
+      if (projectContextMenuEl) projectContextMenuEl.hidden = true;
+      openProjects();
+    });
+    projectContextNoneEl?.addEventListener("click", () => {
+      setActiveProject(null);
+      if (projectContextMenuEl) projectContextMenuEl.hidden = true;
+      promptEl?.focus();
+    });
+    projectContextListEl?.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-project-slug]");
+      if (!button) return;
+      setActiveProject({ slug: button.dataset.projectSlug });
+      if (projectContextMenuEl) projectContextMenuEl.hidden = true;
+      promptEl?.focus();
+    });
+    document.addEventListener("click", (event) => {
+      if (!projectContextMenuEl || projectContextMenuEl.hidden) return;
+      if (event.target.closest("#project-context-menu") || event.target.closest("#active-project-open")) return;
+      projectContextMenuEl.hidden = true;
     });
     renderActiveProject();
 
@@ -4660,7 +4757,9 @@ export function createServerApp(config = configFromEnv()) {
       if (request.method === "GET" && url.pathname === "/api/harness/runners") {
         const session = request.mundusxSession ?? await authStore.session(request);
         if (!session) throw httpError(401, "Authentication required");
-        return sendJson(response, 200, { runners: await authStore.harnessRunners(session.id) });
+        const runners = await authStore.harnessRunners(session.id);
+        const projects = Array.from(new Set(runners.flatMap((runner) => runner.local_projects || []))).sort().slice(0, 100);
+        return sendJson(response, 200, { runners, projects });
       }
       if (request.method === "POST" && url.pathname === "/api/harness/runners/pairing") {
         const session = request.mundusxSession ?? await authStore.session(request);

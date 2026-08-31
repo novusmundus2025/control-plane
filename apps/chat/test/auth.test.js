@@ -154,6 +154,27 @@ test("runner pairing stores only a one-time code digest", async () => {
   assert.equal(result.expires_in_seconds, 600);
 });
 
+test("runner inventory exposes only bounded lowercase local project slugs", async () => {
+  const store = new PostgresAuthStore({}, { pool: {
+    async query() {
+      return { rows: [{
+        runner_id: "runner-1",
+        device_id: "device-1",
+        execution_modes: ["hybrid"],
+        supported_operations: ["file.read"],
+        local_projects: ["alpha", "my-java-program", "../another-user", "Bad Name"],
+        parallel_slots: 1,
+        ready: true,
+        trusted_identity: true,
+        last_seen_epoch: Math.floor(Date.now() / 1000),
+      }] };
+    },
+  } });
+  const [runner] = await store.harnessRunners("user-1");
+  assert.deepEqual(runner.local_projects, ["alpha", "my-java-program"]);
+  assert.equal(runner.fresh, true);
+});
+
 test("Harness authority rejects repositories without an active EHDA policy", async () => {
   const store = new PostgresAuthStore({}, { pool: { async query() { return { rows: [] }; } } });
   store.authorizeRepository = async () => ({ id: 42, full_name: "owner/repo", default_branch: "main", permissions: { pull: true, push: true, admin: false } });

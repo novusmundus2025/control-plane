@@ -206,6 +206,7 @@ create table if not exists public.harness_runners (
   owner_user_id uuid references public.users(id) on delete set null,
   tenant_ids jsonb not null default '[]'::jsonb,
   repository_source_ids jsonb not null default '[]'::jsonb,
+  local_projects jsonb not null default '[]'::jsonb,
   execution_modes jsonb not null default '[]'::jsonb,
   supported_operations jsonb not null default '[]'::jsonb,
   network_default_disabled boolean not null default true,

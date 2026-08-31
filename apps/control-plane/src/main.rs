@@ -12399,6 +12399,7 @@ mod tests {
                     owner_user_id: Some(owner.clone()),
                     tenant_ids: vec!["owner:any".to_string()],
                     repository_source_ids: vec!["github:".to_string()],
+                    local_projects: Vec::new(),
                     execution_modes: modes.into_iter().map(str::to_string).collect(),
                     supported_operations: vec![
                         "file.read".to_string(),

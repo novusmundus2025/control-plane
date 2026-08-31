@@ -256,6 +256,8 @@ pub struct HarnessRunner {
     pub tenant_ids: Vec<String>,
     #[serde(default)]
     pub repository_source_ids: Vec<String>,
+    #[serde(default)]
+    pub local_projects: Vec<String>,
     pub execution_modes: Vec<String>,
     pub supported_operations: Vec<String>,
     pub network_default_disabled: bool,
@@ -283,6 +285,8 @@ pub struct RegisterHarnessRunnerRequest {
     pub tenant_ids: Vec<String>,
     #[serde(default)]
     pub repository_source_ids: Vec<String>,
+    #[serde(default)]
+    pub local_projects: Vec<String>,
     pub execution_modes: Vec<String>,
     pub supported_operations: Vec<String>,
     pub network_default_disabled: bool,
@@ -593,6 +597,23 @@ impl HarnessState {
         {
             validate_identifier(value, "runner scope")?;
         }
+        if request.local_projects.len() > 100
+            || request.local_projects.iter().any(|slug| {
+                slug.is_empty()
+                    || slug.len() > 80
+                    || slug.starts_with('-')
+                    || slug.ends_with('-')
+                    || slug.contains("--")
+                    || !slug.bytes().all(|byte| {
+                        byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'
+                    })
+            })
+        {
+            return Err(HarnessError::new(
+                "HARNESS_RUNNER_PROJECTS_INVALID",
+                "runner local projects must be bounded lowercase slugs",
+            ));
+        }
         let runner = HarnessRunner {
             runner_id: request.runner_id.clone(),
             device_id: request.device_id,
@@ -601,6 +622,7 @@ impl HarnessState {
             owner_user_id: request.owner_user_id,
             tenant_ids: normalized_list(request.tenant_ids),
             repository_source_ids: normalized_list(request.repository_source_ids),
+            local_projects: normalized_list(request.local_projects),
             execution_modes: normalized_list(request.execution_modes),
             supported_operations: normalized_list(request.supported_operations),
             network_default_disabled: request.network_default_disabled,
@@ -2053,6 +2075,7 @@ mod tests {
             pairing_code: None,
             tenant_ids: vec!["tenant-1".to_string()],
             repository_source_ids: vec!["repo-1".to_string()],
+            local_projects: vec!["alpha".to_string(), "beta".to_string()],
             execution_modes: vec!["sandbox".to_string()],
             supported_operations: vec!["file.read".to_string()],
             network_default_disabled: true,
@@ -2084,6 +2107,20 @@ mod tests {
                 .unwrap_err()
                 .code,
             "HARNESS_RUNNER_IDENTITY_CONFLICT"
+        );
+    }
+
+    #[test]
+    fn runner_registration_bounds_and_normalizes_local_projects() {
+        let mut state = HarnessState::default();
+        let runner = state.register_runner(runner_registration(), 1_000).unwrap();
+        assert_eq!(runner.local_projects, vec!["alpha", "beta"]);
+
+        let mut invalid = runner_registration();
+        invalid.local_projects = vec!["../another-user".to_string()];
+        assert_eq!(
+            state.register_runner(invalid, 1_001).unwrap_err().code,
+            "HARNESS_RUNNER_PROJECTS_INVALID"
         );
     }
 
