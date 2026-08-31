@@ -122,7 +122,8 @@ export function configFromEnv(env = process.env) {
     harnessBaseRevision: (env.MUNDUSX_HARNESS_BASE_REVISION ?? "").trim().toLowerCase(),
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
-    harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim(),
+    harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
+      || "https://github.com/mundusx/mundusx/releases",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
@@ -196,21 +197,17 @@ export function page(config = configFromEnv()) {
       <form id="harness-form" class="harness-form">
         <section class="project-section project-create-fields">
           <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-project" autocomplete="off" required></label>
-          <div class="project-local-path"><span>Local folder</span><code id="project-local-path">documents\\mundusx\\projects\\my-project</code></div>
-          <details class="project-options">
-            <summary><span>Project options</span><small>Generic or Java</small></summary>
-            <div class="project-options-body"><label>Project type<select name="project_template"><option value="generic">Generic project</option><option value="java-maven">Java (Maven)</option></select></label></div>
-          </details>
+          <p class="project-local-path">Saved to <code id="project-local-path">documents\\mundusx\\projects\\my-project</code></p>
         </section>
         <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
           <span class="readiness-dot" aria-hidden="true"></span>
           <span><strong id="project-readiness-title">Checking local runner…</strong><small id="project-readiness-text">Looking for your project workspace service.</small></span>
         </div>
         <details class="project-runner-setup" id="project-runner-setup">
-          <summary><span><strong>Local runner setup</strong><small>Required once on this device</small></span><span aria-hidden="true">⌄</span></summary>
+          <summary><span><strong>Set up local runner</strong><small>Required once on this device</small></span><span aria-hidden="true">⌄</span></summary>
           <div class="project-runner-setup-body">
-            <p>The runner creates projects in your Documents folder and executes bounded tools locally. It is separate from inference contributor nodes.</p>
-            <div class="inline-actions">${config.harnessRunnerDownloadUrl ? `<a class="harness-download primary" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" target="_blank" rel="noopener">Download local runner</a>` : `<span class="setup-unavailable">Runner download is not configured yet.</span>`}<button id="harness-pair" type="button">Create pairing code</button></div>
+            <p>Install the native MundusX runner once to create and test projects on this device. Git is required; Java work uses Maven when available.</p>
+            <div class="inline-actions"><a class="harness-download primary" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" target="_blank" rel="noopener">Get local runner</a><button id="harness-pair" type="button">Create pairing code</button></div>
             <code id="harness-pairing-code" class="pairing-code" hidden></code>
             <div class="command-row" id="harness-pairing-command-row" hidden><code id="harness-pairing-command"></code><button class="copy-command" type="button" data-copy-target="harness-pairing-command">Copy</button></div>
             <p id="harness-runner-status">Start the runner, pair it once, and keep it available while a project task runs.</p>
@@ -1507,14 +1504,8 @@ export function page(config = configFromEnv()) {
     .projects-dialog .harness-form { gap: 13px; }
     .project-section { display: grid; gap: 12px; padding: 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--panel-2); }
     .project-field-wide { grid-column: 1 / -1; }
-    .project-local-path { display:grid; gap:5px; padding:11px 12px; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
-    .project-local-path span { color:var(--muted); font-size:12px; }
-    .project-local-path code { overflow-wrap:anywhere; color:var(--purple); font-size:13px; }
-    .project-options { border-top:1px solid var(--line); padding-top:10px; }
-    .project-options > summary { display:flex; align-items:center; justify-content:space-between; gap:12px; color:var(--muted); cursor:pointer; list-style:none; font-size:13px; }
-    .project-options > summary::-webkit-details-marker { display:none; }
-    .project-options > summary small { color:var(--muted-2); }
-    .project-options-body { padding-top:12px; }
+    .project-local-path { margin:0; color:var(--muted); font-size:12px; }
+    .project-local-path code { overflow-wrap:anywhere; color:var(--purple); font-size:12px; }
     .project-actions { display: flex; align-items: center; gap: 16px; padding: 4px 0 0; border: 0; }
     .project-actions output { min-width:0; flex:1; color: var(--text); font-size: 12px; }
     .project-actions .harness-submit { min-width: 142px; }
@@ -2109,9 +2100,12 @@ export function page(config = configFromEnv()) {
       repositoryDialogEl.showModal();
       loadHarnessRunners().catch((error) => {
         if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
-        if (projectReadinessEl) projectReadinessEl.hidden = false;
+        if (projectReadinessEl) projectReadinessEl.hidden = true;
         if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Local runner status unavailable";
         if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = false;
+        if (projectRunnerSetupEl) projectRunnerSetupEl.open = false;
+        if (harnessRunnerStatusEl) harnessRunnerStatusEl.textContent = error.message || "Local runner status unavailable";
+        if (harnessSubmitEl) harnessSubmitEl.disabled = true;
       });
     }
 
@@ -2264,10 +2258,10 @@ export function page(config = configFromEnv()) {
           : "No runner paired yet.";
       harnessRunnerStatusEl.textContent = statusText;
       if (projectReadinessEl) projectReadinessEl.dataset.state = ready ? "ready" : paired ? "offline" : "setup";
-      if (projectReadinessEl) projectReadinessEl.hidden = Boolean(ready);
+      if (projectReadinessEl) projectReadinessEl.hidden = true;
       if (projectReadinessTextEl) projectReadinessTextEl.textContent = ready ? "New projects will be created under documents\\\\mundusx\\\\projects" : paired ? "Start the paired runner to create this project" : "Set up the runner once on this device";
       if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = Boolean(ready);
-      if (projectRunnerSetupEl) projectRunnerSetupEl.open = !ready;
+      if (projectRunnerSetupEl) projectRunnerSetupEl.open = false;
       if (harnessSubmitEl) harnessSubmitEl.disabled = !ready;
       return payload.runners;
     }
@@ -2278,8 +2272,7 @@ export function page(config = configFromEnv()) {
 
     function renderActiveProject() {
       const valid = activeProject
-        && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(activeProject.slug || "")
-        && ["generic", "java-maven"].includes(activeProject.template);
+        && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(activeProject.slug || "");
       if (!valid) activeProject = null;
       if (activeProjectContextEl) activeProjectContextEl.hidden = !activeProject;
       if (activeProjectNameEl) activeProjectNameEl.textContent = activeProject?.slug || "";
@@ -2311,6 +2304,9 @@ export function page(config = configFromEnv()) {
     function projectExecutionMode(template) {
       const preferred = template === "java-maven" ? ["hybrid", "sandbox"] : ["sandbox", "hybrid"];
       return preferred.find((mode) => readyHarnessModes.has(mode)) || preferred[0];
+    }
+    function inferProjectTemplate(message) {
+      return /(java|maven|spring|junit|gradle)/i.test(String(message || "")) ? "java-maven" : "generic";
     }
     document.querySelectorAll(".copy-command").forEach((button) => button.addEventListener("click", async () => {
       const target = document.getElementById(button.dataset.copyTarget || "");
@@ -2349,7 +2345,7 @@ export function page(config = configFromEnv()) {
       harnessResultEl.textContent = "Queuing local project creation…";
       try {
         if (!projectSlug) throw new Error("Enter a lowercase project name");
-        const projectTemplate = String(data.get("project_template") || "generic");
+        const projectTemplate = "generic";
         const response = await fetch("/api/harness/tasks", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -2363,7 +2359,7 @@ export function page(config = configFromEnv()) {
         });
         const payload = await response.json();
         if (!response.ok) throw new Error(payload.error || "Harness submission failed");
-        setActiveProject({ slug: projectSlug, template: projectTemplate });
+        setActiveProject({ slug: projectSlug });
         harnessResultEl.textContent = "Project " + projectSlug + " · task " + payload.task_id + " · " + payload.state + " · UAT approval required";
         harnessFormEl.reset();
         if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\my-project";
@@ -2748,14 +2744,15 @@ export function page(config = configFromEnv()) {
     });
 
     async function runActiveProjectTask(pending, message, project) {
+      const projectTemplate = inferProjectTemplate(message);
       const response = await fetch("/api/harness/tasks", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           objective: message,
           project_slug: project.slug,
-          project_template: project.template || "generic",
-          execution_mode: projectExecutionMode(project.template || "generic"),
+          project_template: projectTemplate,
+          execution_mode: projectExecutionMode(projectTemplate),
           allowed_operations: PROJECT_ALLOWED_OPERATIONS,
         }),
       });
@@ -4755,7 +4752,7 @@ export function localProjectAuthority(session, body) {
   }
   const prefixes = template === "java-maven"
     ? ["src", "pom.xml", "README.md", ".gitignore", ".mundusx"]
-    : ["src", "tests", "docs", "README.md", ".gitignore", ".mundusx", "package.json", "Cargo.toml", "pyproject.toml", "go.mod", "Makefile"];
+    : ["src", "tests", "docs", "README.md", ".gitignore", ".mundusx", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.toml", "Cargo.lock", "pyproject.toml", "requirements.txt", "uv.lock", "poetry.lock", "go.mod", "go.sum", "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "Makefile"];
   return {
     tenant_id: `owner:${session.id}`,
     repository_source_id: `local-project:${session.id}:${template}:${slug}`,
