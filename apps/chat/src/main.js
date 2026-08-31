@@ -197,13 +197,13 @@ export function page(config = configFromEnv()) {
       <form id="harness-form" class="harness-form">
         <section class="project-section project-create-fields">
           <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-project" autocomplete="off" required></label>
-          <p class="project-local-path">Saved to <code id="project-local-path">documents\\mundusx\\projects\\my-project</code></p>
+          <p class="project-local-path">Local files will use <code id="project-local-path">documents\\mundusx\\projects\\my-project</code> when coding starts.</p>
         </section>
         <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
           <span class="readiness-dot" aria-hidden="true"></span>
           <span><strong id="project-readiness-title">Checking local runner…</strong><small id="project-readiness-text">Looking for your project workspace service.</small></span>
         </div>
-        <details class="project-runner-setup" id="project-runner-setup">
+        <details class="project-runner-setup" id="project-runner-setup" hidden>
           <summary><span><strong>Set up local runner</strong><small>Required once on this device</small></span><span aria-hidden="true">⌄</span></summary>
           <div class="project-runner-setup-body">
             <p>Install the native MundusX runner once to create and test projects on this device. Git is required; Java work uses Maven when available.</p>
@@ -1895,6 +1895,8 @@ export function page(config = configFromEnv()) {
     let activeProject = null;
     let availableProjectSlugs = [];
     let readyHarnessModes = new Set();
+    let localRunnerReady = false;
+    let runnerSetupRequested = false;
     function loadStoredProjectContext(namespace) {
       activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
       recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
@@ -2095,6 +2097,7 @@ export function page(config = configFromEnv()) {
         conversationIdKey = "mundusx.chat.conversationId.v1:" + namespace;
         conversationCachePrefix = "mundusx.chat.conversation.v1:" + namespace + ":";
         loadStoredProjectContext(namespace);
+        loadHarnessRunners().catch(() => {});
         activeHistoryId = localStorage.getItem(conversationIdKey);
         const name = user.display_name || user.email;
         document.querySelectorAll("[data-account-name]").forEach((node) => node.textContent = name);
@@ -2125,22 +2128,23 @@ export function page(config = configFromEnv()) {
       }
     }
 
-    async function openProjects() {
+    async function openProjects({ showRunnerSetup = false } = {}) {
+      runnerSetupRequested = showRunnerSetup;
       setWorkspaceDestination("projects");
       repositoryDialogEl.showModal();
-      loadHarnessRunners().catch((error) => {
+      return loadHarnessRunners().catch((error) => {
         if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
         if (projectReadinessEl) projectReadinessEl.hidden = true;
         if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Local runner status unavailable";
-        if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = false;
-        if (projectRunnerSetupEl) projectRunnerSetupEl.open = false;
+        if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = !runnerSetupRequested;
+        if (projectRunnerSetupEl) projectRunnerSetupEl.open = runnerSetupRequested;
         if (harnessRunnerStatusEl) harnessRunnerStatusEl.textContent = error.message || "Local runner status unavailable";
-        if (harnessSubmitEl) harnessSubmitEl.disabled = true;
+        if (harnessSubmitEl) harnessSubmitEl.disabled = false;
       });
     }
 
-    repositoryOpenEl?.addEventListener("click", openProjects);
-    repositoryOpenMobileEl?.addEventListener("click", openProjects);
+    repositoryOpenEl?.addEventListener("click", () => openProjects());
+    repositoryOpenMobileEl?.addEventListener("click", () => openProjects());
     repositoryDialogEl?.addEventListener("close", () => setWorkspaceDestination("chats"));
 
     authEmailFormEl?.addEventListener("submit", async (event) => {
@@ -2280,6 +2284,7 @@ export function page(config = configFromEnv()) {
       if (!response.ok) throw new Error(payload.error || "Runner status could not be loaded");
       const ready = payload.runners.find((runner) => runner.ready && runner.fresh);
       const paired = payload.runners.length > 0;
+      localRunnerReady = Boolean(ready);
       readyHarnessModes = new Set(ready?.execution_modes || []);
       availableProjectSlugs = Array.from(new Set([
         ...availableProjectSlugs,
@@ -2296,9 +2301,9 @@ export function page(config = configFromEnv()) {
       if (projectReadinessEl) projectReadinessEl.dataset.state = ready ? "ready" : paired ? "offline" : "setup";
       if (projectReadinessEl) projectReadinessEl.hidden = true;
       if (projectReadinessTextEl) projectReadinessTextEl.textContent = ready ? "New projects will be created under documents\\\\mundusx\\\\projects" : paired ? "Start the paired runner to create this project" : "Set up the runner once on this device";
-      if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = Boolean(ready);
-      if (projectRunnerSetupEl) projectRunnerSetupEl.open = false;
-      if (harnessSubmitEl) harnessSubmitEl.disabled = !ready;
+      if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = Boolean(ready) || !runnerSetupRequested;
+      if (projectRunnerSetupEl) projectRunnerSetupEl.open = !ready && runnerSetupRequested;
+      if (harnessSubmitEl) harnessSubmitEl.disabled = false;
       return payload.runners;
     }
 
@@ -2436,55 +2441,23 @@ export function page(config = configFromEnv()) {
         harnessPairEl.disabled = false;
       }
     });
-    harnessFormEl?.addEventListener("submit", async (event) => {
+    harnessFormEl?.addEventListener("submit", (event) => {
       event.preventDefault();
       const data = new FormData(harnessFormEl);
       const projectSlug = normalizeProjectSlug(data.get("project_slug"));
-      harnessResultEl.textContent = "Queuing local project creation…";
-      try {
-        if (!projectSlug) throw new Error("Enter a lowercase project name");
-        const projectTemplate = "generic";
-        const response = await fetch("/api/harness/tasks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            objective: "Initialize the local " + projectTemplate + " project workspace and validate its scaffold. Do not add application-specific functionality.",
-            project_slug: projectSlug,
-            project_template: projectTemplate,
-            execution_mode: projectExecutionMode(projectTemplate),
-            allowed_operations: PROJECT_ALLOWED_OPERATIONS,
-          }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Harness submission failed");
-        setActiveProject({ slug: projectSlug });
-        harnessResultEl.textContent = "Project " + projectSlug + " · task " + payload.task_id + " · " + payload.state + " · UAT approval required";
-        harnessFormEl.reset();
-        if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\my-project";
-        repositoryDialogEl?.close();
-        addMessage("Project " + projectSlug + " is active. Describe the coding work here in chat.", "assistant", "Local project");
-        trackHarnessTask(payload.task_id);
-      } catch (error) {
-        harnessResultEl.textContent = error.message || "Local project creation failed";
+      if (!projectSlug) {
+        harnessResultEl.textContent = "Enter a lowercase project name";
+        return;
       }
+      setActiveProject({ slug: projectSlug });
+      harnessResultEl.textContent = "";
+      harnessFormEl.reset();
+      if (projectLocalPathEl) projectLocalPathEl.textContent = "documents\\\\mundusx\\\\projects\\\\my-project";
+      repositoryDialogEl?.close();
+      setWorkspaceDestination("chats");
+      addMessage("Project " + projectSlug + " is active. You can plan and chat now; local files are created only when you request file, build, or test work.", "assistant", "Project ready");
     });
 
-    async function trackHarnessTask(taskId) {
-      for (let attempt = 0; attempt < 24 && repositoryDialogEl?.open; attempt += 1) {
-        await new Promise((resolve) => setTimeout(resolve, 5_000));
-        const response = await fetch("/api/harness/tasks/" + encodeURIComponent(taskId));
-        const payload = await response.json();
-        if (!response.ok) {
-          harnessResultEl.textContent = payload.error || "Task status could not be loaded";
-          return;
-        }
-        const validations = payload.validations || [];
-        const latestValidation = validations.at(-1);
-        harnessResultEl.textContent = "Task " + taskId + " · " + payload.task.state
-          + (latestValidation ? " · validation " + latestValidation.status : "");
-        if (["completed", "failed", "cancelled", "expired"].includes(payload.task.state)) return;
-      }
-    }
     enterToSendToggleEl?.addEventListener("click", () => {
       enterToSendEnabled = !enterToSendEnabled;
       localStorage.setItem("mundusx.chat.enterToSend", String(enterToSendEnabled));
@@ -2823,14 +2796,27 @@ export function page(config = configFromEnv()) {
       const pending = addMessage("Submitting to MundusX...", "assistant", "Queued");
 
       try {
-        if (activeProject) {
+        if (activeProject && requiresLocalProjectAction(message)) {
+          if (!localRunnerReady) {
+            await loadHarnessRunners().catch(() => []);
+          }
+          if (!localRunnerReady) {
+            const body = pending.querySelector(".message-body");
+            if (body) body.textContent = "Connect your local runner to create files, run builds, or execute tests for " + activeProject.slug + ". Your project and chat are already saved.";
+            setStatus("ready", "Runner needed");
+            await openProjects({ showRunnerSetup: true });
+            return;
+          }
           await runActiveProjectTask(pending, message, activeProject);
           syncNetworkRuntimeStatus(true);
           return;
         }
-        const streamed = await tryLiveChatTurn(pending, message, conversationId);
+        const chatMessage = activeProject
+          ? "Active local project: " + activeProject.slug + ". Respond in planning/chat mode and do not claim files were changed.\\n\\n" + message
+          : message;
+        const streamed = await tryLiveChatTurn(pending, chatMessage, conversationId);
         if (!streamed) {
-          await runPolledChatTurn(pending, message, conversationId);
+          await runPolledChatTurn(pending, chatMessage, conversationId);
         }
         syncNetworkRuntimeStatus(true);
       } catch (error) {
@@ -2859,6 +2845,12 @@ export function page(config = configFromEnv()) {
       const body = pending.querySelector(".message-body");
       if (body) body.textContent = "Queued work for " + project.slug + ". Task " + payload.task_id + " is awaiting UAT execution approval.";
       setStatus("ready", "Project queued");
+    }
+
+    function requiresLocalProjectAction(message) {
+      const value = String(message || "").trim();
+      if (/^(what|why|how|should|do i|does|is|are|explain|compare|recommend)\\b/i.test(value)) return false;
+      return /\\b(create|make|add|write|edit|modify|update|delete|remove|rename|move|generate|scaffold|implement|fix|refactor|format|install|run|test|build|compile|lint|commit|checkout|merge|push|pull)\\b/i.test(value);
     }
 
     async function runPolledChatTurn(pending, message, conversationId) {
