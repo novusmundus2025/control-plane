@@ -205,7 +205,7 @@ export function page(config = configFromEnv()) {
           </div>
           <code id="harness-pairing-code" hidden></code>
           <p id="harness-pairing-command" hidden></p>
-          <small>GitHub credentials stay on this machine. Never paste a GitHub token into Chat-U.</small>
+          <small>Never paste a GitHub token into Chat-U. Chat-U uses encrypted GitHub App authorization; this runner uses your local GitHub CLI. Contributor nodes receive neither credential.</small>
         </section>
         <div class="harness-boundary"><strong>Live GitHub permission check</strong><span>EHDA pins the selected repository's current default-branch commit</span></div>
         <form id="harness-form" class="harness-form">
