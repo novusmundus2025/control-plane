@@ -96,6 +96,9 @@ The **Projects** panel contains the local runner setup: install the runner, pair
 verify that it is ready. GitHub CLI authentication is optional until the user asks to publish. The
 optional publication commands are `gh auth login --hostname github.com --git-protocol https --web`
 and `gh auth setup-git`; Chat-U never provides a token input. Pairing does not require GitHub.
+The runner is a native Rust executable, not a project technology stack. It uses Git for workspace
+isolation and repository validation; Java tasks additionally use Maven when Maven is installed.
+Project technology is inferred from the coding request in chat rather than selected during creation.
 New projects use lowercase slugs and live
 under `documents/mundusx/projects/<slug>` on the user's device.
 Creation asks only for the local project identity; coding objectives are entered in the normal chat
@@ -137,7 +140,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEB_SEARCH_DAILY_BUDGET` | unset (unlimited) | Optional daily call cap for the web search tool, tracked in the same Redis/Valkey cache; once exceeded the tool declines until the next UTC day |
 | `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes user-owned local-first Projects and inline runner setup when set to `true` |
 | `MUNDUSX_HARNESS_SERVICE_TOKEN` | unset | Server-only token used to submit Harness tasks to the control plane |
-| `MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL` | unset | Download or release page shown in the runner connection panel |
+| `MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL` | MundusX releases page | Optional override for the runner download or release page shown during one-time setup |
 
 ## Current Flow
 
