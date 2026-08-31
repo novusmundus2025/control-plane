@@ -409,20 +409,21 @@ test("separates user Projects from the local Computer runner", () => {
     }),
   );
 
-  const projects = html.match(/<dialog class="harness-dialog" id="repository-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
+  const projects = html.match(/<dialog class="harness-dialog projects-dialog" id="repository-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
   const computer = html.match(/<dialog class="harness-dialog" id="harness-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
-  const workspaceNav = html.match(/<nav class="rail-tabs" aria-label="Workspace">[\s\S]*?<\/nav>/)?.[0] || "";
+  const workspaceNav = html.match(/<nav class="workspace-nav" aria-label="Workspace">[\s\S]*?<\/nav>/)?.[0] || "";
   const mainHeader = html.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
-  assert.match(html, /id="repository-open"[^>]*hidden>Projects<\/button>/);
+  assert.match(html, /id="repository-open"[^>]*hidden>[\s\S]*?<span>Projects<\/span>/);
   assert.match(html, /id="harness-open"[^>]*hidden>Computer<\/button>/);
   assert.match(workspaceNav, /Chats[\s\S]*id="repository-open"[\s\S]*Projects/);
   assert.doesNotMatch(workspaceNav, />Agents<|>Nodes</);
   assert.doesNotMatch(mainHeader, /id="repository-open"|>Projects<\/button>/);
+  assert.match(mainHeader, /id="repository-open-mobile"[^>]*aria-label="Open Projects"[^>]*hidden/);
   assert.match(projects, /name="repository_id"/);
   assert.match(projects, /Create a repository in my GitHub account/);
   assert.match(projects, /name="repository_name"/);
   assert.match(projects, /Java \(Maven\)/);
-  assert.match(projects, /MundusX does not own it/);
+  assert.match(projects, /MundusX does not own the repository/);
   assert.doesNotMatch(projects, /id="harness-pair"/);
   assert.match(computer, /id="harness-pair"/);
   assert.match(computer, /Install the runner/);
@@ -435,10 +436,12 @@ test("separates user Projects from the local Computer runner", () => {
   assert.match(computer, /Your credentials stay yours/);
   assert.match(projects, /id="project-readiness"/);
   assert.match(projects, /id="project-open-computer"/);
+  assert.match(projects, /class="project-advanced"/);
+  assert.match(projects, /Advanced controls/);
   assert.doesNotMatch(computer, /name="repository_name"|name="objective"|id="harness-form"/);
   assert.doesNotMatch(html, /github:mundusx\/control-plane/);
-  assert.match(projects, /Create project and submit for review/);
-  assert.match(projects, /does not approve merge or deployment/);
+  assert.match(projects, /class="harness-submit"[^>]*>Create project/);
+  assert.match(projects, /Merge and deployment require separate approval/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-open"/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-form"/);
 });
