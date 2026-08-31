@@ -101,9 +101,11 @@ isolation and repository validation; Java tasks additionally use Maven when Mave
 Project technology is inferred from the coding request in chat rather than selected during creation.
 New projects use lowercase slugs and live
 under `documents/mundusx/projects/<slug>` on the user's device.
-Creation asks only for the local project identity; coding objectives are entered in the normal chat
-after the project becomes active. While a project is active, chat messages become bounded Harness
-tasks for that project instead of ordinary unscoped chat requests.
+Creation asks only for the local project identity and does not require a runner or create a Harness
+task. Planning and ordinary project chat work immediately. When the user first requests an explicit
+local action such as creating or editing files, running tests, building, installing, or committing,
+Chat-U checks runner readiness and reveals one-time setup only when needed. With a ready runner,
+those local-action messages become bounded Harness tasks for the active project.
 The composer Project control lists the authenticated user's runner-reported local projects, marks
 the active project, switches context, creates a new project, or returns to unscoped chat. A bounded
 per-user browser-local recent list keeps previously selected names usable while the runner is

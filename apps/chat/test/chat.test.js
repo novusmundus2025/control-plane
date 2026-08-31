@@ -437,10 +437,15 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /activeProjectNameEl\.textContent = activeProject\?\.slug \|\| "Project"/);
   assert.match(html, /activeProjectOpenEl\.setAttribute\("aria-pressed"/);
   assert.match(html, /Ask Atlas to work on/);
-  assert.match(html, /Initialize the local.*project workspace/);
+  assert.doesNotMatch(html, /Initialize the local.*project workspace|Queuing local project creation/);
+  assert.match(html, /Project .* is active\. You can plan and chat now/);
+  assert.match(html, /requiresLocalProjectAction\(message\)/);
+  assert.match(html, /openProjects\(\{ showRunnerSetup: true \}\)/);
+  assert.match(html, /Respond in planning\/chat mode and do not claim files were changed/);
   assert.match(html, /inferProjectTemplate[\s\S]*java\|maven\|spring\|junit\|gradle/);
   assert.match(projects, /id="harness-pair"/);
   assert.match(projects, /Set up local runner/);
+  assert.match(projects, /id="project-runner-setup" hidden/);
   assert.match(projects, /native MundusX runner/);
   assert.match(projects, /https:\/\/github\.com\/mundusx\/mundusx\/releases/);
   assert.match(projects, /id="project-readiness"/);
