@@ -17,6 +17,8 @@ Production authority: none
 
 - Chat access and Harness access are separate decisions.
 - Repository discovery is the intersection of GitHub App installation access and the signed-in user's live GitHub rights. Every repository read revalidates those rights.
+- Repository creation uses the GitHub App user-to-server token and GitHub's authenticated-user endpoint. The authenticated GitHub identity is the owner; the browser cannot provide or override an owner. Private is the default.
+- A new project receives only the path prefixes, validation profile, and execution modes declared by its server-side project template. Java/Maven projects use trusted hybrid execution until a separately approved offline sandbox image exists.
 - A signed-in user may chat, but may submit Harness work only when live GitHub rights also intersect an active `repository_harness_policies` row.
 - Tenant, repository id, immutable base revision, path prefixes, validation profiles, and execution modes come from GitHub plus EHDA policy. Browser payloads cannot override them.
 - A Harness task records `requested_by_user_id` and `submitted_via=chat-u` immutably.

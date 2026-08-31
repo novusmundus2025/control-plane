@@ -413,9 +413,13 @@ test("renders the opt-in repository-bound Harness launcher", () => {
   assert.match(html, /id="harness-open"[^>]*hidden/);
   assert.match(html, /id="repository-open"[^>]*hidden/);
   assert.match(html, /name="repository_id"/);
+  assert.match(html, /Create a repository in my GitHub account/);
+  assert.match(html, /name="repository_name"/);
+  assert.match(html, /Java \(Maven\)/);
+  assert.match(html, /MundusX does not own it/);
   assert.match(html, /Live GitHub permission check/);
   assert.doesNotMatch(html, /github:mundusx\/control-plane/);
-  assert.match(html, /Submit for review/);
+  assert.match(html, /Create project and submit for review/);
   assert.match(html, /does not approve execution, merge, or deployment/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-open"/);
 });

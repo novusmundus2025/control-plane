@@ -49,6 +49,55 @@ test("repository normalization preserves live pull and push permissions", () => 
   });
 });
 
+test("new Java repositories are private user-owned projects with bounded Maven policy", async () => {
+  let githubRequest;
+  let policyInsert;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) { policyInsert = { sql, values }; return { rows: [] }; },
+  } });
+  store.githubJson = async (_userId, url, options) => {
+    githubRequest = { url, options };
+    return {
+      id: 84,
+      full_name: "alice/my-java-program",
+      private: true,
+      default_branch: "main",
+      owner: { login: "alice" },
+      permissions: { pull: true, push: true, admin: true },
+    };
+  };
+
+  const result = await store.createRepository("user-alice", {
+    name: "my-java-program",
+    description: "A tested Java project",
+    template: "java-maven",
+  });
+
+  assert.equal(githubRequest.url, "https://api.github.com/user/repos");
+  assert.equal(githubRequest.options.method, "POST");
+  assert.deepEqual(githubRequest.options.body, {
+    name: "my-java-program",
+    description: "A tested Java project",
+    private: true,
+    auto_init: true,
+  });
+  assert.equal(result.repository.full_name, "alice/my-java-program");
+  assert.equal(policyInsert.values[1], "alice/my-java-program");
+  assert.equal(policyInsert.values[2], "user:user-alice");
+  assert.deepEqual(policyInsert.values[3], ["src", "pom.xml", "README.md", ".gitignore"]);
+  assert.deepEqual(policyInsert.values[4], ["java-maven-test"]);
+  assert.deepEqual(policyInsert.values[5], ["hybrid"]);
+});
+
+test("repository creation rejects invalid names before calling GitHub", async () => {
+  const store = new PostgresAuthStore({}, { pool: {} });
+  store.githubJson = async () => assert.fail("GitHub must not be called");
+  await assert.rejects(
+    store.createRepository("user-1", { name: "owner/repository" }),
+    (error) => error.statusCode === 400,
+  );
+});
+
 test("repository browser masks obvious embedded credentials and blocks secret files", async () => {
   const store = new PostgresAuthStore({}, { pool: {} });
   store.authorizeRepository = async () => ({ id: 42, full_name: "owner/repo", default_branch: "main", permissions: { pull: true, push: false, admin: false } });
