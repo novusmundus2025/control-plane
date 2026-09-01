@@ -1463,7 +1463,6 @@ export function page(config = configFromEnv()) {
       font-size: 12px;
       cursor: pointer;
     }
-    #web-search-toggle { flex:0 0 auto; }
     #enter-to-send-toggle { display: none; }
     .tool-toggle:hover,
     .tool-toggle:focus-visible {
@@ -1825,7 +1824,6 @@ export function page(config = configFromEnv()) {
           <div class="composer-actions">
             <span class="composer-left-actions">
               ${config.harnessUiEnabled ? `<span class="active-project-context" id="active-project-context"><button class="tool-toggle project-context-open" id="active-project-open" type="button" aria-pressed="false" title="Choose a project"><span class="kbd" aria-hidden="true">⌁</span><strong id="active-project-name">Project</strong></button><button class="project-context-clear" id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project" hidden>&times;</button></span>` : ""}
-              <button class="tool-toggle" id="web-search-toggle" type="button" aria-pressed="false" title="Use grounded tools when available"><span class="kbd">@</span><span id="web-search-label">Web Search</span></button>
             </span>
             <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
             <span class="voice-controls" id="voice-controls">
@@ -1856,8 +1854,6 @@ export function page(config = configFromEnv()) {
     const newChatEl = document.getElementById("new-chat");
     const accountBarEl = document.getElementById("account-bar");
     const accountMenuEl = document.getElementById("account-menu");
-    const webSearchToggleEl = document.getElementById("web-search-toggle");
-    const webSearchLabelEl = document.getElementById("web-search-label");
     const harnessFormEl = document.getElementById("harness-form");
     const harnessResultEl = document.getElementById("harness-result");
     const harnessRunnerStatusEl = document.getElementById("harness-runner-status");
@@ -1929,7 +1925,7 @@ export function page(config = configFromEnv()) {
     let voiceHardStopTimer = null;
     let voiceMicStream = null;
     let speakReplies = false;
-    let webSearchEnabled = localStorage.getItem("mundusx.chat.toolMode") === "true";
+    localStorage.removeItem("mundusx.chat.toolMode");
     let enterToSendEnabled = true;
     let activeHistoryMenuId = null;
     let activeHistoryId = localStorage.getItem(conversationIdKey);
@@ -2247,7 +2243,6 @@ export function page(config = configFromEnv()) {
 
     renderHistory();
     hydrateNetwork();
-    renderToolMode();
     renderEnterToSend();
     setupVoiceControls();
     setInterval(hydrateNetwork, 15000);
@@ -2288,12 +2283,6 @@ export function page(config = configFromEnv()) {
       } else if (action === "delete") {
         await deleteHistoryItem(item);
       }
-    });
-    webSearchToggleEl?.addEventListener("click", () => {
-      webSearchEnabled = !webSearchEnabled;
-      localStorage.setItem("mundusx.chat.toolMode", String(webSearchEnabled));
-      renderToolMode();
-      promptEl.focus();
     });
     async function loadHarnessRunners() {
       if (!harnessRunnerStatusEl) return [];
@@ -2542,13 +2531,6 @@ export function page(config = configFromEnv()) {
       } else {
         setStatus("standby", "Standby - no ready nodes");
       }
-    }
-
-    function renderToolMode() {
-      if (!webSearchToggleEl || !webSearchLabelEl) return;
-      webSearchToggleEl.classList.toggle("is-active", webSearchEnabled);
-      webSearchToggleEl.setAttribute("aria-pressed", String(webSearchEnabled));
-      webSearchLabelEl.textContent = webSearchEnabled ? "Tools On" : "Web Search";
     }
 
     function renderEnterToSend() {
@@ -2882,7 +2864,7 @@ export function page(config = configFromEnv()) {
       const created = await fetch("/api/chat/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona(), toolMode: webSearchEnabled, conversationId }),
+          body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona(), toolMode: true, conversationId }),
       });
       const submitted = await readApiPayload(created, "chat request failed");
       if (!created.ok) {
@@ -2952,7 +2934,7 @@ export function page(config = configFromEnv()) {
           historyMessages,
           executionMode: "auto",
           voicePersona: selectedAssistantPersona(),
-          toolMode: webSearchEnabled,
+          toolMode: true,
           conversationId,
         }),
       });
@@ -5076,7 +5058,7 @@ export function canLiveStreamChatTurn(body = {}) {
   if (!message || detectClientMetadataTask(message)) {
     return false;
   }
-  const toolMessage = stripToolModePrefix(message);
+  const toolMessage = message;
   if (
     isMultiIntentPlanningCandidate(toolMessage) ||
     fetchMathJobForPrompt(toolMessage) ||
@@ -5477,7 +5459,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   const toolMode = isToolModeEnabled(body);
-  const toolMessage = stripToolModePrefix(message);
+  const toolMessage = message;
   const compoundToolPrompt = isMultiIntentPlanningCandidate(toolMessage);
 
   if (compoundToolPrompt) {
@@ -5992,12 +5974,6 @@ function isToolModeEnabled(body) {
     return value;
   }
   return /^(1|true|yes|on|tools?|web)$/i.test(String(value ?? "").trim());
-}
-
-function stripToolModePrefix(message) {
-  return String(message ?? "")
-    .replace(/^\s*@(?:web(?:\s+search)?|search|tools?)?\s*/i, "")
-    .trim();
 }
 
 export function extractLinearEquation(message) {

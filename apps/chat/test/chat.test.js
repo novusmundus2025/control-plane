@@ -140,14 +140,14 @@ test("renders a usable chat page", () => {
   assert.match(html, /token_usage/);
   assert.match(html, /Ask everyone/);
   assert.doesNotMatch(html, /<span class="kbd">\/<\/span>Commands/);
-  assert.match(html, /id="web-search-toggle"/);
-  assert.match(html, /id="web-search-label"/);
+  assert.doesNotMatch(html, /id="web-search-toggle"/);
+  assert.doesNotMatch(html, /id="web-search-label"/);
   assert.match(html, /id="enter-to-send-toggle"/);
   assert.match(html, /id="enter-to-send-label"/);
-  assert.match(html, /toolMode: webSearchEnabled/);
-  assert.match(html, /function renderToolMode/);
+  assert.match(html, /toolMode: true/);
+  assert.doesNotMatch(html, /function renderToolMode/);
   assert.match(html, /function renderEnterToSend/);
-  assert.match(html, /Tools On/);
+  assert.doesNotMatch(html, /Tools On/);
   assert.match(html, /function createCitationSources/);
   assert.match(html, /function createToolBadge/);
   assert.match(html, /response\.type === "factual_summary"/);
@@ -432,7 +432,8 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(projects, /Files stay on your device|GitHub is optional/);
   assert.doesNotMatch(projects, /Describe the work|name="objective"/);
   assert.match(html, /id="active-project-context"/);
-  assert.match(html, /composer-left-actions[\s\S]*id="active-project-open"[\s\S]*id="web-search-toggle"/);
+  assert.match(html, /composer-left-actions[\s\S]*id="active-project-open"/);
+  assert.doesNotMatch(html, /id="web-search-toggle"/);
   assert.match(html, /id="active-project-name">Project<\/strong>/);
   assert.match(html, /id="project-context-menu"/);
   assert.match(html, /id="project-context-new"[^>]*>\+ New project/);
@@ -3332,10 +3333,10 @@ test("falls back to a normal MundusX job when explicit tool mode has no matching
   assert.equal(result.status, "queued");
 });
 
-test("accepts at-prefixed web search requests for direct tools", async () => {
+test("routes direct tools automatically without an at-prefixed search mode", async () => {
   const calls = [];
   const result = await submitChatJob(
-    { message: "@ weather in Manila", toolMode: true },
+    { message: "weather in Manila", toolMode: true },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     async (url) => {
       calls.push(url);
