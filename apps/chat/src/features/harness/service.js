@@ -82,6 +82,15 @@ export function createHarnessService({ config, gateway } = {}) {
       }
       return payload;
     },
+
+    async cancelTask(taskId, { session = null } = {}) {
+      requireConfiguredGateway(token, taskGateway);
+      const current = await taskGateway.getTask(taskId);
+      if (!current.task || !session || current.task.requested_by_user_id !== session.id) {
+        throw httpError(404, "Harness task is not available to this user");
+      }
+      return taskGateway.cancelTask(taskId);
+    },
   });
 }
 

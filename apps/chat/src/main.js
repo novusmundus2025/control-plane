@@ -13,6 +13,7 @@ import {
   fetchHarnessTask as fetchHarnessTaskFeature,
   submitHarnessTask as submitHarnessTaskFeature,
 } from "./features/harness/service.js";
+import { createMcpHttpController } from "./features/mcp/http-controller.js";
 import { httpError } from "./shared/http-error.js";
 import {
   detectChatQualityFlags,
@@ -127,6 +128,9 @@ export function configFromEnv(env = process.env) {
     operatorToken: (env.MUNDUSX_OPERATOR_TOKEN ?? env.OPENGPU_OPERATOR_TOKEN ?? "").trim(),
     harnessServiceToken: (env.MUNDUSX_HARNESS_SERVICE_TOKEN ?? "").trim(),
     harnessUiEnabled,
+    mcpEnabled: ["1", "true", "yes"].includes(
+      String(env.MUNDUSX_MCP_ENABLED ?? "").trim().toLowerCase(),
+    ),
     harnessTenantId: (env.MUNDUSX_HARNESS_TENANT_ID ?? "").trim(),
     harnessRepositorySourceId: (env.MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID ?? "").trim(),
     harnessBaseRevision: (env.MUNDUSX_HARNESS_BASE_REVISION ?? "").trim().toLowerCase(),
@@ -249,6 +253,25 @@ export function page(config = configFromEnv()) {
       </form>` : ""}
     </section>
   </div>`;
+  const mcpDialog = config.mcpEnabled ? `<div class="projects-overlay" id="mcp-dialog" hidden>
+    <section class="harness-dialog mcp-dialog" role="dialog" aria-modal="true" aria-labelledby="mcp-dialog-title">
+      <button class="dialog-close" id="mcp-dialog-close" type="button" aria-label="Close">&times;</button>
+      <h2 id="mcp-dialog-title">MCP connections</h2>
+      <p class="mcp-intro">Connect Codex, ChatGPT desktop, OpenWebUI, or another MCP client to your MundusX projects and Harness runner.</p>
+      <label class="mcp-endpoint">Server URL<code>${escapeHtml(config.auth?.publicOrigin || "https://chat-u.mundusx.ai")}/mcp</code></label>
+      <form id="mcp-token-form" class="mcp-token-form">
+        <label>Connection name<input name="name" maxlength="80" value="My Codex" required></label>
+        <label>Expires<select name="expires_in_days"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">1 year</option></select></label>
+        <button type="submit">Create access token</button>
+      </form>
+      <section class="mcp-token-once" id="mcp-token-once" hidden>
+        <strong>Copy this token now</strong><p>It is shown once. MundusX stores only its digest.</p>
+        <div class="command-row"><code id="mcp-token-value"></code><button class="copy-command" type="button" data-copy-target="mcp-token-value">Copy</button></div>
+      </section>
+      <section class="mcp-token-list-section"><h3>Active connections</h3><div id="mcp-token-list" class="mcp-token-list"><p class="project-context-empty">Loading…</p></div></section>
+      <p class="mcp-safety">MCP can submit bounded UAT Harness work, inspect evidence, and cancel your tasks. Apply, merge, and deployment still require separate approval.</p>
+    </section>
+  </div>` : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1543,6 +1566,27 @@ export function page(config = configFromEnv()) {
     .sr-only { position: absolute!important; width: 1px!important; height: 1px!important; padding: 0!important; margin: -1px!important; overflow: hidden!important; clip: rect(0,0,0,0)!important; white-space: nowrap!important; border: 0!important; }
     .projects-overlay { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:10px; background:rgba(38,44,62,.42); backdrop-filter:blur(2px); }
     .projects-overlay[hidden] { display:none; }
+    .mcp-dialog { position:relative; width:min(620px,calc(100vw - 32px)); display:grid; gap:16px; }
+    .mcp-dialog .dialog-close { position:absolute; top:14px; right:14px; z-index:2; width:36px; height:36px; display:grid; place-items:center; margin:0; padding:0; border:0; border-radius:9px; color:var(--text); background:transparent; font:inherit; font-size:26px; line-height:1; cursor:pointer; transition:background var(--motion-fast),transform var(--motion-fast); }
+    .mcp-dialog .dialog-close:hover,.mcp-dialog .dialog-close:focus-visible { background:var(--panel-2); outline:0; transform:scale(1.04); }
+    .mcp-dialog h2 { padding-right:44px; }
+    .mcp-dialog h2,.mcp-dialog h3,.mcp-dialog p { margin:0; }
+    .mcp-intro,.mcp-safety { color:var(--muted); line-height:1.5; }
+    .mcp-endpoint { display:grid; gap:7px; font-weight:650; }
+    .mcp-endpoint code,.mcp-token-once { padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel-2); overflow-wrap:anywhere; }
+    .mcp-token-form { display:grid; grid-template-columns:minmax(0,1fr) 120px auto; align-items:end; gap:10px; }
+    .mcp-token-form label { display:grid; gap:6px; font-size:13px; font-weight:650; }
+    .mcp-token-form input,.mcp-token-form select { min-height:42px; border:1px solid var(--line-strong); border-radius:9px; padding:0 11px; color:var(--text); background:var(--panel); font:inherit; }
+    .mcp-token-form button,.mcp-token-row button { min-height:42px; border:0; border-radius:9px; padding:0 14px; color:white; background:var(--blue); font-size:13px; font-weight:700; line-height:1; cursor:pointer; }
+    .mcp-token-once { display:grid; gap:8px; }
+    .mcp-token-once[hidden] { display:none; }
+    .mcp-token-once p,.mcp-token-meta { color:var(--muted); font-size:12px; }
+    .mcp-token-once .command-row { margin:0; }
+    .mcp-token-list-section { display:grid; gap:8px; }
+    .mcp-token-list { display:grid; gap:6px; }
+    .mcp-token-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; }
+    .mcp-token-row>span { display:grid; gap:3px; min-width:0; }
+    .mcp-token-row button { min-height:34px; color:#dc2626; background:color-mix(in srgb,#dc2626 10%,var(--panel)); }
     .app-toast { position:fixed; right:24px; bottom:24px; z-index:80; max-width:min(420px,calc(100vw - 32px)); padding:12px 16px; border:1px solid var(--line-strong); border-radius:12px; color:var(--panel); background:var(--text); box-shadow:0 18px 48px rgba(18,19,28,.24); font-size:14px; font-weight:650; line-height:1.4; opacity:0; transform:translateY(8px); transition:opacity var(--motion-fast),transform var(--motion-fast); }
     .app-toast.is-visible { opacity:1; transform:translateY(0); }
     .app-toast[hidden] { display:none; }
@@ -1771,7 +1815,7 @@ export function page(config = configFromEnv()) {
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
     @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px}.active-project-context strong{max-width:90px}#web-search-label{display:none} }
-    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:10px;right:10px}.project-heading{padding:18px 52px 10px 16px}.projects-dialog .harness-form{padding:8px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%} }
+    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:10px;right:10px}.project-heading{padding:18px 52px 10px 16px}.projects-dialog .harness-form{padding:8px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%}.mcp-token-form{grid-template-columns:1fr}.mcp-token-form button{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
   </style>
 </head>
@@ -1823,6 +1867,7 @@ export function page(config = configFromEnv()) {
           <button class="account-menu-item" type="button">${ICON_PERSONALIZATION}<span>Personalization</span></button>
           <button class="account-menu-item" type="button">${ICON_PROFILE}<span>Profile</span></button>
           <button class="account-menu-item" type="button">${ICON_SETTINGS}<span>Settings</span></button>
+          ${config.mcpEnabled ? `<button class="account-menu-item" id="account-mcp" type="button">${ICON_LAYERS}<span>MCP connections</span></button>` : ""}
           <div class="account-menu-divider"></div>
           <button class="account-menu-item" type="button">${ICON_HELP_RING}<span>Help</span><span class="chevron">${ICON_CHEVRON_RIGHT}</span></button>
           <button class="account-menu-item" id="account-logout" type="button">${ICON_LOGOUT}<span>Log out</span></button>
@@ -1838,6 +1883,7 @@ export function page(config = configFromEnv()) {
       </div>
     </aside>
     ${repositoryDialog}
+    ${mcpDialog}
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
     <main id="chat-main" class="is-empty-chat">
       <canvas class="mesh-canvas" id="mesh-canvas" aria-hidden="true"></canvas>
@@ -1919,6 +1965,13 @@ export function page(config = configFromEnv()) {
     const authMessageEl = document.getElementById("auth-message");
     const authEmailFormEl = document.getElementById("auth-email-form");
     const accountLogoutEl = document.getElementById("account-logout");
+    const accountMcpEl = document.getElementById("account-mcp");
+    const mcpDialogEl = document.getElementById("mcp-dialog");
+    const mcpDialogCloseEl = document.getElementById("mcp-dialog-close");
+    const mcpTokenFormEl = document.getElementById("mcp-token-form");
+    const mcpTokenOnceEl = document.getElementById("mcp-token-once");
+    const mcpTokenValueEl = document.getElementById("mcp-token-value");
+    const mcpTokenListEl = document.getElementById("mcp-token-list");
     const chatsOpenEl = document.getElementById("chats-open");
     const repositoryOpenEl = document.getElementById("repository-open");
     const repositoryOpenMobileEl = document.getElementById("repository-open-mobile");
@@ -2219,13 +2272,117 @@ export function page(config = configFromEnv()) {
       }, 2800);
     }
 
+    function openMcpConnections() {
+      if (!mcpDialogEl) return;
+      accountMenuEl?.classList.remove("is-open");
+      accountBarEl?.setAttribute("aria-expanded", "false");
+      mcpDialogEl.hidden = false;
+      loadMcpTokens();
+    }
+
+    function closeMcpConnections() {
+      if (!mcpDialogEl) return;
+      mcpDialogEl.hidden = true;
+      if (mcpTokenOnceEl) mcpTokenOnceEl.hidden = true;
+      if (mcpTokenValueEl) mcpTokenValueEl.textContent = "";
+    }
+
+    async function loadMcpTokens() {
+      if (!mcpTokenListEl) return;
+      mcpTokenListEl.innerHTML = '<p class="project-context-empty">Loading…</p>';
+      try {
+        const response = await fetch("/api/mcp/tokens");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "MCP connections could not be loaded");
+        renderMcpTokens(payload.tokens || []);
+      } catch (error) {
+        mcpTokenListEl.textContent = error.message;
+      }
+    }
+
+    function renderMcpTokens(tokens) {
+      if (!mcpTokenListEl) return;
+      mcpTokenListEl.replaceChildren();
+      if (!tokens.length) {
+        const empty = document.createElement("p");
+        empty.className = "project-context-empty";
+        empty.textContent = "No active MCP connections.";
+        mcpTokenListEl.append(empty);
+        return;
+      }
+      for (const token of tokens) {
+        const row = document.createElement("div");
+        row.className = "mcp-token-row";
+        const details = document.createElement("span");
+        const name = document.createElement("strong");
+        name.textContent = token.name;
+        const meta = document.createElement("span");
+        meta.className = "mcp-token-meta";
+        meta.textContent = "Expires " + new Date(token.expires_at).toLocaleDateString() + (token.last_used_at ? " · Last used " + new Date(token.last_used_at).toLocaleDateString() : "");
+        details.append(name, meta);
+        const revoke = document.createElement("button");
+        revoke.type = "button";
+        revoke.dataset.revokeMcpToken = token.token_id;
+        revoke.dataset.tokenName = token.name;
+        revoke.textContent = "Revoke";
+        row.append(details, revoke);
+        mcpTokenListEl.append(row);
+      }
+    }
+
+    accountMcpEl?.addEventListener("click", openMcpConnections);
+    mcpDialogCloseEl?.addEventListener("click", closeMcpConnections);
+    mcpTokenFormEl?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submit = mcpTokenFormEl.querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        const data = new FormData(mcpTokenFormEl);
+        const response = await fetch("/api/mcp/tokens", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: data.get("name"), expires_in_days: Number(data.get("expires_in_days")) }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "MCP access token could not be created");
+        mcpTokenValueEl.textContent = payload.token;
+        mcpTokenOnceEl.hidden = false;
+        await loadMcpTokens();
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        submit.disabled = false;
+      }
+    });
+    mcpTokenListEl?.addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-revoke-mcp-token]");
+      if (!button || !window.confirm('Revoke MCP connection "' + button.dataset.tokenName + '"?')) return;
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/mcp/tokens/" + encodeURIComponent(button.dataset.revokeMcpToken), { method: "DELETE" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "MCP connection could not be revoked");
+        showToast("MCP connection revoked");
+        await loadMcpTokens();
+      } catch (error) {
+        showToast(error.message);
+        button.disabled = false;
+      }
+    });
+
     repositoryOpenEl?.addEventListener("click", () => openProjects());
     repositoryOpenMobileEl?.addEventListener("click", () => openProjects());
     repositoryDialogCloseEl?.addEventListener("click", closeProjects);
     document.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape" || repositoryDialogEl?.hidden) return;
-      event.preventDefault();
-      closeProjects();
+      if (event.key !== "Escape") return;
+      if (repositoryDialogEl && !repositoryDialogEl.hidden) {
+        event.preventDefault();
+        closeProjects();
+      }
+      if (mcpDialogEl && !mcpDialogEl.hidden) {
+        event.preventDefault();
+        closeMcpConnections();
+      }
     });
 
     authEmailFormEl?.addEventListener("submit", async (event) => {
@@ -4749,6 +4906,13 @@ export function createServerApp(config = configFromEnv()) {
     readJsonBody,
     sendJson,
   });
+  const handleMcpRequest = createMcpHttpController({
+    enabled: config.mcpEnabled,
+    authStore,
+    harnessService,
+    publicOrigin: config.auth?.publicOrigin,
+    sendJson,
+  });
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -4770,8 +4934,10 @@ export function createServerApp(config = configFromEnv()) {
           control_plane_url: config.controlPlaneUrl,
           model_routing: "control-plane",
           model_override: config.modelOverride || null,
+          mcp: config.mcpEnabled ? "enabled" : "disabled",
         });
       }
+      if (await handleMcpRequest({ request, response, url })) return;
       if (request.method === "OPTIONS" && url.pathname.startsWith("/v1/")) {
         return sendOpenAiJson(response, 204, null);
       }
@@ -4832,6 +4998,23 @@ export function createServerApp(config = configFromEnv()) {
         if (!session) throw httpError(401, "Authentication required");
         await authStore.logout(request, response, session);
         return sendJson(response, 200, { status: "signed_out" });
+      }
+      if (config.mcpEnabled && request.method === "GET" && url.pathname === "/api/mcp/tokens") {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        return sendJson(response, 200, { tokens: await authStore.listMcpTokens(session.id) });
+      }
+      if (config.mcpEnabled && request.method === "POST" && url.pathname === "/api/mcp/tokens") {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        const body = await readJsonBody(request);
+        return sendJson(response, 201, await authStore.createMcpToken(session.id, body));
+      }
+      const mcpTokenMatch = url.pathname.match(/^\/api\/mcp\/tokens\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i);
+      if (config.mcpEnabled && request.method === "DELETE" && mcpTokenMatch) {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        return sendJson(response, 200, await authStore.revokeMcpToken(session.id, mcpTokenMatch[1]));
       }
       if (request.method === "GET" && url.pathname === "/api/github/repositories") {
         const session = request.mundusxSession ?? await authStore.session(request);
