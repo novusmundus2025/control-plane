@@ -14,6 +14,31 @@ export function createHarnessHttpController({
   return async function handleHarnessRequest({ request, response, url }) {
     if (!url.pathname.startsWith("/api/harness/")) return false;
 
+    if (request.method === "POST" && url.pathname === "/api/harness/bootstrap/sessions") {
+      const body = await readJsonBody(request);
+      sendJson(response, 201, await authStore.createHarnessRunnerBootstrap(body));
+      return true;
+    }
+
+    const bootstrapMatch = url.pathname.match(/^\/api\/harness\/bootstrap\/sessions\/([0-9a-f-]{36})\/(status|approval|approve)$/i);
+    if (bootstrapMatch && request.method === "POST" && bootstrapMatch[2] === "status") {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await authStore.harnessRunnerBootstrapStatus(bootstrapMatch[1], body?.bootstrap_secret));
+      return true;
+    }
+    if (bootstrapMatch && request.method === "POST" && bootstrapMatch[2] === "approval") {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await authStore.harnessRunnerBootstrapApproval(bootstrapMatch[1], body?.approval_token));
+      return true;
+    }
+    if (bootstrapMatch && request.method === "POST" && bootstrapMatch[2] === "approve") {
+      const session = await requireSession(request, authStore);
+      authStore.requireCsrf(request, session);
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await authStore.approveHarnessRunnerBootstrap(session.id, bootstrapMatch[1], body?.approval_token));
+      return true;
+    }
+
     if (request.method === "GET" && url.pathname === "/api/harness/runners") {
       const session = await requireSession(request, authStore);
       const runners = await authStore.harnessRunners(session.id);

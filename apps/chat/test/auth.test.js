@@ -154,6 +154,37 @@ test("runner pairing stores only a one-time code digest", async () => {
   assert.equal(result.expires_in_seconds, 600);
 });
 
+test("runner bootstrap stores only independent secret digests bound to a device key", async () => {
+  let inserted;
+  const store = new PostgresAuthStore({ publicOrigin: "https://chat.mundusx.ai" }, { pool: {
+    async query(sql, values) { inserted = { sql, values }; return { rows: [] }; },
+  } });
+  const result = await store.createHarnessRunnerBootstrap({
+    device_id: "runner-device-123",
+    public_key_hex: "ab".repeat(32),
+  });
+  assert.match(result.session_id, /^[0-9a-f-]{36}$/);
+  assert.match(result.bootstrap_secret, /^MXB-[A-Za-z0-9_-]{43}$/);
+  assert.match(result.approval_url, /^https:\/\/chat\.mundusx\.ai\/runner\/connect\?/);
+  assert.match(inserted.sql, /harness_runner_bootstrap_sessions/);
+  assert.equal(inserted.values[1].length, 64);
+  assert.equal(inserted.values[2].length, 64);
+  assert.notEqual(inserted.values[1], inserted.values[2]);
+  assert.doesNotMatch(JSON.stringify(inserted.values), new RegExp(result.bootstrap_secret));
+});
+
+test("runner bootstrap status confirms approval without echoing the one-use secret", async () => {
+  const expires = new Date(Date.now() + 60_000);
+  const store = new PostgresAuthStore({}, { pool: {
+    async query() { return { rows: [{ approved_at: new Date(), consumed_at: null, expires_at: expires }] }; },
+  } });
+  const secret = `MXB-${"A".repeat(43)}`;
+  assert.deepEqual(
+    await store.harnessRunnerBootstrapStatus("123e4567-e89b-42d3-a456-426614174000", secret),
+    { state: "approved" },
+  );
+});
+
 test("runner inventory exposes only bounded lowercase local project slugs", async () => {
   const store = new PostgresAuthStore({}, { pool: {
     async query() {

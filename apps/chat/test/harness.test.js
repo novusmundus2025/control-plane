@@ -187,6 +187,33 @@ test("Harness HTTP controller handles runner inventory as a feature boundary", a
   assert.deepEqual(rendered.payload.projects, ["alpha", "beta"]);
 });
 
+test("Harness HTTP controller exposes unauthenticated runner bootstrap start and status only", async () => {
+  const calls = [];
+  let rendered;
+  const controller = createHarnessHttpController({
+    authStore: {
+      async createHarnessRunnerBootstrap(body) { calls.push(["start", body]); return { session_id: "session" }; },
+      async harnessRunnerBootstrapStatus(id, secret) { calls.push(["status", id, secret]); return { state: "pending" }; },
+    },
+    harnessService: {},
+    readJsonBody: async (request) => request.body,
+    sendJson: (_response, status, payload) => { rendered = { status, payload }; },
+  });
+  await controller({
+    request: { method: "POST", body: { device_id: "device", public_key_hex: "ab".repeat(32) } },
+    response: {},
+    url: new URL("https://chat.mundusx.ai/api/harness/bootstrap/sessions"),
+  });
+  assert.equal(rendered.status, 201);
+  await controller({
+    request: { method: "POST", body: { bootstrap_secret: "secret" } },
+    response: {},
+    url: new URL("https://chat.mundusx.ai/api/harness/bootstrap/sessions/123e4567-e89b-42d3-a456-426614174000/status"),
+  });
+  assert.equal(rendered.status, 200);
+  assert.deepEqual(calls.map((call) => call[0]), ["start", "status"]);
+});
+
 test("Harness feature boundaries do not depend on the legacy composition shell", () => {
   const sourceRoot = resolve(dirname(fileURLToPath(import.meta.url)), "../src");
   const boundaryFiles = [
