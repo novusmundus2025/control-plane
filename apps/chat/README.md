@@ -152,6 +152,16 @@ Railway provides `PORT`; the app reads it automatically.
 
 ## Current Flow
 
+Runtime assistant skills are application configuration under `apps/chat/skills/`.
+`manifest.json` is the authoritative enablement and metadata registry; each skill's
+Markdown file supplies its private model instructions. The service validates and
+loads the registry at startup, so repository changes require a restart or redeploy.
+
+The unauthenticated `/skills` management preview lists registry metadata and can
+validate browser-local drafts. It intentionally cannot read current private skill
+content or publish global changes. Server-side publishing remains disabled until an
+authenticated, audited workflow is implemented.
+
 1. Browser posts a user message to `POST /api/chat/jobs`.
 2. Simple polynomial indefinite integrals are answered directly through the math tool.
 3. Obvious weather questions are answered directly through `wttr.in`; if Redis/Valkey is configured the response is cached for 2 hours.

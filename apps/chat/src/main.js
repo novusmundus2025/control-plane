@@ -14,6 +14,8 @@ import {
   submitHarnessTask as submitHarnessTaskFeature,
 } from "./features/harness/service.js";
 import { createMcpHttpController } from "./features/mcp/http-controller.js";
+import { renderSkillsPage } from "./features/skills/page.js";
+import { createSkillRegistry } from "./features/skills/registry.js";
 import { httpError } from "./shared/http-error.js";
 import {
   detectChatQualityFlags,
@@ -58,18 +60,19 @@ const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LOGO_PATH = resolve(MODULE_DIR, "../public/mundusx-logo.png");
 const MARIE_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/marie-persona.md");
 const ATLAS_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/atlas-persona.md");
-const SKILLS_DIR = resolve(MODULE_DIR, "../../../docs/skills");
+const SKILLS_DIR = resolve(MODULE_DIR, "../skills");
+const SKILL_REGISTRY = createSkillRegistry({ skillsDir: SKILLS_DIR });
 const CHAT_SKILLS = {
-  router: loadMarkdownSkill("router.md", "# Router Skill\nRoute requests conservatively."),
-  formatter: loadMarkdownSkill("formatter.md", "# Formatter Skill\nAnswer directly and cleanly."),
-  personaAtlas: loadMarkdownSkill("persona-atlas.md", "# Atlas Persona Skill\nMy name is Atlas."),
-  translation: loadMarkdownSkill("translation.md", "# Translation Skill\nReturn only the translated text."),
-  code: loadMarkdownSkill("code.md", "# Code Generation Skill\nGive brief useful context, then complete code."),
-  math: loadMarkdownSkill("math.md", "# Math Skill\nReturn the final answer first."),
-  weather: loadMarkdownSkill("weather.md", "# Weather Skill\nUse the weather tool for weather."),
-  facts: loadMarkdownSkill("facts.md", "# Facts Skill\nUse grounded factual sources."),
-  chunkPlanner: loadMarkdownSkill("chunk-planner.md", "# Chunk Planner Skill\nChunk only when useful."),
-  verifier: loadMarkdownSkill("verifier.md", "# Verifier Skill\nFlag malformed output."),
+  router: SKILL_REGISTRY.content("router", "# Router Skill\nRoute requests conservatively."),
+  formatter: SKILL_REGISTRY.content("formatter", "# Formatter Skill\nAnswer directly and cleanly."),
+  personaAtlas: SKILL_REGISTRY.content("persona-atlas", "# Atlas Persona Skill\nMy name is Atlas."),
+  translation: SKILL_REGISTRY.content("translation", "# Translation Skill\nReturn only the translated text."),
+  code: SKILL_REGISTRY.content("code", "# Code Generation Skill\nGive brief useful context, then complete code."),
+  math: SKILL_REGISTRY.content("math", "# Math Skill\nReturn the final answer first."),
+  weather: SKILL_REGISTRY.content("weather", "# Weather Skill\nUse the weather tool for weather."),
+  facts: SKILL_REGISTRY.content("facts", "# Facts Skill\nUse grounded factual sources."),
+  chunkPlanner: SKILL_REGISTRY.content("chunk-planner", "# Chunk Planner Skill\nChunk only when useful."),
+  verifier: SKILL_REGISTRY.content("verifier", "# Verifier Skill\nFlag malformed output."),
 };
 const loggedChatJobs = new Set();
 const MARIE_PERSONA = loadPersona(
@@ -720,6 +723,8 @@ export function page(config = configFromEnv()) {
       color: var(--text);
       font-size: 14px;
       text-align: left;
+      text-decoration: none;
+      cursor: pointer;
       transition: background var(--motion-fast);
     }
     .account-menu-item:hover,
@@ -1195,6 +1200,7 @@ export function page(config = configFromEnv()) {
       background: transparent;
       color: #aeb7c8;
       cursor: pointer;
+      text-decoration: none;
       padding: 5px 7px;
       font: inherit;
       font-size: 12px;
@@ -1867,6 +1873,7 @@ export function page(config = configFromEnv()) {
           <button class="account-menu-item" type="button">${ICON_PERSONALIZATION}<span>Personalization</span></button>
           <button class="account-menu-item" type="button">${ICON_PROFILE}<span>Profile</span></button>
           <button class="account-menu-item" type="button">${ICON_SETTINGS}<span>Settings</span></button>
+          <a class="account-menu-item" href="/skills">${ICON_LAYERS}<span>Skills</span></a>
           ${config.mcpEnabled ? `<button class="account-menu-item" id="account-mcp" type="button">${ICON_LAYERS}<span>MCP connections</span></button>` : ""}
           <div class="account-menu-divider"></div>
           <button class="account-menu-item" type="button">${ICON_HELP_RING}<span>Help</span><span class="chevron">${ICON_CHEVRON_RIGHT}</span></button>
@@ -4918,6 +4925,9 @@ export function createServerApp(config = configFromEnv()) {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
       if (request.method === "GET" && url.pathname === "/") {
         return sendHtml(response, page(config));
+      }
+      if (request.method === "GET" && url.pathname === "/skills") {
+        return sendHtml(response, renderSkillsPage({ catalog: SKILL_REGISTRY.catalog(), version: SKILL_REGISTRY.version }));
       }
       if (request.method === "GET" && url.pathname === "/assets/mundusx-logo.png") {
         return sendPng(response, await readFile(LOGO_PATH));
@@ -10615,7 +10625,7 @@ export function selectChatSkills(message = "") {
     skills.push({ name: "verifier.md", content: CHAT_SKILLS.verifier });
   }
 
-  return dedupeSkills(skills);
+  return dedupeSkills(skills.filter((skill) => skill.content));
 }
 
 function looksLikeWeatherRequest(lower) {
@@ -10930,14 +10940,6 @@ function compactRelevantContent(value, maxChars) {
 function loadPersona(path, fallback) {
   try {
     return readFileSync(path, "utf8").trim();
-  } catch {
-    return fallback;
-  }
-}
-
-function loadMarkdownSkill(fileName, fallback) {
-  try {
-    return readFileSync(resolve(SKILLS_DIR, fileName), "utf8").trim();
   } catch {
     return fallback;
   }

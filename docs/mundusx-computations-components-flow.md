@@ -521,7 +521,7 @@ The recommended next layer is a Markdown skill system plus deterministic router.
 Suggested structure:
 
 ```text
-docs/skills/
+apps/chat/skills/
   router.md
   math.md
   code.md
