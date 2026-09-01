@@ -139,7 +139,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEATHER_TTL_SECONDS` | `7200` | Weather cache TTL; default is 2 hours |
 | `MUNDUSX_FACTUAL_SUMMARY_URL` | `https://en.wikipedia.org/api/rest_v1/page/summary` | Factual summary API used before LLM jobs for obvious history/who/what questions |
 | `MUNDUSX_WIKIDATA_ENTITY_URL` | `https://www.wikidata.org/wiki/Special:EntityData` | Wikidata entity API used for current office-holder questions |
-| `MUNDUSX_WEB_SEARCH_URL` | `https://api.search.brave.com/res/v1/web/search` | Brave Search API origin used for general fact-grounding when Web Search/tool mode is on |
+| `MUNDUSX_WEB_SEARCH_URL` | `https://api.search.brave.com/res/v1/web/search` | Brave Search API origin used for automatic general fact-grounding when a request needs current or specific external facts |
 | `MUNDUSX_WEB_SEARCH_API_KEY` | unset | Brave Search API key; the web search tool silently declines (falls through to the LLM) without it |
 | `MUNDUSX_WEB_SEARCH_MAX_RESULTS` | `4` | Number of search snippets fetched and injected into the grounded prompt |
 | `MUNDUSX_WEB_SEARCH_TTL_SECONDS` | `1800` | Web search cache TTL when `MUNDUSX_WEATHER_CACHE_URL`/`VALKEY_URL`/`REDIS_URL` is configured |
@@ -155,7 +155,7 @@ Railway provides `PORT`; the app reads it automatically.
 3. Obvious weather questions are answered directly through `wttr.in`; if Redis/Valkey is configured the response is cached for 2 hours.
 4. Current office-holder questions such as "current president of USA" are answered through Wikidata before using local LLM jobs.
 5. Obvious factual history/who/what questions are answered from the factual summary source before using local LLM jobs.
-6. When Web Search/tool mode is on, a deterministic grounding gate (`needsGrounding`) decides whether a message looks like it needs current or specific facts (dates, counts, prices, named entities, "who/what/when/how many," etc.) versus conversational or creative requests that never trigger a search. Gated requests query the Brave Search API for a handful of snippets, cached in Redis/Valkey when configured, with an optional daily call budget as a cost circuit breaker.
+6. A deterministic grounding gate (`needsGrounding`) automatically decides whether a message looks like it needs current or specific facts (dates, counts, prices, named entities, "who/what/when/how many," etc.) versus conversational or creative requests that never trigger a search. Gated requests query the Brave Search API for a handful of snippets, cached in Redis/Valkey when configured, with an optional daily call budget as a cost circuit breaker. Chat-U exposes no search-mode toggle or `@websearch` command.
 7. Retrieved snippets are injected into the job's `system_prompt` as a numbered, citable source list with an instruction to answer only from those sources and cite them — the routed MundusX job (any contributor node/model) then only has to synthesize prose from already-verified facts, not decide when or what to search. The response is tagged `tool: "web_search"` with a `sources` list for citation display; a lightweight overlap/citation check logs (but does not yet block) answers that don't appear to use the provided sources.
 8. Other requests are submitted as routed MundusX jobs to `POST /v1/jobs` with `execution_mode=auto`.
 9. Control plane decides whether the request is single-job or decomposed across graph chunks.
