@@ -434,6 +434,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   const mainHeader = html.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   assert.match(html, /id="repository-open"[^>]*>[\s\S]*?<span>Projects<\/span>/);
   assert.match(workspaceNav, /Chats[\s\S]*id="repository-open"[\s\S]*Projects/);
+  assert.match(html, /class="account-menu-item" href="\/skills"[\s\S]*>Skills<\/span>/);
   assert.doesNotMatch(workspaceNav, />Agents<|>Nodes</);
   assert.doesNotMatch(mainHeader, /id="repository-open"|>Projects<\/button>/);
   assert.match(mainHeader, /id="repository-open-mobile"[^>]*aria-label="Open Projects"/);

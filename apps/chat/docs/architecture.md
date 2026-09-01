@@ -38,6 +38,13 @@ MCP is a second thin inbound adapter:
 - `features/mcp/server.js` publishes bounded user-scoped tools and translates them into existing Harness and repository services.
 - MCP never owns task state, approvals, repository policy, or runner execution.
 
+Skills are application-owned runtime configuration:
+
+- `apps/chat/skills/manifest.json` defines stable skill IDs, metadata, enablement, and files.
+- `features/skills/registry.js` validates and loads private Markdown instructions at process startup.
+- `features/skills/page.js` renders the no-auth draft and validation preview without exposing or mutating server-side instructions.
+- Publishing remains repository-controlled until authenticated, audited skill administration is added.
+
 ## Architecture rules
 
 - Preserve a single deployable service; do not introduce microservices for internal code organization.
