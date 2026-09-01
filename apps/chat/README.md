@@ -93,8 +93,10 @@ task remains in `created` state until an operator separately approves UAT execut
 pair their local runner with a hashed, one-use, ten-minute code; no user UUID or GitHub token is
 copied into runner configuration. The launcher cannot approve merge or deployment.
 
-The **Projects** panel contains the local runner setup: install the runner, pair the device, and
-verify that it is ready. GitHub CLI authentication is optional until the user asks to publish. The
+The **Projects** panel presents local runner setup as Install, Connect, and Ready stages. The browser
+records only the user's installation acknowledgement; after a pairing code is created it polls the
+server for paired and heartbeat-ready states instead of claiming it can verify a native download.
+GitHub CLI authentication is optional until the user asks to publish. The
 optional publication commands are `gh auth login --hostname github.com --git-protocol https --web`
 and `gh auth setup-git`; MundusX Chat never provides a token input. Pairing does not require GitHub.
 The runner is a native Rust executable, not a project technology stack. It uses Git for workspace
