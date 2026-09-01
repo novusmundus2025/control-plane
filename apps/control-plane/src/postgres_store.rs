@@ -215,7 +215,23 @@ impl PostgresStore {
         let mut transaction = client
             .transaction()
             .map_err(|error| format!("postgres pairing transaction failed: {error}"))?;
-        let row = transaction
+        let bootstrap_row = transaction
+            .query_opt(
+                r#"update public.harness_runner_bootstrap_sessions
+set consumed_at = coalesce(consumed_at, now()),
+    runner_id = coalesce(runner_id, $2)
+where bootstrap_hash = $1
+  and approved_at is not null
+  and user_id is not null
+  and public_key_hex = $3
+  and expires_at > now()
+  and (consumed_at is null or runner_id = $2)
+returning user_id::text"#,
+                &[&pairing_hash, &runner_id, &public_key_hex],
+            )
+            .map_err(|error| format!("postgres bootstrap lookup failed: {error}"))?;
+        let legacy_row = if bootstrap_row.is_none() {
+            transaction
             .query_opt(
                 r#"update public.harness_runner_pairings
 set consumed_at = coalesce(consumed_at, now()),
@@ -227,8 +243,11 @@ where pairing_hash = $1
 returning user_id::text"#,
                 &[&pairing_hash, &runner_id, &public_key_hex],
             )
-            .map_err(|error| format!("postgres pairing lookup failed: {error}"))?;
-        let Some(row) = row else {
+            .map_err(|error| format!("postgres pairing lookup failed: {error}"))?
+        } else {
+            None
+        };
+        let Some(row) = bootstrap_row.or(legacy_row) else {
             return Err(
                 "HARNESS_PAIRING_INVALID: pairing code is expired, consumed, or belongs to another runner"
                     .to_string(),
@@ -241,6 +260,12 @@ returning user_id::text"#,
                 &[],
             )
             .map_err(|error| format!("postgres pairing cleanup failed: {error}"))?;
+        transaction
+            .execute(
+                "delete from public.harness_runner_bootstrap_sessions where expires_at < now() - interval '1 day'",
+                &[],
+            )
+            .map_err(|error| format!("postgres bootstrap cleanup failed: {error}"))?;
         transaction
             .commit()
             .map_err(|error| format!("postgres pairing commit failed: {error}"))?;
