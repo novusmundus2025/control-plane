@@ -440,6 +440,11 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /loadStoredProjectContext\(namespace\)/);
   assert.match(html, /Array\.isArray\(payload\.projects\)/);
   assert.match(html, /button\.dataset\.projectSlug = slug/);
+  assert.match(html, /removeButton\.dataset\.removeProjectSlug = slug/);
+  assert.match(html, /Remove .* from Projects\? Local files will not be deleted/);
+  assert.match(html, /Project .* removed\. Local files were kept/);
+  assert.match(html, /removedProjectsKey = "mundusx\.chat\.removedProjects\.v1:" \+ namespace/);
+  assert.match(html, /if \(activeProject\?\.slug === slug\) setActiveProject\(null\)/);
   assert.match(html, /activeProjectNameEl\.textContent = activeProject\?\.slug \|\| "Project"/);
   assert.match(html, /activeProjectOpenEl\.setAttribute\("aria-pressed"/);
   assert.match(html, /Ask Atlas to work on/);
