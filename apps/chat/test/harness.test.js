@@ -90,7 +90,7 @@ test("Harness service derives authority from the authenticated grant", async () 
   assert.equal(submitted.tenant_id, "tenant-authorized");
   assert.equal(submitted.repository_source_id, "github:mundusx/authorized");
   assert.equal(submitted.requested_by_user_id, session.id);
-  assert.equal(submitted.submitted_via, "chat-u");
+  assert.equal(submitted.submitted_via, "mundusx-chat");
 });
 
 test("Harness service exposes task evidence only to its requesting user", async () => {
@@ -150,7 +150,7 @@ test("control-plane Harness gateway owns transport details", async () => {
   const payload = await gateway.createTask({ objective: "contract" });
   assert.equal(request.url, "https://uat.mundusx.ai/internal/harness/tasks");
   assert.equal(request.options.headers.Authorization, "Bearer service-token");
-  assert.equal(request.options.headers["X-MundusX-Actor"], "chat-u");
+  assert.equal(request.options.headers["X-MundusX-Actor"], "mundusx-chat");
   assert.equal(payload.task_id, "htask_gateway");
 
   await gateway.cancelTask("htask_gateway");

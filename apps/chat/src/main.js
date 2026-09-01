@@ -258,7 +258,7 @@ export function page(config = configFromEnv()) {
       <button class="dialog-close" id="mcp-dialog-close" type="button" aria-label="Close">&times;</button>
       <h2 id="mcp-dialog-title">MCP connections</h2>
       <p class="mcp-intro">Connect Codex, ChatGPT desktop, OpenWebUI, or another MCP client to your MundusX projects and Harness runner.</p>
-      <label class="mcp-endpoint">Server URL<code>${escapeHtml(config.auth?.publicOrigin || "https://chat-u.mundusx.ai")}/mcp</code></label>
+      <label class="mcp-endpoint">Server URL<code>${escapeHtml(config.auth?.publicOrigin || "https://chat.mundusx.ai")}/mcp</code></label>
       <form id="mcp-token-form" class="mcp-token-form">
         <label>Connection name<input name="name" maxlength="80" value="My Codex" required></label>
         <label>Expires<select name="expires_in_days"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">1 year</option></select></label>
@@ -5145,11 +5145,11 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
 
   const status = String(result?.status ?? "").toLowerCase();
   if (status !== "completed") {
-    throw httpError(502, result?.error || `Chat-U job ended with status ${status || "unknown"}`);
+    throw httpError(502, result?.error || `MundusX Chat job ended with status ${status || "unknown"}`);
   }
   const content = String(result?.output ?? "").trim();
   if (!content) {
-    throw httpError(502, "Chat-U completed without assistant output");
+    throw httpError(502, "MundusX Chat completed without assistant output");
   }
 
   const usage = result?.progress?.token_usage ?? {};

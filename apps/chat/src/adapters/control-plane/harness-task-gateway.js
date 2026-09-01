@@ -4,7 +4,7 @@ export function createControlPlaneHarnessTaskGateway({
   controlPlaneUrl,
   token,
   fetchImpl = fetch,
-  actor = "chat-u",
+  actor = "mundusx-chat",
 }) {
   if (typeof fetchImpl !== "function") {
     throw new TypeError("fetchImpl must be a function");

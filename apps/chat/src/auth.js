@@ -108,7 +108,7 @@ export function authConfigFromEnv(env = process.env) {
   return {
     required: !["0", "false", "no"].includes(String(env.MUNDUSX_CHAT_AUTH_REQUIRED ?? "true").toLowerCase()),
     databaseUrl: String(env.MUNDUSX_DATABASE_POOL_URL ?? env.DATABASE_URL ?? "").trim(),
-    publicOrigin: String(env.MUNDUSX_PUBLIC_ORIGIN ?? "https://chat-u.mundusx.ai").replace(/\/$/, ""),
+    publicOrigin: String(env.MUNDUSX_PUBLIC_ORIGIN ?? "https://chat.mundusx.ai").replace(/\/$/, ""),
     githubClientId: String(env.MUNDUSX_GITHUB_CLIENT_ID ?? "").trim(),
     githubClientSecret: String(env.MUNDUSX_GITHUB_CLIENT_SECRET ?? "").trim(),
     encryptionKey: encryptionKey(String(env.MUNDUSX_AUTH_ENCRYPTION_KEY ?? "").trim()),
