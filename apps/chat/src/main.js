@@ -6,6 +6,14 @@ import { dirname, resolve } from "node:path";
 import { connect as createTlsConnection } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PostgresAuthStore, authConfigFromEnv, csrfToken } from "./auth.js";
+import { createHarnessHttpController } from "./features/harness/http-controller.js";
+import { localProjectAuthority } from "./features/harness/project-policy.js";
+import {
+  createHarnessService,
+  fetchHarnessTask as fetchHarnessTaskFeature,
+  submitHarnessTask as submitHarnessTaskFeature,
+} from "./features/harness/service.js";
+import { httpError } from "./shared/http-error.js";
 import {
   detectChatQualityFlags,
   detectCompleteCodeQualityFlags,
@@ -13,6 +21,8 @@ import {
   detectStructuredOutputQualityFlags,
   normalizeCompleteCodeOutput,
 } from "./chat-quality.js";
+
+export { localProjectAuthority };
 
 const DEFAULT_CONTROL_PLANE_URL = "https://uat.mundusx.ai";
 const DEFAULT_TIMEOUT_SECONDS = 90;
@@ -165,6 +175,25 @@ export function configFromEnv(env = process.env) {
       DEFAULT_WEB_SEARCH_DAILY_BUDGET,
     ),
   };
+}
+
+export async function submitHarnessTask(
+  body,
+  config = configFromEnv(),
+  fetchImpl = fetch,
+  session = null,
+  authority = null,
+) {
+  return submitHarnessTaskFeature(body, config, fetchImpl, session, authority);
+}
+
+export async function fetchHarnessTask(
+  taskId,
+  config = configFromEnv(),
+  fetchImpl = fetch,
+  session = null,
+) {
+  return fetchHarnessTaskFeature(taskId, config, fetchImpl, session);
 }
 
 export function normalizeAssistantDisplayText(text) {
@@ -4668,6 +4697,13 @@ export function page(config = configFromEnv()) {
 
 export function createServerApp(config = configFromEnv()) {
   const authStore = config.authStore ?? new PostgresAuthStore(config.auth ?? authConfigFromEnv());
+  const harnessService = createHarnessService({ config });
+  const handleHarnessRequest = createHarnessHttpController({
+    authStore,
+    harnessService,
+    readJsonBody,
+    sendJson,
+  });
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -4771,36 +4807,7 @@ export function createServerApp(config = configFromEnv()) {
         const result = await authStore.repositoryContents(session.id, githubContentsMatch[1], url.searchParams.get("path") || "", url.searchParams.get("ref") || "");
         return sendJson(response, 200, result);
       }
-      if (request.method === "GET" && url.pathname === "/api/harness/runners") {
-        const session = request.mundusxSession ?? await authStore.session(request);
-        if (!session) throw httpError(401, "Authentication required");
-        const runners = await authStore.harnessRunners(session.id);
-        const projects = Array.from(new Set(runners.flatMap((runner) => runner.local_projects || []))).sort().slice(0, 100);
-        return sendJson(response, 200, { runners, projects });
-      }
-      if (request.method === "POST" && url.pathname === "/api/harness/runners/pairing") {
-        const session = request.mundusxSession ?? await authStore.session(request);
-        if (!session) throw httpError(401, "Authentication required");
-        authStore.requireCsrf(request, session);
-        return sendJson(response, 201, await authStore.createHarnessRunnerPairing(session.id));
-      }
-      if (request.method === "POST" && url.pathname === "/api/harness/tasks") {
-        const body = await readJsonBody(request);
-        const session = request.mundusxSession ?? await authStore.session(request);
-        if (!session) throw httpError(401, "Authentication is required for Harness work");
-        authStore.requireCsrf(request, session);
-        const authority = body?.project_slug
-          ? localProjectAuthority(session, body)
-          : await authStore.harnessAuthority(session.id, body?.repository_id, String(body?.execution_mode || "sandbox"), body?.allowed_operations);
-        const result = await submitHarnessTask(body, config, fetch, session, authority);
-        return sendJson(response, 201, result);
-      }
-      const harnessTaskMatch = url.pathname.match(/^\/api\/harness\/tasks\/(htask_[A-Za-z0-9_-]+)$/);
-      if (request.method === "GET" && harnessTaskMatch) {
-        const session = request.mundusxSession ?? await authStore.session(request);
-        if (!session) throw httpError(401, "Authentication required");
-        return sendJson(response, 200, await fetchHarnessTask(harnessTaskMatch[1], config, fetch, session));
-      }
+      if (await handleHarnessRequest({ request, response, url })) return;
       if (request.method === "GET" && url.pathname.startsWith("/api/conversations/") && url.pathname.endsWith("/messages")) {
         const conversationId = decodeURIComponent(
           url.pathname.slice("/api/conversations/".length, -"/messages".length),
@@ -4847,128 +4854,6 @@ export function createServerApp(config = configFromEnv()) {
       return sendJson(response, status, { error: error.message ?? "request failed" });
     }
   });
-}
-
-const CHAT_HARNESS_OPERATIONS = new Set([
-  "repository.status",
-  "repository.diff",
-  "file.read",
-  "file.search",
-  "patch.apply",
-  "validation.run",
-]);
-
-export function localProjectAuthority(session, body) {
-  const slug = String(body?.project_slug || "").trim();
-  if (!/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) || slug.length > 80) {
-    throw httpError(400, "project_slug must be a lowercase hyphenated name");
-  }
-  const template = String(body?.project_template || "generic");
-  if (!new Set(["generic", "java-maven"]).has(template)) {
-    throw httpError(400, "project_template is not supported");
-  }
-  const prefixes = template === "java-maven"
-    ? ["src", "pom.xml", "README.md", ".gitignore", ".mundusx"]
-    : ["src", "tests", "docs", "README.md", ".gitignore", ".mundusx", "package.json", "package-lock.json", "pnpm-lock.yaml", "yarn.lock", "Cargo.toml", "Cargo.lock", "pyproject.toml", "requirements.txt", "uv.lock", "poetry.lock", "go.mod", "go.sum", "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "Makefile"];
-  return {
-    tenant_id: `owner:${session.id}`,
-    repository_source_id: `local-project:${session.id}:${template}:${slug}`,
-    allowed_path_prefixes: prefixes,
-    validation_profiles: [template === "java-maven" ? "java-maven-test" : "repository-default"],
-    base_revision: "0".repeat(40),
-    allowed_execution_modes: ["sandbox", "hybrid"],
-  };
-}
-
-export async function submitHarnessTask(body, config = configFromEnv(), fetchImpl = fetch, session = null, authority = null) {
-  if (!config.harnessUiEnabled) throw httpError(404, "Coding Harness is not enabled");
-  const token = config.harnessServiceToken || config.operatorToken;
-  if (!token) throw httpError(503, "Coding Harness service authentication is not configured");
-  const grant = !authority && session
-    ? session.harness_grants?.find((candidate) => candidate.grant_id === body?.grant_id)
-    : null;
-  if (session && !grant && !authority) throw httpError(403, "No repository authority permits this Harness request");
-  const tenantId = authority?.tenant_id ?? grant?.tenant_id ?? config.harnessTenantId;
-  const repositorySourceId = authority?.repository_source_id ?? grant?.repository_source_id ?? config.harnessRepositorySourceId;
-  const allowedPathPrefixes = authority?.allowed_path_prefixes ?? grant?.allowed_path_prefixes ?? config.harnessAllowedPathPrefixes?.split(",").map((value) => value.trim()).filter(Boolean);
-  const validationProfiles = authority?.validation_profiles ?? grant?.validation_profiles ?? config.harnessValidationProfiles?.split(",").map((value) => value.trim()).filter(Boolean);
-  const baseRevision = authority?.base_revision ?? config.harnessBaseRevision;
-  if (
-    !tenantId ||
-    !repositorySourceId ||
-    !/^[0-9a-f]{40}$/.test(baseRevision) ||
-    !allowedPathPrefixes?.length ||
-    !validationProfiles?.length
-  ) {
-    throw httpError(503, "Coding Harness project boundary is incomplete");
-  }
-  const objective = String(body?.objective ?? "").trim();
-  if (!objective || objective.length > 4000) {
-    throw httpError(400, "objective must contain 1 to 4000 characters");
-  }
-  const executionMode = String(body?.execution_mode ?? "sandbox");
-  if (!["sandbox", "hybrid"].includes(executionMode)) {
-    throw httpError(400, "execution_mode must be sandbox or hybrid");
-  }
-  if ((authority || grant) && !(authority?.allowed_execution_modes ?? grant?.allowed_execution_modes)?.includes(executionMode)) {
-    throw httpError(403, "The repository grant does not permit this execution mode");
-  }
-  const allowedOperations = Array.isArray(body?.allowed_operations)
-    ? [...new Set(body.allowed_operations.map(String))]
-    : [];
-  if (
-    allowedOperations.length === 0 ||
-    allowedOperations.some((operation) => !CHAT_HARNESS_OPERATIONS.has(operation))
-  ) {
-    throw httpError(400, "allowed_operations contains an unavailable tool");
-  }
-  const upstream = await fetchImpl(`${config.controlPlaneUrl}/internal/harness/tasks`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "X-MundusX-Actor": "chat-u",
-    },
-    body: JSON.stringify({
-      harness_contract_version: "1.0",
-      tenant_id: tenantId,
-      repository_source_id: repositorySourceId,
-      objective,
-      base_revision: baseRevision,
-      allowed_path_prefixes: allowedPathPrefixes,
-      execution_mode: executionMode,
-      allowed_operations: allowedOperations,
-      validation_profiles: validationProfiles,
-      requested_by_user_id: session?.id ?? null,
-      submitted_via: session ? "chat-u" : "service",
-    }),
-  });
-  const text = await upstream.text();
-  let payload;
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = {};
-  }
-  if (!upstream.ok) {
-    throw httpError(upstream.status, payload.error || `control plane returned ${upstream.status}`);
-  }
-  if (!payload.task_id) throw httpError(502, "control plane did not return a Harness task id");
-  return { task_id: payload.task_id, state: payload.state ?? "created", approval: "required" };
-}
-
-export async function fetchHarnessTask(taskId, config = configFromEnv(), fetchImpl = fetch, session = null) {
-  const token = config.harnessServiceToken || config.operatorToken;
-  if (!token) throw httpError(503, "Coding Harness service authentication is not configured");
-  const upstream = await fetchImpl(`${config.controlPlaneUrl}/internal/harness/tasks/${encodeURIComponent(taskId)}`, {
-    headers: { Authorization: `Bearer ${token}`, "X-MundusX-Actor": "chat-u" },
-  });
-  const payload = await upstream.json().catch(() => ({}));
-  if (!upstream.ok) throw httpError(upstream.status, payload.error || `control plane returned ${upstream.status}`);
-  if (!payload.task || (session && payload.task.requested_by_user_id !== session.id)) {
-    throw httpError(404, "Harness task is not available to this user");
-  }
-  return payload;
 }
 
 export async function submitChatTurn(body, config = configFromEnv(), fetchImpl = fetch) {
@@ -11738,12 +11623,6 @@ function normalizeOrigin(value) {
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-}
-
-function httpError(statusCode, message) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
 }
 
 function delay(ms) {

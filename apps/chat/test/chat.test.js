@@ -25,10 +25,8 @@ import {
   inferChatRequestTimeoutSeconds,
   isFocusedQuotedRequest,
   isWeatherResourceRequest,
-  localProjectAuthority,
   normalizeWeatherWordTypos,
   fetchChatConversation,
-  fetchHarnessTask,
   fetchNetworkSummary,
   needsGrounding,
   normalizeAssistantDisplayText,
@@ -45,7 +43,6 @@ import {
   relayControlPlaneOpenAiStream,
   submitChatJob,
   submitChatTurn,
-  submitHarnessTask,
   submitOpenAiChatCompletion,
   streamOpenAiChatCompletion,
   streamChatTurn,
@@ -477,123 +474,6 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(projects, /Publishing to GitHub is a separate action/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-open"/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-form"/);
-});
-
-test("derives a bounded local project authority from a lowercase slug", () => {
-  const session = { id: "ad36260d-40bc-44a9-b637-d03093e1f310" };
-  const authority = localProjectAuthority(session, {
-    project_slug: "my-java-program",
-    project_template: "java-maven",
-  });
-
-  assert.equal(authority.tenant_id, `owner:${session.id}`);
-  assert.equal(authority.repository_source_id, `local-project:${session.id}:java-maven:my-java-program`);
-  assert.equal(authority.base_revision, "0".repeat(40));
-  assert.deepEqual(authority.validation_profiles, ["java-maven-test"]);
-  assert.ok(authority.allowed_path_prefixes.includes("src"));
-  assert.throws(() => localProjectAuthority(session, { project_slug: "My Project" }), /lowercase hyphenated/);
-});
-
-test("submits Harness work only inside the configured repository boundary", async () => {
-  let upstreamRequest;
-  const config = configFromEnv({
-    MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
-    MUNDUSX_HARNESS_UI_ENABLED: "true",
-    MUNDUSX_HARNESS_SERVICE_TOKEN: "server-secret",
-    MUNDUSX_HARNESS_TENANT_ID: "ehda-uat",
-    MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID: "github:mundusx/control-plane",
-    MUNDUSX_HARNESS_BASE_REVISION: "a".repeat(40),
-    MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES: "apps/control-plane,docs",
-    MUNDUSX_HARNESS_VALIDATION_PROFILES: "control-plane-tests",
-  });
-  const result = await submitHarnessTask(
-    {
-      objective: "Add a bounded test",
-      repository_source_id: "github:attacker/override",
-      allowed_operations: ["file.read", "validation.run"],
-      execution_mode: "sandbox",
-    },
-    config,
-    async (url, options) => {
-      upstreamRequest = { url, options };
-      return jsonResponse({ task_id: "htask_abc", state: "created" });
-    },
-  );
-
-  const submitted = JSON.parse(upstreamRequest.options.body);
-  assert.equal(upstreamRequest.url, "https://uat.mundusx.ai/internal/harness/tasks");
-  assert.equal(upstreamRequest.options.headers.Authorization, "Bearer server-secret");
-  assert.equal(submitted.repository_source_id, "github:mundusx/control-plane");
-  assert.equal(submitted.tenant_id, "ehda-uat");
-  assert.deepEqual(submitted.allowed_path_prefixes, ["apps/control-plane", "docs"]);
-  assert.deepEqual(result, { task_id: "htask_abc", state: "created", approval: "required" });
-});
-
-test("authenticated Harness submission derives authority from the selected user grant", async () => {
-  let submitted;
-  const config = configFromEnv({
-    MUNDUSX_HARNESS_UI_ENABLED: "true",
-    MUNDUSX_HARNESS_SERVICE_TOKEN: "server-secret",
-    MUNDUSX_HARNESS_BASE_REVISION: "b".repeat(40),
-  });
-  const session = {
-    id: "ad36260d-40bc-44a9-b637-d03093e1f310",
-    harness_grants: [{
-      grant_id: "grant-1",
-      tenant_id: "tenant-authorized",
-      repository_source_id: "github:mundusx/authorized",
-      allowed_path_prefixes: ["apps/chat"],
-      validation_profiles: ["chat-tests"],
-      allowed_execution_modes: ["sandbox"],
-    }],
-  };
-  await submitHarnessTask({
-    grant_id: "grant-1",
-    objective: "Test account-bound submission",
-    execution_mode: "sandbox",
-    allowed_operations: ["file.read", "validation.run"],
-    tenant_id: "tenant-attacker",
-  }, config, async (_url, options) => {
-    submitted = JSON.parse(options.body);
-    return jsonResponse({ task_id: "htask_user", state: "created" });
-  }, session);
-
-  assert.equal(submitted.tenant_id, "tenant-authorized");
-  assert.equal(submitted.repository_source_id, "github:mundusx/authorized");
-  assert.equal(submitted.requested_by_user_id, session.id);
-  assert.equal(submitted.submitted_via, "chat-u");
-});
-
-test("Harness task evidence is visible only to the user who submitted it", async () => {
-  const config = configFromEnv({
-    MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
-    MUNDUSX_HARNESS_SERVICE_TOKEN: "server-secret",
-  });
-  const payload = {
-    task: {
-      task_id: "htask_private",
-      requested_by_user_id: "owner-user",
-      state: "completed",
-    },
-    validations: [],
-  };
-
-  const ownTask = await fetchHarnessTask(
-    "htask_private",
-    config,
-    async () => jsonResponse(payload),
-    { id: "owner-user" },
-  );
-  assert.equal(ownTask.task.task_id, "htask_private");
-  await assert.rejects(
-    fetchHarnessTask(
-      "htask_private",
-      config,
-      async () => jsonResponse(payload),
-      { id: "different-user" },
-    ),
-    (error) => error.statusCode === 404,
-  );
 });
 
 test("accepts an explicit chat model override without making it a default", () => {

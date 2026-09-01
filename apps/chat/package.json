@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "node src/main.js",
     "start": "node src/main.js",
-    "check": "node --check src/main.js",
+    "check": "node scripts/check-source.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {
