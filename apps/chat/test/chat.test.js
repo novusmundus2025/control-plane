@@ -447,7 +447,10 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /activeProjectOpenEl\.setAttribute\("aria-pressed"/);
   assert.match(html, /Ask Atlas to work on/);
   assert.doesNotMatch(html, /Initialize the local.*project workspace|Queuing local project creation/);
-  assert.match(html, /Project .* is active\. You can plan and chat now/);
+  assert.match(html, /id="app-toast"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(html, /function showToast\(message\)/);
+  assert.match(html, /closeProjects\(\);[\s\S]*showToast\('Project "/);
+  assert.doesNotMatch(html, /repositoryDialogEl\?\.close\(\)/);
   assert.match(html, /requiresLocalProjectAction\(message\)/);
   assert.match(html, /openProjects\(\{ showRunnerSetup: true \}\)/);
   assert.match(html, /Respond in planning\/chat mode and do not claim files were changed/);
