@@ -1,29 +1,66 @@
 # MundusX Chat Architecture
 
-MundusX Chat originally followed a modular monolith style with ports-and-adapters boundaries. Its OpenAI gateway and live-weather adapter have moved into the control plane; this document now describes the legacy service retained during UAT cutover.
+MundusX Chat is a modular monolith: one deployable Railway service with explicit internal feature and infrastructure boundaries. Public URLs, authentication rules, and the UAT approval contract remain stable while responsibilities move out of the composition shell incrementally.
 
-The app remains one deployable Railway service, but code should be grouped by responsibility:
+## Dependency direction
 
-- HTTP and composition: request parsing, response writing, server startup, and environment config.
-- Control-plane adapter: all calls to MundusX control-plane APIs.
-- Tool adapters: weather, facts, web search, math, and other deterministic helpers.
-- Planning and routing: deciding whether a request is direct, compound, chunked, or tool-backed.
-- Output quality: sanitizing, formatting, and rejecting malformed model output.
-- UI rendering: HTML, CSS, client-side event wiring, and conversation rendering.
-- Persistence: browser cache, backend job lookup, and future conversation storage.
+```text
+HTTP/UI -> feature controller -> application service -> domain policy
+                                      |
+                                      v
+                                injected gateway port
+                                      |
+                                      v
+                             infrastructure adapter
+```
 
-Rules for future changes:
+Feature and domain modules must not import from `main.js`. Infrastructure adapters may depend on shared transport primitives but must not contain UI or domain decisions. `main.js` is the compatibility composition root: it constructs concrete dependencies, starts the server, and temporarily re-exports migrated public functions.
 
-- Do not add new protocol or tool behavior here; add it to the control-plane gateway or its internal tool modules.
-- Extract pure, standalone logic into small modules before adding more branches to `main.js`.
-- Do not let tool adapters know about UI rendering.
-- Do not let UI code know worker internals beyond normalized job status.
-- Do not commit generated build output such as Rust `target/`, Node `node_modules/`, coverage, or local caches.
-- Prefer deterministic cleanup before calling another model to repair an answer.
-- Tests should cover the public behavior at the boundary: API routes, rendered job state, and output quality decisions.
+## Source layout
 
-Current cleanup direction:
+- `src/features/<feature>/`: HTTP controllers, application services, and feature policy.
+- `src/adapters/<system>/`: concrete control-plane, database, GitHub, search, and runner transports.
+- `src/shared/`: stable cross-cutting primitives such as structured HTTP errors.
+- `src/auth.js`: authentication persistence during its feature migration.
+- `src/chat-quality.js`: pure output-quality detection and normalization.
+- `src/main.js`: composition root plus legacy slices awaiting extraction.
 
-- `src/main.js` remains the composition shell while the repo is small.
-- `src/chat-quality.js` owns answer-quality flags such as repetition, instruction leaks, broken Markdown, and unrelated-question drift.
-- New feature slices should follow the same extraction pattern instead of growing one file indefinitely.
+Projects/Harness is the first migrated vertical slice:
+
+- `features/harness/project-policy.js` derives bounded local-project authority without transport dependencies.
+- `features/harness/service.js` validates and coordinates Harness workflows through an injected gateway.
+- `features/harness/http-controller.js` owns `/api/harness/*` request translation.
+- `adapters/control-plane/harness-task-gateway.js` owns control-plane URLs, headers, and response parsing.
+
+## Architecture rules
+
+- Preserve a single deployable service; do not introduce microservices for internal code organization.
+- Prefer vertical feature slices over global `controllers`, `services`, and `utils` dumping grounds.
+- Keep domain policy pure and deterministic.
+- Inject external gateways into application services; never call infrastructure from domain policy.
+- Keep HTTP request/response objects inside controllers.
+- Normalize external payloads at adapter boundaries.
+- Use structured errors with stable status codes.
+- Preserve compatibility exports during migration, then remove them only through a separately approved API change.
+- Do not add generic base services, service locators, or inheritance frameworks.
+- Do not let UI code depend on worker internals beyond normalized job state.
+- Do not commit generated build output, dependency directories, coverage, or local caches.
+
+## Testing strategy
+
+- Characterization tests protect existing user-visible and API behavior during extraction.
+- Feature tests import the feature modules directly.
+- Adapter contract tests assert URL, authentication header, payload, and error translation behavior.
+- HTTP controller tests use injected stores and services rather than real external systems.
+- Browser checks cover project creation, project selection, ordinary chat, themes, and responsive behavior.
+- `npm run check --workspace @mundusx/chat` syntax-checks every source module recursively.
+
+## Next extraction order
+
+1. UI shell and browser state.
+2. Chat submission and job lifecycle.
+3. Deterministic tools and grounding strategies.
+4. Conversation persistence.
+5. Authentication controllers and adapters.
+
+Each extraction must remain independently testable and deployable; avoid a big-bang rewrite.
