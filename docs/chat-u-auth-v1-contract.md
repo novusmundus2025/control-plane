@@ -1,7 +1,7 @@
-# Chat-U Per-User Authentication v1
+# MundusX Chat Per-User Authentication v1
 
 Status: UAT implementation contract
-Scope: browser Chat-U and Coding Harness submission
+Scope: browser MundusX Chat and Coding Harness submission
 Production authority: none
 
 ## Identity and session authority
@@ -23,7 +23,7 @@ Production authority: none
 - A new project receives only the path prefixes, validation profile, and execution modes declared by its server-side project template. Java/Maven projects use trusted hybrid execution until a separately approved offline sandbox image exists.
 - A signed-in user may chat, but may submit Harness work only when live GitHub rights also intersect an active `repository_harness_policies` row.
 - Tenant, repository id, immutable base revision, path prefixes, validation profiles, and execution modes come from GitHub plus EHDA policy. Browser payloads cannot override them.
-- A Harness task records `requested_by_user_id` and `submitted_via=chat-u` immutably.
+- A Harness task records `requested_by_user_id` and `submitted_via=mundusx-chat` immutably.
 - Users may read only their own Harness tasks and cannot create execution approvals.
 - EHDA operator UAT approval remains separate. Merge and deployment remain separate approvals.
 
@@ -31,7 +31,7 @@ Production authority: none
 
 - GitHub login is enabled only when client ID, client secret, public origin, and PostgreSQL are configured.
 - Email login is enabled only when the email provider key and verified sender are configured.
-- When authentication is required but storage is unavailable, Chat-U fails closed with `503`; it never falls back to anonymous access.
+- When authentication is required but storage is unavailable, MundusX Chat fails closed with `503`; it never falls back to anonymous access.
 - UAT must verify OAuth state/PKCE rejection, one-time-link replay rejection, session revocation, horizontal-access rejection, repository-grant enforcement, and unauthenticated API rejection.
 
 ## Primary references

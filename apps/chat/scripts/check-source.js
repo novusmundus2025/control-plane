@@ -11,7 +11,7 @@ for (const sourceFile of sourceFiles) {
   if (result.status !== 0) process.exit(result.status || 1);
 }
 
-console.log(`Checked ${sourceFiles.length} Chat-U source modules.`);
+console.log(`Checked ${sourceFiles.length} MundusX Chat source modules.`);
 
 function collectJavaScriptFiles(directory) {
   return readdirSync(directory, { withFileTypes: true })

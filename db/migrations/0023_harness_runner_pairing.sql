@@ -1,4 +1,4 @@
--- One-time Chat-U to local Harness runner pairing. Only SHA-256 digests are stored.
+-- One-time MundusX Chat to local Harness runner pairing. Only SHA-256 digests are stored.
 
 create table if not exists public.harness_runner_pairings (
   pairing_hash text primary key,

@@ -2,7 +2,7 @@
 
 Legacy standalone chat surface. The OpenAI-compatible adapter and live-weather route now live in the control plane so clients can use one API origin.
 
-Keep this service available only during UAT parity testing. After Open WebUI is pointed at the control-plane `/v1` URL and the smoke tests pass, the `chat-u` deployment can be stopped. The browser UI code remains here until its separate retirement decision.
+This service powers the canonical MundusX browser chat at `https://chat.mundusx.ai`.
 
 ## Run locally
 
@@ -49,13 +49,13 @@ MUNDUSX_WEB_SEARCH_TTL_SECONDS=1800
 MUNDUSX_WEB_SEARCH_DAILY_BUDGET=<optional daily call cap; 0 or unset means unlimited>
 ```
 
-Browser Chat-U uses per-user PostgreSQL sessions by default. Run migration `0020_chat_user_auth.sql`,
+MundusX Chat uses per-user PostgreSQL sessions by default. Run migration `0020_chat_user_auth.sql`,
 configure at least one login provider, and keep the database and provider secrets server-side:
 
 ```text
 MUNDUSX_CHAT_AUTH_REQUIRED=true
 MUNDUSX_DATABASE_POOL_URL=<PgBouncer DATABASE_URL reference>
-MUNDUSX_PUBLIC_ORIGIN=https://chat-u.mundusx.ai
+MUNDUSX_PUBLIC_ORIGIN=https://chat.mundusx.ai
 MUNDUSX_GITHUB_CLIENT_ID=<GitHub App client id>
 MUNDUSX_GITHUB_CLIENT_SECRET=<GitHub App client secret>
 MUNDUSX_AUTH_ENCRYPTION_KEY=<base64-encoded 32-byte key>
@@ -69,11 +69,11 @@ with account permission `Email addresses: read`, repository permission `Contents
 repository permission `Administration: read and write`. The Administration permission lets an
 authenticated user explicitly create a repository in their own account; it does not create a
 MundusX-owned repository. Install the App for all repositories if newly created repositories must
-be immediately available to the Harness. Chat-U
+be immediately available to the Harness. MundusX Chat
 uses the App's user-to-server token so repository visibility is restricted by both the installation
 and the signed-in user's current GitHub rights. Tokens are encrypted at rest and never returned to
 the browser. New Projects are local-first; publication creates a private repository by default.
-Imported repositories derive a policy from safe top-level paths. Chat-U then pins the
+Imported repositories derive a policy from safe top-level paths. MundusX Chat then pins the
 current default-branch commit. A
 browser cannot choose its own tenant, unverified repository, validation command, or base revision.
 
@@ -96,7 +96,7 @@ copied into runner configuration. The launcher cannot approve merge or deploymen
 The **Projects** panel contains the local runner setup: install the runner, pair the device, and
 verify that it is ready. GitHub CLI authentication is optional until the user asks to publish. The
 optional publication commands are `gh auth login --hostname github.com --git-protocol https --web`
-and `gh auth setup-git`; Chat-U never provides a token input. Pairing does not require GitHub.
+and `gh auth setup-git`; MundusX Chat never provides a token input. Pairing does not require GitHub.
 The runner is a native Rust executable, not a project technology stack. It uses Git for workspace
 isolation and repository validation; Java tasks additionally use Maven when Maven is installed.
 Project technology is inferred from the coding request in chat rather than selected during creation.
@@ -105,7 +105,7 @@ under `documents/mundusx/projects/<slug>` on the user's device.
 Creation asks only for the local project identity and does not require a runner or create a Harness
 task. Planning and ordinary project chat work immediately. When the user first requests an explicit
 local action such as creating or editing files, running tests, building, installing, or committing,
-Chat-U checks runner readiness and reveals one-time setup only when needed. With a ready runner,
+MundusX Chat checks runner readiness and reveals one-time setup only when needed. With a ready runner,
 those local-action messages become bounded Harness tasks for the active project.
 The composer Project control lists the authenticated user's runner-reported local projects, marks
 the active project, switches context, creates a new project, or returns to unscoped chat. A bounded
@@ -124,7 +124,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `OPENGPU_OPERATOR_TOKEN` | unset | Deprecated fallback token name |
 | `MUNDUSX_CHAT_AUTH_REQUIRED` | `true` | Requires an active individual session for browser `/api/*` routes; fail-closed when storage is unavailable |
 | `MUNDUSX_DATABASE_POOL_URL` | unset | PgBouncer runtime URL used for identity, session, conversation-owner, and grant checks |
-| `MUNDUSX_PUBLIC_ORIGIN` | `https://chat-u.mundusx.ai` | Exact browser origin and OAuth callback base; also enforced for CSRF checks |
+| `MUNDUSX_PUBLIC_ORIGIN` | `https://chat.mundusx.ai` | Exact browser origin and OAuth callback base; also enforced for CSRF checks |
 | `MUNDUSX_GITHUB_CLIENT_ID` | unset | Enables GitHub App user authorization when paired with its secret |
 | `MUNDUSX_GITHUB_CLIENT_SECRET` | unset | Server-only GitHub App client secret |
 | `MUNDUSX_AUTH_ENCRYPTION_KEY` | unset | Base64-encoded 32-byte AES key required to encrypt GitHub user/refresh tokens at rest |
@@ -147,7 +147,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEB_SEARCH_DAILY_BUDGET` | unset (unlimited) | Optional daily call cap for the web search tool, tracked in the same Redis/Valkey cache; once exceeded the tool declines until the next UTC day |
 | `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes user-owned local-first Projects and inline runner setup when set to `true` |
 | `MUNDUSX_HARNESS_SERVICE_TOKEN` | unset | Server-only token used to submit Harness tasks to the control plane |
-| `MUNDUSX_MCP_ENABLED` | `false` | Exposes the user-scoped Streamable HTTP Harness MCP endpoint and Chat-U connection manager |
+| `MUNDUSX_MCP_ENABLED` | `false` | Exposes the user-scoped Streamable HTTP Harness MCP endpoint and MundusX Chat connection manager |
 | `MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL` | MundusX releases page | Optional override for the runner download or release page shown during one-time setup |
 
 ## Current Flow
@@ -157,7 +157,7 @@ Railway provides `PORT`; the app reads it automatically.
 3. Obvious weather questions are answered directly through `wttr.in`; if Redis/Valkey is configured the response is cached for 2 hours.
 4. Current office-holder questions such as "current president of USA" are answered through Wikidata before using local LLM jobs.
 5. Obvious factual history/who/what questions are answered from the factual summary source before using local LLM jobs.
-6. A deterministic grounding gate (`needsGrounding`) automatically decides whether a message looks like it needs current or specific facts (dates, counts, prices, named entities, "who/what/when/how many," etc.) versus conversational or creative requests that never trigger a search. Gated requests query the Brave Search API for a handful of snippets, cached in Redis/Valkey when configured, with an optional daily call budget as a cost circuit breaker. Chat-U exposes no search-mode toggle or `@websearch` command.
+6. A deterministic grounding gate (`needsGrounding`) automatically decides whether a message looks like it needs current or specific facts (dates, counts, prices, named entities, "who/what/when/how many," etc.) versus conversational or creative requests that never trigger a search. Gated requests query the Brave Search API for a handful of snippets, cached in Redis/Valkey when configured, with an optional daily call budget as a cost circuit breaker. MundusX Chat exposes no search-mode toggle or `@websearch` command.
 7. Retrieved snippets are injected into the job's `system_prompt` as a numbered, citable source list with an instruction to answer only from those sources and cite them — the routed MundusX job (any contributor node/model) then only has to synthesize prose from already-verified facts, not decide when or what to search. The response is tagged `tool: "web_search"` with a `sources` list for citation display; a lightweight overlap/citation check logs (but does not yet block) answers that don't appear to use the provided sources.
 8. Other requests are submitted as routed MundusX jobs to `POST /v1/jobs` with `execution_mode=auto`.
 9. Control plane decides whether the request is single-job or decomposed across graph chunks.
