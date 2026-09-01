@@ -313,6 +313,10 @@ test("anchors the account profile below the flexible conversation rail", () => {
   const html = page(configFromEnv({}));
   assert.match(html, /grid-template-rows:\s*auto auto minmax\(0, ?1fr\) auto;/);
   assert.match(html, /\.account-widget\s*\{[^}]*align-self:\s*end;[^}]*width:\s*100%;/s);
+  assert.match(html, /grid-template-columns: minmax\(0, 300px\) minmax\(0, 1fr\);/);
+  assert.match(html, /aside \{[\s\S]*?width: 100%;[\s\S]*?min-width: 0;[\s\S]*?overflow: hidden;/);
+  assert.match(html, /\.rail-primary,\.workspace-nav,\.rail-list \{ width:100%; min-width:0; max-width:100%; \}/);
+  assert.match(html, /\.new-chat,\.rail-destination,\.account-bar \{ width:100%; min-width:0; max-width:100%; \}/);
 });
 
 test("normalizes streamed emoji headings and list boundaries", () => {
