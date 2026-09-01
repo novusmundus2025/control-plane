@@ -110,6 +110,32 @@ test("Harness service exposes task evidence only to its requesting user", async 
   );
 });
 
+test("Harness service cancels a task only for its requesting user", async () => {
+  const cancelled = [];
+  const service = createHarnessService({
+    config: harnessConfig(),
+    gateway: {
+      async getTask() {
+        return { task: { task_id: "htask_private", requested_by_user_id: "owner-user" } };
+      },
+      async cancelTask(taskId) {
+        cancelled.push(taskId);
+        return { task_id: taskId, state: "cancelled" };
+      },
+    },
+  });
+
+  assert.deepEqual(
+    await service.cancelTask("htask_private", { session: { id: "owner-user" } }),
+    { task_id: "htask_private", state: "cancelled" },
+  );
+  await assert.rejects(
+    service.cancelTask("htask_private", { session: { id: "different-user" } }),
+    (error) => error.statusCode === 404,
+  );
+  assert.deepEqual(cancelled, ["htask_private"]);
+});
+
 test("control-plane Harness gateway owns transport details", async () => {
   let request;
   const gateway = createControlPlaneHarnessTaskGateway({
@@ -126,6 +152,11 @@ test("control-plane Harness gateway owns transport details", async () => {
   assert.equal(request.options.headers.Authorization, "Bearer service-token");
   assert.equal(request.options.headers["X-MundusX-Actor"], "chat-u");
   assert.equal(payload.task_id, "htask_gateway");
+
+  await gateway.cancelTask("htask_gateway");
+  assert.equal(request.url, "https://uat.mundusx.ai/internal/harness/tasks/htask_gateway/cancel");
+  assert.equal(request.options.method, "POST");
+  assert.equal(request.options.headers.Authorization, "Bearer service-token");
 });
 
 test("Harness HTTP controller handles runner inventory as a feature boundary", async () => {
@@ -162,6 +193,8 @@ test("Harness feature boundaries do not depend on the legacy composition shell",
     "features/harness/project-policy.js",
     "features/harness/service.js",
     "features/harness/http-controller.js",
+    "features/mcp/http-controller.js",
+    "features/mcp/server.js",
     "adapters/control-plane/harness-task-gateway.js",
   ];
   for (const relativePath of boundaryFiles) {

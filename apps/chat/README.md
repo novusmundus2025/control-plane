@@ -83,6 +83,7 @@ provide the server-side Harness token and runner download page:
 ```text
 MUNDUSX_HARNESS_UI_ENABLED=true
 MUNDUSX_HARNESS_SERVICE_TOKEN=<same secret configured on the control plane>
+MUNDUSX_MCP_ENABLED=true
 MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL=https://github.com/mundusx/mundusx/releases
 ```
 
@@ -146,6 +147,7 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEB_SEARCH_DAILY_BUDGET` | unset (unlimited) | Optional daily call cap for the web search tool, tracked in the same Redis/Valkey cache; once exceeded the tool declines until the next UTC day |
 | `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes user-owned local-first Projects and inline runner setup when set to `true` |
 | `MUNDUSX_HARNESS_SERVICE_TOKEN` | unset | Server-only token used to submit Harness tasks to the control plane |
+| `MUNDUSX_MCP_ENABLED` | `false` | Exposes the user-scoped Streamable HTTP Harness MCP endpoint and Chat-U connection manager |
 | `MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL` | MundusX releases page | Optional override for the runner download or release page shown during one-time setup |
 
 ## Current Flow
