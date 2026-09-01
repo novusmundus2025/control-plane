@@ -1453,10 +1453,13 @@ export function page(config = configFromEnv()) {
     .project-context-menu-header button,.project-context-choice { border:0; background:transparent; color:var(--text); font:inherit; cursor:pointer; }
     .project-context-menu-header button { color:var(--blue); font-weight:700; }
     .project-context-list { display:grid; gap:3px; max-height:230px; overflow:auto; }
+    .project-context-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:3px; }
     .project-context-choice { width:100%; display:flex; align-items:center; gap:9px; padding:9px 10px; border-radius:9px; text-align:left; }
     .project-context-choice[hidden] { display:none; }
     .project-context-choice:hover,.project-context-choice:focus-visible { background:var(--panel-2); outline:none; }
     .project-context-choice[aria-current="true"] { color:var(--blue); background:color-mix(in srgb,var(--blue) 8%,var(--panel)); font-weight:700; }
+    .project-context-remove { width:34px; height:34px; display:grid; place-items:center; border:0; border-radius:9px; color:var(--muted); background:transparent; cursor:pointer; font-size:18px; font-weight:700; line-height:1; }
+    .project-context-remove:hover,.project-context-remove:focus-visible { color:#dc2626; background:color-mix(in srgb,#dc2626 10%,var(--panel)); outline:none; }
     .project-context-empty { margin:5px 8px 9px; color:var(--muted); font-size:13px; }
     .project-context-none { margin-top:5px; padding-top:9px; border-top:1px solid var(--line); color:var(--muted); }
     textarea {
@@ -1932,9 +1935,11 @@ export function page(config = configFromEnv()) {
     let conversationCachePrefix = "mundusx.chat.pending.conversation.v1:";
     let activeProjectKey = "mundusx.chat.activeProject.v1:anonymous";
     let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
+    let removedProjectsKey = "mundusx.chat.removedProjects.v1:anonymous";
     const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
     let activeProject = null;
     let availableProjectSlugs = [];
+    let removedProjectSlugs = [];
     let readyHarnessModes = new Set();
     let localRunnerReady = false;
     let runnerSetupRequested = false;
@@ -1942,12 +1947,23 @@ export function page(config = configFromEnv()) {
     function loadStoredProjectContext(namespace) {
       activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
       recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
+      removedProjectsKey = "mundusx.chat.removedProjects.v1:" + namespace;
       try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
+      try {
+        removedProjectSlugs = JSON.parse(localStorage.getItem(removedProjectsKey) || "[]")
+          .filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+          .slice(0, 100);
+      } catch { removedProjectSlugs = []; }
       try {
         availableProjectSlugs = JSON.parse(localStorage.getItem(recentProjectsKey) || "[]")
           .filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+          .filter((slug) => !removedProjectSlugs.includes(slug))
           .slice(0, 100);
       } catch { availableProjectSlugs = []; }
+      if (activeProject?.slug && removedProjectSlugs.includes(activeProject.slug)) {
+        activeProject = null;
+        localStorage.removeItem(activeProjectKey);
+      }
       renderActiveProject();
     }
     loadStoredProjectContext("anonymous");
@@ -2347,7 +2363,8 @@ export function page(config = configFromEnv()) {
       availableProjectSlugs = Array.from(new Set([
         ...availableProjectSlugs,
         ...(Array.isArray(payload.projects) ? payload.projects : []),
-      ])).filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)).sort().slice(0, 100);
+      ])).filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+        .filter((slug) => !removedProjectSlugs.includes(slug)).sort().slice(0, 100);
       localStorage.setItem(recentProjectsKey, JSON.stringify(availableProjectSlugs));
       renderProjectMenu();
       const statusText = ready
@@ -2394,6 +2411,8 @@ export function page(config = configFromEnv()) {
         projectContextListEl.append(empty);
       }
       for (const slug of availableProjectSlugs) {
+        const row = document.createElement("div");
+        row.className = "project-context-row";
         const button = document.createElement("button");
         button.type = "button";
         button.className = "project-context-choice";
@@ -2405,14 +2424,35 @@ export function page(config = configFromEnv()) {
         const name = document.createElement("span");
         name.textContent = slug;
         button.append(icon, name);
-        projectContextListEl.append(button);
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "project-context-remove";
+        removeButton.dataset.removeProjectSlug = slug;
+        removeButton.setAttribute("aria-label", "Remove " + slug + " from Projects");
+        removeButton.title = "Remove from Projects";
+        removeButton.textContent = "\u00d7";
+        row.append(button, removeButton);
+        projectContextListEl.append(row);
       }
       if (projectContextNoneEl) projectContextNoneEl.hidden = !activeProject;
     }
 
     function rememberProject(slug) {
+      removedProjectSlugs = removedProjectSlugs.filter((value) => value !== slug);
+      localStorage.setItem(removedProjectsKey, JSON.stringify(removedProjectSlugs));
       availableProjectSlugs = [slug, ...availableProjectSlugs.filter((value) => value !== slug)].slice(0, 100);
       localStorage.setItem(recentProjectsKey, JSON.stringify(availableProjectSlugs));
+    }
+
+    function removeProject(slug) {
+      if (!window.confirm('Remove "' + slug + '" from Projects? Local files will not be deleted.')) return;
+      removedProjectSlugs = [slug, ...removedProjectSlugs.filter((value) => value !== slug)].slice(0, 100);
+      availableProjectSlugs = availableProjectSlugs.filter((value) => value !== slug);
+      localStorage.setItem(removedProjectsKey, JSON.stringify(removedProjectSlugs));
+      localStorage.setItem(recentProjectsKey, JSON.stringify(availableProjectSlugs));
+      if (activeProject?.slug === slug) setActiveProject(null);
+      else renderProjectMenu();
+      showToast('Project "' + slug + '" removed. Local files were kept.');
     }
 
     function setActiveProject(project) {
@@ -2443,6 +2483,11 @@ export function page(config = configFromEnv()) {
       promptEl?.focus();
     });
     projectContextListEl?.addEventListener("click", (event) => {
+      const removeButton = event.target.closest("button[data-remove-project-slug]");
+      if (removeButton) {
+        removeProject(removeButton.dataset.removeProjectSlug);
+        return;
+      }
       const button = event.target.closest("button[data-project-slug]");
       if (!button) return;
       setActiveProject({ slug: button.dataset.projectSlug });
