@@ -1511,6 +1511,9 @@ export function page(config = configFromEnv()) {
     .sr-only { position: absolute!important; width: 1px!important; height: 1px!important; padding: 0!important; margin: -1px!important; overflow: hidden!important; clip: rect(0,0,0,0)!important; white-space: nowrap!important; border: 0!important; }
     .projects-overlay { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:10px; background:rgba(38,44,62,.42); backdrop-filter:blur(2px); }
     .projects-overlay[hidden] { display:none; }
+    .app-toast { position:fixed; right:24px; bottom:24px; z-index:80; max-width:min(420px,calc(100vw - 32px)); padding:12px 16px; border:1px solid var(--line-strong); border-radius:12px; color:var(--panel); background:var(--text); box-shadow:0 18px 48px rgba(18,19,28,.24); font-size:14px; font-weight:650; line-height:1.4; opacity:0; transform:translateY(8px); transition:opacity var(--motion-fast),transform var(--motion-fast); }
+    .app-toast.is-visible { opacity:1; transform:translateY(0); }
+    .app-toast[hidden] { display:none; }
     .projects-dialog { width:min(520px,calc(100vw - 20px)); padding:0; overflow-x:hidden; border-color:var(--line); border-radius:16px; background:color-mix(in srgb,var(--bg) 86%,var(--panel)); box-shadow:0 28px 80px rgba(18,19,28,.24); backdrop-filter:blur(24px); }
     .projects-dialog .dialog-close { position:absolute; top:14px; right:14px; z-index:5; width:36px; height:36px; display:grid; place-items:center; margin:0; padding:0; border:0; border-radius:9px; color:var(--text); background:transparent; font:inherit; font-size:28px; line-height:1; cursor:pointer; transition:background var(--motion-fast),transform var(--motion-fast); }
     .projects-dialog .dialog-close:hover,.projects-dialog .dialog-close:focus-visible { background:var(--panel); outline:0; transform:scale(1.04); }
@@ -1803,6 +1806,7 @@ export function page(config = configFromEnv()) {
       </div>
     </aside>
     ${repositoryDialog}
+    <div class="app-toast" id="app-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
     <main id="chat-main" class="is-empty-chat">
       <canvas class="mesh-canvas" id="mesh-canvas" aria-hidden="true"></canvas>
       <header>
@@ -1888,6 +1892,7 @@ export function page(config = configFromEnv()) {
     const repositoryOpenMobileEl = document.getElementById("repository-open-mobile");
     const repositoryDialogEl = document.getElementById("repository-dialog");
     const repositoryDialogCloseEl = document.getElementById("repository-dialog-close");
+    const appToastEl = document.getElementById("app-toast");
     const meshCanvasEl = document.getElementById("mesh-canvas");
     const themeLightEl = document.getElementById("theme-light");
     const themeDarkEl = document.getElementById("theme-dark");
@@ -1904,6 +1909,7 @@ export function page(config = configFromEnv()) {
     let readyHarnessModes = new Set();
     let localRunnerReady = false;
     let runnerSetupRequested = false;
+    let appToastTimer = null;
     function loadStoredProjectContext(namespace) {
       activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
       recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
@@ -2154,6 +2160,18 @@ export function page(config = configFromEnv()) {
       if (!repositoryDialogEl) return;
       repositoryDialogEl.hidden = true;
       setWorkspaceDestination("chats");
+    }
+
+    function showToast(message) {
+      if (!appToastEl) return;
+      if (appToastTimer) window.clearTimeout(appToastTimer);
+      appToastEl.textContent = message;
+      appToastEl.hidden = false;
+      window.requestAnimationFrame(() => appToastEl.classList.add("is-visible"));
+      appToastTimer = window.setTimeout(() => {
+        appToastEl.classList.remove("is-visible");
+        window.setTimeout(() => { appToastEl.hidden = true; }, 180);
+      }, 2800);
     }
 
     repositoryOpenEl?.addEventListener("click", () => openProjects());
@@ -2467,9 +2485,9 @@ export function page(config = configFromEnv()) {
       harnessResultEl.textContent = "";
       harnessFormEl.reset();
       updateProjectCreateAvailability();
-      repositoryDialogEl?.close();
-      setWorkspaceDestination("chats");
-      addMessage("Project " + projectSlug + " is active. You can plan and chat now; local files are created only when you request file, build, or test work.", "assistant", "Project ready");
+      closeProjects();
+      showToast('Project "' + projectSlug + '" created');
+      promptEl?.focus();
     });
 
     enterToSendToggleEl?.addEventListener("click", () => {
