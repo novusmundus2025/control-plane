@@ -84,17 +84,22 @@ provide the server-side Harness token and runner download page:
 MUNDUSX_HARNESS_UI_ENABLED=true
 MUNDUSX_HARNESS_SERVICE_TOKEN=<same secret configured on the control plane>
 MUNDUSX_MCP_ENABLED=true
-MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL=https://github.com/mundusx/mundusx/releases
+MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL=https://github.com/mundusx/mundusx/releases/latest/download/mundusx-harness-setup-windows-x86_64.exe
 ```
 
 Chat users can submit only a local project, path, validation, mode, and tool boundary granted to their
 internal user id. A submitted
 task remains in `created` state until an operator separately approves UAT execution in EHDA. Users
-pair their local runner with a hashed, one-use, ten-minute code; no user UUID or GitHub token is
-copied into runner configuration. The launcher cannot approve merge or deployment.
+connect their local runner through a browser-approved, one-use, ten-minute bootstrap session; no
+user UUID, GitHub token, raw bootstrap secret, or approval token is stored. The approval token stays
+in the URL fragment so it is not sent in HTTP request URLs. The launcher cannot approve merge or deployment.
 
-The **Projects** panel contains the local runner setup: install the runner, pair the device, and
-verify that it is ready. GitHub CLI authentication is optional until the user asks to publish. The
+The **Projects** panel exposes one **Connect this computer** action only when local work is first
+requested. The lightweight installer creates an OS-protected signing identity, opens one browser
+approval, configures per-user background startup, and starts the runner. Chat polls runner
+heartbeats and automatically resumes the original coding request after connection. Browser restarts
+do not require pairing again; manual one-time pairing remains available only for compatibility.
+GitHub CLI authentication is optional until the user asks to publish. The
 optional publication commands are `gh auth login --hostname github.com --git-protocol https --web`
 and `gh auth setup-git`; Chat-U never provides a token input. Pairing does not require GitHub.
 The runner is a native Rust executable, not a project technology stack. It uses Git for workspace
@@ -147,8 +152,8 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_WEB_SEARCH_DAILY_BUDGET` | unset (unlimited) | Optional daily call cap for the web search tool, tracked in the same Redis/Valkey cache; once exceeded the tool declines until the next UTC day |
 | `MUNDUSX_HARNESS_UI_ENABLED` | `false` | Exposes user-owned local-first Projects and inline runner setup when set to `true` |
 | `MUNDUSX_HARNESS_SERVICE_TOKEN` | unset | Server-only token used to submit Harness tasks to the control plane |
-| `MUNDUSX_MCP_ENABLED` | `false` | Exposes the user-scoped Streamable HTTP Harness MCP endpoint and Chat-U connection manager |
-| `MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL` | MundusX releases page | Optional override for the runner download or release page shown during one-time setup |
+| `MUNDUSX_MCP_ENABLED` | `false` | Exposes the user-scoped Streamable HTTP Harness MCP endpoint and MundusX Chat connection manager |
+| `MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL` | Windows one-click runner setup asset | Optional override for the user-owned runner installer shown during one-time setup |
 
 ## Current Flow
 
