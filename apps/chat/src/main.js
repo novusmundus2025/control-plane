@@ -187,10 +187,11 @@ export function page(config = configFromEnv()) {
   const repositoryMobileLauncher = `<button class="header-projects" id="repository-open-mobile" type="button" aria-label="Open Projects"${config.harnessUiEnabled ? "" : " hidden"}>
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Projects</span>
     </button>`;
-  const repositoryDialog = `<dialog class="harness-dialog projects-dialog" id="repository-dialog">
-      <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
+  const repositoryDialog = `<div class="projects-overlay" id="repository-dialog" hidden>
+    <section class="harness-dialog projects-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title">
+      <button class="dialog-close" id="repository-dialog-close" type="button" aria-label="Close">&times;</button>
       <header class="project-heading">
-        <h2>Create project</h2>
+        <h2 id="project-dialog-title">Create project</h2>
       </header>
       ${config.harnessUiEnabled ? `
       <form id="harness-form" class="harness-form">
@@ -217,7 +218,8 @@ export function page(config = configFromEnv()) {
           <button class="harness-submit" type="submit" disabled>Create project</button>
         </footer>
       </form>` : ""}
-    </dialog>`;
+    </section>
+  </div>`;
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -1474,8 +1476,6 @@ export function page(config = configFromEnv()) {
     .header-action { border: 1px solid var(--line-strong); border-radius: 999px; background: white; color: var(--blue); padding: 8px 14px; font: inherit; font-weight: 700; cursor: pointer; }
     .harness-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; border: 1px solid var(--line-strong); border-radius: 18px; padding: 24px; color: var(--text); background: var(--panel); box-shadow: 0 28px 80px rgba(18,19,28,.24); }
     .harness-dialog::backdrop { background: rgba(15,23,42,.48); }
-    .dialog-close { float: right; padding: 0; }
-    .dialog-close button { border: 0; background: transparent; font-size: 28px; cursor: pointer; }
     .harness-boundary,.harness-form { display: grid; gap: 14px; }
     .harness-boundary { padding: 12px; border-radius: 10px; background: var(--bg); }
     .project-readiness { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--bg); }
@@ -1505,11 +1505,11 @@ export function page(config = configFromEnv()) {
     .project-browser summary { font-weight: 700; cursor: pointer; }
     .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
     .sr-only { position: absolute!important; width: 1px!important; height: 1px!important; padding: 0!important; margin: -1px!important; overflow: hidden!important; clip: rect(0,0,0,0)!important; white-space: nowrap!important; border: 0!important; }
+    .projects-overlay { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:10px; background:rgba(38,44,62,.42); backdrop-filter:blur(2px); }
+    .projects-overlay[hidden] { display:none; }
     .projects-dialog { width:min(520px,calc(100vw - 20px)); padding:0; overflow-x:hidden; border-color:var(--line); border-radius:16px; background:color-mix(in srgb,var(--bg) 86%,var(--panel)); box-shadow:0 28px 80px rgba(18,19,28,.24); backdrop-filter:blur(24px); }
-    .projects-dialog::backdrop { background:rgba(38,44,62,.42); backdrop-filter:blur(2px); }
-    .projects-dialog .dialog-close { position:absolute; top:14px; right:14px; z-index:3; width:36px; height:36px; float:none; margin:0; }
-    .projects-dialog .dialog-close button { width:36px; height:36px; display:grid; place-items:center; border-radius:9px; color:var(--text); line-height:1; transition:background var(--motion-fast),transform var(--motion-fast); }
-    .projects-dialog .dialog-close button:hover,.projects-dialog .dialog-close button:focus-visible { background:var(--panel); outline:0; transform:scale(1.04); }
+    .projects-dialog .dialog-close { position:absolute; top:14px; right:14px; z-index:5; width:36px; height:36px; display:grid; place-items:center; margin:0; padding:0; border:0; border-radius:9px; color:var(--text); background:transparent; font:inherit; font-size:28px; line-height:1; cursor:pointer; transition:background var(--motion-fast),transform var(--motion-fast); }
+    .projects-dialog .dialog-close:hover,.projects-dialog .dialog-close:focus-visible { background:var(--panel); outline:0; transform:scale(1.04); }
     .project-heading { display:block; padding:20px 58px 12px 18px; margin:0; border:0; text-align:left; }
     .project-heading h2 { margin:0; font-size:19px; font-weight:500; line-height:1.2; }
     .projects-dialog .harness-form { gap:16px; padding:10px 18px 18px; }
@@ -1724,7 +1724,7 @@ export function page(config = configFromEnv()) {
     .account-bar:hover,.account-menu-header:hover,.account-menu-item:hover { background:var(--panel-2); }
     html[data-theme="dark"] code { color:#c6bcff; }
     html[data-theme="dark"] .projects-dialog { border-color:rgba(170,182,230,.18); background:color-mix(in srgb,var(--bg) 76%,#171b31); box-shadow:0 30px 90px rgba(0,0,0,.58); }
-    html[data-theme="dark"] .projects-dialog::backdrop { background:rgba(2,5,15,.72); }
+    html[data-theme="dark"] .projects-overlay { background:rgba(2,5,15,.72); }
     html[data-theme="dark"] .project-purpose-note { color:#d4d8e8; background:rgba(255,255,255,.12); }
     html[data-theme="dark"] .message-retry-button { background:var(--panel); }
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
@@ -1884,6 +1884,7 @@ export function page(config = configFromEnv()) {
     const repositoryOpenEl = document.getElementById("repository-open");
     const repositoryOpenMobileEl = document.getElementById("repository-open-mobile");
     const repositoryDialogEl = document.getElementById("repository-dialog");
+    const repositoryDialogCloseEl = document.getElementById("repository-dialog-close");
     const meshCanvasEl = document.getElementById("mesh-canvas");
     const themeLightEl = document.getElementById("theme-light");
     const themeDarkEl = document.getElementById("theme-dark");
@@ -2134,7 +2135,7 @@ export function page(config = configFromEnv()) {
     async function openProjects({ showRunnerSetup = false } = {}) {
       runnerSetupRequested = showRunnerSetup;
       setWorkspaceDestination("projects");
-      repositoryDialogEl.showModal();
+      repositoryDialogEl.hidden = false;
       return loadHarnessRunners().catch((error) => {
         if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
         if (projectReadinessEl) projectReadinessEl.hidden = true;
@@ -2146,9 +2147,20 @@ export function page(config = configFromEnv()) {
       });
     }
 
+    function closeProjects() {
+      if (!repositoryDialogEl) return;
+      repositoryDialogEl.hidden = true;
+      setWorkspaceDestination("chats");
+    }
+
     repositoryOpenEl?.addEventListener("click", () => openProjects());
     repositoryOpenMobileEl?.addEventListener("click", () => openProjects());
-    repositoryDialogEl?.addEventListener("close", () => setWorkspaceDestination("chats"));
+    repositoryDialogCloseEl?.addEventListener("click", closeProjects);
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape" || repositoryDialogEl?.hidden) return;
+      event.preventDefault();
+      closeProjects();
+    });
 
     authEmailFormEl?.addEventListener("submit", async (event) => {
       event.preventDefault();

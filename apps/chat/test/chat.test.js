@@ -410,7 +410,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
     }),
   );
 
-  const projects = html.match(/<dialog class="harness-dialog projects-dialog" id="repository-dialog">[\s\S]*?<\/dialog>/)?.[0] || "";
+  const projects = html.match(/<div class="projects-overlay" id="repository-dialog" hidden>[\s\S]*?<\/section>\s*<\/div>/)?.[0] || "";
   const workspaceNav = html.match(/<nav class="workspace-nav" aria-label="Workspace">[\s\S]*?<\/nav>/)?.[0] || "";
   const mainHeader = html.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   assert.match(html, /id="repository-open"[^>]*>[\s\S]*?<span>Projects<\/span>/);
@@ -418,7 +418,9 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(workspaceNav, />Agents<|>Nodes</);
   assert.doesNotMatch(mainHeader, /id="repository-open"|>Projects<\/button>/);
   assert.match(mainHeader, /id="repository-open-mobile"[^>]*aria-label="Open Projects"/);
-  assert.match(projects, /<h2>Create project<\/h2>/);
+  assert.match(projects, /role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="project-dialog-title"/);
+  assert.match(projects, /<h2 id="project-dialog-title">Create project<\/h2>/);
+  assert.match(projects, /id="repository-dialog-close"[^>]*type="button"[^>]*aria-label="Close"/);
   assert.match(projects, /name="project_slug"[^>]*pattern="\[a-z0-9\]/);
   assert.match(projects, /Projects keep chats and files together/);
   assert.doesNotMatch(projects, /documents\\mundusx\\projects|Default memory|class="project-mark"/);
@@ -455,7 +457,11 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(html, /id="harness-open"|id="harness-dialog"|>Computer<\/button>/);
   assert.match(projects, /class="harness-submit"[^>]*disabled[^>]*>Create project/);
   assert.match(html, /updateProjectCreateAvailability\(\)/);
-  assert.match(html, /\.projects-dialog \.dialog-close \{ position:absolute; top:14px; right:14px; z-index:3; width:36px; height:36px;/);
+  assert.match(html, /repositoryDialogCloseEl\?\.addEventListener\("click", closeProjects\)/);
+  assert.match(html, /function closeProjects\(\)[\s\S]*?repositoryDialogEl\.hidden = true/);
+  assert.match(html, /event\.key !== "Escape"[\s\S]*?closeProjects\(\)/);
+  assert.match(html, /\.projects-overlay\[hidden\] \{ display:none; \}/);
+  assert.match(html, /\.projects-dialog \.dialog-close \{ position:absolute; top:14px; right:14px; z-index:5; width:36px; height:36px; display:grid;/);
   assert.match(html, /\.project-heading \{ display:block; padding:20px 58px 12px 18px;/);
   assert.match(html, /\.projects-dialog \.harness-form \{ gap:16px; padding:10px 18px 18px;/);
   assert.match(html, /html\[data-theme="dark"\] \.projects-dialog \{/);
