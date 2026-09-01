@@ -78,7 +78,7 @@ test("Harness MCP rejects missing bearer credentials before protocol handling", 
   assert.match(response.headers.get("www-authenticate"), /Bearer/);
 });
 
-test("Harness MCP rejects browser origins outside Chat-U", async (context) => {
+test("Harness MCP rejects browser origins outside MundusX Chat", async (context) => {
   const endpoint = await startMcpServer(context, {
     authStore: { async mcpSession() { assert.fail("origin is checked before credentials"); } },
     harnessService: {},
@@ -96,7 +96,7 @@ async function startMcpServer(context, { authStore, harnessService }) {
     enabled: true,
     authStore,
     harnessService,
-    publicOrigin: "https://chat-u.mundusx.ai",
+    publicOrigin: "https://chat.mundusx.ai",
     sendJson(response, status, payload) {
       response.writeHead(status, { "Content-Type": "application/json" });
       response.end(JSON.stringify(payload));

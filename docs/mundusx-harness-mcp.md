@@ -1,10 +1,10 @@
 # MundusX Harness MCP
 
 MundusX exposes Harness Contract v1.0 through a user-scoped, stateless
-Streamable HTTP MCP endpoint hosted by Chat-U:
+Streamable HTTP MCP endpoint hosted by MundusX Chat:
 
 ```text
-https://chat-u.mundusx.ai/mcp
+https://chat.mundusx.ai/mcp
 ```
 
 The MCP layer is an adapter only. EHDA remains authoritative for repository
@@ -15,11 +15,11 @@ The endpoint never returns GitHub credentials or the Harness service token.
 
 1. Apply database migration `0025_mcp_personal_access_tokens.sql` using the
    direct `MUNDUSX_DATABASE_URL` migration path.
-2. Set `MUNDUSX_MCP_ENABLED=true` on the Chat-U Railway service.
+2. Set `MUNDUSX_MCP_ENABLED=true` on the MundusX Chat Railway service.
 3. Retain the existing server-only `MUNDUSX_HARNESS_SERVICE_TOKEN` and pooled
    `MUNDUSX_DATABASE_POOL_URL` variables.
-4. Redeploy Chat-U and verify `/health` reports `"mcp":"enabled"`.
-5. Sign in to Chat-U, open the account menu, select **MCP connections**, and
+4. Redeploy MundusX Chat and verify `/health` reports `"mcp":"enabled"`.
+5. Sign in to MundusX Chat, open the account menu, select **MCP connections**, and
    create a named access token. Copy it immediately; only its SHA-256 digest is
    stored.
 
@@ -31,7 +31,7 @@ are scoped to the authenticated MundusX user.
 Store the token in the local environment rather than in source control:
 
 ```powershell
-$env:MUNDUSX_MCP_TOKEN = "<token shown once by Chat-U>"
+$env:MUNDUSX_MCP_TOKEN = "<token shown once by MundusX Chat>"
 ```
 
 Add the server in ChatGPT desktop or Codex settings as Streamable HTTP, or add
@@ -39,7 +39,7 @@ the following to the user or trusted-project `config.toml`:
 
 ```toml
 [mcp_servers.mundusx_harness]
-url = "https://chat-u.mundusx.ai/mcp"
+url = "https://chat.mundusx.ai/mcp"
 bearer_token_env_var = "MUNDUSX_MCP_TOKEN"
 ```
 

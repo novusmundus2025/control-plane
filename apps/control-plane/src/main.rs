@@ -6868,7 +6868,7 @@ fn handle_connection_with_streams(
                                     .write_all(
                                         harness_error_response(harness::HarnessError::new(
                                             "HARNESS_PAIRING_REQUIRED",
-                                            "pair this runner from an authenticated Chat-U session before registration",
+                                            "pair this runner from an authenticated MundusX Chat session before registration",
                                         ))
                                         .as_bytes(),
                                     )

@@ -406,11 +406,11 @@ test("normalizes chat app environment", () => {
 test("renders a user-scoped MCP connection manager only when enabled", () => {
   const html = page(configFromEnv({
     MUNDUSX_MCP_ENABLED: "true",
-    MUNDUSX_PUBLIC_ORIGIN: "https://chat-u.mundusx.ai",
+    MUNDUSX_PUBLIC_ORIGIN: "https://chat.mundusx.ai",
   }));
   assert.match(html, /id="account-mcp"[^>]*>[\s\S]*MCP connections/);
   assert.match(html, /id="mcp-dialog"[^>]*hidden/);
-  assert.match(html, /https:\/\/chat-u\.mundusx\.ai\/mcp/);
+  assert.match(html, /https:\/\/chat\.mundusx\.ai\/mcp/);
   assert.match(html, /id="mcp-token-form"/);
   assert.match(html, /Copy this token now/);
   assert.match(html, /MundusX stores only its digest/);
@@ -3303,7 +3303,7 @@ test("returns immediate weather turns without polling the control plane", async 
   assert.equal(result.progress.strategy, "weather_tool");
 });
 
-test("adapts a Hermes OpenAI weather request to an immediate Chat-U tool response", async () => {
+test("adapts a Hermes OpenAI weather request to an immediate MundusX Chat tool response", async () => {
   const result = await submitOpenAiChatCompletion(
     {
       model: "mundusx-agnostic",
@@ -3386,7 +3386,7 @@ test("asks for a location instead of misrouting a locationless weather request",
   assert.equal(result.choices[0].message.content, "Which city or location would you like the weather for?");
 });
 
-test("adapts Hermes message history into Chat-U model context", async () => {
+test("adapts Hermes message history into MundusX Chat model context", async () => {
   let submittedJob = null;
   const result = await submitOpenAiChatCompletion(
     {
@@ -3744,7 +3744,7 @@ test("OpenAI adapter correlates its stable id and OpenWebUI chat id", async () =
   assert.deepEqual(conversationWrites.map((entry) => entry.role), ["user", "assistant"]);
 });
 
-test("generative Chat-U requests stream while deterministic and tool routes fall back", () => {
+test("generative MundusX Chat requests stream while deterministic and tool routes fall back", () => {
   assert.equal(canLiveStreamChatTurn({ message: "Explain distributed systems.", toolMode: false }), true);
   assert.equal(canLiveStreamChatTurn({ message: "Create a complete Java program", toolMode: false }), true);
   assert.equal(canLiveStreamChatTurn({ message: "Return a JSON schema for a customer record", toolMode: false }), true);
@@ -3753,7 +3753,7 @@ test("generative Chat-U requests stream while deterministic and tool routes fall
   assert.equal(canLiveStreamChatTurn({ message: "Latest NVIDIA news", toolMode: true }), false);
 });
 
-test("native Chat-U streams complete projects as upstream deltas arrive", async () => {
+test("native MundusX Chat streams complete projects as upstream deltas arrive", async () => {
   const prompt = "Give me a complete Node.js CRUD API for schools and students.";
   const requests = [];
   const responseEvents = [];
@@ -3906,7 +3906,7 @@ test("streaming relay exposes the first upstream delta before completion", async
   assert.equal(events.at(-1).type, "end");
 });
 
-test("deterministic Chat-U requests return an explicit polling fallback without upstream work", async () => {
+test("deterministic MundusX Chat requests return an explicit polling fallback without upstream work", async () => {
   const events = [];
   const response = {
     writeHead: (status, headers) => events.push({ status, headers }),
@@ -3927,7 +3927,7 @@ test("deterministic Chat-U requests return an explicit polling fallback without 
   assert.deepEqual(JSON.parse(events[1].value), { fallback: true, reason: "deterministic_or_tool_routed" });
 });
 
-test("live Chat-U stream preserves history and persists one user and assistant turn", async () => {
+test("live MundusX Chat stream preserves history and persists one user and assistant turn", async () => {
   const encoder = new TextEncoder();
   const writes = [];
   let upstreamRequest = null;

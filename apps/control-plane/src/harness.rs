@@ -277,7 +277,7 @@ pub struct RegisterHarnessRunnerRequest {
     pub kind: HarnessRunnerKind,
     #[serde(default)]
     pub owner_user_id: Option<String>,
-    /// One-time Chat-U pairing secret. It is consumed before registration and
+    /// One-time MundusX Chat pairing secret. It is consumed before registration and
     /// is never persisted in runner state or returned in API responses.
     #[serde(default)]
     pub pairing_code: Option<String>,
@@ -1896,11 +1896,12 @@ fn validate_create_request(
             "requesting user id must be a UUID",
         ));
     }
-    if request
-        .submitted_via
-        .as_deref()
-        .is_some_and(|value| !matches!(value, "chat-u" | "service" | "control-plane-ui"))
-    {
+    if request.submitted_via.as_deref().is_some_and(|value| {
+        !matches!(
+            value,
+            "mundusx-chat" | "chat-u" | "service" | "control-plane-ui"
+        )
+    }) {
         return Err(HarnessError::new(
             "HARNESS_SUBMISSION_SOURCE_INVALID",
             "submission source is not recognized",

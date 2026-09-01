@@ -65,7 +65,7 @@ export function createHarnessService({ config, gateway } = {}) {
         allowed_operations: allowedOperations,
         validation_profiles: boundary.validationProfiles,
         requested_by_user_id: session?.id ?? null,
-        submitted_via: session ? "chat-u" : "service",
+        submitted_via: session ? "mundusx-chat" : "service",
       });
 
       if (!payload.task_id) {
