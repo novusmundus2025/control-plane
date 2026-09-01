@@ -205,3 +205,49 @@ test("conversation ownership is claimed once and rejects another user", async ()
     (error) => error.statusCode === 404,
   );
 });
+
+test("MCP credentials are returned once and stored only as a digest", async () => {
+  let insert;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) {
+      insert = { sql, values };
+      return { rows: [{ token_id: "11111111-1111-4111-8111-111111111111", name: values[2] }] };
+    },
+  } });
+
+  const created = await store.createMcpToken("user-1", { name: "My Codex", expires_in_days: 30 });
+  assert.match(created.token, /^mxmcp_[A-Za-z0-9_-]{43}$/);
+  assert.equal(insert.values[1].length, 64);
+  assert.notEqual(insert.values[1], created.token);
+  assert.equal(insert.values[2], "My Codex");
+  assert.equal(insert.values[3], 30);
+});
+
+test("MCP bearer authentication resolves only an active token owner", async () => {
+  const queries = [];
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      if (sql.includes("from public.mcp_personal_access_tokens")) {
+        return { rows: [{ token_id: "token-id", id: "user-1", email: "user@example.com", role: "operator" }] };
+      }
+      return { rows: [] };
+    },
+  } });
+
+  const session = await store.mcpSession({ headers: { authorization: `Bearer mxmcp_${"a".repeat(43)}` } });
+  assert.equal(session.id, "user-1");
+  assert.equal(queries[0].values[0].length, 64);
+  assert.equal(await store.mcpSession({ headers: { authorization: "Bearer invalid" } }), null);
+});
+
+test("MCP token revocation is scoped to the authenticated owner", async () => {
+  let update;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) { update = { sql, values }; return { rowCount: 1, rows: [{ token_id: values[0] }] }; },
+  } });
+  const tokenId = "11111111-1111-4111-8111-111111111111";
+  assert.deepEqual(await store.revokeMcpToken("user-1", tokenId), { revoked: true, token_id: tokenId });
+  assert.deepEqual(update.values, [tokenId, "user-1"]);
+  assert.match(update.sql, /user_id = \$2::uuid/);
+});

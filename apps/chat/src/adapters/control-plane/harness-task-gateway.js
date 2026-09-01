@@ -33,6 +33,17 @@ export function createControlPlaneHarnessTaskGateway({
       );
       return parseGatewayResponse(upstream);
     },
+
+    async cancelTask(taskId) {
+      const upstream = await fetchImpl(
+        `${baseUrl}/internal/harness/tasks/${encodeURIComponent(taskId)}/cancel`,
+        {
+          method: "POST",
+          headers: { Authorization: `Bearer ${token}`, "X-MundusX-Actor": actor },
+        },
+      );
+      return parseGatewayResponse(upstream);
+    },
   });
 }
 

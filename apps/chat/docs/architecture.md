@@ -32,6 +32,12 @@ Projects/Harness is the first migrated vertical slice:
 - `features/harness/http-controller.js` owns `/api/harness/*` request translation.
 - `adapters/control-plane/harness-task-gateway.js` owns control-plane URLs, headers, and response parsing.
 
+MCP is a second thin inbound adapter:
+
+- `features/mcp/http-controller.js` owns bearer authentication and stateless Streamable HTTP transport.
+- `features/mcp/server.js` publishes bounded user-scoped tools and translates them into existing Harness and repository services.
+- MCP never owns task state, approvals, repository policy, or runner execution.
+
 ## Architecture rules
 
 - Preserve a single deployable service; do not introduce microservices for internal code organization.

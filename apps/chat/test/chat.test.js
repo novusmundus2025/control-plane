@@ -400,6 +400,24 @@ test("normalizes chat app environment", () => {
   assert.equal(config.operatorToken, "token");
   assert.equal(config.modelOverride, "");
   assert.equal(config.harnessUiEnabled, false);
+  assert.equal(config.mcpEnabled, false);
+});
+
+test("renders a user-scoped MCP connection manager only when enabled", () => {
+  const html = page(configFromEnv({
+    MUNDUSX_MCP_ENABLED: "true",
+    MUNDUSX_PUBLIC_ORIGIN: "https://chat-u.mundusx.ai",
+  }));
+  assert.match(html, /id="account-mcp"[^>]*>[\s\S]*MCP connections/);
+  assert.match(html, /id="mcp-dialog"[^>]*hidden/);
+  assert.match(html, /https:\/\/chat-u\.mundusx\.ai\/mcp/);
+  assert.match(html, /id="mcp-token-form"/);
+  assert.match(html, /Copy this token now/);
+  assert.match(html, /MundusX stores only its digest/);
+  assert.match(html, /Apply, merge, and deployment still require separate approval/);
+  assert.match(html, /fetch\("\/api\/mcp\/tokens"/);
+  assert.match(html, /data-revoke-mcp-token/);
+  assert.doesNotMatch(page(configFromEnv({})), /id="account-mcp"|id="mcp-dialog"/);
 });
 
 test("renders local-first Projects without a separate Computer surface", () => {

@@ -6,6 +6,10 @@ const CSRF_COOKIE = "__Host-mx_csrf";
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 const CHALLENGE_SECONDS = 10 * 60;
 const RUNNER_PAIRING_SECONDS = 10 * 60;
+const MCP_TOKEN_PREFIX = "mxmcp_";
+const MCP_TOKEN_PATTERN = /^mxmcp_[A-Za-z0-9_-]{43}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const DEFAULT_MCP_TOKEN_DAYS = 90;
 const GITHUB_API_VERSION = "2026-03-10";
 const MAX_GITHUB_PAGES = 5;
 const MAX_GITHUB_INSTALLATIONS = 20;
@@ -168,6 +172,63 @@ export class PostgresAuthStore {
     this.requireCsrf(request, session);
     await this.pool.query("update public.user_sessions set revoked_at = now() where session_hash = $1", [session.session_hash]);
     response.setHeader("Set-Cookie", [cookie(SESSION_COOKIE, "", 0), cookie(CSRF_COOKIE, "", 0, false)]);
+  }
+
+  async mcpSession(request) {
+    this.ensureReady();
+    const authorization = String(request.headers.authorization || "");
+    const raw = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+    if (!MCP_TOKEN_PATTERN.test(raw)) return null;
+    const result = await this.pool.query(`select t.token_id, u.id, u.email, u.display_name, u.role
+      from public.mcp_personal_access_tokens t
+      join public.users u on u.id = t.user_id
+      where t.token_hash = $1 and t.revoked_at is null and t.expires_at > now() and u.status = 'active'`,
+    [digest(raw)]);
+    const session = result.rows[0] ?? null;
+    if (session) {
+      await this.pool.query(`update public.mcp_personal_access_tokens set last_used_at = now()
+        where token_id = $1 and (last_used_at is null or last_used_at < now() - interval '5 minutes')`,
+      [session.token_id]);
+    }
+    return session;
+  }
+
+  async createMcpToken(userId, input = {}) {
+    this.ensureReady();
+    const name = String(input.name || "Codex").trim();
+    const expiresInDays = Number(input.expires_in_days ?? DEFAULT_MCP_TOKEN_DAYS);
+    if (!name || name.length > 80) throw Object.assign(new Error("MCP token name must contain 1 to 80 characters"), { statusCode: 400 });
+    if (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 365) {
+      throw Object.assign(new Error("MCP token lifetime must be between 1 and 365 days"), { statusCode: 400 });
+    }
+    const raw = `${MCP_TOKEN_PREFIX}${token()}`;
+    const result = await this.pool.query(`insert into public.mcp_personal_access_tokens
+      (user_id, token_hash, name, expires_at)
+      values ($1, $2, $3, now() + ($4 * interval '1 day'))
+      returning token_id, name, created_at, expires_at`,
+    [userId, digest(raw), name, expiresInDays]);
+    return { ...result.rows[0], token: raw };
+  }
+
+  async listMcpTokens(userId) {
+    this.ensureReady();
+    const result = await this.pool.query(`select token_id, name, created_at, expires_at, last_used_at
+      from public.mcp_personal_access_tokens
+      where user_id = $1 and revoked_at is null and expires_at > now()
+      order by created_at desc limit 20`, [userId]);
+    return result.rows;
+  }
+
+  async revokeMcpToken(userId, tokenId) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(tokenId || ""))) {
+      throw Object.assign(new Error("MCP token id is invalid"), { statusCode: 400 });
+    }
+    const result = await this.pool.query(`update public.mcp_personal_access_tokens set revoked_at = now()
+      where token_id = $1::uuid and user_id = $2::uuid and revoked_at is null returning token_id`,
+    [tokenId, userId]);
+    if (result.rowCount !== 1) throw Object.assign(new Error("MCP token was not found"), { statusCode: 404 });
+    return { revoked: true, token_id: tokenId };
   }
 
   async authorizeConversation(userId, conversationId, create = false) {
