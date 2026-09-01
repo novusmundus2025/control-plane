@@ -231,10 +231,14 @@ export function page(config = configFromEnv()) {
       </header>
       ${config.harnessUiEnabled ? `
       <form id="harness-form" class="harness-form">
-        <section class="project-section project-create-fields">
+        <section class="project-section project-create-fields" id="project-create-fields">
           <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-project" autocomplete="off" required></label>
         </section>
-        <p class="project-purpose-note"><span aria-hidden="true">✦</span><span>Projects keep chats and files together so you can continue where you left off.</span></p>
+        <p class="project-purpose-note" id="project-purpose-note"><span aria-hidden="true">✦</span><span>Projects keep chats and files together so you can continue where you left off.</span></p>
+        <section class="project-runner-context" id="project-runner-context" hidden>
+          <span class="project-runner-context-icon" aria-hidden="true">⌁</span>
+          <span><strong id="project-runner-context-name">Project</strong><small>This project and its chat are already saved. Connect this device before creating files or running commands.</small></span>
+        </section>
         <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
           <span class="readiness-dot" aria-hidden="true"></span>
           <span><strong id="project-readiness-title">Checking local runner…</strong><small id="project-readiness-text">Looking for your project workspace service.</small></span>
@@ -242,14 +246,16 @@ export function page(config = configFromEnv()) {
         <details class="project-runner-setup" id="project-runner-setup" hidden>
           <summary><span><strong>Set up local runner</strong><small>Required once on this device</small></span><span aria-hidden="true">⌄</span></summary>
           <div class="project-runner-setup-body">
-            <p>Install the native MundusX runner once to create and test projects on this device. Git is required; Java work uses Maven when available.</p>
-            <div class="inline-actions"><a class="harness-download primary" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" target="_blank" rel="noopener">Get local runner</a><button id="harness-pair" type="button">Create pairing code</button></div>
+            <ol class="runner-setup-steps">
+              <li><span><strong>Install the local runner</strong><small>Download and start it once on this computer.</small></span><a class="harness-download primary" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" target="_blank" rel="noopener">Download runner</a></li>
+              <li><span><strong>Connect this browser</strong><small>Pairing authorizes local project actions; it is separate from GitHub access.</small></span><button id="harness-pair" type="button" hidden>Connect runner</button></li>
+            </ol>
             <code id="harness-pairing-code" class="pairing-code" hidden></code>
             <div class="command-row" id="harness-pairing-command-row" hidden><code id="harness-pairing-command"></code><button class="copy-command" type="button" data-copy-target="harness-pairing-command">Copy</button></div>
-            <p id="harness-runner-status">Start the runner, pair it once, and keep it available while a project task runs.</p>
+            <p id="harness-runner-status">Checking whether secure runner pairing is available…</p>
           </div>
         </details>
-        <footer class="project-actions">
+        <footer class="project-actions" id="project-actions">
           <output id="harness-result" aria-live="polite"></output>
           <button class="harness-submit" type="submit" disabled>Create project</button>
         </footer>
@@ -1558,7 +1564,7 @@ export function page(config = configFromEnv()) {
     .credential-note strong { color: var(--text); }
     .setup-unavailable { color: var(--muted); font-size: 13px; }
     .project-readiness { margin: 2px 0; padding: 10px 12px; border-radius: 10px; }
-    .project-readiness[hidden],.project-runner-setup[hidden] { display:none; }
+    .project-readiness[hidden],.project-runner-setup[hidden],.project-runner-context[hidden],.project-create-fields[hidden],.project-purpose-note[hidden],.project-actions[hidden] { display:none; }
     .project-readiness > span:nth-child(2) { display:grid; gap:2px; flex: 1; }
     .project-readiness small { color:var(--muted); }
     .harness-form label { display: grid; gap: 6px; }
@@ -1607,6 +1613,16 @@ export function page(config = configFromEnv()) {
     .project-field-wide input { line-height:1.3; }
     .project-purpose-note { display:flex; align-items:flex-start; gap:10px; margin:0; padding:12px 13px; border-radius:11px; color:var(--muted); background:color-mix(in srgb,var(--text) 7%,transparent); font-size:13px; line-height:1.4; }
     .project-purpose-note > span:first-child { color:var(--purple); font-size:16px; line-height:1.1; }
+    .project-runner-context { display:flex; align-items:flex-start; gap:12px; margin:0; padding:13px; border:1px solid var(--line); border-radius:11px; background:var(--bg); }
+    .project-runner-context-icon { display:grid; place-items:center; width:30px; height:30px; flex:0 0 auto; border-radius:9px; color:var(--blue); background:color-mix(in srgb,var(--blue) 11%,transparent); }
+    .project-runner-context > span:last-child { display:grid; gap:2px; min-width:0; }
+    .project-runner-context strong { overflow-wrap:anywhere; }
+    .project-runner-context small { color:var(--muted); line-height:1.4; }
+    .runner-setup-steps { display:grid; gap:12px; margin:0; padding:0; list-style:none; counter-reset:runner-step; }
+    .runner-setup-steps li { counter-increment:runner-step; display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:12px; padding:11px; border:1px solid var(--line); border-radius:10px; background:var(--panel); }
+    .runner-setup-steps li > span { display:grid; grid-template-columns:26px minmax(0,1fr); column-gap:9px; }
+    .runner-setup-steps li > span::before { content:counter(runner-step); grid-row:1 / 3; display:grid; place-items:center; width:25px; height:25px; border-radius:50%; color:var(--blue); background:color-mix(in srgb,var(--blue) 11%,transparent); font-size:12px; font-weight:800; }
+    .runner-setup-steps small { color:var(--muted); }
     .project-actions { display:flex; align-items:center; justify-content:flex-end; gap:16px; padding:0; border:0; }
     .project-actions output { min-width:0; flex:1; color: var(--text); font-size: 12px; }
     .project-actions .harness-submit { min-width:142px; min-height:44px; padding:11px 16px; border-radius:11px; box-shadow:0 10px 24px rgba(86,70,246,.22); }
@@ -1821,7 +1837,7 @@ export function page(config = configFromEnv()) {
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
     @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px}.active-project-context strong{max-width:90px}#web-search-label{display:none} }
-    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:10px;right:10px}.project-heading{padding:18px 52px 10px 16px}.projects-dialog .harness-form{padding:8px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%}.mcp-token-form{grid-template-columns:1fr}.mcp-token-form button{width:100%} }
+    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:10px;right:10px}.project-heading{padding:18px 52px 10px 16px}.projects-dialog .harness-form{padding:8px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%}.runner-setup-steps li{grid-template-columns:1fr}.runner-setup-steps li>a,.runner-setup-steps li>button{width:100%;text-align:center}.mcp-token-form{grid-template-columns:1fr}.mcp-token-form button{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
   </style>
 </head>
@@ -1984,6 +2000,12 @@ export function page(config = configFromEnv()) {
     const repositoryOpenMobileEl = document.getElementById("repository-open-mobile");
     const repositoryDialogEl = document.getElementById("repository-dialog");
     const repositoryDialogCloseEl = document.getElementById("repository-dialog-close");
+    const repositoryDialogTitleEl = document.getElementById("project-dialog-title");
+    const projectCreateFieldsEl = document.getElementById("project-create-fields");
+    const projectPurposeNoteEl = document.getElementById("project-purpose-note");
+    const projectRunnerContextEl = document.getElementById("project-runner-context");
+    const projectRunnerContextNameEl = document.getElementById("project-runner-context-name");
+    const projectActionsEl = document.getElementById("project-actions");
     const appToastEl = document.getElementById("app-toast");
     const meshCanvasEl = document.getElementById("mesh-canvas");
     const themeLightEl = document.getElementById("theme-light");
@@ -2003,6 +2025,7 @@ export function page(config = configFromEnv()) {
     let readyHarnessModes = new Set();
     let localRunnerReady = false;
     let runnerSetupRequested = false;
+    let runnerTargetProject = null;
     let appToastTimer = null;
     function loadStoredProjectContext(namespace) {
       activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
@@ -2210,6 +2233,7 @@ export function page(config = configFromEnv()) {
         authCsrfToken = payload.csrf_token;
         const user = payload.user;
         currentUser = user;
+        updateRunnerPairAvailability();
         const namespace = String(user.id).replace(/[^a-zA-Z0-9-]/g, "");
         historyKey = "mundusx.chat.history.v1:" + namespace;
         conversationIdKey = "mundusx.chat.conversationId.v1:" + namespace;
@@ -2225,6 +2249,7 @@ export function page(config = configFromEnv()) {
         authGateEl.hidden = true;
       } catch {
         currentUser = null;
+        updateRunnerPairAvailability();
         if (document.body.dataset.authRequired === "true") {
           authMessageEl.textContent = providers.github || providers.email ? "Choose a secure sign-in method." : "Authentication is not configured yet.";
         } else {
@@ -2246,17 +2271,44 @@ export function page(config = configFromEnv()) {
       }
     }
 
-    async function openProjects({ showRunnerSetup = false } = {}) {
+    function configureProjectsDialog({ showRunnerSetup = false, project = null } = {}) {
+      const existingProjectMode = Boolean(showRunnerSetup && project?.slug);
+      runnerTargetProject = existingProjectMode ? project : null;
+      if (repositoryDialogTitleEl) repositoryDialogTitleEl.textContent = existingProjectMode ? "Connect local runner" : "Create project";
+      if (projectCreateFieldsEl) projectCreateFieldsEl.hidden = existingProjectMode;
+      if (projectPurposeNoteEl) projectPurposeNoteEl.hidden = existingProjectMode;
+      if (projectRunnerContextEl) projectRunnerContextEl.hidden = !existingProjectMode;
+      if (projectRunnerContextNameEl) projectRunnerContextNameEl.textContent = existingProjectMode ? project.slug : "Project";
+      if (projectActionsEl) projectActionsEl.hidden = existingProjectMode;
+      if (projectRunnerSetupEl) {
+        projectRunnerSetupEl.hidden = !existingProjectMode;
+        projectRunnerSetupEl.open = existingProjectMode;
+      }
+    }
+
+    function updateRunnerPairAvailability() {
+      if (!harnessPairEl || !harnessRunnerStatusEl) return;
+      const pairingAvailable = Boolean(currentUser && authCsrfToken);
+      harnessPairEl.hidden = !pairingAvailable;
+      harnessPairEl.disabled = !pairingAvailable;
+      if (!pairingAvailable && !localRunnerReady) {
+        harnessRunnerStatusEl.textContent = "Install the runner now. Secure browser pairing will be available when account connection is enabled.";
+      }
+    }
+
+    async function openProjects({ showRunnerSetup = false, project = null } = {}) {
       runnerSetupRequested = showRunnerSetup;
+      configureProjectsDialog({ showRunnerSetup, project });
       setWorkspaceDestination("projects");
       repositoryDialogEl.hidden = false;
       return loadHarnessRunners().catch((error) => {
         if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
         if (projectReadinessEl) projectReadinessEl.hidden = true;
         if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Local runner status unavailable";
-        if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = !runnerSetupRequested;
-        if (projectRunnerSetupEl) projectRunnerSetupEl.open = runnerSetupRequested;
-        if (harnessRunnerStatusEl) harnessRunnerStatusEl.textContent = error.message || "Local runner status unavailable";
+        if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = !runnerTargetProject;
+        if (projectRunnerSetupEl) projectRunnerSetupEl.open = Boolean(runnerTargetProject);
+        if (harnessRunnerStatusEl && currentUser) harnessRunnerStatusEl.textContent = error.message || "Local runner status unavailable";
+        updateRunnerPairAvailability();
         updateProjectCreateAvailability();
       });
     }
@@ -2706,7 +2758,9 @@ export function page(config = configFromEnv()) {
         harnessPairingCommandRowEl.hidden = false;
         harnessRunnerStatusEl.textContent = "Pairing code expires in 10 minutes and works once.";
       } catch (error) {
-        harnessRunnerStatusEl.textContent = error.message;
+        harnessRunnerStatusEl.textContent = /authentication|required|sign in/i.test(error.message)
+          ? "Secure runner pairing is not available until account connection is enabled."
+          : error.message;
       } finally {
         harnessPairEl.disabled = false;
       }
@@ -3067,7 +3121,7 @@ export function page(config = configFromEnv()) {
             const body = pending.querySelector(".message-body");
             if (body) body.textContent = "Connect your local runner to create files, run builds, or execute tests for " + activeProject.slug + ". Your project and chat are already saved.";
             setStatus("ready", "Runner needed");
-            await openProjects({ showRunnerSetup: true });
+            await openProjects({ showRunnerSetup: true, project: activeProject });
             return;
           }
           await runActiveProjectTask(pending, message, activeProject);
