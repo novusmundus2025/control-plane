@@ -282,13 +282,16 @@ export function page(config = configFromEnv()) {
       height: 100vh;
       min-height: 0;
       display: grid;
-      grid-template-columns: 300px minmax(0, 1fr);
+      grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
     }
 
     /* ---- Sidebar / menu column ---- */
     aside {
+      width: 100%;
+      min-width: 0;
       height: 100vh;
       min-height: 0;
+      overflow: hidden;
       border-right: 1px solid var(--line);
       background: var(--rail);
       padding: 22px 16px 18px;
@@ -540,6 +543,8 @@ export function page(config = configFromEnv()) {
       position: relative;
       align-self: end;
       width: 100%;
+      min-width: 0;
+      max-width: 100%;
       border-top: 1px solid var(--line);
       padding-top: 14px;
     }
@@ -1682,7 +1687,9 @@ export function page(config = configFromEnv()) {
     body { background:var(--bg); transition:background .28s ease,color .28s ease; }
     .shell { position:relative; isolation:isolate; }
     aside { position:relative; z-index:4; backdrop-filter:blur(22px); grid-template-rows:auto auto minmax(0,1fr) auto; gap:14px; }
+    .rail-primary,.workspace-nav,.rail-list { width:100%; min-width:0; max-width:100%; }
     .rail-primary { display:grid; gap:8px; }
+    .new-chat,.rail-destination,.account-bar { width:100%; min-width:0; max-width:100%; }
     .new-chat { color:white; border:0; background:var(--gradient); box-shadow:0 10px 24px rgba(84,71,244,.22); }
     .new-chat:hover,.new-chat:focus-visible { background:var(--gradient); transform:translateY(-1px); }
     .new-chat .kbd-hint { color:white; border-color:rgba(255,255,255,.25); background:rgba(255,255,255,.12); }
