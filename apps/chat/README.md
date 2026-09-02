@@ -84,7 +84,7 @@ provide the server-side Harness token and runner download page:
 MUNDUSX_HARNESS_UI_ENABLED=true
 MUNDUSX_HARNESS_SERVICE_TOKEN=<same secret configured on the control plane>
 MUNDUSX_MCP_ENABLED=true
-MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL=https://github.com/mundusx/mundusx/releases/download/harness-runner-v0.1.0-uat.3/mundusx-harness-setup-windows-x86_64.exe
+MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL=https://github.com/mundusx/releases/releases/download/harness-runner-v0.1.0-uat.4/mundusx-harness-setup-windows-x86_64.exe
 ```
 
 Chat users can submit only a local project, path, validation, mode, and tool boundary granted to their
