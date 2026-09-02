@@ -17,6 +17,7 @@ import { createMcpHttpController } from "./features/mcp/http-controller.js";
 import { renderSkillsPage } from "./features/skills/page.js";
 import { createSkillRegistry } from "./features/skills/registry.js";
 import { httpError } from "./shared/http-error.js";
+import { RELEASE_BACKEND_BASE_URL, releaseDownloadLocation } from "./release-downloads.js";
 import {
   detectChatQualityFlags,
   detectCompleteCodeQualityFlags,
@@ -140,7 +141,7 @@ export function configFromEnv(env = process.env) {
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
     harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
-      || "https://github.com/mundusx/releases/releases/download/harness-runner-v0.1.0-uat.4/mundusx-harness-setup-windows-x86_64.exe",
+      || `${RELEASE_BACKEND_BASE_URL}/mundusx-harness-setup-windows-x86_64.exe`,
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
@@ -5103,6 +5104,15 @@ export function createServerApp(config = configFromEnv()) {
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      const releaseLocation = releaseDownloadLocation(url.pathname);
+      if (["GET", "HEAD"].includes(request.method) && releaseLocation) {
+        response.writeHead(307, {
+          Location: releaseLocation,
+          "Cache-Control": "public, max-age=300",
+          "X-Content-Type-Options": "nosniff",
+        });
+        return response.end();
+      }
       if (request.method === "GET" && url.pathname === "/") {
         return sendHtml(response, page(config));
       }

@@ -84,8 +84,12 @@ provide the server-side Harness token and runner download page:
 MUNDUSX_HARNESS_UI_ENABLED=true
 MUNDUSX_HARNESS_SERVICE_TOKEN=<same secret configured on the control plane>
 MUNDUSX_MCP_ENABLED=true
-MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL=https://github.com/mundusx/releases/releases/download/harness-runner-v0.1.0-uat.4/mundusx-harness-setup-windows-x86_64.exe
+MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL=https://downloads.mundusx.ai/prod/latest/mundusx-harness-setup-windows-x86_64.exe
 ```
+
+The stable `/prod/latest/<asset>` channel is an allowlisted redirect to the latest signed binary in
+the public `mundusx/releases` repository. Attach `downloads.mundusx.ai` to this Railway service
+before setting the variable; the built-in fallback remains the canonical GitHub Releases URL.
 
 Chat users can submit only a local project, path, validation, mode, and tool boundary granted to their
 internal user id. A submitted
