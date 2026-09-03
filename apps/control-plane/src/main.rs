@@ -1141,6 +1141,79 @@ fn topology_node_tone(node: &NodeRecord) -> &'static str {
     }
 }
 
+fn render_node_classification(node: &NodeRecord) -> String {
+    let advertised = node.capabilities.as_ref();
+    let live = node
+        .worker_health
+        .as_ref()
+        .map(|health| &health.capabilities);
+    let harness = advertised.and_then(|capabilities| capabilities.harness.as_ref());
+    let node_type = if harness.is_some() {
+        "harness runner"
+    } else {
+        "inference contributor"
+    };
+    let capacity = advertised
+        .map(|capabilities| capabilities.capacity_class.as_str())
+        .filter(|value| !value.is_empty())
+        .or_else(|| {
+            live.map(|capabilities| capabilities.capacity_class.as_str())
+                .filter(|value| !value.is_empty())
+        })
+        .unwrap_or("unclassified");
+    let roles = advertised
+        .map(|capabilities| capabilities.supported_roles.as_slice())
+        .filter(|roles| !roles.is_empty())
+        .or_else(|| {
+            live.map(|capabilities| capabilities.roles.as_slice())
+                .filter(|roles| !roles.is_empty())
+        })
+        .map(|roles| {
+            roles
+                .iter()
+                .map(|role| role.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "not advertised".to_string());
+    let tools = advertised
+        .map(|capabilities| capabilities.supported_tools.as_slice())
+        .filter(|tools| !tools.is_empty())
+        .or_else(|| {
+            live.map(|capabilities| capabilities.supported_tools.as_slice())
+                .filter(|tools| !tools.is_empty())
+        })
+        .map(|tools| tools.join(", "))
+        .unwrap_or_else(|| "none".to_string());
+    let authority = harness
+        .map(|capabilities| {
+            if capabilities.supported_operations.is_empty() {
+                "bounded harness policy".to_string()
+            } else {
+                capabilities.supported_operations.join(", ")
+            }
+        })
+        .unwrap_or_else(|| "inference only; no filesystem authority".to_string());
+    let runtime = node.worker_health.as_ref().map_or("unknown", |health| {
+        if health.capabilities.models.iter().any(|model| model.warm) {
+            "warm"
+        } else if health.runtime_ready {
+            "ready / cold"
+        } else {
+            "unavailable"
+        }
+    });
+    format!(
+        r#"<div class="classification"><strong>{node_type}</strong><div class="meta">location: contributor / outbound</div><div class="meta">capacity: {capacity} &middot; runtime: {runtime}</div><div class="meta">can do: {roles}</div><div class="meta">declared tools: {tools}</div><div class="meta"><strong>authority:</strong> {authority}</div></div>"#,
+        node_type = escape_html(node_type),
+        capacity = escape_html(capacity),
+        runtime = escape_html(runtime),
+        roles = escape_html(&roles),
+        tools = escape_html(&tools),
+        authority = escape_html(&authority),
+    )
+}
+
 fn render_topology_slots(state: &ControlPlaneState) -> String {
     let mut live_nodes: Vec<&NodeRecord> = state
         .nodes
@@ -1264,6 +1337,7 @@ fn render_node_records(state: &ControlPlaneState, nodes: Vec<NodeRecord>) -> Str
                 )
             })
             .unwrap_or_else(|| r#"<div class="meta">worker: unknown</div>"#.to_string());
+        let classification = render_node_classification(&node);
         let policy_reason = node
             .policy_reason
             .as_ref()
@@ -1288,7 +1362,7 @@ fn render_node_records(state: &ControlPlaneState, nodes: Vec<NodeRecord>) -> Str
                 <div class="meta">completed {} &middot; failed {} &middot; consecutive failures {}</div>
                 <div class="meta">accepted {} &middot; rejected {} &middot; last failure {}</div>
               </div>
-              <div><span class="pill" style="background:{};color:{};">{}</span></div>
+              <div><span class="pill" style="background:{};color:{};">{}</span>{}</div>
               <div>
                 <span class="pill" style="background:{};color:{};">{}</span>
                 <div class="meta" style="margin-top:6px;">reported {}</div>
@@ -1330,6 +1404,7 @@ fn render_node_records(state: &ControlPlaneState, nodes: Vec<NodeRecord>) -> Str
             backend_bg,
             backend_fg,
             escape_html(&backend),
+            classification,
             state_bg,
             state_fg,
             escape_html(&node.state.to_string()),
@@ -1901,6 +1976,7 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
         String::new()
     };
     let scheduler_fit = render_node_scheduler_fit(state, node);
+    let classification = render_node_classification(node);
 
     format!(
         r#"<section class="panel node-profile-panel">
@@ -1963,6 +2039,10 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
               </div>
             </div>
             <div class="node-profile-card">
+              <h3>Classification and authority</h3>
+              {classification}
+            </div>
+            <div class="node-profile-card">
               <h3>Scheduler Fit</h3>
               {scheduler_fit}
             </div>
@@ -2013,6 +2093,7 @@ fn render_node_profile_panel(state: &ControlPlaneState, node_id: &str) -> String
         state = escape_html(&node.state.to_string()),
         reported_state = escape_html(&node.reported_state.to_string()),
         scheduler_fit = scheduler_fit,
+        classification = classification,
     )
 }
 
@@ -9537,8 +9618,8 @@ mod tests {
 
     use crate::contracts::{
         AgentRegistration, AgentState, Backend, ChatMessage, Heartbeat, JobCompletion,
-        JobExecutionMode, JobGraphNodeStatus, JobRequest, JobStatus, ModelCapability, RoutingMode,
-        RuntimeMode, WorkerHealthReport,
+        JobExecutionMode, JobGraphNodeStatus, JobRequest, JobStatus, ModelCapability, NodeRole,
+        RoutingMode, RuntimeMode, WorkerHealthReport,
     };
     use crate::state::ControlPlaneState;
     use ed25519_dalek::{Signer, SigningKey};
@@ -10528,6 +10609,15 @@ mod tests {
             node.trust.accepted_results = 8;
             node.trust.total_latency_ms = 800;
             node.trust.last_success_at = Some("20".to_string());
+            let health = node.worker_health.as_mut().expect("worker health");
+            health.capabilities.capacity_class = "standard".to_string();
+            health.capabilities.roles = vec![NodeRole::Chat, NodeRole::Coding];
+            health.capabilities.supported_tools = vec!["repository".to_string()];
+            health.capabilities.models = vec![ModelCapability {
+                name: "test-model".to_string(),
+                warm: true,
+                ..ModelCapability::default()
+            }];
         }
         {
             let node = state.nodes.get_mut("node-poor").expect("poor node");
@@ -10551,6 +10641,11 @@ mod tests {
         assert!(html.contains("grade A &middot; 95/100 &middot; high trust"));
         assert!(html.contains("grade F &middot; 20/100 &middot; poor trust"));
         assert!(html.contains("grade C &middot; 50/100 &middot; new"));
+        assert!(html.contains("inference contributor"));
+        assert!(html.contains("capacity: standard &middot; runtime: warm"));
+        assert!(html.contains("can do: chat, coding"));
+        assert!(html.contains("declared tools: repository"));
+        assert!(html.contains("authority:</strong> inference only; no filesystem authority"));
         assert!(html.contains("completed 8 &middot; failed 0 &middot; consecutive failures 0"));
         assert!(
             html.contains("accepted 1 &middot; rejected 5 &middot; last failure runtime failed")
