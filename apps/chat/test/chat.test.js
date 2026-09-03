@@ -549,6 +549,16 @@ test("composes chat system prompts from selected markdown skills", () => {
   assert.doesNotMatch(prompt, /Use the Atlas persona/);
 });
 
+test("composes account-owned skills and administrator global overrides at runtime", () => {
+  const prompt = buildChatSystemPrompt("Say hi.", "atlas", {
+    global: [{ skill_id: "formatter", enabled: true, content: "# Formatter\nUse the global override." }],
+    personal: [{ slug: "my-style", enabled: true, content: "# My style\nUse short paragraphs." }],
+  });
+  assert.match(prompt, /Use the global override/);
+  assert.match(prompt, /\[personal-my-style\] Use short paragraphs/);
+  assert.doesNotMatch(prompt, /Keep the answer direct and readable/);
+});
+
 test("selects focused markdown skills by request type", () => {
   assert.deepEqual(
     selectChatSkills("Say hi.").map((skill) => skill.name),

@@ -49,7 +49,8 @@ MUNDUSX_WEB_SEARCH_TTL_SECONDS=1800
 MUNDUSX_WEB_SEARCH_DAILY_BUDGET=<optional daily call cap; 0 or unset means unlimited>
 ```
 
-MundusX Chat uses per-user PostgreSQL sessions by default. Run migration `0020_chat_user_auth.sql`,
+MundusX Chat uses per-user PostgreSQL sessions by default. Run migrations through
+`0027_user_and_global_skills.sql`,
 configure at least one login provider, and keep the database and provider secrets server-side:
 
 ```text
@@ -161,15 +162,18 @@ Railway provides `PORT`; the app reads it automatically.
 
 ## Current Flow
 
-Runtime assistant skills are application configuration under `apps/chat/skills/`.
-`manifest.json` is the authoritative enablement and metadata registry; each skill's
-Markdown file supplies its private model instructions. The service validates and
-loads the registry at startup, so repository changes require a restart or redeploy.
+Runtime assistant skills start from application configuration under `apps/chat/skills/`.
+`manifest.json` defines the global catalog and each Markdown file supplies its deployed
+default. `/skills` requires an authenticated account. Normal users see global metadata
+read-only and can create, edit, enable, disable, or delete only their own PostgreSQL-backed
+personal skills. Personal skills are selected only for that user's chat requests and follow
+the same validation, size, and secret-rejection rules as global skills.
 
-The unauthenticated `/skills` management preview lists registry metadata and can
-validate browser-local drafts. It intentionally cannot read current private skill
-content or publish global changes. Server-side publishing remains disabled until an
-authenticated, audited workflow is implemented.
+Users with the `admin`, `platform_admin`, or `super_admin` role can update a global catalog
+entry. The database override is versioned and takes effect for authenticated chat requests;
+non-administrators never receive the private global Markdown. All writes require the existing
+same-origin CSRF protection. Global safety and authorization policy remains outside this
+custom-skill layer and cannot be replaced by a personal skill.
 
 1. Browser posts a user message to `POST /api/chat/jobs`.
 2. Simple polynomial indefinite integrals are answered directly through the math tool.
