@@ -27,6 +27,12 @@ export function createSkillRegistry({ skillsDir }) {
       if (!record) return fallback;
       return record.enabled ? record.content : null;
     },
+    rawContent(id) {
+      return records.get(id)?.content ?? null;
+    },
+    has(id) {
+      return records.has(id);
+    },
     catalog() {
       return [...records.values()].map(({ content: _content, validation, ...entry }) => ({
         ...entry,

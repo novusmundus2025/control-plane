@@ -16,7 +16,8 @@ import {
 import { createMcpHttpController } from "./features/mcp/http-controller.js";
 import { createLocalAgentHttpController } from "./features/agent/http-controller.js";
 import { renderSkillsPage } from "./features/skills/page.js";
-import { createSkillRegistry } from "./features/skills/registry.js";
+import { createSkillRegistry, validateSkillDraft } from "./features/skills/registry.js";
+import { createSkillsHttpController } from "./features/skills/http-controller.js";
 import { httpError } from "./shared/http-error.js";
 import { RELEASE_BACKEND_BASE_URL, releaseDownloadLocation } from "./release-downloads.js";
 import {
@@ -5156,6 +5157,12 @@ export function createServerApp(config = configFromEnv()) {
     readJsonBody,
     sendJson,
   });
+  const handleSkillsRequest = createSkillsHttpController({
+    authStore,
+    registry: SKILL_REGISTRY,
+    readJsonBody,
+    sendJson,
+  });
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -5172,7 +5179,15 @@ export function createServerApp(config = configFromEnv()) {
         return sendHtml(response, page(config));
       }
       if (request.method === "GET" && url.pathname === "/skills") {
-        return sendHtml(response, renderSkillsPage({ catalog: SKILL_REGISTRY.catalog(), version: SKILL_REGISTRY.version }));
+        const session = await authStore.session(request);
+        if (!session) {
+          response.writeHead(302, { Location: "/" });
+          return response.end();
+        }
+        return sendHtml(response, renderSkillsPage({
+          user: { id: session.id, email: session.email, display_name: session.display_name, role: session.role },
+          csrfToken: csrfToken(request),
+        }));
       }
       if (request.method === "GET" && url.pathname === "/runner/connect") {
         return sendHtml(response, runnerConnectPage(url));
@@ -5253,6 +5268,7 @@ export function createServerApp(config = configFromEnv()) {
         request.mundusxSession = session;
         if (["POST", "PUT", "PATCH", "DELETE"].includes(request.method)) authStore.requireCsrf(request, session);
       }
+      if (await handleSkillsRequest({ request, response, url })) return;
       if (request.method === "POST" && url.pathname === "/api/auth/logout") {
         const session = await authStore.session(request);
         if (!session) throw httpError(401, "Authentication required");
@@ -5313,17 +5329,20 @@ export function createServerApp(config = configFromEnv()) {
       if (request.method === "POST" && url.pathname === "/api/chat") {
         const body = await readJsonBody(request);
         if (request.mundusxSession) await authStore.authorizeConversation(request.mundusxSession.id, body?.conversationId, true);
+        if (request.mundusxSession) body.skillContext = await runtimeSkillContext(authStore, request.mundusxSession.id);
         const result = await submitChatTurn(body, config);
         return sendJson(response, 200, result);
       }
       if (request.method === "POST" && url.pathname === "/api/chat/stream") {
         const body = await readJsonBody(request);
         if (request.mundusxSession) await authStore.authorizeConversation(request.mundusxSession.id, body?.conversationId, true);
+        if (request.mundusxSession) body.skillContext = await runtimeSkillContext(authStore, request.mundusxSession.id);
         return await streamChatTurn(response, body, config);
       }
       if (request.method === "POST" && url.pathname === "/api/chat/jobs") {
         const body = await readJsonBody(request);
         if (request.mundusxSession) await authStore.authorizeConversation(request.mundusxSession.id, body?.conversationId, true);
+        if (request.mundusxSession) body.skillContext = await runtimeSkillContext(authStore, request.mundusxSession.id);
         const result = await submitChatJob(body, config);
         return sendJson(response, 202, result);
       }
@@ -5490,7 +5509,7 @@ export async function streamChatTurn(response, body, config = configFromEnv(), f
   const requestBody = {
     stream: true,
     messages: [
-      { role: "system", content: buildChatSystemPrompt(message, body?.voicePersona) },
+      { role: "system", content: buildChatSystemPrompt(message, body?.voicePersona, body?.skillContext) },
       ...historyMessages,
       { role: "user", content: message },
     ],
@@ -5950,7 +5969,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   const model = String(body?.model ?? config.modelOverride ?? "").trim();
   const capacityProfile = await fetchChatCapacityProfile(config, fetchImpl, model);
   const contextWindowTokens = capacityProfile?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
-  let systemPrompt = buildChatSystemPrompt(message, body?.voicePersona);
+  let systemPrompt = buildChatSystemPrompt(message, body?.voicePersona, body?.skillContext);
   if (body?.qualityRetry === true) {
     systemPrompt += " This is an internal validation retry. Return a corrected complete answer only. Do not repeat words, clauses, sentences, or sections. Satisfy every requested method, entrypoint, call relationship, import, and formatting requirement. For code requests, use readable multiline source code in one fenced block.";
   }
@@ -10777,11 +10796,17 @@ function looksLikeTranslationRequest(lower) {
   );
 }
 
-export function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
+export function buildChatSystemPrompt(message = "", voicePersona = "atlas", skillContext = {}) {
   const persona = resolveVoicePersona(voicePersona);
   const personaName = persona === "atlas" ? "Atlas" : "Marie";
   const personaText = persona === "atlas" ? ATLAS_PERSONA : MARIE_PERSONA;
-  const selectedSkills = selectChatSkills(message);
+  const selectedSkills = selectChatSkills(message, skillContext?.global);
+  for (const personal of Array.isArray(skillContext?.personal) ? skillContext.personal.slice(0, 10) : []) {
+    const validation = validateSkillDraft(personal?.content);
+    if (personal?.enabled !== false && validation.valid) {
+      selectedSkills.push({ name: `personal-${personal.slug}.md`, content: personal.content });
+    }
+  }
   const includePersona = selectedSkills.some((skill) => skill.name === "persona-atlas.md") || persona === "marie";
   const lower = String(message).toLowerCase();
   const productionCodeProject = looksLikeProductionCodeProjectRequest(lower);
@@ -10835,7 +10860,7 @@ export function buildChatSystemPrompt(message = "", voicePersona = "atlas") {
   return rules.join(" ");
 }
 
-export function selectChatSkills(message = "") {
+export function selectChatSkills(message = "", globalOverrides = []) {
   const text = String(message ?? "");
   const lower = text.toLowerCase();
   const skills = [
@@ -10874,7 +10899,20 @@ export function selectChatSkills(message = "") {
     skills.push({ name: "verifier.md", content: CHAT_SKILLS.verifier });
   }
 
-  return dedupeSkills(skills.filter((skill) => skill.content));
+  const overrides = new Map((Array.isArray(globalOverrides) ? globalOverrides : []).map((item) => [item.skill_id, item]));
+  const ids = { "router.md": "router", "formatter.md": "formatter", "persona-atlas.md": "persona-atlas", "translation.md": "translation", "code.md": "code", "math.md": "math", "weather.md": "weather", "facts.md": "facts", "chunk-planner.md": "chunk-planner", "verifier.md": "verifier" };
+  return dedupeSkills(skills.map((skill) => {
+    const override = overrides.get(ids[skill.name]);
+    return override ? { ...skill, content: override.enabled === false ? null : override.content } : skill;
+  }).filter((skill) => skill.content));
+}
+
+async function runtimeSkillContext(authStore, userId) {
+  const [global, personal] = await Promise.all([
+    authStore.globalSkillOverrides(),
+    authStore.listUserSkills(userId, { enabledOnly: true }),
+  ]);
+  return { global, personal };
 }
 
 function looksLikeWeatherRequest(lower) {

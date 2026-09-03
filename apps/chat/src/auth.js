@@ -880,6 +880,63 @@ export class PostgresAuthStore {
     } catch (error) { await client.query("rollback").catch(() => {}); throw error; }
     finally { client.release(); }
   }
+
+  async listUserSkills(userId, { enabledOnly = false } = {}) {
+    this.ensureReady();
+    const result = await this.pool.query(`select skill_id, slug, title, description, content, enabled, created_at, updated_at
+      from public.user_skills where user_id = $1 ${enabledOnly ? "and enabled = true" : ""}
+      order by updated_at desc limit 50`, [userId]);
+    return result.rows;
+  }
+
+  async saveUserSkill(userId, input = {}, skillId = null) {
+    this.ensureReady();
+    const values = [userId, input.slug, input.title, input.description, input.content, input.enabled !== false];
+    if (skillId) {
+      if (!UUID_PATTERN.test(String(skillId))) throw Object.assign(new Error("Skill id is invalid"), { statusCode: 400 });
+      const result = await this.pool.query(`update public.user_skills
+        set slug = $2, title = $3, description = $4, content = $5, enabled = $6, updated_at = now()
+        where user_id = $1 and skill_id = $7
+        returning skill_id, slug, title, description, content, enabled, created_at, updated_at`, [...values, skillId]);
+      if (result.rowCount !== 1) throw Object.assign(new Error("Personal skill not found"), { statusCode: 404 });
+      return result.rows[0];
+    }
+    const result = await this.pool.query(`insert into public.user_skills
+      (user_id, slug, title, description, content, enabled) values ($1, $2, $3, $4, $5, $6)
+      returning skill_id, slug, title, description, content, enabled, created_at, updated_at`, values);
+    return result.rows[0];
+  }
+
+  async deleteUserSkill(userId, skillId) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(skillId))) throw Object.assign(new Error("Skill id is invalid"), { statusCode: 400 });
+    const result = await this.pool.query("delete from public.user_skills where user_id = $1 and skill_id = $2 returning skill_id", [userId, skillId]);
+    if (result.rowCount !== 1) throw Object.assign(new Error("Personal skill not found"), { statusCode: 404 });
+    return { deleted: true, skill_id: result.rows[0].skill_id };
+  }
+
+  async globalSkillOverrides() {
+    this.ensureReady();
+    const result = await this.pool.query(`select skill_id, content, enabled, version, updated_at
+      from public.global_skill_overrides order by skill_id`);
+    return result.rows;
+  }
+
+  async saveGlobalSkill(session, skillId, input = {}) {
+    this.ensureReady();
+    if (!isSkillAdministrator(session?.role)) throw Object.assign(new Error("Platform administrator access is required"), { statusCode: 403 });
+    const result = await this.pool.query(`insert into public.global_skill_overrides
+      (skill_id, content, enabled, updated_by) values ($1, $2, $3, $4)
+      on conflict (skill_id) do update set content = excluded.content, enabled = excluded.enabled,
+        version = public.global_skill_overrides.version + 1, updated_by = excluded.updated_by, updated_at = now()
+      returning skill_id, content, enabled, version, updated_at`,
+    [skillId, input.content, input.enabled !== false, session.id]);
+    return result.rows[0];
+  }
+}
+
+export function isSkillAdministrator(role) {
+  return ["admin", "platform_admin", "super_admin"].includes(String(role || "").toLowerCase());
 }
 
 export function csrfToken(request) {
