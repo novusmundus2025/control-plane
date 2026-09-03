@@ -235,6 +235,172 @@ export class PostgresAuthStore {
     return { revoked: true, token_id: tokenId };
   }
 
+  async registerLocalAgent(userId, input = {}) {
+    this.ensureReady();
+    const connectionId = String(input.connection_id || randomUUID());
+    const deviceName = String(input.device_name || "MundusX agent").trim();
+    if (!UUID_PATTERN.test(connectionId) || !deviceName || deviceName.length > 160) {
+      throw Object.assign(new Error("Local agent identity is invalid"), { statusCode: 400 });
+    }
+    const capabilities = input.capabilities && typeof input.capabilities === "object"
+      ? input.capabilities
+      : {};
+    const result = await this.pool.query(`insert into public.local_agent_connections
+      (connection_id, user_id, device_name, capabilities, last_seen_at)
+      values ($1::uuid, $2::uuid, $3, $4::jsonb, now())
+      on conflict (connection_id) do update set
+        device_name = excluded.device_name,
+        capabilities = excluded.capabilities,
+        last_seen_at = now(),
+        revoked_at = null
+      where public.local_agent_connections.user_id = excluded.user_id
+      returning connection_id, device_name, capabilities, last_seen_at`,
+    [connectionId, userId, deviceName, JSON.stringify(capabilities)]);
+    if (result.rowCount !== 1) {
+      throw Object.assign(new Error("Local agent connection belongs to another user"), { statusCode: 403 });
+    }
+    return result.rows[0];
+  }
+
+  async localAgentStatus(userId) {
+    this.ensureReady();
+    const result = await this.pool.query(`select connection_id, device_name, capabilities, last_seen_at,
+      last_seen_at > now() - interval '45 seconds' as online
+      from public.local_agent_connections
+      where user_id = $1::uuid and revoked_at is null
+      order by last_seen_at desc limit 10`, [userId]);
+    return { online: result.rows.some((row) => row.online), connections: result.rows };
+  }
+
+  async createLocalAgentTask(userId, input = {}) {
+    this.ensureReady();
+    const prompt = String(input.prompt || input.message || "").trim();
+    const conversationId = input.conversation_id || input.conversationId || null;
+    const sessionId = String(input.session_id || randomUUID());
+    if (!prompt || prompt.length > 16000 || !UUID_PATTERN.test(sessionId)) {
+      throw Object.assign(new Error("Local agent task is invalid"), { statusCode: 400 });
+    }
+    if (conversationId && !UUID_PATTERN.test(String(conversationId))) {
+      throw Object.assign(new Error("conversation_id must be a UUID"), { statusCode: 400 });
+    }
+    const taskId = randomUUID();
+    const result = await this.pool.query(`insert into public.local_agent_tasks
+      (task_id, user_id, conversation_id, session_id, prompt, allow_mutations)
+      values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6)
+      returning task_id, conversation_id, session_id, state, created_at`,
+    [taskId, userId, conversationId, sessionId, prompt, input.allow_mutations === true]);
+    return result.rows[0];
+  }
+
+  async claimLocalAgentTask(userId, connectionId) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(connectionId || ""))) {
+      throw Object.assign(new Error("connection_id must be a UUID"), { statusCode: 400 });
+    }
+    const result = await this.pool.query(`with candidate as (
+      select task_id from public.local_agent_tasks
+      where user_id = $1::uuid
+        and exists (select 1 from public.local_agent_connections connection
+          where connection.connection_id = $2::uuid and connection.user_id = $1::uuid
+            and connection.revoked_at is null)
+        and (
+        state = 'queued' or (state = 'running' and lease_expires_at < now())
+      )
+      order by created_at for update skip locked limit 1
+    )
+    update public.local_agent_tasks task set
+      state = 'running', connection_id = $2::uuid,
+      started_at = coalesce(started_at, now()), lease_expires_at = now() + interval '60 seconds'
+    from candidate where task.task_id = candidate.task_id
+    returning task.task_id, task.conversation_id, task.session_id, task.prompt,
+      task.allow_mutations, task.state`, [userId, connectionId]);
+    await this.pool.query(`update public.local_agent_connections set last_seen_at = now()
+      where connection_id = $1::uuid and user_id = $2::uuid and revoked_at is null`,
+    [connectionId, userId]);
+    return result.rows[0] ?? null;
+  }
+
+  async heartbeatLocalAgentTask(userId, connectionId, taskId) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(connectionId || "")) || !UUID_PATTERN.test(String(taskId || ""))) {
+      throw Object.assign(new Error("Local agent task identity is invalid"), { statusCode: 400 });
+    }
+    const result = await this.pool.query(`update public.local_agent_tasks task set
+      lease_expires_at = case when task.state = 'running' then now() + interval '60 seconds' else null end
+      where task.task_id = $1::uuid and task.user_id = $2::uuid and task.connection_id = $3::uuid
+        and exists (select 1 from public.local_agent_connections connection
+          where connection.connection_id = $3::uuid and connection.user_id = $2::uuid
+            and connection.revoked_at is null)
+      returning task.task_id, task.session_id, task.state`, [taskId, userId, connectionId]);
+    await this.pool.query(`update public.local_agent_connections set last_seen_at = now()
+      where connection_id = $1::uuid and user_id = $2::uuid and revoked_at is null`,
+    [connectionId, userId]);
+    if (result.rowCount !== 1) throw Object.assign(new Error("Local agent task was not found"), { statusCode: 404 });
+    return result.rows[0];
+  }
+
+  async appendLocalAgentEvents(userId, taskId, events = []) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(taskId || "")) || !Array.isArray(events) || events.length > 200) {
+      throw Object.assign(new Error("Local agent events are invalid"), { statusCode: 400 });
+    }
+    for (const item of events) {
+      const sequence = Number(item?.sequence);
+      if (!Number.isSafeInteger(sequence) || sequence < 0 || !item?.event || typeof item.event !== "object") {
+        throw Object.assign(new Error("Local agent event is invalid"), { statusCode: 400 });
+      }
+      await this.pool.query(`insert into public.local_agent_task_events (task_id, sequence, event)
+        select task_id, $3, $4::jsonb from public.local_agent_tasks
+        where task_id = $1::uuid and user_id = $2::uuid
+        on conflict (task_id, sequence) do nothing`,
+      [taskId, userId, sequence, JSON.stringify(item.event)]);
+    }
+    return { accepted: events.length };
+  }
+
+  async completeLocalAgentTask(userId, taskId, input = {}) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(taskId || ""))) {
+      throw Object.assign(new Error("task_id must be a UUID"), { statusCode: 400 });
+    }
+    const success = input.status !== "failed" && !input.error;
+    const result = await this.pool.query(`update public.local_agent_tasks set
+      state = $3, result = $4::jsonb, error = $5, completed_at = now(), lease_expires_at = null
+      where task_id = $1::uuid and user_id = $2::uuid and state = 'running'
+      returning task_id, conversation_id, session_id, state, result, error, completed_at`,
+    [taskId, userId, success ? "completed" : "failed", JSON.stringify(input.result ?? null), input.error ? String(input.error).slice(0, 4000) : null]);
+    if (result.rowCount !== 1) throw Object.assign(new Error("Local agent task is not running"), { statusCode: 409 });
+    return result.rows[0];
+  }
+
+  async localAgentTask(userId, taskId) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(taskId || ""))) {
+      throw Object.assign(new Error("task_id must be a UUID"), { statusCode: 400 });
+    }
+    const result = await this.pool.query(`select task_id, conversation_id, session_id, state,
+      result, error, created_at, started_at, completed_at, cancelled_at
+      from public.local_agent_tasks where task_id = $1::uuid and user_id = $2::uuid`,
+    [taskId, userId]);
+    if (result.rowCount !== 1) throw Object.assign(new Error("Local agent task was not found"), { statusCode: 404 });
+    const events = await this.pool.query(`select sequence, event, created_at
+      from public.local_agent_task_events where task_id = $1::uuid order by sequence limit 500`, [taskId]);
+    return { ...result.rows[0], events: events.rows };
+  }
+
+  async cancelLocalAgentTask(userId, taskId) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(taskId || ""))) {
+      throw Object.assign(new Error("task_id must be a UUID"), { statusCode: 400 });
+    }
+    const result = await this.pool.query(`update public.local_agent_tasks set
+      state = 'cancelled', cancelled_at = now(), lease_expires_at = null
+      where task_id = $1::uuid and user_id = $2::uuid and state in ('queued', 'running')
+      returning task_id, session_id, state`, [taskId, userId]);
+    if (result.rowCount !== 1) throw Object.assign(new Error("Local agent task cannot be cancelled"), { statusCode: 409 });
+    return result.rows[0];
+  }
+
   async authorizeConversation(userId, conversationId, create = false) {
     if (!conversationId) throw Object.assign(new Error("conversation id is required"), { statusCode: 400 });
     try {
