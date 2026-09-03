@@ -6,15 +6,17 @@
   "scripts": {
     "dev": "node src/main.js",
     "start": "node src/main.js",
-    "check": "node --check src/main.js",
+    "check": "node scripts/check-source.js",
     "test": "node --test test/*.test.js"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "dompurify": "3.4.14",
     "marked": "18.0.11",
-    "pg": "8.23.0"
+    "pg": "8.23.0",
+    "zod": "^4.5.4"
   }
 }

@@ -242,7 +242,7 @@ GET  /internal/routing/{job_id}
 ```
 
 Internal scheduler endpoints require operator/service authentication and are
-not called directly by Chat-U clients or contributor nodes.
+not called directly by MundusX Chat clients or contributor nodes.
 
 ## 9. Delivery sequence and acceptance
 

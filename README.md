@@ -122,7 +122,7 @@ Operator auth is enforced when `MUNDUSX_OPERATOR_TOKEN` is set and `MUNDUSX_AUTH
 
 ### Public OpenAI-compatible gateway
 
-These unauthenticated routes are the stable client boundary for Open WebUI, Hermes, and other OpenAI-compatible clients, matching the former Chat-U contract that accepts `not-required` when a client insists on an API-key value. Virtual model IDs never pin a physical contributor model; the planner and scheduler retain routing authority.
+These unauthenticated routes are the stable client boundary for Open WebUI, Hermes, and other OpenAI-compatible clients, matching the former browser-chat contract that accepts `not-required` when a client insists on an API-key value. Virtual model IDs never pin a physical contributor model; the planner and scheduler retain routing authority.
 
 | Method | Path | Description |
 |---|---|---|

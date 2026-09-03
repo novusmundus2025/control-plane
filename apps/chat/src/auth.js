@@ -1,15 +1,36 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from "node:crypto";
 import { Pool } from "pg";
 
 const SESSION_COOKIE = "__Host-mx_session";
 const CSRF_COOKIE = "__Host-mx_csrf";
 const SESSION_SECONDS = 7 * 24 * 60 * 60;
 const CHALLENGE_SECONDS = 10 * 60;
+const RUNNER_PAIRING_SECONDS = 10 * 60;
+const RUNNER_BOOTSTRAP_SECONDS = 10 * 60;
+const RUNNER_BOOTSTRAP_SECRET_PATTERN = /^MXB-[A-Za-z0-9_-]{43}$/;
+const RUNNER_DEVICE_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,159}$/;
+const RUNNER_PUBLIC_KEY_PATTERN = /^[0-9a-f]{64,256}$/i;
+const MCP_TOKEN_PREFIX = "mxmcp_";
+const MCP_TOKEN_PATTERN = /^mxmcp_[A-Za-z0-9_-]{43}$/;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const DEFAULT_MCP_TOKEN_DAYS = 90;
 const GITHUB_API_VERSION = "2026-03-10";
 const MAX_GITHUB_PAGES = 5;
 const MAX_GITHUB_INSTALLATIONS = 20;
 const MAX_GITHUB_REPOSITORIES = 1000;
 const MAX_REPOSITORY_FILE_BYTES = 256 * 1024;
+const PROJECT_TEMPLATES = Object.freeze({
+  "java-maven": {
+    allowedPathPrefixes: ["src", "pom.xml", "README.md", ".gitignore"],
+    validationProfiles: ["java-maven-test"],
+    allowedExecutionModes: ["hybrid"],
+  },
+  generic: {
+    allowedPathPrefixes: ["src", "test", "tests", "README.md", ".gitignore"],
+    validationProfiles: ["repository-default"],
+    allowedExecutionModes: ["sandbox", "hybrid"],
+  },
+});
 
 function digest(value) {
   return createHash("sha256").update(String(value)).digest("hex");
@@ -91,7 +112,7 @@ export function authConfigFromEnv(env = process.env) {
   return {
     required: !["0", "false", "no"].includes(String(env.MUNDUSX_CHAT_AUTH_REQUIRED ?? "true").toLowerCase()),
     databaseUrl: String(env.MUNDUSX_DATABASE_POOL_URL ?? env.DATABASE_URL ?? "").trim(),
-    publicOrigin: String(env.MUNDUSX_PUBLIC_ORIGIN ?? "https://chat-u.mundusx.ai").replace(/\/$/, ""),
+    publicOrigin: String(env.MUNDUSX_PUBLIC_ORIGIN ?? "https://chat.mundusx.ai").replace(/\/$/, ""),
     githubClientId: String(env.MUNDUSX_GITHUB_CLIENT_ID ?? "").trim(),
     githubClientSecret: String(env.MUNDUSX_GITHUB_CLIENT_SECRET ?? "").trim(),
     encryptionKey: encryptionKey(String(env.MUNDUSX_AUTH_ENCRYPTION_KEY ?? "").trim()),
@@ -155,6 +176,63 @@ export class PostgresAuthStore {
     this.requireCsrf(request, session);
     await this.pool.query("update public.user_sessions set revoked_at = now() where session_hash = $1", [session.session_hash]);
     response.setHeader("Set-Cookie", [cookie(SESSION_COOKIE, "", 0), cookie(CSRF_COOKIE, "", 0, false)]);
+  }
+
+  async mcpSession(request) {
+    this.ensureReady();
+    const authorization = String(request.headers.authorization || "");
+    const raw = authorization.startsWith("Bearer ") ? authorization.slice(7).trim() : "";
+    if (!MCP_TOKEN_PATTERN.test(raw)) return null;
+    const result = await this.pool.query(`select t.token_id, u.id, u.email, u.display_name, u.role
+      from public.mcp_personal_access_tokens t
+      join public.users u on u.id = t.user_id
+      where t.token_hash = $1 and t.revoked_at is null and t.expires_at > now() and u.status = 'active'`,
+    [digest(raw)]);
+    const session = result.rows[0] ?? null;
+    if (session) {
+      await this.pool.query(`update public.mcp_personal_access_tokens set last_used_at = now()
+        where token_id = $1 and (last_used_at is null or last_used_at < now() - interval '5 minutes')`,
+      [session.token_id]);
+    }
+    return session;
+  }
+
+  async createMcpToken(userId, input = {}) {
+    this.ensureReady();
+    const name = String(input.name || "Codex").trim();
+    const expiresInDays = Number(input.expires_in_days ?? DEFAULT_MCP_TOKEN_DAYS);
+    if (!name || name.length > 80) throw Object.assign(new Error("MCP token name must contain 1 to 80 characters"), { statusCode: 400 });
+    if (!Number.isInteger(expiresInDays) || expiresInDays < 1 || expiresInDays > 365) {
+      throw Object.assign(new Error("MCP token lifetime must be between 1 and 365 days"), { statusCode: 400 });
+    }
+    const raw = `${MCP_TOKEN_PREFIX}${token()}`;
+    const result = await this.pool.query(`insert into public.mcp_personal_access_tokens
+      (user_id, token_hash, name, expires_at)
+      values ($1, $2, $3, now() + ($4 * interval '1 day'))
+      returning token_id, name, created_at, expires_at`,
+    [userId, digest(raw), name, expiresInDays]);
+    return { ...result.rows[0], token: raw };
+  }
+
+  async listMcpTokens(userId) {
+    this.ensureReady();
+    const result = await this.pool.query(`select token_id, name, created_at, expires_at, last_used_at
+      from public.mcp_personal_access_tokens
+      where user_id = $1 and revoked_at is null and expires_at > now()
+      order by created_at desc limit 20`, [userId]);
+    return result.rows;
+  }
+
+  async revokeMcpToken(userId, tokenId) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(tokenId || ""))) {
+      throw Object.assign(new Error("MCP token id is invalid"), { statusCode: 400 });
+    }
+    const result = await this.pool.query(`update public.mcp_personal_access_tokens set revoked_at = now()
+      where token_id = $1::uuid and user_id = $2::uuid and revoked_at is null returning token_id`,
+    [tokenId, userId]);
+    if (result.rowCount !== 1) throw Object.assign(new Error("MCP token was not found"), { statusCode: 404 });
+    return { revoked: true, token_id: tokenId };
   }
 
   async authorizeConversation(userId, conversationId, create = false) {
@@ -222,15 +300,74 @@ export class PostgresAuthStore {
     return payload.access_token;
   }
 
-  async githubJson(userId, url) {
+  async githubJson(userId, url, { method = "GET", body } = {}) {
     const accessToken = await this.githubToken(userId);
-    const response = await this.fetch(url, { headers: githubHeaders(accessToken) });
+    const response = await this.fetch(url, {
+      method,
+      headers: { ...githubHeaders(accessToken), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
     const payload = await response.json().catch(() => ({}));
     if (response.status === 401) throw Object.assign(new Error("GitHub access expired; reconnect your account"), { statusCode: 401 });
     if (response.status === 403) throw Object.assign(new Error("GitHub denied this repository operation"), { statusCode: 403 });
     if (response.status === 404) throw Object.assign(new Error("Repository resource was not found"), { statusCode: 404 });
+    if (response.status === 422) throw Object.assign(new Error(String(payload.message || "Repository name or settings were rejected by GitHub")), { statusCode: 422 });
     if (!response.ok) throw Object.assign(new Error(`GitHub returned ${response.status}`), { statusCode: 502 });
     return payload;
+  }
+
+  async createRepository(userId, input = {}) {
+    const name = String(input.name || "").trim();
+    const description = String(input.description || "").trim();
+    const visibility = String(input.visibility || "private").toLowerCase();
+    const template = String(input.template || "java-maven").toLowerCase();
+    if (!/^(?!\.{1,2}$)[A-Za-z0-9._-]{1,100}$/.test(name)) {
+      throw Object.assign(new Error("Repository name must use 1-100 letters, numbers, dots, dashes, or underscores"), { statusCode: 400 });
+    }
+    if (description.length > 350) throw Object.assign(new Error("Repository description is too long"), { statusCode: 400 });
+    if (!["private", "public"].includes(visibility)) throw Object.assign(new Error("Repository visibility must be private or public"), { statusCode: 400 });
+    const projectPolicy = PROJECT_TEMPLATES[template];
+    if (!projectPolicy) throw Object.assign(new Error("Project template is not supported"), { statusCode: 400 });
+
+    const created = await this.githubJson(userId, "https://api.github.com/user/repos", {
+      method: "POST",
+      body: {
+        name,
+        description,
+        private: visibility === "private",
+        auto_init: true,
+      },
+    });
+    const repo = this.normalizeRepository(created);
+    if (!repo.id || !repo.full_name || !created.owner?.login) {
+      throw Object.assign(new Error("GitHub did not return the created user repository"), { statusCode: 502 });
+    }
+    await this.pool.query(`with stale_policy as (
+      delete from public.repository_harness_policies
+      where repository_id <> $1 and lower(repository_full_name) = lower($2)
+    )
+      insert into public.repository_harness_policies
+      (repository_id, repository_full_name, tenant_id, allowed_path_prefixes,
+       validation_profiles, allowed_execution_modes, require_write_permission, created_by)
+      values ($1, $2, $3, $4, $5, $6, true, $7)
+      on conflict (repository_id) do update set
+        repository_full_name = excluded.repository_full_name,
+        tenant_id = excluded.tenant_id,
+        allowed_path_prefixes = excluded.allowed_path_prefixes,
+        validation_profiles = excluded.validation_profiles,
+        allowed_execution_modes = excluded.allowed_execution_modes,
+        require_write_permission = true,
+        status = 'active',
+        updated_at = now()`, [
+      repo.id,
+      repo.full_name,
+      `user:${userId}`,
+      projectPolicy.allowedPathPrefixes,
+      projectPolicy.validationProfiles,
+      projectPolicy.allowedExecutionModes,
+      `chat-user:${userId}`,
+    ]);
+    return { repository: repo, template };
   }
 
   async repositories(userId) {
@@ -300,15 +437,37 @@ export class PostgresAuthStore {
     if (!Array.isArray(operations)) throw Object.assign(new Error("allowed operations must be a list"), { statusCode: 400 });
     const requirePush = operations.some((operation) => ["patch.apply", "validation.run"].includes(String(operation)));
     const repo = await this.authorizeRepository(userId, repositoryId, { requirePush });
-    const policyResult = await this.pool.query(`select * from public.repository_harness_policies
+    let policyResult = await this.pool.query(`select * from public.repository_harness_policies
       where repository_id = $1 and status = 'active'`, [repo.id]);
+    if (!policyResult.rows[0]) {
+      const root = await this.githubJson(userId, `https://api.github.com/repos/${repo.full_name}/contents/?ref=${encodeURIComponent(repo.default_branch)}`);
+      const allowedPathPrefixes = Array.isArray(root)
+        ? root.filter((entry) => ["dir", "file"].includes(entry.type) && !sensitiveRepositoryPath(entry.path)).slice(0, 200).map((entry) => entry.path)
+        : [];
+      if (!allowedPathPrefixes.length) throw Object.assign(new Error("Repository has no safe paths available for Harness work"), { statusCode: 403 });
+      await this.pool.query(`insert into public.repository_harness_policies
+        (repository_id, repository_full_name, tenant_id, allowed_path_prefixes,
+         validation_profiles, allowed_execution_modes, require_write_permission, created_by)
+        values ($1, $2, $3, $4, $5, $6, true, $7)
+        on conflict (repository_id) do nothing`, [
+        repo.id,
+        repo.full_name,
+        `user:${userId}`,
+        allowedPathPrefixes,
+        ["repository-default"],
+        ["sandbox", "hybrid"],
+        `chat-user:${userId}`,
+      ]);
+      policyResult = await this.pool.query(`select * from public.repository_harness_policies
+        where repository_id = $1 and status = 'active'`, [repo.id]);
+    }
     const policy = policyResult.rows[0];
     if (!policy || policy.repository_full_name.toLowerCase() !== repo.full_name.toLowerCase()) throw Object.assign(new Error("This repository is not enabled for EHDA Harness work"), { statusCode: 403 });
     if (!policy.allowed_execution_modes.includes(executionMode)) throw Object.assign(new Error("EHDA policy does not permit this execution mode"), { statusCode: 403 });
     if (policy.require_write_permission && !repo.permissions.push) throw Object.assign(new Error("Write permission is required by EHDA policy"), { statusCode: 403 });
     const commit = await this.githubJson(userId, `https://api.github.com/repos/${repo.full_name}/commits/${encodeURIComponent(repo.default_branch)}`);
     if (!/^[0-9a-f]{40}$/i.test(String(commit.sha || ""))) throw Object.assign(new Error("GitHub did not return an immutable base revision"), { statusCode: 502 });
-    return {
+    const authority = {
       user_id: userId,
       tenant_id: policy.tenant_id,
       repository_source_id: `github:${repo.id}:${repo.full_name}`,
@@ -317,6 +476,148 @@ export class PostgresAuthStore {
       validation_profiles: policy.validation_profiles,
       allowed_execution_modes: policy.allowed_execution_modes,
     };
+    const runners = await this.harnessRunners(userId);
+    if (!runners.some((runner) => runner.ready && runner.fresh)) {
+      throw Object.assign(new Error("Pair and start your Harness runner before submitting repository work"), { statusCode: 409 });
+    }
+    return authority;
+  }
+
+  async createHarnessRunnerPairing(userId) {
+    this.ensureReady();
+    const pairingCode = `MX-${token(24)}`;
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query(
+        "delete from public.harness_runner_pairings where user_id = $1 and consumed_at is null",
+        [userId],
+      );
+      await client.query(`insert into public.harness_runner_pairings
+        (pairing_hash, user_id, expires_at)
+        values ($1, $2, now() + ($3 * interval '1 second'))`,
+        [digest(pairingCode), userId, RUNNER_PAIRING_SECONDS],
+      );
+      await client.query("commit");
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally {
+      client.release();
+    }
+    return {
+      pairing_code: pairingCode,
+      expires_in_seconds: RUNNER_PAIRING_SECONDS,
+    };
+  }
+
+  async createHarnessRunnerBootstrap(input = {}) {
+    this.ensureReady();
+    const deviceId = String(input.device_id || "").trim();
+    const publicKeyHex = String(input.public_key_hex || "").trim().toLowerCase();
+    if (!RUNNER_DEVICE_ID_PATTERN.test(deviceId)) {
+      throw Object.assign(new Error("Runner device id is invalid"), { statusCode: 400 });
+    }
+    if (!RUNNER_PUBLIC_KEY_PATTERN.test(publicKeyHex)) {
+      throw Object.assign(new Error("Runner public key is invalid"), { statusCode: 400 });
+    }
+    const sessionId = randomUUID();
+    const bootstrapSecret = `MXB-${token()}`;
+    const approvalToken = token();
+    await this.pool.query(`with cleared as (
+      delete from public.harness_runner_bootstrap_sessions
+      where expires_at <= now()
+         or (device_id = $4 and public_key_hex = $5 and consumed_at is null)
+    )
+      insert into public.harness_runner_bootstrap_sessions
+      (session_id, bootstrap_hash, approval_hash, device_id, public_key_hex, expires_at)
+      values ($1, $2, $3, $4, $5, now() + ($6 * interval '1 second'))`, [
+      sessionId,
+      digest(bootstrapSecret),
+      digest(approvalToken),
+      deviceId,
+      publicKeyHex,
+      RUNNER_BOOTSTRAP_SECONDS,
+    ]);
+    return {
+      session_id: sessionId,
+      bootstrap_secret: bootstrapSecret,
+      approval_url: `${this.config.publicOrigin}/runner/connect?session=${encodeURIComponent(sessionId)}#token=${encodeURIComponent(approvalToken)}`,
+      expires_in_seconds: RUNNER_BOOTSTRAP_SECONDS,
+    };
+  }
+
+  async harnessRunnerBootstrapApproval(sessionId, approvalToken) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(sessionId)) || !approvalToken) {
+      throw Object.assign(new Error("Runner connection is invalid or expired"), { statusCode: 404 });
+    }
+    const result = await this.pool.query(`select session_id, device_id, approved_at, consumed_at, expires_at
+      from public.harness_runner_bootstrap_sessions
+      where session_id = $1 and approval_hash = $2 and expires_at > now()`, [sessionId, digest(approvalToken)]);
+    const row = result.rows[0];
+    if (!row) throw Object.assign(new Error("Runner connection is invalid or expired"), { statusCode: 404 });
+    return {
+      session_id: row.session_id,
+      device_id: row.device_id,
+      state: row.consumed_at ? "connected" : row.approved_at ? "approved" : "pending",
+      expires_at: row.expires_at,
+    };
+  }
+
+  async approveHarnessRunnerBootstrap(userId, sessionId, approvalToken) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(sessionId)) || !approvalToken) {
+      throw Object.assign(new Error("Runner connection is invalid or expired"), { statusCode: 404 });
+    }
+    const result = await this.pool.query(`update public.harness_runner_bootstrap_sessions
+      set user_id = coalesce(user_id, $3), approved_at = coalesce(approved_at, now())
+      where session_id = $1 and approval_hash = $2 and expires_at > now() and consumed_at is null
+        and (user_id is null or user_id = $3)
+      returning session_id, device_id, approved_at, expires_at`, [sessionId, digest(approvalToken), userId]);
+    const row = result.rows[0];
+    if (!row) throw Object.assign(new Error("Runner connection is invalid, expired, or already used"), { statusCode: 409 });
+    return { session_id: row.session_id, device_id: row.device_id, state: "approved", expires_at: row.expires_at };
+  }
+
+  async harnessRunnerBootstrapStatus(sessionId, bootstrapSecret) {
+    this.ensureReady();
+    if (!UUID_PATTERN.test(String(sessionId)) || !RUNNER_BOOTSTRAP_SECRET_PATTERN.test(String(bootstrapSecret))) {
+      throw Object.assign(new Error("Runner connection is invalid or expired"), { statusCode: 404 });
+    }
+    const result = await this.pool.query(`select approved_at, consumed_at, expires_at
+      from public.harness_runner_bootstrap_sessions
+      where session_id = $1 and bootstrap_hash = $2`, [sessionId, digest(bootstrapSecret)]);
+    const row = result.rows[0];
+    if (!row || new Date(row.expires_at).getTime() <= Date.now()) return { state: "expired" };
+    if (row.consumed_at) return { state: "connected" };
+    if (row.approved_at) return { state: "approved" };
+    return { state: "pending" };
+  }
+
+  async harnessRunners(userId) {
+    this.ensureReady();
+    const result = await this.pool.query(`select runner_id, device_id, execution_modes,
+      supported_operations, local_projects, parallel_slots, ready, trusted_identity, last_seen_epoch
+      from public.harness_runners
+      where owner_user_id = $1
+      order by last_seen_epoch desc
+      limit 20`, [userId]);
+    const nowEpoch = Math.floor(Date.now() / 1000);
+    return result.rows.map((runner) => ({
+      runner_id: runner.runner_id,
+      device_id: runner.device_id,
+      execution_modes: Array.isArray(runner.execution_modes) ? runner.execution_modes : [],
+      supported_operations: Array.isArray(runner.supported_operations) ? runner.supported_operations : [],
+      local_projects: Array.isArray(runner.local_projects)
+        ? runner.local_projects.filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug)).slice(0, 100)
+        : [],
+      parallel_slots: Number(runner.parallel_slots),
+      ready: Boolean(runner.ready),
+      trusted_identity: Boolean(runner.trusted_identity),
+      last_seen_epoch: Number(runner.last_seen_epoch),
+      fresh: nowEpoch - Number(runner.last_seen_epoch) <= 60,
+    }));
   }
 
   async startGithub(redirectPath = "/") {

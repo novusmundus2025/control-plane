@@ -6,6 +6,18 @@ import { dirname, resolve } from "node:path";
 import { connect as createTlsConnection } from "node:tls";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { PostgresAuthStore, authConfigFromEnv, csrfToken } from "./auth.js";
+import { createHarnessHttpController } from "./features/harness/http-controller.js";
+import { localProjectAuthority } from "./features/harness/project-policy.js";
+import {
+  createHarnessService,
+  fetchHarnessTask as fetchHarnessTaskFeature,
+  submitHarnessTask as submitHarnessTaskFeature,
+} from "./features/harness/service.js";
+import { createMcpHttpController } from "./features/mcp/http-controller.js";
+import { renderSkillsPage } from "./features/skills/page.js";
+import { createSkillRegistry } from "./features/skills/registry.js";
+import { httpError } from "./shared/http-error.js";
+import { RELEASE_BACKEND_BASE_URL, releaseDownloadLocation } from "./release-downloads.js";
 import {
   detectChatQualityFlags,
   detectCompleteCodeQualityFlags,
@@ -13,6 +25,8 @@ import {
   detectStructuredOutputQualityFlags,
   normalizeCompleteCodeOutput,
 } from "./chat-quality.js";
+
+export { localProjectAuthority };
 
 const DEFAULT_CONTROL_PLANE_URL = "https://uat.mundusx.ai";
 const DEFAULT_TIMEOUT_SECONDS = 90;
@@ -47,18 +61,19 @@ const MODULE_DIR = dirname(fileURLToPath(import.meta.url));
 const LOGO_PATH = resolve(MODULE_DIR, "../public/mundusx-logo.png");
 const MARIE_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/marie-persona.md");
 const ATLAS_PERSONA_PATH = resolve(MODULE_DIR, "../../../docs/atlas-persona.md");
-const SKILLS_DIR = resolve(MODULE_DIR, "../../../docs/skills");
+const SKILLS_DIR = resolve(MODULE_DIR, "../skills");
+const SKILL_REGISTRY = createSkillRegistry({ skillsDir: SKILLS_DIR });
 const CHAT_SKILLS = {
-  router: loadMarkdownSkill("router.md", "# Router Skill\nRoute requests conservatively."),
-  formatter: loadMarkdownSkill("formatter.md", "# Formatter Skill\nAnswer directly and cleanly."),
-  personaAtlas: loadMarkdownSkill("persona-atlas.md", "# Atlas Persona Skill\nMy name is Atlas."),
-  translation: loadMarkdownSkill("translation.md", "# Translation Skill\nReturn only the translated text."),
-  code: loadMarkdownSkill("code.md", "# Code Generation Skill\nGive brief useful context, then complete code."),
-  math: loadMarkdownSkill("math.md", "# Math Skill\nReturn the final answer first."),
-  weather: loadMarkdownSkill("weather.md", "# Weather Skill\nUse the weather tool for weather."),
-  facts: loadMarkdownSkill("facts.md", "# Facts Skill\nUse grounded factual sources."),
-  chunkPlanner: loadMarkdownSkill("chunk-planner.md", "# Chunk Planner Skill\nChunk only when useful."),
-  verifier: loadMarkdownSkill("verifier.md", "# Verifier Skill\nFlag malformed output."),
+  router: SKILL_REGISTRY.content("router", "# Router Skill\nRoute requests conservatively."),
+  formatter: SKILL_REGISTRY.content("formatter", "# Formatter Skill\nAnswer directly and cleanly."),
+  personaAtlas: SKILL_REGISTRY.content("persona-atlas", "# Atlas Persona Skill\nMy name is Atlas."),
+  translation: SKILL_REGISTRY.content("translation", "# Translation Skill\nReturn only the translated text."),
+  code: SKILL_REGISTRY.content("code", "# Code Generation Skill\nGive brief useful context, then complete code."),
+  math: SKILL_REGISTRY.content("math", "# Math Skill\nReturn the final answer first."),
+  weather: SKILL_REGISTRY.content("weather", "# Weather Skill\nUse the weather tool for weather."),
+  facts: SKILL_REGISTRY.content("facts", "# Facts Skill\nUse grounded factual sources."),
+  chunkPlanner: SKILL_REGISTRY.content("chunk-planner", "# Chunk Planner Skill\nChunk only when useful."),
+  verifier: SKILL_REGISTRY.content("verifier", "# Verifier Skill\nFlag malformed output."),
 };
 const loggedChatJobs = new Set();
 const MARIE_PERSONA = loadPersona(
@@ -117,11 +132,16 @@ export function configFromEnv(env = process.env) {
     operatorToken: (env.MUNDUSX_OPERATOR_TOKEN ?? env.OPENGPU_OPERATOR_TOKEN ?? "").trim(),
     harnessServiceToken: (env.MUNDUSX_HARNESS_SERVICE_TOKEN ?? "").trim(),
     harnessUiEnabled,
+    mcpEnabled: ["1", "true", "yes"].includes(
+      String(env.MUNDUSX_MCP_ENABLED ?? "").trim().toLowerCase(),
+    ),
     harnessTenantId: (env.MUNDUSX_HARNESS_TENANT_ID ?? "").trim(),
     harnessRepositorySourceId: (env.MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID ?? "").trim(),
     harnessBaseRevision: (env.MUNDUSX_HARNESS_BASE_REVISION ?? "").trim().toLowerCase(),
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
+    harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
+      || `${RELEASE_BACKEND_BASE_URL}/mundusx-harness-setup-windows-x86_64.exe`,
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
@@ -165,6 +185,25 @@ export function configFromEnv(env = process.env) {
   };
 }
 
+export async function submitHarnessTask(
+  body,
+  config = configFromEnv(),
+  fetchImpl = fetch,
+  session = null,
+  authority = null,
+) {
+  return submitHarnessTaskFeature(body, config, fetchImpl, session, authority);
+}
+
+export async function fetchHarnessTask(
+  taskId,
+  config = configFromEnv(),
+  fetchImpl = fetch,
+  session = null,
+) {
+  return fetchHarnessTaskFeature(taskId, config, fetchImpl, session);
+}
+
 export function normalizeAssistantDisplayText(text) {
   return String(text || "")
     .replace(/\r\n/g, "\n")
@@ -178,41 +217,67 @@ export function normalizeAssistantDisplayText(text) {
 }
 
 export function page(config = configFromEnv()) {
-  const repositoryLauncher = `<button class="header-action" id="repository-open" type="button" hidden>Repositories</button>
-    <dialog class="harness-dialog" id="repository-dialog">
-      <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
-      <h2>Your repositories</h2>
-      <p>Only repositories available to both your GitHub account and the installed MundusX GitHub App appear here.</p>
-      <label>Repository<select id="repository-select"></select></label>
-      <div class="repository-path"><button id="repository-up" type="button">Up</button><code id="repository-path">/</code></div>
-      <div class="repository-entries" id="repository-entries"></div>
-      <pre class="repository-file" id="repository-file" hidden></pre>
-      <output id="repository-result" aria-live="polite"></output>
-    </dialog>`;
-  const harnessLauncher = config.harnessUiEnabled
-    ? `<button class="header-action" id="harness-open" type="button" hidden>Coding Harness</button>
-      <dialog class="harness-dialog" id="harness-dialog">
-        <form method="dialog" class="dialog-close"><button type="submit" aria-label="Close">&times;</button></form>
-        <h2>Coding Harness</h2>
-        <p>Submit a bounded coding task for operator review. This does not approve execution, merge, or deployment.</p>
-        <div class="harness-boundary"><strong>Live GitHub permission check</strong><span>EHDA pins the selected repository's current default-branch commit</span></div>
-        <form id="harness-form" class="harness-form">
-          <label>Repository<select name="repository_id" id="harness-grant" required></select></label>
-          <label>Objective<textarea name="objective" rows="5" maxlength="4000" required placeholder="Describe one bounded coding change"></textarea></label>
-          <label>Execution mode<select name="execution_mode"><option value="sandbox">Sandbox</option><option value="hybrid">Hybrid (trusted node only)</option></select></label>
-          <fieldset><legend>Allowed tools</legend>
-            <label><input type="checkbox" name="allowed_operations" value="repository.status" checked> Repository status</label>
-            <label><input type="checkbox" name="allowed_operations" value="repository.diff" checked> Repository diff</label>
-            <label><input type="checkbox" name="allowed_operations" value="file.read" checked> Read files</label>
-            <label><input type="checkbox" name="allowed_operations" value="file.search" checked> Search files</label>
-            <label><input type="checkbox" name="allowed_operations" value="patch.apply" checked> Apply bounded patches</label>
-            <label><input type="checkbox" name="allowed_operations" value="validation.run" checked> Run named validations</label>
-          </fieldset>
-          <button class="harness-submit" type="submit">Submit for review</button>
+  const repositoryLauncher = `<button class="rail-destination" id="repository-open" type="button"${config.harnessUiEnabled ? "" : " hidden"}>
+      <span class="rail-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span>
+      <span>Projects</span><span class="rail-destination-chevron" aria-hidden="true">›</span>
+    </button>`;
+  const repositoryMobileLauncher = `<button class="header-projects" id="repository-open-mobile" type="button" aria-label="Open Projects"${config.harnessUiEnabled ? "" : " hidden"}>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Projects</span>
+    </button>`;
+  const repositoryDialog = `<div class="projects-overlay" id="repository-dialog" hidden>
+    <section class="harness-dialog projects-dialog" role="dialog" aria-modal="true" aria-labelledby="project-dialog-title">
+      <button class="dialog-close" id="repository-dialog-close" type="button" aria-label="Close">&times;</button>
+      <header class="project-heading">
+        <h2 id="project-dialog-title">Create project</h2>
+      </header>
+      ${config.harnessUiEnabled ? `
+      <form id="harness-form" class="harness-form">
+        <section class="project-section project-create-fields" id="project-create-fields">
+          <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-project" autocomplete="off" required></label>
+        </section>
+        <p class="project-purpose-note" id="project-purpose-note"><span aria-hidden="true">✦</span><span>Projects keep chats and files together so you can continue where you left off.</span></p>
+        <section class="project-runner-context" id="project-runner-context" hidden>
+          <span class="project-runner-context-icon" aria-hidden="true">⌁</span>
+          <span><strong id="project-runner-context-name">Project</strong><small>This project and its chat are already saved. Connect this device before creating files or running commands.</small></span>
+        </section>
+        <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
+          <span class="readiness-dot" aria-hidden="true"></span>
+          <span><strong id="project-readiness-title">Checking local runner…</strong><small id="project-readiness-text">Looking for your project workspace service.</small></span>
+        </div>
+        <section class="project-runner-setup" id="project-runner-setup" hidden>
+          <div class="runner-one-click">
+            <span class="project-runner-context-icon" aria-hidden="true">⌁</span>
+            <span><strong>Run code on this computer</strong><small>A lightweight user-owned runner keeps files and Git credentials on your device. It is separate from contributor nodes.</small></span>
+          </div>
+          <a class="harness-download primary" id="harness-download" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" download>Connect this computer</a>
+          <p id="harness-runner-status" aria-live="polite">One install and one browser approval. Future sessions reconnect automatically.</p>
+        </section>
+        <footer class="project-actions" id="project-actions">
           <output id="harness-result" aria-live="polite"></output>
-        </form>
-      </dialog>`
-    : "";
+          <button class="harness-submit" type="submit" disabled>Create project</button>
+        </footer>
+      </form>` : ""}
+    </section>
+  </div>`;
+  const mcpDialog = config.mcpEnabled ? `<div class="projects-overlay" id="mcp-dialog" hidden>
+    <section class="harness-dialog mcp-dialog" role="dialog" aria-modal="true" aria-labelledby="mcp-dialog-title">
+      <button class="dialog-close" id="mcp-dialog-close" type="button" aria-label="Close">&times;</button>
+      <h2 id="mcp-dialog-title">MCP connections</h2>
+      <p class="mcp-intro">Connect Codex, ChatGPT desktop, OpenWebUI, or another MCP client to your MundusX projects and Harness runner.</p>
+      <label class="mcp-endpoint">Server URL<code>${escapeHtml(config.auth?.publicOrigin || "https://chat.mundusx.ai")}/mcp</code></label>
+      <form id="mcp-token-form" class="mcp-token-form">
+        <label>Connection name<input name="name" maxlength="80" value="My Codex" required></label>
+        <label>Expires<select name="expires_in_days"><option value="30">30 days</option><option value="90" selected>90 days</option><option value="365">1 year</option></select></label>
+        <button type="submit">Create access token</button>
+      </form>
+      <section class="mcp-token-once" id="mcp-token-once" hidden>
+        <strong>Copy this token now</strong><p>It is shown once. MundusX stores only its digest.</p>
+        <div class="command-row"><code id="mcp-token-value"></code><button class="copy-command" type="button" data-copy-target="mcp-token-value">Copy</button></div>
+      </section>
+      <section class="mcp-token-list-section"><h3>Active connections</h3><div id="mcp-token-list" class="mcp-token-list"><p class="project-context-empty">Loading…</p></div></section>
+      <p class="mcp-safety">MCP can submit bounded UAT Harness work, inspect evidence, and cancel your tasks. Apply, merge, and deployment still require separate approval.</p>
+    </section>
+  </div>` : "";
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -275,13 +340,16 @@ export function page(config = configFromEnv()) {
       height: 100vh;
       min-height: 0;
       display: grid;
-      grid-template-columns: 300px minmax(0, 1fr);
+      grid-template-columns: minmax(0, 300px) minmax(0, 1fr);
     }
 
     /* ---- Sidebar / menu column ---- */
     aside {
+      width: 100%;
+      min-width: 0;
       height: 100vh;
       min-height: 0;
+      overflow: hidden;
       border-right: 1px solid var(--line);
       background: var(--rail);
       padding: 22px 16px 18px;
@@ -383,9 +451,9 @@ export function page(config = configFromEnv()) {
       justify-content: space-between;
       gap: 10px;
       overflow: hidden;
-      border: 1px solid transparent;
-      border-radius: 7px;
-      padding: 9px 10px;
+      border: 0;
+      border-radius: 6px;
+      padding: 8px 6px;
       color: #414a5a;
       font-size: 13px;
       background: transparent;
@@ -428,7 +496,7 @@ export function page(config = configFromEnv()) {
     .history-menu-button:focus-visible,
     .history-menu-button[aria-expanded="true"] {
       color: var(--text);
-      background: #fff;
+      background: var(--panel);
       border-color: var(--line);
       outline: 0;
     }
@@ -440,8 +508,8 @@ export function page(config = configFromEnv()) {
       gap: 3px;
       padding: 7px;
       border-radius: 10px;
-      border: 1px solid rgba(17, 24, 39, 0.08);
-      background: #fff;
+      border: 1px solid var(--line);
+      background: var(--panel);
       box-shadow: 0 18px 45px rgba(20, 25, 40, 0.18);
     }
     .history-context-menu.is-open {
@@ -463,7 +531,7 @@ export function page(config = configFromEnv()) {
     }
     .history-context-menu button:hover,
     .history-context-menu button:focus-visible {
-      background: #f1f2f9;
+      background: var(--panel-2);
       outline: 0;
     }
     .history-context-menu .danger {
@@ -477,13 +545,12 @@ export function page(config = configFromEnv()) {
     .history-item:hover,
     .history-item:focus-visible {
       color: var(--text);
-      background: #f1f2f9;
+      background: var(--panel-2);
       outline: 0;
     }
     .history-item.active {
       color: var(--purple);
-      border-color: rgba(124, 108, 246, 0.4);
-      background: linear-gradient(90deg, rgba(124, 108, 246, 0.14), rgba(59, 130, 246, 0.06));
+      background: rgba(124, 108, 246, 0.09);
     }
     .history-title {
       min-width: 0;
@@ -534,6 +601,8 @@ export function page(config = configFromEnv()) {
       position: relative;
       align-self: end;
       width: 100%;
+      min-width: 0;
+      max-width: 100%;
       border-top: 1px solid var(--line);
       padding-top: 14px;
     }
@@ -657,6 +726,8 @@ export function page(config = configFromEnv()) {
       color: var(--text);
       font-size: 14px;
       text-align: left;
+      text-decoration: none;
+      cursor: pointer;
       transition: background var(--motion-fast);
     }
     .account-menu-item:hover,
@@ -720,6 +791,9 @@ export function page(config = configFromEnv()) {
     .header-actions {
       display: none;
     }
+    .header-projects { display:none; align-items:center; gap:7px; border:1px solid var(--line); border-radius:10px; padding:7px 10px; color:var(--text); background:var(--panel); font:inherit; font-size:12px; font-weight:700; cursor:pointer; }
+    .header-projects[hidden] { display:none; }
+    .header-projects svg { width:17px; height:17px; color:var(--accent); }
 
     .messages {
       min-height: 0;
@@ -1129,6 +1203,7 @@ export function page(config = configFromEnv()) {
       background: transparent;
       color: #aeb7c8;
       cursor: pointer;
+      text-decoration: none;
       padding: 5px 7px;
       font: inherit;
       font-size: 12px;
@@ -1395,6 +1470,30 @@ export function page(config = configFromEnv()) {
       padding: 5px 7px 5px 12px;
       box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
     }
+    .composer-left-actions { grid-column:1; grid-row:1; align-self:center; display:flex; align-items:center; gap:2px; min-width:0; }
+    .active-project-context { min-width:0; display:flex; align-items:center; color:var(--muted-2); }
+    .active-project-context[hidden] { display: none; }
+    .active-project-context .project-context-open { min-width:0; }
+    .active-project-context .project-context-open[aria-pressed="true"] { color:var(--blue); }
+    .active-project-context strong { display:block; max-width:150px; overflow:hidden; color:inherit; text-overflow:ellipsis; white-space:nowrap; }
+    .active-project-context .project-context-clear { border:0; padding:5px 3px; background:transparent; color:var(--muted-2); font:inherit; cursor:pointer; }
+    .active-project-context .project-context-clear[hidden] { display:none; }
+    #chat-form { position:relative; }
+    .project-context-menu { position:absolute; left:26px; bottom:86px; z-index:8; width:min(320px,calc(100% - 52px)); padding:8px; border:1px solid var(--line-strong); border-radius:14px; background:var(--panel); box-shadow:0 18px 50px rgba(15,23,42,.18); }
+    .project-context-menu[hidden] { display:none; }
+    .project-context-menu-header { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:5px 7px 8px; }
+    .project-context-menu-header button,.project-context-choice { border:0; background:transparent; color:var(--text); font:inherit; cursor:pointer; }
+    .project-context-menu-header button { color:var(--blue); font-weight:700; }
+    .project-context-list { display:grid; gap:3px; max-height:230px; overflow:auto; }
+    .project-context-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:3px; }
+    .project-context-choice { width:100%; display:flex; align-items:center; gap:9px; padding:9px 10px; border-radius:9px; text-align:left; }
+    .project-context-choice[hidden] { display:none; }
+    .project-context-choice:hover,.project-context-choice:focus-visible { background:var(--panel-2); outline:none; }
+    .project-context-choice[aria-current="true"] { color:var(--blue); background:color-mix(in srgb,var(--blue) 8%,var(--panel)); font-weight:700; }
+    .project-context-remove { width:34px; height:34px; display:grid; place-items:center; border:0; border-radius:9px; color:var(--muted); background:transparent; cursor:pointer; font-size:18px; font-weight:700; line-height:1; }
+    .project-context-remove:hover,.project-context-remove:focus-visible { color:#dc2626; background:color-mix(in srgb,#dc2626 10%,var(--panel)); outline:none; }
+    .project-context-empty { margin:5px 8px 9px; color:var(--muted); font-size:13px; }
+    .project-context-none { margin-top:5px; padding-top:9px; border-top:1px solid var(--line); color:var(--muted); }
     textarea {
       grid-column: 2;
       grid-row: 1;
@@ -1428,11 +1527,6 @@ export function page(config = configFromEnv()) {
       font-size: 12px;
       cursor: pointer;
     }
-    #web-search-toggle {
-      grid-column: 1;
-      grid-row: 1;
-      align-self: center;
-    }
     #enter-to-send-toggle { display: none; }
     .tool-toggle:hover,
     .tool-toggle:focus-visible {
@@ -1448,18 +1542,90 @@ export function page(config = configFromEnv()) {
       color: var(--green);
     }
     .header-action { border: 1px solid var(--line-strong); border-radius: 999px; background: white; color: var(--blue); padding: 8px 14px; font: inherit; font-weight: 700; cursor: pointer; }
-    .harness-dialog { width: min(620px, calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: 18px; padding: 24px; color: var(--text); box-shadow: 0 28px 80px rgba(18,19,28,.24); }
+    .harness-dialog { width: min(680px, calc(100vw - 32px)); max-height: calc(100vh - 32px); overflow: auto; border: 1px solid var(--line-strong); border-radius: 18px; padding: 24px; color: var(--text); background: var(--panel); box-shadow: 0 28px 80px rgba(18,19,28,.24); }
     .harness-dialog::backdrop { background: rgba(15,23,42,.48); }
-    .dialog-close { float: right; padding: 0; }
-    .dialog-close button { border: 0; background: transparent; font-size: 28px; cursor: pointer; }
     .harness-boundary,.harness-form { display: grid; gap: 14px; }
     .harness-boundary { padding: 12px; border-radius: 10px; background: var(--bg); }
+    .project-readiness { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--bg); }
+    .project-readiness button { border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--text); padding: 7px 10px; font: inherit; cursor: pointer; }
+    .readiness-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 999px; background: var(--muted-2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted-2) 15%, transparent); }
+    [data-state="ready"] > .readiness-dot { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 15%, transparent); }
+    [data-state="offline"] > .readiness-dot { background: #d98c16; box-shadow: 0 0 0 4px rgba(217,140,22,.14); }
+    .command-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; margin-top: 9px; }
+    .command-row[hidden] { display: none; }
+    .command-row code { min-width: 0; overflow-wrap: anywhere; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); user-select: all; font-size: 12px; }
+    .command-row button { padding: 8px 10px; }
+    .credential-note { margin: 3px 0 14px; padding: 12px 14px; border: 1px solid color-mix(in srgb, var(--blue) 22%, var(--line)); border-radius: 10px; background: color-mix(in srgb, var(--blue) 5%, var(--panel)); color: var(--muted); line-height: 1.45; }
+    .credential-note strong { color: var(--text); }
+    .setup-unavailable { color: var(--muted); font-size: 13px; }
+    .project-readiness { margin: 2px 0; padding: 10px 12px; border-radius: 10px; }
+    .project-readiness[hidden],.project-runner-setup[hidden],.project-runner-context[hidden],.project-create-fields[hidden],.project-purpose-note[hidden],.project-actions[hidden] { display:none; }
+    .project-readiness > span:nth-child(2) { display:grid; gap:2px; flex: 1; }
+    .project-readiness small { color:var(--muted); }
     .harness-form label { display: grid; gap: 6px; }
-    .harness-form textarea,.harness-form select { grid-column: auto; grid-row: auto; width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; background: white; font: inherit; }
+    .harness-form textarea,.harness-form select,.harness-form input[type="text"],.harness-form input:not([type]) { grid-column: auto; grid-row: auto; width: 100%; border: 1px solid var(--line-strong); border-radius: 10px; padding: 10px; background: white; font: inherit; }
     .harness-form textarea { min-height: 120px; max-height: 320px; resize: vertical; }
     .harness-form fieldset { display: grid; gap: 8px; border: 1px solid var(--line); border-radius: 10px; }
     .harness-form fieldset label { display: flex; align-items: center; gap: 8px; }
+    .project-browser { margin-top: 20px; padding-top: 14px; border-top: 1px solid var(--line); }
+    .project-browser summary { font-weight: 700; cursor: pointer; }
     .harness-submit { border: 0; border-radius: 10px; background: var(--gradient); color: white; padding: 12px; font: inherit; font-weight: 700; cursor: pointer; }
+    .sr-only { position: absolute!important; width: 1px!important; height: 1px!important; padding: 0!important; margin: -1px!important; overflow: hidden!important; clip: rect(0,0,0,0)!important; white-space: nowrap!important; border: 0!important; }
+    .projects-overlay { position:fixed; inset:0; z-index:50; display:grid; place-items:center; padding:10px; background:rgba(38,44,62,.42); backdrop-filter:blur(2px); }
+    .projects-overlay[hidden] { display:none; }
+    .mcp-dialog { position:relative; width:min(620px,calc(100vw - 32px)); display:grid; gap:16px; }
+    .mcp-dialog .dialog-close { position:absolute; top:14px; right:14px; z-index:2; width:36px; height:36px; display:grid; place-items:center; margin:0; padding:0; border:0; border-radius:9px; color:var(--text); background:transparent; font:inherit; font-size:26px; line-height:1; cursor:pointer; transition:background var(--motion-fast),transform var(--motion-fast); }
+    .mcp-dialog .dialog-close:hover,.mcp-dialog .dialog-close:focus-visible { background:var(--panel-2); outline:0; transform:scale(1.04); }
+    .mcp-dialog h2 { padding-right:44px; }
+    .mcp-dialog h2,.mcp-dialog h3,.mcp-dialog p { margin:0; }
+    .mcp-intro,.mcp-safety { color:var(--muted); line-height:1.5; }
+    .mcp-endpoint { display:grid; gap:7px; font-weight:650; }
+    .mcp-endpoint code,.mcp-token-once { padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel-2); overflow-wrap:anywhere; }
+    .mcp-token-form { display:grid; grid-template-columns:minmax(0,1fr) 120px auto; align-items:end; gap:10px; }
+    .mcp-token-form label { display:grid; gap:6px; font-size:13px; font-weight:650; }
+    .mcp-token-form input,.mcp-token-form select { min-height:42px; border:1px solid var(--line-strong); border-radius:9px; padding:0 11px; color:var(--text); background:var(--panel); font:inherit; }
+    .mcp-token-form button,.mcp-token-row button { min-height:42px; border:0; border-radius:9px; padding:0 14px; color:white; background:var(--blue); font-size:13px; font-weight:700; line-height:1; cursor:pointer; }
+    .mcp-token-once { display:grid; gap:8px; }
+    .mcp-token-once[hidden] { display:none; }
+    .mcp-token-once p,.mcp-token-meta { color:var(--muted); font-size:12px; }
+    .mcp-token-once .command-row { margin:0; }
+    .mcp-token-list-section { display:grid; gap:8px; }
+    .mcp-token-list { display:grid; gap:6px; }
+    .mcp-token-row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:10px 12px; border:1px solid var(--line); border-radius:10px; }
+    .mcp-token-row>span { display:grid; gap:3px; min-width:0; }
+    .mcp-token-row button { min-height:34px; color:#dc2626; background:color-mix(in srgb,#dc2626 10%,var(--panel)); }
+    .app-toast { position:fixed; right:24px; bottom:24px; z-index:80; max-width:min(420px,calc(100vw - 32px)); padding:12px 16px; border:1px solid var(--line-strong); border-radius:12px; color:var(--panel); background:var(--text); box-shadow:0 18px 48px rgba(18,19,28,.24); font-size:14px; font-weight:650; line-height:1.4; opacity:0; transform:translateY(8px); transition:opacity var(--motion-fast),transform var(--motion-fast); }
+    .app-toast.is-visible { opacity:1; transform:translateY(0); }
+    .app-toast[hidden] { display:none; }
+    .projects-dialog { width:min(520px,calc(100vw - 20px)); padding:0; overflow-x:hidden; border-color:var(--line); border-radius:16px; background:color-mix(in srgb,var(--bg) 86%,var(--panel)); box-shadow:0 28px 80px rgba(18,19,28,.24); backdrop-filter:blur(24px); }
+    .projects-dialog .dialog-close { position:absolute; top:14px; right:14px; z-index:5; width:36px; height:36px; display:grid; place-items:center; margin:0; padding:0; border:0; border-radius:9px; color:var(--text); background:transparent; font:inherit; font-size:28px; line-height:1; cursor:pointer; transition:background var(--motion-fast),transform var(--motion-fast); }
+    .projects-dialog .dialog-close:hover,.projects-dialog .dialog-close:focus-visible { background:var(--panel); outline:0; transform:scale(1.04); }
+    .project-heading { display:block; padding:20px 58px 12px 18px; margin:0; border:0; text-align:left; }
+    .project-heading h2 { margin:0; font-size:19px; font-weight:500; line-height:1.2; }
+    .projects-dialog .harness-form { gap:16px; padding:10px 18px 18px; }
+    .project-section { display:grid; gap:10px; padding:0; border:0; background:transparent; box-shadow:none; }
+    .project-field-wide { grid-column:1 / -1; line-height:1.25; }
+    .project-field-wide input { line-height:1.3; }
+    .project-purpose-note { display:flex; align-items:flex-start; gap:10px; margin:0; padding:12px 13px; border-radius:11px; color:var(--muted); background:color-mix(in srgb,var(--text) 7%,transparent); font-size:13px; line-height:1.4; }
+    .project-purpose-note > span:first-child { color:var(--purple); font-size:16px; line-height:1.1; }
+    .project-runner-context { display:flex; align-items:flex-start; gap:12px; margin:0; padding:13px; border:1px solid var(--line); border-radius:11px; background:var(--bg); }
+    .project-runner-context-icon { display:grid; place-items:center; width:30px; height:30px; flex:0 0 auto; border-radius:9px; color:var(--blue); background:color-mix(in srgb,var(--blue) 11%,transparent); }
+    .project-runner-context > span:last-child { display:grid; gap:2px; min-width:0; }
+    .project-runner-context strong { overflow-wrap:anywhere; }
+    .project-runner-context small { color:var(--muted); line-height:1.4; }
+    .project-actions { display:flex; align-items:center; justify-content:flex-end; gap:16px; padding:0; border:0; }
+    .project-actions output { min-width:0; flex:1; color: var(--text); font-size: 12px; }
+    .project-actions .harness-submit { min-width:142px; min-height:44px; padding:11px 16px; border-radius:11px; box-shadow:0 10px 24px rgba(86,70,246,.22); }
+    .project-actions .harness-submit:disabled { cursor:not-allowed; filter:grayscale(.45); opacity:.55; }
+    .project-runner-setup { padding:14px 16px 12px; border:1px solid var(--line); border-radius:13px; background:var(--panel-2); }
+    .runner-one-click { display:flex; align-items:flex-start; gap:12px; }
+    .runner-one-click > span:last-child { display:grid; gap:3px; min-width:0; }
+    .runner-one-click small { color:var(--muted); line-height:1.45; }
+    .project-runner-setup > .harness-download { display:block; margin-top:14px; border:0; border-radius:10px; padding:11px 14px; color:white; background:linear-gradient(135deg,var(--blue),var(--purple)); font-weight:750; text-align:center; text-decoration:none; }
+    .project-runner-setup > p { margin:10px 2px 0; color:var(--muted); font-size:13px; line-height:1.4; }
+    .projects-dialog .harness-form textarea,.projects-dialog .harness-form select,.projects-dialog .harness-form input[type="text"],.projects-dialog .harness-form input:not([type]) { min-height:42px; color:var(--text); background:color-mix(in srgb,var(--panel) 92%,var(--bg)); }
+    .projects-dialog .harness-form input:focus { border-color:color-mix(in srgb,var(--purple) 56%,var(--line-strong)); outline:3px solid color-mix(in srgb,var(--purple) 12%,transparent); }
+    .projects-dialog .project-browser { margin-top: 16px; padding: 13px 2px 0; }
     .auth-gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(246,247,252,.96); }
     .auth-gate[hidden] { display: none; }
     .auth-card { width: min(420px, calc(100vw - 32px)); padding: 30px; border: 1px solid var(--line); border-radius: 18px; background: white; box-shadow: 0 18px 60px rgba(28,31,60,.12); display: grid; gap: 16px; }
@@ -1591,6 +1757,9 @@ export function page(config = configFromEnv()) {
     @media (max-width: 860px) {
       .shell { grid-template-columns: 1fr; }
       aside { display: none; }
+      header { justify-content:flex-start; padding:0 14px; gap:10px; }
+      .header-projects:not([hidden]) { display:inline-flex; }
+      .theme-switch { margin-left:auto; }
       .conversation { padding: 24px 14px 20px; }
       main.is-empty-chat { grid-template-rows: 58px minmax(0, 0.9fr) minmax(0, 1.1fr); }
       form { padding: 12px 14px 18px; }
@@ -1604,20 +1773,21 @@ export function page(config = configFromEnv()) {
     html[data-theme="dark"] { color-scheme:dark; --bg:#070a15; --rail:rgba(8,11,24,.94); --panel:rgba(17,21,40,.82); --panel-2:rgba(20,24,45,.72); --line:rgba(170,182,230,.14); --line-strong:rgba(170,182,230,.24); --text:#f4f5ff; --muted:#b1b7ca; --muted-2:#7f89a6; --mesh-a:68,103,255; --mesh-b:143,56,255; --surface-shadow:0 22px 70px rgba(0,0,0,.38); }
     body { background:var(--bg); transition:background .28s ease,color .28s ease; }
     .shell { position:relative; isolation:isolate; }
-    aside { position:relative; z-index:4; backdrop-filter:blur(22px); grid-template-rows:auto auto auto minmax(0,1fr) auto; gap:14px; }
-    .network-card { display:grid; grid-template-columns:auto 1fr auto; align-items:center; gap:10px; border:1px solid var(--line); border-radius:12px; padding:11px 12px; background:var(--panel); }
-    .network-card .status-dot { color:#43c767; box-shadow:0 0 12px rgba(67,199,103,.7); }
-    .network-copy { display:grid; gap:3px; }
-    .network-copy strong { font-size:10px; letter-spacing:.06em; text-transform:uppercase; }
-    .network-copy span { color:var(--muted); font-size:11px; }
-    .network-wave { color:#43c767; font-size:20px; letter-spacing:-4px; transform:rotate(-8deg); }
+    aside { position:relative; z-index:4; backdrop-filter:blur(22px); grid-template-rows:auto auto minmax(0,1fr) auto; gap:14px; }
+    .rail-primary,.workspace-nav,.rail-list { width:100%; min-width:0; max-width:100%; }
     .rail-primary { display:grid; gap:8px; }
+    .new-chat,.rail-destination,.account-bar { width:100%; min-width:0; max-width:100%; }
     .new-chat { color:white; border:0; background:var(--gradient); box-shadow:0 10px 24px rgba(84,71,244,.22); }
     .new-chat:hover,.new-chat:focus-visible { background:var(--gradient); transform:translateY(-1px); }
     .new-chat .kbd-hint { color:white; border-color:rgba(255,255,255,.25); background:rgba(255,255,255,.12); }
-    .rail-tabs { display:grid; grid-template-columns:repeat(3,1fr); gap:4px; }
-    .rail-tab { border:0; border-bottom:2px solid transparent; padding:8px 2px; color:var(--muted); background:transparent; font-size:12px; }
-    .rail-tab.is-active { color:var(--purple); border-color:var(--purple); font-weight:700; }
+    .workspace-nav { display:grid; gap:4px; margin-top:4px; }
+    .workspace-label { padding:4px 10px 2px; color:var(--muted-2); font-size:10px; font-weight:750; letter-spacing:.08em; text-transform:uppercase; }
+    .rail-destination { width:100%; min-width:0; display:grid; grid-template-columns:30px minmax(0,1fr) auto; align-items:center; gap:9px; border:1px solid transparent; border-radius:10px; padding:8px 10px; color:var(--muted); background:transparent; font:inherit; font-size:13px; font-weight:650; text-align:left; cursor:pointer; transition:color var(--motion-fast),border-color var(--motion-fast),background var(--motion-fast),transform var(--motion-fast); }
+    .rail-destination:hover,.rail-destination:focus-visible { color:var(--text); background:var(--panel-2); border-color:var(--line); outline:0; transform:translateX(2px); }
+    .rail-destination.is-active { color:var(--text); background:var(--panel); border-color:var(--line); box-shadow:0 8px 22px rgba(50,45,120,.08); }
+    .rail-destination-icon { width:28px; height:28px; display:grid; place-items:center; border-radius:8px; color:var(--purple); background:color-mix(in srgb,var(--purple) 9%,transparent); }
+    .rail-destination-icon svg { width:17px; height:17px; }
+    .rail-destination-chevron { color:var(--muted-2); font-size:18px; line-height:1; }
     main { position:relative; z-index:1; background:radial-gradient(circle at 55% 18%,rgba(var(--mesh-a),.06),transparent 42%); }
     .mesh-canvas { position:absolute; z-index:-1; inset:58px 0 0; width:100%; height:calc(100% - 58px); pointer-events:none; opacity:.78; transition:opacity .4s ease; }
     main:not(.is-empty-chat) .mesh-canvas { opacity:.10; }
@@ -1647,10 +1817,14 @@ export function page(config = configFromEnv()) {
     .account-bar,.account-menu,.account-upgrade { background:var(--panel); }
     .account-bar:hover,.account-menu-header:hover,.account-menu-item:hover { background:var(--panel-2); }
     html[data-theme="dark"] code { color:#c6bcff; }
+    html[data-theme="dark"] .projects-dialog { border-color:rgba(170,182,230,.18); background:color-mix(in srgb,var(--bg) 76%,#171b31); box-shadow:0 30px 90px rgba(0,0,0,.58); }
+    html[data-theme="dark"] .projects-overlay { background:rgba(2,5,15,.72); }
+    html[data-theme="dark"] .project-purpose-note { color:#d4d8e8; background:rgba(255,255,255,.12); }
     html[data-theme="dark"] .message-retry-button { background:var(--panel); }
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
-    @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px} }
+    @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px}.active-project-context strong{max-width:90px}#web-search-label{display:none} }
+    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:10px;right:10px}.project-heading{padding:18px 52px 10px 16px}.projects-dialog .harness-form{padding:8px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%}.mcp-token-form{grid-template-columns:1fr}.mcp-token-form button{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
   </style>
 </head>
@@ -1658,7 +1832,7 @@ export function page(config = configFromEnv()) {
   <div class="auth-gate" id="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title">
     <div class="auth-card">
       <h1 id="auth-title">Sign in to MundusX</h1>
-      <p>Your chats and Coding Harness permissions are tied to your individual account.</p>
+      <p>Your chats and local Projects permissions are tied to your individual account.</p>
       <a class="auth-github" id="auth-github" href="/api/auth/github/start">Continue with GitHub</a>
       <form class="auth-email" id="auth-email-form"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="email" required><button type="submit">Email me a sign-in link</button></form>
       <div class="auth-message" id="auth-message">Checking your session…</div>
@@ -1673,10 +1847,13 @@ export function page(config = configFromEnv()) {
           <div class="brand-kicker">Decentralized AI Network</div>
         </div>
       </div>
-      <div class="network-card" aria-label="Network status"><span class="status-dot"></span><span class="network-copy"><strong>Network status</strong><span>All systems operational</span></span><span class="network-wave" aria-hidden="true">⌁⌁</span></div>
       <div class="rail-primary">
         <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
-        <nav class="rail-tabs" aria-label="Workspace"><button class="rail-tab is-active" type="button">Chats</button><button class="rail-tab" type="button">Agents</button><button class="rail-tab" type="button">Nodes</button></nav>
+        <nav class="workspace-nav" aria-label="Workspace">
+          <span class="workspace-label">Workspace</span>
+          <button class="rail-destination is-active" id="chats-open" type="button" aria-current="page"><span class="rail-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 3v-13a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span>Chats</span></button>
+          ${repositoryLauncher}
+        </nav>
       </div>
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
       <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
@@ -1699,6 +1876,8 @@ export function page(config = configFromEnv()) {
           <button class="account-menu-item" type="button">${ICON_PERSONALIZATION}<span>Personalization</span></button>
           <button class="account-menu-item" type="button">${ICON_PROFILE}<span>Profile</span></button>
           <button class="account-menu-item" type="button">${ICON_SETTINGS}<span>Settings</span></button>
+          <a class="account-menu-item" href="/skills">${ICON_LAYERS}<span>Skills</span></a>
+          ${config.mcpEnabled ? `<button class="account-menu-item" id="account-mcp" type="button">${ICON_LAYERS}<span>MCP connections</span></button>` : ""}
           <div class="account-menu-divider"></div>
           <button class="account-menu-item" type="button">${ICON_HELP_RING}<span>Help</span><span class="chevron">${ICON_CHEVRON_RIGHT}</span></button>
           <button class="account-menu-item" id="account-logout" type="button">${ICON_LOGOUT}<span>Log out</span></button>
@@ -1713,13 +1892,15 @@ export function page(config = configFromEnv()) {
         </button>
       </div>
     </aside>
+    ${repositoryDialog}
+    ${mcpDialog}
+    <div class="app-toast" id="app-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
     <main id="chat-main" class="is-empty-chat">
       <canvas class="mesh-canvas" id="mesh-canvas" aria-hidden="true"></canvas>
       <header>
         <div class="theme-switch" role="group" aria-label="Color theme"><button class="theme-option" id="theme-light" type="button" aria-label="Use light theme" aria-pressed="true">☀</button><button class="theme-option" id="theme-dark" type="button" aria-label="Use dark theme" aria-pressed="false">☾</button></div>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
-        ${repositoryLauncher}
-        ${harnessLauncher}
+        ${repositoryMobileLauncher}
       </header>
       <section class="messages" id="messages" aria-live="polite">
         <div class="conversation" id="conversation">
@@ -1729,10 +1910,13 @@ export function page(config = configFromEnv()) {
         </div>
       </section>
       <form id="chat-form">
+        ${config.harnessUiEnabled ? `<div class="project-context-menu" id="project-context-menu" hidden><div class="project-context-menu-header"><strong>Projects</strong><button id="project-context-new" type="button">+ New project</button></div><div class="project-context-list" id="project-context-list"></div><button class="project-context-choice project-context-none" id="project-context-none" type="button"><span aria-hidden="true">○</span><span>No project</span></button></div>` : ""}
         <div class="composer">
           <textarea id="prompt" name="prompt" rows="1" placeholder="Ask everyone..." autocomplete="off" required></textarea>
           <div class="composer-actions">
-            <button class="tool-toggle" id="web-search-toggle" type="button" aria-pressed="false" title="Use grounded tools when available"><span class="kbd">@</span><span id="web-search-label">Web Search</span></button>
+            <span class="composer-left-actions">
+              ${config.harnessUiEnabled ? `<span class="active-project-context" id="active-project-context"><button class="tool-toggle project-context-open" id="active-project-open" type="button" aria-pressed="false" title="Choose a project"><span class="kbd" aria-hidden="true">⌁</span><strong id="active-project-name">Project</strong></button><button class="project-context-clear" id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project" hidden>&times;</button></span>` : ""}
+            </span>
             <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
             <span class="voice-controls" id="voice-controls">
               <button class="voice-button" id="voice-mic" type="button" aria-label="Start voice input" title="Voice input">${ICON_MIC}</button>
@@ -1762,12 +1946,23 @@ export function page(config = configFromEnv()) {
     const newChatEl = document.getElementById("new-chat");
     const accountBarEl = document.getElementById("account-bar");
     const accountMenuEl = document.getElementById("account-menu");
-    const webSearchToggleEl = document.getElementById("web-search-toggle");
-    const webSearchLabelEl = document.getElementById("web-search-label");
-    const harnessOpenEl = document.getElementById("harness-open");
-    const harnessDialogEl = document.getElementById("harness-dialog");
     const harnessFormEl = document.getElementById("harness-form");
     const harnessResultEl = document.getElementById("harness-result");
+    const harnessRunnerStatusEl = document.getElementById("harness-runner-status");
+    const harnessDownloadEl = document.getElementById("harness-download");
+    const projectReadinessTitleEl = document.getElementById("project-readiness-title");
+    const projectReadinessEl = document.getElementById("project-readiness");
+    const projectReadinessTextEl = document.getElementById("project-readiness-text");
+    const projectRunnerSetupEl = document.getElementById("project-runner-setup");
+    const activeProjectContextEl = document.getElementById("active-project-context");
+    const activeProjectNameEl = document.getElementById("active-project-name");
+    const activeProjectOpenEl = document.getElementById("active-project-open");
+    const activeProjectClearEl = document.getElementById("active-project-clear");
+    const projectContextMenuEl = document.getElementById("project-context-menu");
+    const projectContextListEl = document.getElementById("project-context-list");
+    const projectContextNewEl = document.getElementById("project-context-new");
+    const projectContextNoneEl = document.getElementById("project-context-none");
+    const harnessSubmitEl = harnessFormEl?.querySelector(".harness-submit");
     const enterToSendToggleEl = document.getElementById("enter-to-send-toggle");
     const enterToSendLabelEl = document.getElementById("enter-to-send-label");
     const voiceMicEl = document.getElementById("voice-mic");
@@ -1777,24 +1972,74 @@ export function page(config = configFromEnv()) {
     const authMessageEl = document.getElementById("auth-message");
     const authEmailFormEl = document.getElementById("auth-email-form");
     const accountLogoutEl = document.getElementById("account-logout");
-    const harnessGrantEl = document.getElementById("harness-grant");
+    const accountMcpEl = document.getElementById("account-mcp");
+    const mcpDialogEl = document.getElementById("mcp-dialog");
+    const mcpDialogCloseEl = document.getElementById("mcp-dialog-close");
+    const mcpTokenFormEl = document.getElementById("mcp-token-form");
+    const mcpTokenOnceEl = document.getElementById("mcp-token-once");
+    const mcpTokenValueEl = document.getElementById("mcp-token-value");
+    const mcpTokenListEl = document.getElementById("mcp-token-list");
+    const chatsOpenEl = document.getElementById("chats-open");
     const repositoryOpenEl = document.getElementById("repository-open");
+    const repositoryOpenMobileEl = document.getElementById("repository-open-mobile");
     const repositoryDialogEl = document.getElementById("repository-dialog");
-    const repositorySelectEl = document.getElementById("repository-select");
-    const repositoryEntriesEl = document.getElementById("repository-entries");
-    const repositoryFileEl = document.getElementById("repository-file");
-    const repositoryPathEl = document.getElementById("repository-path");
-    const repositoryResultEl = document.getElementById("repository-result");
-    const repositoryUpEl = document.getElementById("repository-up");
+    const repositoryDialogCloseEl = document.getElementById("repository-dialog-close");
+    const repositoryDialogTitleEl = document.getElementById("project-dialog-title");
+    const projectCreateFieldsEl = document.getElementById("project-create-fields");
+    const projectPurposeNoteEl = document.getElementById("project-purpose-note");
+    const projectRunnerContextEl = document.getElementById("project-runner-context");
+    const projectRunnerContextNameEl = document.getElementById("project-runner-context-name");
+    const projectActionsEl = document.getElementById("project-actions");
+    const appToastEl = document.getElementById("app-toast");
     const meshCanvasEl = document.getElementById("mesh-canvas");
     const themeLightEl = document.getElementById("theme-light");
     const themeDarkEl = document.getElementById("theme-dark");
     let authCsrfToken = null;
     let currentUser = null;
-    let currentRepositoryPath = "";
     let historyKey = "mundusx.chat.pending.history.v1";
     let conversationIdKey = "mundusx.chat.pending.conversationId.v1";
     let conversationCachePrefix = "mundusx.chat.pending.conversation.v1:";
+    let activeProjectKey = "mundusx.chat.activeProject.v1:anonymous";
+    let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
+    let removedProjectsKey = "mundusx.chat.removedProjects.v1:anonymous";
+    const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
+    let activeProject = null;
+    let availableProjectSlugs = [];
+    let removedProjectSlugs = [];
+    let readyHarnessModes = new Set();
+    let localRunnerReady = false;
+    let runnerSetupRequested = false;
+    let runnerTargetProject = null;
+    let runnerDownloadStarted = false;
+    let runnerPairingInProgress = false;
+    let runnerPairingExpiresAt = 0;
+    let runnerPairingPollTimer = null;
+    let pendingRunnerAction = null;
+    let pendingRunnerResumeInProgress = false;
+    let appToastTimer = null;
+    function loadStoredProjectContext(namespace) {
+      activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
+      recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
+      removedProjectsKey = "mundusx.chat.removedProjects.v1:" + namespace;
+      try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
+      try {
+        removedProjectSlugs = JSON.parse(localStorage.getItem(removedProjectsKey) || "[]")
+          .filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+          .slice(0, 100);
+      } catch { removedProjectSlugs = []; }
+      try {
+        availableProjectSlugs = JSON.parse(localStorage.getItem(recentProjectsKey) || "[]")
+          .filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+          .filter((slug) => !removedProjectSlugs.includes(slug))
+          .slice(0, 100);
+      } catch { availableProjectSlugs = []; }
+      if (activeProject?.slug && removedProjectSlugs.includes(activeProject.slug)) {
+        activeProject = null;
+        localStorage.removeItem(activeProjectKey);
+      }
+      renderActiveProject();
+    }
+    loadStoredProjectContext("anonymous");
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let isListening = false;
@@ -1804,7 +2049,7 @@ export function page(config = configFromEnv()) {
     let voiceHardStopTimer = null;
     let voiceMicStream = null;
     let speakReplies = false;
-    let webSearchEnabled = localStorage.getItem("mundusx.chat.toolMode") === "true";
+    localStorage.removeItem("mundusx.chat.toolMode");
     let enterToSendEnabled = true;
     let activeHistoryMenuId = null;
     let activeHistoryId = localStorage.getItem(conversationIdKey);
@@ -1847,12 +2092,13 @@ export function page(config = configFromEnv()) {
 
       function createConstellation() {
         const count = Math.max(54, Math.min(96, Math.round(width / 17)));
+        const deviceLabels = ["phone", "spark", "watch", "laptop", "computer", "car", "nodes"];
         constellationNodes = Array.from({ length: count }, (_, index) => ({
           x: seededValue(index, 1),
           y: .10 + seededValue(index, 2) * .82,
           drift: seededValue(index, 3) * Math.PI * 2,
           size: .55 + seededValue(index, 4) * 1.25,
-          label: index % 29 === 0 ? ["phone", "spark", "watch", "node"][index % 4] : "",
+          label: index < deviceLabels.length ? deviceLabels[index] : "",
         }));
         constellationEdges = [];
         constellationNodes.forEach((node, index) => {
@@ -1970,7 +2216,6 @@ export function page(config = configFromEnv()) {
       const providers = await nativeFetch("/api/auth/providers").then((value) => value.json()).catch(() => ({}));
       document.getElementById("auth-github").hidden = !providers.github;
       authEmailFormEl.hidden = !providers.email;
-      repositoryOpenEl.hidden = !providers.github;
       try {
         const response = await nativeFetch("/api/auth/session");
         if (!response.ok) throw new Error("Sign in required");
@@ -1978,23 +2223,23 @@ export function page(config = configFromEnv()) {
         authCsrfToken = payload.csrf_token;
         const user = payload.user;
         currentUser = user;
+        updateRunnerSetupState();
         const namespace = String(user.id).replace(/[^a-zA-Z0-9-]/g, "");
         historyKey = "mundusx.chat.history.v1:" + namespace;
         conversationIdKey = "mundusx.chat.conversationId.v1:" + namespace;
         conversationCachePrefix = "mundusx.chat.conversation.v1:" + namespace + ":";
+        loadStoredProjectContext(namespace);
+        loadHarnessRunners().catch(() => {});
         activeHistoryId = localStorage.getItem(conversationIdKey);
         const name = user.display_name || user.email;
         document.querySelectorAll("[data-account-name]").forEach((node) => node.textContent = name);
         document.querySelectorAll("[data-account-email]").forEach((node) => node.textContent = user.email);
         document.querySelectorAll("[data-account-avatar]").forEach((node) => node.textContent = name.split(/\\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase());
-        if (!user.github_connected && harnessOpenEl) harnessOpenEl.hidden = true;
-        if (user.github_connected) loadRepositories().catch(() => {
-          if (harnessOpenEl) harnessOpenEl.hidden = true;
-        });
         renderHistory();
         authGateEl.hidden = true;
       } catch {
         currentUser = null;
+        updateRunnerSetupState();
         if (document.body.dataset.authRequired === "true") {
           authMessageEl.textContent = providers.github || providers.email ? "Choose a secure sign-in method." : "Authentication is not configured yet.";
         } else {
@@ -2003,71 +2248,217 @@ export function page(config = configFromEnv()) {
       }
     }
 
-    async function loadRepositories() {
-      repositoryResultEl.textContent = "Loading repositories allowed by GitHub…";
-      const response = await window.fetch("/api/github/repositories");
-      if (response.status === 401 || response.status === 403) {
-        location.href = "/api/auth/github/start?return_to=/";
-        return [];
+    function setWorkspaceDestination(destination) {
+      const projectsActive = destination === "projects";
+      chatsOpenEl?.classList.toggle("is-active", !projectsActive);
+      repositoryOpenEl?.classList.toggle("is-active", projectsActive);
+      if (projectsActive) {
+        repositoryOpenEl?.setAttribute("aria-current", "page");
+        chatsOpenEl?.removeAttribute("aria-current");
+      } else {
+        chatsOpenEl?.setAttribute("aria-current", "page");
+        repositoryOpenEl?.removeAttribute("aria-current");
       }
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Repositories could not be loaded");
-      const options = payload.repositories.map((repo) => {
-        const option = document.createElement("option");
-        option.value = String(repo.id);
-        option.textContent = repo.full_name + (repo.permissions.push ? " · write" : " · read");
-        return option;
-      });
-      repositorySelectEl.replaceChildren(...options.map((option) => option.cloneNode(true)));
-      harnessGrantEl?.replaceChildren(...options.map((option) => option.cloneNode(true)));
-      if (harnessOpenEl) harnessOpenEl.hidden = !payload.repositories.length;
-      repositoryResultEl.textContent = payload.repositories.length ? "Select a repository to browse." : "No GitHub App repositories are available to this account.";
-      return payload.repositories;
     }
 
-    async function loadRepositoryContents(path = "") {
-      const repositoryId = repositorySelectEl.value;
-      if (!repositoryId) return;
-      repositoryResultEl.textContent = "Checking live GitHub access…";
-      const params = new URLSearchParams({ path });
-      const response = await window.fetch("/api/github/repositories/" + encodeURIComponent(repositoryId) + "/contents?" + params);
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Repository content could not be loaded");
-      currentRepositoryPath = payload.path || "";
-      repositoryPathEl.textContent = "/" + currentRepositoryPath;
-      repositoryFileEl.hidden = true;
-      if (payload.file) {
-        repositoryEntriesEl.replaceChildren();
-        repositoryFileEl.textContent = payload.file.content;
-        repositoryFileEl.hidden = false;
-        repositoryResultEl.textContent = payload.file.path + " · " + payload.file.size + " bytes" + (payload.file.redacted ? " · obvious credentials masked" : "");
+    function configureProjectsDialog({ showRunnerSetup = false, project = null } = {}) {
+      const existingProjectMode = Boolean(showRunnerSetup && project?.slug);
+      runnerTargetProject = existingProjectMode ? project : null;
+      if (repositoryDialogTitleEl) repositoryDialogTitleEl.textContent = existingProjectMode ? "Connect local runner" : "Create project";
+      if (projectCreateFieldsEl) projectCreateFieldsEl.hidden = existingProjectMode;
+      if (projectPurposeNoteEl) projectPurposeNoteEl.hidden = existingProjectMode;
+      if (projectRunnerContextEl) projectRunnerContextEl.hidden = !existingProjectMode;
+      if (projectRunnerContextNameEl) projectRunnerContextNameEl.textContent = existingProjectMode ? project.slug : "Project";
+      if (projectActionsEl) projectActionsEl.hidden = existingProjectMode;
+      if (projectRunnerSetupEl) {
+        projectRunnerSetupEl.hidden = !existingProjectMode;
+      }
+      updateRunnerSetupState();
+    }
+
+    function updateRunnerSetupState({ paired = false, ready = false } = {}) {
+      if (!harnessRunnerStatusEl) return;
+      if (harnessDownloadEl) {
+        harnessDownloadEl.hidden = ready;
+        harnessDownloadEl.textContent = runnerDownloadStarted && !ready ? "Installer downloaded · waiting…" : "Connect this computer";
+      }
+      if (ready) harnessRunnerStatusEl.textContent = "Connected. Local coding actions are ready.";
+      else if (paired) harnessRunnerStatusEl.textContent = "Connected but offline. Start the MundusX runner on this computer.";
+      else if (runnerPairingInProgress) harnessRunnerStatusEl.textContent = "Open the downloaded installer and approve this computer in the browser. Waiting for it to connect…";
+      else harnessRunnerStatusEl.textContent = "One install and one browser approval. Future sessions reconnect automatically.";
+    }
+
+    function stopRunnerPairingPoll() {
+      if (runnerPairingPollTimer) window.clearTimeout(runnerPairingPollTimer);
+      runnerPairingPollTimer = null;
+    }
+
+    function pollRunnerPairing() {
+      stopRunnerPairingPoll();
+      if (!runnerPairingInProgress || Date.now() >= runnerPairingExpiresAt) {
+        runnerPairingInProgress = false;
+        if (harnessRunnerStatusEl && Date.now() >= runnerPairingExpiresAt) harnessRunnerStatusEl.textContent = "The installer was not detected. Choose Connect this computer to try again.";
         return;
       }
-      repositoryEntriesEl.replaceChildren(...payload.entries.map((entry) => {
-        const button = document.createElement("button");
-        button.type = "button";
-        button.className = "repository-entry";
-        button.dataset.path = entry.path;
-        button.textContent = (entry.type === "dir" ? "📁 " : "📄 ") + entry.name;
-        return button;
-      }));
-      repositoryResultEl.textContent = payload.entries.length + " entries";
+      runnerPairingPollTimer = window.setTimeout(async () => {
+        try {
+          const runners = await loadHarnessRunners();
+          if (localRunnerReady || runners.length) {
+            runnerPairingInProgress = false;
+            stopRunnerPairingPoll();
+            return;
+          }
+        } catch {}
+        pollRunnerPairing();
+      }, 3000);
     }
 
-    repositoryOpenEl?.addEventListener("click", async () => {
-      if (!currentUser?.github_connected) { location.href = "/api/auth/github/start?return_to=/"; return; }
-      repositoryDialogEl.showModal();
-      try { const repositories = await loadRepositories(); if (repositories.length) await loadRepositoryContents(""); }
-      catch (error) { repositoryResultEl.textContent = error.message; }
+    async function openProjects({ showRunnerSetup = false, project = null } = {}) {
+      runnerSetupRequested = showRunnerSetup;
+      configureProjectsDialog({ showRunnerSetup, project });
+      setWorkspaceDestination("projects");
+      repositoryDialogEl.hidden = false;
+      return loadHarnessRunners().catch((error) => {
+        if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
+        if (projectReadinessEl) projectReadinessEl.hidden = true;
+        if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Local runner status unavailable";
+        if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = !runnerTargetProject;
+        if (harnessRunnerStatusEl && currentUser) harnessRunnerStatusEl.textContent = error.message || "Local runner status unavailable";
+        updateRunnerSetupState();
+        updateProjectCreateAvailability();
+      });
+    }
+
+    function closeProjects() {
+      if (!repositoryDialogEl) return;
+      repositoryDialogEl.hidden = true;
+      stopRunnerPairingPoll();
+      setWorkspaceDestination("chats");
+    }
+
+    function showToast(message) {
+      if (!appToastEl) return;
+      if (appToastTimer) window.clearTimeout(appToastTimer);
+      appToastEl.textContent = message;
+      appToastEl.hidden = false;
+      window.requestAnimationFrame(() => appToastEl.classList.add("is-visible"));
+      appToastTimer = window.setTimeout(() => {
+        appToastEl.classList.remove("is-visible");
+        window.setTimeout(() => { appToastEl.hidden = true; }, 180);
+      }, 2800);
+    }
+
+    function openMcpConnections() {
+      if (!mcpDialogEl) return;
+      accountMenuEl?.classList.remove("is-open");
+      accountBarEl?.setAttribute("aria-expanded", "false");
+      mcpDialogEl.hidden = false;
+      loadMcpTokens();
+    }
+
+    function closeMcpConnections() {
+      if (!mcpDialogEl) return;
+      mcpDialogEl.hidden = true;
+      if (mcpTokenOnceEl) mcpTokenOnceEl.hidden = true;
+      if (mcpTokenValueEl) mcpTokenValueEl.textContent = "";
+    }
+
+    async function loadMcpTokens() {
+      if (!mcpTokenListEl) return;
+      mcpTokenListEl.innerHTML = '<p class="project-context-empty">Loading…</p>';
+      try {
+        const response = await fetch("/api/mcp/tokens");
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "MCP connections could not be loaded");
+        renderMcpTokens(payload.tokens || []);
+      } catch (error) {
+        mcpTokenListEl.textContent = error.message;
+      }
+    }
+
+    function renderMcpTokens(tokens) {
+      if (!mcpTokenListEl) return;
+      mcpTokenListEl.replaceChildren();
+      if (!tokens.length) {
+        const empty = document.createElement("p");
+        empty.className = "project-context-empty";
+        empty.textContent = "No active MCP connections.";
+        mcpTokenListEl.append(empty);
+        return;
+      }
+      for (const token of tokens) {
+        const row = document.createElement("div");
+        row.className = "mcp-token-row";
+        const details = document.createElement("span");
+        const name = document.createElement("strong");
+        name.textContent = token.name;
+        const meta = document.createElement("span");
+        meta.className = "mcp-token-meta";
+        meta.textContent = "Expires " + new Date(token.expires_at).toLocaleDateString() + (token.last_used_at ? " · Last used " + new Date(token.last_used_at).toLocaleDateString() : "");
+        details.append(name, meta);
+        const revoke = document.createElement("button");
+        revoke.type = "button";
+        revoke.dataset.revokeMcpToken = token.token_id;
+        revoke.dataset.tokenName = token.name;
+        revoke.textContent = "Revoke";
+        row.append(details, revoke);
+        mcpTokenListEl.append(row);
+      }
+    }
+
+    accountMcpEl?.addEventListener("click", openMcpConnections);
+    mcpDialogCloseEl?.addEventListener("click", closeMcpConnections);
+    mcpTokenFormEl?.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const submit = mcpTokenFormEl.querySelector('button[type="submit"]');
+      submit.disabled = true;
+      try {
+        const data = new FormData(mcpTokenFormEl);
+        const response = await fetch("/api/mcp/tokens", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: data.get("name"), expires_in_days: Number(data.get("expires_in_days")) }),
+        });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "MCP access token could not be created");
+        mcpTokenValueEl.textContent = payload.token;
+        mcpTokenOnceEl.hidden = false;
+        await loadMcpTokens();
+      } catch (error) {
+        showToast(error.message);
+      } finally {
+        submit.disabled = false;
+      }
     });
-    repositorySelectEl?.addEventListener("change", () => loadRepositoryContents("").catch((error) => repositoryResultEl.textContent = error.message));
-    repositoryEntriesEl?.addEventListener("click", (event) => {
-      const button = event.target.closest("button[data-path]");
-      if (button) loadRepositoryContents(button.dataset.path).catch((error) => repositoryResultEl.textContent = error.message);
+    mcpTokenListEl?.addEventListener("click", async (event) => {
+      const button = event.target.closest("button[data-revoke-mcp-token]");
+      if (!button || !window.confirm('Revoke MCP connection "' + button.dataset.tokenName + '"?')) return;
+      button.disabled = true;
+      try {
+        const response = await fetch("/api/mcp/tokens/" + encodeURIComponent(button.dataset.revokeMcpToken), { method: "DELETE" });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error || "MCP connection could not be revoked");
+        showToast("MCP connection revoked");
+        await loadMcpTokens();
+      } catch (error) {
+        showToast(error.message);
+        button.disabled = false;
+      }
     });
-    repositoryUpEl?.addEventListener("click", () => {
-      const parent = currentRepositoryPath.split("/").slice(0, -1).join("/");
-      loadRepositoryContents(parent).catch((error) => repositoryResultEl.textContent = error.message);
+
+    repositoryOpenEl?.addEventListener("click", () => openProjects());
+    repositoryOpenMobileEl?.addEventListener("click", () => openProjects());
+    repositoryDialogCloseEl?.addEventListener("click", closeProjects);
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      if (repositoryDialogEl && !repositoryDialogEl.hidden) {
+        event.preventDefault();
+        closeProjects();
+      }
+      if (mcpDialogEl && !mcpDialogEl.hidden) {
+        event.preventDefault();
+        closeMcpConnections();
+      }
     });
 
     authEmailFormEl?.addEventListener("submit", async (event) => {
@@ -2148,7 +2539,6 @@ export function page(config = configFromEnv()) {
 
     renderHistory();
     hydrateNetwork();
-    renderToolMode();
     renderEnterToSend();
     setupVoiceControls();
     setInterval(hydrateNetwork, 15000);
@@ -2190,37 +2580,241 @@ export function page(config = configFromEnv()) {
         await deleteHistoryItem(item);
       }
     });
-    webSearchToggleEl?.addEventListener("click", () => {
-      webSearchEnabled = !webSearchEnabled;
-      localStorage.setItem("mundusx.chat.toolMode", String(webSearchEnabled));
-      renderToolMode();
-      promptEl.focus();
+    async function loadHarnessRunners() {
+      if (!harnessRunnerStatusEl) return [];
+      harnessRunnerStatusEl.textContent = "Checking runner connection…";
+      if (projectReadinessEl) projectReadinessEl.dataset.state = "checking";
+      if (projectReadinessEl) projectReadinessEl.hidden = true;
+      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = "Checking local runner…";
+      const response = await fetch("/api/harness/runners");
+      const payload = await response.json();
+      if (!response.ok) throw new Error(payload.error || "Runner status could not be loaded");
+      const ready = payload.runners.find((runner) => runner.ready && runner.fresh);
+      const paired = payload.runners.length > 0;
+      localRunnerReady = Boolean(ready);
+      readyHarnessModes = new Set(ready?.execution_modes || []);
+      availableProjectSlugs = Array.from(new Set([
+        ...availableProjectSlugs,
+        ...(Array.isArray(payload.projects) ? payload.projects : []),
+      ])).filter((slug) => /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug))
+        .filter((slug) => !removedProjectSlugs.includes(slug)).sort().slice(0, 100);
+      localStorage.setItem(recentProjectsKey, JSON.stringify(availableProjectSlugs));
+      renderProjectMenu();
+      if (ready || paired) {
+        runnerPairingInProgress = false;
+        stopRunnerPairingPoll();
+      }
+      updateRunnerSetupState({ paired, ready: Boolean(ready) });
+      const statusText = ready
+        ? "Ready · " + ready.parallel_slots + " local slot" + (ready.parallel_slots === 1 ? "" : "s")
+        : payload.runners.length
+          ? "Connected but offline. Start the MundusX runner on this computer."
+          : runnerPairingInProgress
+            ? "Waiting for installer approval and runner startup…"
+            : "Connect this computer when you first ask MundusX to create or run code.";
+      harnessRunnerStatusEl.textContent = statusText;
+      if (projectReadinessEl) projectReadinessEl.dataset.state = ready ? "ready" : paired ? "offline" : "setup";
+      if (projectReadinessEl) projectReadinessEl.hidden = true;
+      if (projectReadinessTextEl) projectReadinessTextEl.textContent = ready ? "New projects will be created under documents\\\\mundusx\\\\projects" : paired ? "Start the paired runner to create this project" : "Set up the runner once on this device";
+      if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = Boolean(ready) || !runnerSetupRequested;
+      updateProjectCreateAvailability();
+      if (ready) void resumePendingRunnerAction();
+      return payload.runners;
+    }
+
+    async function resumePendingRunnerAction() {
+      if (!pendingRunnerAction || pendingRunnerResumeInProgress || !localRunnerReady) return;
+      const action = pendingRunnerAction;
+      pendingRunnerAction = null;
+      pendingRunnerResumeInProgress = true;
+      closeProjects();
+      const body = action.pending?.querySelector(".message-body");
+      if (body) body.textContent = "Runner connected. Resuming your request…";
+      setStatus("working", "Working");
+      try {
+        await runActiveProjectTask(action.pending, action.message, action.project);
+        syncNetworkRuntimeStatus(true);
+      } catch (error) {
+        failConversationStream(action.conversationId, action.pending, action.message, error);
+      } finally {
+        pendingRunnerResumeInProgress = false;
+        sendEl.disabled = false;
+        promptEl?.focus();
+      }
+    }
+
+    function normalizeProjectSlug(value) {
+      return String(value || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+    }
+
+    function renderActiveProject() {
+      const valid = activeProject
+        && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(activeProject.slug || "");
+      if (!valid) activeProject = null;
+      if (activeProjectContextEl) activeProjectContextEl.hidden = false;
+      if (activeProjectNameEl) activeProjectNameEl.textContent = activeProject?.slug || "Project";
+      if (activeProjectOpenEl) activeProjectOpenEl.setAttribute("aria-pressed", String(Boolean(activeProject)));
+      if (activeProjectOpenEl) activeProjectOpenEl.title = activeProject ? "Change active project" : "Choose a project";
+      if (activeProjectClearEl) activeProjectClearEl.hidden = !activeProject;
+      if (promptEl) promptEl.placeholder = activeProject
+        ? "Ask Atlas to work on " + activeProject.slug + "..."
+        : "Ask everyone...";
+      renderProjectMenu();
+    }
+
+    function renderProjectMenu() {
+      if (!projectContextListEl) return;
+      projectContextListEl.replaceChildren();
+      if (!availableProjectSlugs.length) {
+        const empty = document.createElement("p");
+        empty.className = "project-context-empty";
+        empty.textContent = "No local projects yet.";
+        projectContextListEl.append(empty);
+      }
+      for (const slug of availableProjectSlugs) {
+        const row = document.createElement("div");
+        row.className = "project-context-row";
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "project-context-choice";
+        button.dataset.projectSlug = slug;
+        button.setAttribute("aria-current", String(activeProject?.slug === slug));
+        const icon = document.createElement("span");
+        icon.setAttribute("aria-hidden", "true");
+        icon.textContent = activeProject?.slug === slug ? "●" : "○";
+        const name = document.createElement("span");
+        name.textContent = slug;
+        button.append(icon, name);
+        const removeButton = document.createElement("button");
+        removeButton.type = "button";
+        removeButton.className = "project-context-remove";
+        removeButton.dataset.removeProjectSlug = slug;
+        removeButton.setAttribute("aria-label", "Remove " + slug + " from Projects");
+        removeButton.title = "Remove from Projects";
+        removeButton.textContent = "\u00d7";
+        row.append(button, removeButton);
+        projectContextListEl.append(row);
+      }
+      if (projectContextNoneEl) projectContextNoneEl.hidden = !activeProject;
+    }
+
+    function rememberProject(slug) {
+      removedProjectSlugs = removedProjectSlugs.filter((value) => value !== slug);
+      localStorage.setItem(removedProjectsKey, JSON.stringify(removedProjectSlugs));
+      availableProjectSlugs = [slug, ...availableProjectSlugs.filter((value) => value !== slug)].slice(0, 100);
+      localStorage.setItem(recentProjectsKey, JSON.stringify(availableProjectSlugs));
+    }
+
+    function removeProject(slug) {
+      if (!window.confirm('Remove "' + slug + '" from Projects? Local files will not be deleted.')) return;
+      removedProjectSlugs = [slug, ...removedProjectSlugs.filter((value) => value !== slug)].slice(0, 100);
+      availableProjectSlugs = availableProjectSlugs.filter((value) => value !== slug);
+      localStorage.setItem(removedProjectsKey, JSON.stringify(removedProjectSlugs));
+      localStorage.setItem(recentProjectsKey, JSON.stringify(availableProjectSlugs));
+      if (activeProject?.slug === slug) setActiveProject(null);
+      else renderProjectMenu();
+      showToast('Project "' + slug + '" removed. Local files were kept.');
+    }
+
+    function setActiveProject(project) {
+      activeProject = project;
+      if (project) {
+        rememberProject(project.slug);
+        localStorage.setItem(activeProjectKey, JSON.stringify(project));
+      }
+      else localStorage.removeItem(activeProjectKey);
+      renderActiveProject();
+    }
+
+    activeProjectOpenEl?.addEventListener("click", (event) => {
+      event.stopPropagation();
+      if (projectContextMenuEl) projectContextMenuEl.hidden = !projectContextMenuEl.hidden;
     });
-    harnessOpenEl?.addEventListener("click", () => harnessDialogEl?.showModal());
-    harnessFormEl?.addEventListener("submit", async (event) => {
+    activeProjectClearEl?.addEventListener("click", () => {
+      setActiveProject(null);
+      promptEl?.focus();
+    });
+    projectContextNewEl?.addEventListener("click", () => {
+      if (projectContextMenuEl) projectContextMenuEl.hidden = true;
+      openProjects();
+    });
+    projectContextNoneEl?.addEventListener("click", () => {
+      setActiveProject(null);
+      if (projectContextMenuEl) projectContextMenuEl.hidden = true;
+      promptEl?.focus();
+    });
+    projectContextListEl?.addEventListener("click", (event) => {
+      const removeButton = event.target.closest("button[data-remove-project-slug]");
+      if (removeButton) {
+        removeProject(removeButton.dataset.removeProjectSlug);
+        return;
+      }
+      const button = event.target.closest("button[data-project-slug]");
+      if (!button) return;
+      setActiveProject({ slug: button.dataset.projectSlug });
+      if (projectContextMenuEl) projectContextMenuEl.hidden = true;
+      promptEl?.focus();
+    });
+    document.addEventListener("click", (event) => {
+      if (!projectContextMenuEl || projectContextMenuEl.hidden) return;
+      if (event.target.closest("#project-context-menu") || event.target.closest("#active-project-open")) return;
+      projectContextMenuEl.hidden = true;
+    });
+    renderActiveProject();
+
+    const projectSlugEl = harnessFormEl?.elements.namedItem("project_slug");
+    projectSlugEl?.addEventListener("input", () => {
+      const slug = normalizeProjectSlug(projectSlugEl.value);
+      if (projectSlugEl.value !== slug) projectSlugEl.value = slug;
+      updateProjectCreateAvailability();
+    });
+    function updateProjectCreateAvailability() {
+      if (harnessSubmitEl) harnessSubmitEl.disabled = !projectSlugEl?.value.trim();
+    }
+    function projectExecutionMode(template) {
+      const preferred = template === "java-maven" ? ["hybrid", "sandbox"] : ["sandbox", "hybrid"];
+      return preferred.find((mode) => readyHarnessModes.has(mode)) || preferred[0];
+    }
+    function inferProjectTemplate(message) {
+      return /(java|maven|spring|junit|gradle)/i.test(String(message || "")) ? "java-maven" : "generic";
+    }
+    document.querySelectorAll(".copy-command").forEach((button) => button.addEventListener("click", async () => {
+      const target = document.getElementById(button.dataset.copyTarget || "");
+      const value = target?.textContent?.trim() || "";
+      if (!value) return;
+      try {
+        await navigator.clipboard.writeText(value);
+        const previous = button.textContent;
+        button.textContent = "Copied";
+        window.setTimeout(() => { button.textContent = previous; }, 1400);
+      } catch {
+        window.getSelection()?.selectAllChildren(target);
+      }
+    }));
+    harnessDownloadEl?.addEventListener("click", () => {
+      runnerDownloadStarted = true;
+      runnerPairingInProgress = true;
+      runnerPairingExpiresAt = Date.now() + 10 * 60 * 1000;
+      updateRunnerSetupState();
+      pollRunnerPairing();
+    });
+    harnessFormEl?.addEventListener("submit", (event) => {
       event.preventDefault();
       const data = new FormData(harnessFormEl);
-      const allowedOperations = data.getAll("allowed_operations").map(String);
-      harnessResultEl.textContent = "Submitting bounded task...";
-      try {
-        const response = await fetch("/api/harness/tasks", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            objective: String(data.get("objective") || ""),
-            repository_id: String(data.get("repository_id") || ""),
-            execution_mode: String(data.get("execution_mode") || "sandbox"),
-            allowed_operations: allowedOperations,
-          }),
-        });
-        const payload = await response.json();
-        if (!response.ok) throw new Error(payload.error || "Harness submission failed");
-        harnessResultEl.textContent = "Task " + payload.task_id + " is awaiting operator UAT approval.";
-        harnessFormEl.reset();
-      } catch (error) {
-        harnessResultEl.textContent = error.message || "Harness submission failed";
+      const projectSlug = normalizeProjectSlug(data.get("project_slug"));
+      if (!projectSlug) {
+        harnessResultEl.textContent = "Enter a lowercase project name";
+        return;
       }
+      setActiveProject({ slug: projectSlug });
+      harnessResultEl.textContent = "";
+      harnessFormEl.reset();
+      updateProjectCreateAvailability();
+      closeProjects();
+      showToast('Project "' + projectSlug + '" created');
+      promptEl?.focus();
     });
+
     enterToSendToggleEl?.addEventListener("click", () => {
       enterToSendEnabled = !enterToSendEnabled;
       localStorage.setItem("mundusx.chat.enterToSend", String(enterToSendEnabled));
@@ -2280,13 +2874,6 @@ export function page(config = configFromEnv()) {
       } else {
         setStatus("standby", "Standby - no ready nodes");
       }
-    }
-
-    function renderToolMode() {
-      if (!webSearchToggleEl || !webSearchLabelEl) return;
-      webSearchToggleEl.classList.toggle("is-active", webSearchEnabled);
-      webSearchToggleEl.setAttribute("aria-pressed", String(webSearchEnabled));
-      webSearchLabelEl.textContent = webSearchEnabled ? "Tools On" : "Web Search";
     }
 
     function renderEnterToSend() {
@@ -2527,6 +3114,7 @@ export function page(config = configFromEnv()) {
     }
 
     newChatEl?.addEventListener("click", () => {
+      setWorkspaceDestination("chats");
       activeHistoryLoadToken += 1;
       loadingHistoryConversationId = null;
       followLatestMessage = true;
@@ -2558,9 +3146,28 @@ export function page(config = configFromEnv()) {
       const pending = addMessage("Submitting to MundusX...", "assistant", "Queued");
 
       try {
-        const streamed = await tryLiveChatTurn(pending, message, conversationId);
+        if (activeProject && requiresLocalProjectAction(message)) {
+          if (!localRunnerReady) {
+            await loadHarnessRunners().catch(() => []);
+          }
+          if (!localRunnerReady) {
+            const body = pending.querySelector(".message-body");
+            if (body) body.textContent = "Connect your local runner to create files, run builds, or execute tests for " + activeProject.slug + ". Your project and chat are already saved.";
+            pendingRunnerAction = { pending, message, project: activeProject, conversationId };
+            setStatus("ready", "Runner needed");
+            await openProjects({ showRunnerSetup: true, project: activeProject });
+            return;
+          }
+          await runActiveProjectTask(pending, message, activeProject);
+          syncNetworkRuntimeStatus(true);
+          return;
+        }
+        const chatMessage = activeProject
+          ? "Active local project: " + activeProject.slug + ". Respond in planning/chat mode and do not claim files were changed.\\n\\n" + message
+          : message;
+        const streamed = await tryLiveChatTurn(pending, chatMessage, conversationId);
         if (!streamed) {
-          await runPolledChatTurn(pending, message, conversationId);
+          await runPolledChatTurn(pending, chatMessage, conversationId);
         }
         syncNetworkRuntimeStatus(true);
       } catch (error) {
@@ -2571,11 +3178,37 @@ export function page(config = configFromEnv()) {
       }
     });
 
+    async function runActiveProjectTask(pending, message, project) {
+      const projectTemplate = inferProjectTemplate(message);
+      const response = await fetch("/api/harness/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          objective: message,
+          project_slug: project.slug,
+          project_template: projectTemplate,
+          execution_mode: projectExecutionMode(projectTemplate),
+          allowed_operations: PROJECT_ALLOWED_OPERATIONS,
+        }),
+      });
+      const payload = await readApiPayload(response, "project task submission failed");
+      if (!response.ok) throw new Error(payload.error || "Project task submission failed");
+      const body = pending.querySelector(".message-body");
+      if (body) body.textContent = "Queued work for " + project.slug + ". Task " + payload.task_id + " is awaiting UAT execution approval.";
+      setStatus("ready", "Project queued");
+    }
+
+    function requiresLocalProjectAction(message) {
+      const value = String(message || "").trim();
+      if (/^(what|why|how|should|do i|does|is|are|explain|compare|recommend)\\b/i.test(value)) return false;
+      return /\\b(create|make|add|write|edit|modify|update|delete|remove|rename|move|generate|scaffold|implement|fix|refactor|format|install|run|test|build|compile|lint|commit|checkout|merge|push|pull)\\b/i.test(value);
+    }
+
     async function runPolledChatTurn(pending, message, conversationId) {
       const created = await fetch("/api/chat/jobs", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona(), toolMode: webSearchEnabled, conversationId }),
+          body: JSON.stringify({ message, executionMode: "auto", voicePersona: selectedAssistantPersona(), toolMode: true, conversationId }),
       });
       const submitted = await readApiPayload(created, "chat request failed");
       if (!created.ok) {
@@ -2645,7 +3278,7 @@ export function page(config = configFromEnv()) {
           historyMessages,
           executionMode: "auto",
           voicePersona: selectedAssistantPersona(),
-          toolMode: webSearchEnabled,
+          toolMode: true,
           conversationId,
         }),
       });
@@ -4269,14 +4902,23 @@ export function page(config = configFromEnv()) {
 
     async function deleteHistoryItem(item) {
       const items = readHistory();
+      const conversationId = item.conversationId || item.id;
+      const isActiveConversation = conversationId === activeHistoryId;
       writeHistory(items.filter((entry) => entry.id !== item.id));
-      const cachedId = item.conversationId || item.id;
-      if (cachedId) {
-        localStorage.removeItem(conversationCachePrefix + cachedId);
+      if (conversationId) {
+        localStorage.removeItem(conversationCachePrefix + conversationId);
+        conversationStreamStates.delete(conversationId);
       }
-      if (item.conversationId && item.conversationId === localStorage.getItem(conversationIdKey)) {
+      if (isActiveConversation) {
+        activeHistoryLoadToken += 1;
+        loadingHistoryConversationId = null;
         localStorage.setItem(conversationIdKey, crypto.randomUUID());
         activeHistoryId = localStorage.getItem(conversationIdKey);
+        clearConversation();
+        messagesEl.prepend(createWelcome());
+        setEmptyChatMode(true);
+        renderHistory();
+        syncNetworkRuntimeStatus(true);
       }
       try {
         const result = await deleteConversationRecord(item.conversationId);
@@ -4350,13 +4992,135 @@ export function page(config = configFromEnv()) {
 </html>`;
 }
 
+function runnerConnectPage(url) {
+  const requestedSessionId = String(url.searchParams.get("session") || "");
+  const sessionId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedSessionId)
+    ? requestedSessionId
+    : "";
+  return `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="no-referrer">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'self'">
+  <title>Connect this computer · MundusX</title>
+  <style>
+    :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+    body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #f5f6fb; color: #171927; }
+    main { width: min(430px, calc(100vw - 40px)); padding: 28px; border: 1px solid #dfe2ec; border-radius: 20px; background: #fff; box-shadow: 0 20px 60px #24294722; }
+    h1 { margin: 0 0 10px; font-size: 24px; } p { color: #626a80; line-height: 1.5; }
+    .device { margin: 20px 0; padding: 14px 16px; border-radius: 12px; background: #f0f2f8; font-weight: 650; }
+    button, a.button { display: block; box-sizing: border-box; width: 100%; padding: 12px 16px; border: 0; border-radius: 11px; background: linear-gradient(135deg,#3984ff,#7655ee); color: white; font: inherit; font-weight: 700; text-align: center; text-decoration: none; cursor: pointer; }
+    button:disabled { opacity: .6; cursor: wait; } .error { color: #b42318; }
+    @media (prefers-color-scheme: dark) { body { background:#080b18; color:#f4f5fb; } main { background:#111526; border-color:#29304a; } p { color:#aab1c7; } .device { background:#1b2034; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Connect this computer</h1>
+    <p id="message">Checking the runner connection…</p>
+    <div class="device" id="device" hidden></div>
+    <button id="approve" hidden>Approve this computer</button>
+    <a class="button" id="sign-in" hidden>Sign in to continue</a>
+  </main>
+  <script>
+    const sessionId = ${JSON.stringify(sessionId)};
+    const approvalStorageKey = "mundusx.runner.approval:" + sessionId;
+    const fragmentToken = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+    if (fragmentToken) sessionStorage.setItem(approvalStorageKey, fragmentToken);
+    const approvalToken = fragmentToken || sessionStorage.getItem(approvalStorageKey) || "";
+    if (location.hash) history.replaceState(null, "", location.pathname + location.search);
+    const message = document.getElementById("message");
+    const device = document.getElementById("device");
+    const approve = document.getElementById("approve");
+    const signIn = document.getElementById("sign-in");
+    signIn.href = "/api/auth/github/start?return_to=" + encodeURIComponent(location.pathname + location.search);
+    let csrfToken = "";
+    async function json(url, options) {
+      const response = await fetch(url, options);
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || "Unable to connect this computer");
+      return payload;
+    }
+    async function start() {
+      try {
+        const details = await json("/api/harness/bootstrap/sessions/" + encodeURIComponent(sessionId) + "/approval", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ approval_token: approvalToken }),
+        });
+        device.textContent = details.device_id;
+        device.hidden = false;
+        if (details.state === "connected") { message.textContent = "This computer is connected. You can close this tab."; return; }
+        const auth = await json("/api/auth/session");
+        csrfToken = auth.csrf_token;
+        message.textContent = "Approve this user-owned runner to create files and run bounded tools on this computer.";
+        approve.hidden = false;
+      } catch (error) {
+        if (String(error.message).includes("Authentication required")) {
+          message.textContent = "Sign in to approve this computer. Your GitHub credentials remain on this device.";
+          signIn.hidden = false;
+        } else { message.textContent = error.message; message.className = "error"; }
+      }
+    }
+    approve.addEventListener("click", async () => {
+      approve.disabled = true;
+      approve.textContent = "Connecting…";
+      try {
+        await json("/api/harness/bootstrap/sessions/" + encodeURIComponent(sessionId) + "/approve", {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "X-MundusX-CSRF": csrfToken },
+          body: JSON.stringify({ approval_token: approvalToken }),
+        });
+        message.textContent = "Approved. The runner is finishing setup and your original task will resume automatically.";
+        sessionStorage.removeItem(approvalStorageKey);
+        approve.hidden = true;
+        setTimeout(() => window.close(), 1800);
+      } catch (error) { message.textContent = error.message; message.className = "error"; approve.disabled = false; approve.textContent = "Try again"; }
+    });
+    start();
+  </script>
+</body>
+</html>`;
+}
+
 export function createServerApp(config = configFromEnv()) {
   const authStore = config.authStore ?? new PostgresAuthStore(config.auth ?? authConfigFromEnv());
+  const harnessService = createHarnessService({ config });
+  const handleHarnessRequest = createHarnessHttpController({
+    authStore,
+    harnessService,
+    readJsonBody,
+    sendJson,
+  });
+  const handleMcpRequest = createMcpHttpController({
+    enabled: config.mcpEnabled,
+    authStore,
+    harnessService,
+    publicOrigin: config.auth?.publicOrigin,
+    sendJson,
+  });
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      const releaseLocation = releaseDownloadLocation(url.pathname);
+      if (["GET", "HEAD"].includes(request.method) && releaseLocation) {
+        response.writeHead(307, {
+          Location: releaseLocation,
+          "Cache-Control": "public, max-age=300",
+          "X-Content-Type-Options": "nosniff",
+        });
+        return response.end();
+      }
       if (request.method === "GET" && url.pathname === "/") {
         return sendHtml(response, page(config));
+      }
+      if (request.method === "GET" && url.pathname === "/skills") {
+        return sendHtml(response, renderSkillsPage({ catalog: SKILL_REGISTRY.catalog(), version: SKILL_REGISTRY.version }));
+      }
+      if (request.method === "GET" && url.pathname === "/runner/connect") {
+        return sendHtml(response, runnerConnectPage(url));
       }
       if (request.method === "GET" && url.pathname === "/assets/mundusx-logo.png") {
         return sendPng(response, await readFile(LOGO_PATH));
@@ -4373,8 +5137,10 @@ export function createServerApp(config = configFromEnv()) {
           control_plane_url: config.controlPlaneUrl,
           model_routing: "control-plane",
           model_override: config.modelOverride || null,
+          mcp: config.mcpEnabled ? "enabled" : "disabled",
         });
       }
+      if (await handleMcpRequest({ request, response, url })) return;
       if (request.method === "OPTIONS" && url.pathname.startsWith("/v1/")) {
         return sendOpenAiJson(response, 204, null);
       }
@@ -4424,6 +5190,7 @@ export function createServerApp(config = configFromEnv()) {
         response.writeHead(302, { Location: location });
         return response.end();
       }
+      if (await handleHarnessRequest({ request, response, url })) return;
       if (config.auth?.required && url.pathname.startsWith("/api/") && !url.pathname.startsWith("/api/auth/")) {
         const session = await authStore.session(request);
         if (!session) throw httpError(401, "Authentication required");
@@ -4436,10 +5203,34 @@ export function createServerApp(config = configFromEnv()) {
         await authStore.logout(request, response, session);
         return sendJson(response, 200, { status: "signed_out" });
       }
+      if (config.mcpEnabled && request.method === "GET" && url.pathname === "/api/mcp/tokens") {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        return sendJson(response, 200, { tokens: await authStore.listMcpTokens(session.id) });
+      }
+      if (config.mcpEnabled && request.method === "POST" && url.pathname === "/api/mcp/tokens") {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        const body = await readJsonBody(request);
+        return sendJson(response, 201, await authStore.createMcpToken(session.id, body));
+      }
+      const mcpTokenMatch = url.pathname.match(/^\/api\/mcp\/tokens\/([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i);
+      if (config.mcpEnabled && request.method === "DELETE" && mcpTokenMatch) {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "Authentication required");
+        return sendJson(response, 200, await authStore.revokeMcpToken(session.id, mcpTokenMatch[1]));
+      }
       if (request.method === "GET" && url.pathname === "/api/github/repositories") {
         const session = request.mundusxSession ?? await authStore.session(request);
         if (!session) throw httpError(401, "GitHub sign-in is required");
         return sendJson(response, 200, { repositories: await authStore.repositories(session.id) });
+      }
+      if (request.method === "POST" && url.pathname === "/api/github/repositories") {
+        const session = request.mundusxSession ?? await authStore.session(request);
+        if (!session) throw httpError(401, "GitHub sign-in is required");
+        authStore.requireCsrf(request, session);
+        const body = await readJsonBody(request);
+        return sendJson(response, 201, await authStore.createRepository(session.id, body));
       }
       const githubContentsMatch = url.pathname.match(/^\/api\/github\/repositories\/(\d+)\/contents$/);
       if (request.method === "GET" && githubContentsMatch) {
@@ -4447,15 +5238,6 @@ export function createServerApp(config = configFromEnv()) {
         if (!session) throw httpError(401, "GitHub sign-in is required");
         const result = await authStore.repositoryContents(session.id, githubContentsMatch[1], url.searchParams.get("path") || "", url.searchParams.get("ref") || "");
         return sendJson(response, 200, result);
-      }
-      if (request.method === "POST" && url.pathname === "/api/harness/tasks") {
-        const body = await readJsonBody(request);
-        const session = request.mundusxSession ?? await authStore.session(request);
-        if (!session) throw httpError(401, "GitHub sign-in is required for Harness work");
-        authStore.requireCsrf(request, session);
-        const authority = await authStore.harnessAuthority(session.id, body?.repository_id, String(body?.execution_mode || "sandbox"), body?.allowed_operations);
-        const result = await submitHarnessTask(body, config, fetch, session, authority);
-        return sendJson(response, 201, result);
       }
       if (request.method === "GET" && url.pathname.startsWith("/api/conversations/") && url.pathname.endsWith("/messages")) {
         const conversationId = decodeURIComponent(
@@ -4503,92 +5285,6 @@ export function createServerApp(config = configFromEnv()) {
       return sendJson(response, status, { error: error.message ?? "request failed" });
     }
   });
-}
-
-const CHAT_HARNESS_OPERATIONS = new Set([
-  "repository.status",
-  "repository.diff",
-  "file.read",
-  "file.search",
-  "patch.apply",
-  "validation.run",
-]);
-
-export async function submitHarnessTask(body, config = configFromEnv(), fetchImpl = fetch, session = null, authority = null) {
-  if (!config.harnessUiEnabled) throw httpError(404, "Coding Harness is not enabled");
-  const token = config.harnessServiceToken || config.operatorToken;
-  if (!token) throw httpError(503, "Coding Harness service authentication is not configured");
-  const grant = !authority && session
-    ? session.harness_grants?.find((candidate) => candidate.grant_id === body?.grant_id)
-    : null;
-  if (session && !grant && !authority) throw httpError(403, "No repository authority permits this Harness request");
-  const tenantId = authority?.tenant_id ?? grant?.tenant_id ?? config.harnessTenantId;
-  const repositorySourceId = authority?.repository_source_id ?? grant?.repository_source_id ?? config.harnessRepositorySourceId;
-  const allowedPathPrefixes = authority?.allowed_path_prefixes ?? grant?.allowed_path_prefixes ?? config.harnessAllowedPathPrefixes?.split(",").map((value) => value.trim()).filter(Boolean);
-  const validationProfiles = authority?.validation_profiles ?? grant?.validation_profiles ?? config.harnessValidationProfiles?.split(",").map((value) => value.trim()).filter(Boolean);
-  const baseRevision = authority?.base_revision ?? config.harnessBaseRevision;
-  if (
-    !tenantId ||
-    !repositorySourceId ||
-    !/^[0-9a-f]{40}$/.test(baseRevision) ||
-    !allowedPathPrefixes?.length ||
-    !validationProfiles?.length
-  ) {
-    throw httpError(503, "Coding Harness repository boundary is incomplete");
-  }
-  const objective = String(body?.objective ?? "").trim();
-  if (!objective || objective.length > 4000) {
-    throw httpError(400, "objective must contain 1 to 4000 characters");
-  }
-  const executionMode = String(body?.execution_mode ?? "sandbox");
-  if (!["sandbox", "hybrid"].includes(executionMode)) {
-    throw httpError(400, "execution_mode must be sandbox or hybrid");
-  }
-  if ((authority || grant) && !(authority?.allowed_execution_modes ?? grant?.allowed_execution_modes)?.includes(executionMode)) {
-    throw httpError(403, "The repository grant does not permit this execution mode");
-  }
-  const allowedOperations = Array.isArray(body?.allowed_operations)
-    ? [...new Set(body.allowed_operations.map(String))]
-    : [];
-  if (
-    allowedOperations.length === 0 ||
-    allowedOperations.some((operation) => !CHAT_HARNESS_OPERATIONS.has(operation))
-  ) {
-    throw httpError(400, "allowed_operations contains an unavailable tool");
-  }
-  const upstream = await fetchImpl(`${config.controlPlaneUrl}/internal/harness/tasks`, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${token}`,
-      "Content-Type": "application/json",
-      "X-MundusX-Actor": "chat-u",
-    },
-    body: JSON.stringify({
-      harness_contract_version: "1.0",
-      tenant_id: tenantId,
-      repository_source_id: repositorySourceId,
-      objective,
-      base_revision: baseRevision,
-      allowed_path_prefixes: allowedPathPrefixes,
-      execution_mode: executionMode,
-      allowed_operations: allowedOperations,
-      validation_profiles: validationProfiles,
-      requested_by_user_id: session?.id ?? null,
-      submitted_via: session ? "chat-u" : "service",
-    }),
-  });
-  const text = await upstream.text();
-  let payload;
-  try {
-    payload = text ? JSON.parse(text) : {};
-  } catch {
-    payload = {};
-  }
-  if (!upstream.ok) {
-    throw httpError(upstream.status, payload.error || `control plane returned ${upstream.status}`);
-  }
-  if (!payload.task_id) throw httpError(502, "control plane did not return a Harness task id");
-  return { task_id: payload.task_id, state: payload.state ?? "created", approval: "required" };
 }
 
 export async function submitChatTurn(body, config = configFromEnv(), fetchImpl = fetch) {
@@ -4652,11 +5348,11 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
 
   const status = String(result?.status ?? "").toLowerCase();
   if (status !== "completed") {
-    throw httpError(502, result?.error || `Chat-U job ended with status ${status || "unknown"}`);
+    throw httpError(502, result?.error || `MundusX Chat job ended with status ${status || "unknown"}`);
   }
   const content = String(result?.output ?? "").trim();
   if (!content) {
-    throw httpError(502, "Chat-U completed without assistant output");
+    throw httpError(502, "MundusX Chat completed without assistant output");
   }
 
   const usage = result?.progress?.token_usage ?? {};
@@ -4696,7 +5392,7 @@ export function canLiveStreamChatTurn(body = {}) {
   if (!message || detectClientMetadataTask(message)) {
     return false;
   }
-  const toolMessage = stripToolModePrefix(message);
+  const toolMessage = message;
   if (
     isMultiIntentPlanningCandidate(toolMessage) ||
     fetchMathJobForPrompt(toolMessage) ||
@@ -5097,7 +5793,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   }
 
   const toolMode = isToolModeEnabled(body);
-  const toolMessage = stripToolModePrefix(message);
+  const toolMessage = message;
   const compoundToolPrompt = isMultiIntentPlanningCandidate(toolMessage);
 
   if (compoundToolPrompt) {
@@ -5612,12 +6308,6 @@ function isToolModeEnabled(body) {
     return value;
   }
   return /^(1|true|yes|on|tools?|web)$/i.test(String(value ?? "").trim());
-}
-
-function stripToolModePrefix(message) {
-  return String(message ?? "")
-    .replace(/^\s*@(?:web(?:\s+search)?|search|tools?)?\s*/i, "")
-    .trim();
 }
 
 export function extractLinearEquation(message) {
@@ -10128,7 +10818,7 @@ export function selectChatSkills(message = "") {
     skills.push({ name: "verifier.md", content: CHAT_SKILLS.verifier });
   }
 
-  return dedupeSkills(skills);
+  return dedupeSkills(skills.filter((skill) => skill.content));
 }
 
 function looksLikeWeatherRequest(lower) {
@@ -10448,14 +11138,6 @@ function loadPersona(path, fallback) {
   }
 }
 
-function loadMarkdownSkill(fileName, fallback) {
-  try {
-    return readFileSync(resolve(SKILLS_DIR, fileName), "utf8").trim();
-  } catch {
-    return fallback;
-  }
-}
-
 function containsAny(value, needles) {
   return needles.some((needle) => value.includes(needle));
 }
@@ -10548,7 +11230,7 @@ export async function deleteChatConversation(conversationId, config = configFrom
       method: "DELETE",
     });
   } catch (error) {
-    if ([404, 503].includes(error.statusCode)) {
+    if ([404, 502, 503].includes(error.statusCode)) {
       return {
         conversation_id: id,
         deleted: false,
@@ -11364,12 +12046,6 @@ function normalizeOrigin(value) {
 function positiveInteger(value, fallback) {
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
-}
-
-function httpError(statusCode, message) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  return error;
 }
 
 function delay(ms) {

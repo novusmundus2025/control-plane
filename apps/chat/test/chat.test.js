@@ -43,7 +43,6 @@ import {
   relayControlPlaneOpenAiStream,
   submitChatJob,
   submitChatTurn,
-  submitHarnessTask,
   submitOpenAiChatCompletion,
   streamOpenAiChatCompletion,
   streamChatTurn,
@@ -86,6 +85,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /data-starter-prompt="Help me write and debug code"/);
   assert.match(html, /mainEl\.addEventListener\("pointermove"/);
   assert.match(html, /function createConstellation\(\)/);
+  assert.match(html, /\["phone", "spark", "watch", "laptop", "computer", "car", "nodes"\]/);
+  assert.match(html, /label: index < deviceLabels\.length \? deviceLabels\[index\] : ""/);
   assert.match(html, /constellationEdges\.forEach/);
   assert.doesNotMatch(html, /createRadialGradient\(pulseX/);
   assert.doesNotMatch(html, /Welcome to[\s\S]*MundusX[\s\S]*Chat/);
@@ -136,14 +137,14 @@ test("renders a usable chat page", () => {
   assert.match(html, /token_usage/);
   assert.match(html, /Ask everyone/);
   assert.doesNotMatch(html, /<span class="kbd">\/<\/span>Commands/);
-  assert.match(html, /id="web-search-toggle"/);
-  assert.match(html, /id="web-search-label"/);
+  assert.doesNotMatch(html, /id="web-search-toggle"/);
+  assert.doesNotMatch(html, /id="web-search-label"/);
   assert.match(html, /id="enter-to-send-toggle"/);
   assert.match(html, /id="enter-to-send-label"/);
-  assert.match(html, /toolMode: webSearchEnabled/);
-  assert.match(html, /function renderToolMode/);
+  assert.match(html, /toolMode: true/);
+  assert.doesNotMatch(html, /function renderToolMode/);
   assert.match(html, /function renderEnterToSend/);
-  assert.match(html, /Tools On/);
+  assert.doesNotMatch(html, /Tools On/);
   assert.match(html, /function createCitationSources/);
   assert.match(html, /function createToolBadge/);
   assert.match(html, /response\.type === "factual_summary"/);
@@ -219,6 +220,8 @@ test("renders a usable chat page", () => {
   assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /\.header-actions \{\s*display: none;/);
   assert.match(html, /class="runtime-status-sentinel" id="runtime-status"/);
+  assert.doesNotMatch(html, /class="network-card"/);
+  assert.doesNotMatch(html, /All systems operational/);
   assert.match(html, /id="runtime-status" data-state="working"/);
   assert.match(html, /id="runtime-status-text">Checking/);
   assert.match(html, /\.runtime-status-sentinel\[data-state="standby"\]/);
@@ -276,7 +279,12 @@ test("renders a usable chat page", () => {
   assert.match(html, /\/api\/conversations\//);
   assert.match(html, /\.rail-list \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
   assert.match(html, /\.history-item \{[\s\S]*?overflow: hidden;/);
+  assert.match(html, /\.history-item \{[\s\S]*?border: 0;/);
+  assert.match(html, /\.history-item\.active \{[\s\S]*?background: rgba\(124, 108, 246, 0\.09\);/);
   assert.match(html, /\.history-context-menu \{/);
+  assert.match(html, /\.history-item:hover,[\s\S]*?background: var\(--panel-2\);/);
+  assert.match(html, /\.history-menu-button:hover,[\s\S]*?background: var\(--panel\);/);
+  assert.match(html, /\.history-context-menu \{[\s\S]*?background: var\(--panel\);/);
   assert.match(html, /\.history-time \{[\s\S]*?text-overflow: ellipsis;/);
   assert.match(html, /html \{[\s\S]*?overflow-x: hidden;/);
   assert.match(html, /\.messages \{[\s\S]*?overflow-x: hidden;[\s\S]*?overflow-y: auto;/);
@@ -300,8 +308,12 @@ test("renders a usable chat page", () => {
 
 test("anchors the account profile below the flexible conversation rail", () => {
   const html = page(configFromEnv({}));
-  assert.match(html, /grid-template-rows:\s*auto auto minmax\(0, 1fr\) auto;/);
+  assert.match(html, /grid-template-rows:\s*auto auto minmax\(0, ?1fr\) auto;/);
   assert.match(html, /\.account-widget\s*\{[^}]*align-self:\s*end;[^}]*width:\s*100%;/s);
+  assert.match(html, /grid-template-columns: minmax\(0, 300px\) minmax\(0, 1fr\);/);
+  assert.match(html, /aside \{[\s\S]*?width: 100%;[\s\S]*?min-width: 0;[\s\S]*?overflow: hidden;/);
+  assert.match(html, /\.rail-primary,\.workspace-nav,\.rail-list \{ width:100%; min-width:0; max-width:100%; \}/);
+  assert.match(html, /\.new-chat,\.rail-destination,\.account-bar \{ width:100%; min-width:0; max-width:100%; \}/);
 });
 
 test("normalizes streamed emoji headings and list boundaries", () => {
@@ -388,9 +400,27 @@ test("normalizes chat app environment", () => {
   assert.equal(config.operatorToken, "token");
   assert.equal(config.modelOverride, "");
   assert.equal(config.harnessUiEnabled, false);
+  assert.equal(config.mcpEnabled, false);
 });
 
-test("renders the opt-in repository-bound Harness launcher", () => {
+test("renders a user-scoped MCP connection manager only when enabled", () => {
+  const html = page(configFromEnv({
+    MUNDUSX_MCP_ENABLED: "true",
+    MUNDUSX_PUBLIC_ORIGIN: "https://chat.mundusx.ai",
+  }));
+  assert.match(html, /id="account-mcp"[^>]*>[\s\S]*MCP connections/);
+  assert.match(html, /id="mcp-dialog"[^>]*hidden/);
+  assert.match(html, /https:\/\/chat\.mundusx\.ai\/mcp/);
+  assert.match(html, /id="mcp-token-form"/);
+  assert.match(html, /Copy this token now/);
+  assert.match(html, /MundusX stores only its digest/);
+  assert.match(html, /Apply, merge, and deployment still require separate approval/);
+  assert.match(html, /fetch\("\/api\/mcp\/tokens"/);
+  assert.match(html, /data-revoke-mcp-token/);
+  assert.doesNotMatch(page(configFromEnv({})), /id="account-mcp"|id="mcp-dialog"/);
+});
+
+test("renders local-first Projects without a separate Computer surface", () => {
   const html = page(
     configFromEnv({
       MUNDUSX_HARNESS_UI_ENABLED: "true",
@@ -399,85 +429,89 @@ test("renders the opt-in repository-bound Harness launcher", () => {
     }),
   );
 
-  assert.match(html, /id="harness-open"/);
-  assert.match(html, /id="harness-open"[^>]*hidden/);
-  assert.match(html, /id="repository-open"[^>]*hidden/);
-  assert.match(html, /name="repository_id"/);
-  assert.match(html, /Live GitHub permission check/);
-  assert.doesNotMatch(html, /github:mundusx\/control-plane/);
-  assert.match(html, /Submit for review/);
-  assert.match(html, /does not approve execution, merge, or deployment/);
+  const projects = html.match(/<div class="projects-overlay" id="repository-dialog" hidden>[\s\S]*?<\/section>\s*<\/div>/)?.[0] || "";
+  const workspaceNav = html.match(/<nav class="workspace-nav" aria-label="Workspace">[\s\S]*?<\/nav>/)?.[0] || "";
+  const mainHeader = html.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
+  assert.match(html, /id="repository-open"[^>]*>[\s\S]*?<span>Projects<\/span>/);
+  assert.match(workspaceNav, /Chats[\s\S]*id="repository-open"[\s\S]*Projects/);
+  assert.match(html, /class="account-menu-item" href="\/skills"[\s\S]*>Skills<\/span>/);
+  assert.doesNotMatch(workspaceNav, />Agents<|>Nodes</);
+  assert.doesNotMatch(mainHeader, /id="repository-open"|>Projects<\/button>/);
+  assert.match(mainHeader, /id="repository-open-mobile"[^>]*aria-label="Open Projects"/);
+  assert.match(projects, /role="dialog"[^>]*aria-modal="true"[^>]*aria-labelledby="project-dialog-title"/);
+  assert.match(projects, /<h2 id="project-dialog-title">Create project<\/h2>/);
+  assert.match(projects, /id="repository-dialog-close"[^>]*type="button"[^>]*aria-label="Close"/);
+  assert.match(projects, /id="project-create-fields"[\s\S]*name="project_slug"[^>]*pattern="\[a-z0-9\]/);
+  assert.match(projects, /Projects keep chats and files together/);
+  assert.doesNotMatch(projects, /documents\\mundusx\\projects|Default memory|class="project-mark"/);
+  assert.doesNotMatch(projects, /Project type|Java \(Maven\)|Project options|name="project_template"/);
+  assert.doesNotMatch(projects, /Files stay on your device|GitHub is optional/);
+  assert.doesNotMatch(projects, /Describe the work|name="objective"/);
+  assert.match(html, /id="active-project-context"/);
+  assert.match(html, /composer-left-actions[\s\S]*id="active-project-open"/);
+  assert.doesNotMatch(html, /id="web-search-toggle"/);
+  assert.match(html, /id="active-project-name">Project<\/strong>/);
+  assert.match(html, /id="project-context-menu"/);
+  assert.match(html, /id="project-context-new"[^>]*>\+ New project/);
+  assert.match(html, /id="project-context-list"/);
+  assert.match(html, /id="project-context-none"/);
+  assert.match(html, /mundusx\.chat\.localProjects\.v1:" \+ namespace/);
+  assert.match(html, /loadStoredProjectContext\(namespace\)/);
+  assert.match(html, /Array\.isArray\(payload\.projects\)/);
+  assert.match(html, /button\.dataset\.projectSlug = slug/);
+  assert.match(html, /removeButton\.dataset\.removeProjectSlug = slug/);
+  assert.match(html, /Remove .* from Projects\? Local files will not be deleted/);
+  assert.match(html, /Project .* removed\. Local files were kept/);
+  assert.match(html, /removedProjectsKey = "mundusx\.chat\.removedProjects\.v1:" \+ namespace/);
+  assert.match(html, /if \(activeProject\?\.slug === slug\) setActiveProject\(null\)/);
+  assert.match(html, /activeProjectNameEl\.textContent = activeProject\?\.slug \|\| "Project"/);
+  assert.match(html, /activeProjectOpenEl\.setAttribute\("aria-pressed"/);
+  assert.match(html, /Ask Atlas to work on/);
+  assert.doesNotMatch(html, /Initialize the local.*project workspace|Queuing local project creation/);
+  assert.match(html, /id="app-toast"[^>]*role="status"[^>]*aria-live="polite"/);
+  assert.match(html, /function showToast\(message\)/);
+  assert.match(html, /closeProjects\(\);[\s\S]*showToast\('Project "/);
+  assert.doesNotMatch(html, /repositoryDialogEl\?\.close\(\)/);
+  assert.match(html, /requiresLocalProjectAction\(message\)/);
+  assert.match(html, /openProjects\(\{ showRunnerSetup: true, project: activeProject \}\)/);
+  assert.match(html, /existingProjectMode = Boolean\(showRunnerSetup && project\?\.slug\)/);
+  assert.match(html, /repositoryDialogTitleEl\.textContent = existingProjectMode \? "Connect local runner" : "Create project"/);
+  assert.match(html, /projectCreateFieldsEl\.hidden = existingProjectMode/);
+  assert.match(html, /projectRunnerContextNameEl\.textContent = existingProjectMode \? project\.slug : "Project"/);
+  assert.match(html, /projectActionsEl\.hidden = existingProjectMode/);
+  assert.match(html, /Respond in planning\/chat mode and do not claim files were changed/);
+  assert.match(html, /inferProjectTemplate[\s\S]*java\|maven\|spring\|junit\|gradle/);
+  assert.match(projects, /id="project-runner-setup" hidden/);
+  assert.match(projects, /Run code on this computer/);
+  assert.match(projects, /It is separate from contributor nodes/);
+  assert.match(projects, /id="harness-download"[^>]*download>Connect this computer/);
+  assert.match(projects, /One install and one browser approval/);
+  assert.doesNotMatch(projects, /I installed it|Connect browser|pairing code/);
+  assert.match(html, /runnerPairingPollTimer = window\.setTimeout/);
+  assert.match(html, /Waiting for installer approval and runner startup/);
+  assert.match(html, /pendingRunnerAction = \{ pending, message, project: activeProject, conversationId \}/);
+  assert.match(html, /Runner connected\. Resuming your request/);
+  assert.match(html, /if \(ready\) void resumePendingRunnerAction\(\)/);
+  assert.doesNotMatch(projects, />Create pairing code</);
+  assert.doesNotMatch(projects, /<details|Set up local runner/);
+  assert.match(projects, /mundusx-harness-setup-windows-x86_64\.exe/);
+  assert.match(projects, /id="project-readiness"/);
+  assert.doesNotMatch(projects, /project-readiness-refresh|class="project-advanced"|Advanced controls|Allowed tools/);
+  assert.doesNotMatch(html, /id="harness-open"|id="harness-dialog"|>Computer<\/button>/);
+  assert.match(projects, /class="harness-submit"[^>]*disabled[^>]*>Create project/);
+  assert.match(html, /updateProjectCreateAvailability\(\)/);
+  assert.match(html, /repositoryDialogCloseEl\?\.addEventListener\("click", closeProjects\)/);
+  assert.match(html, /function closeProjects\(\)[\s\S]*?repositoryDialogEl\.hidden = true/);
+  assert.match(html, /event\.key !== "Escape"[\s\S]*?closeProjects\(\)/);
+  assert.match(html, /\.projects-overlay\[hidden\] \{ display:none; \}/);
+  assert.match(html, /\.projects-dialog \.dialog-close \{ position:absolute; top:14px; right:14px; z-index:5; width:36px; height:36px; display:grid;/);
+  assert.match(html, /\.project-heading \{ display:block; padding:20px 58px 12px 18px;/);
+  assert.match(html, /\.projects-dialog \.harness-form \{ gap:16px; padding:10px 18px 18px;/);
+  assert.match(html, /html\[data-theme="dark"\] \.projects-dialog \{/);
+  assert.match(html, /html\[data-theme="dark"\] \.project-purpose-note \{/);
+  assert.doesNotMatch(projects, /Publishing to GitHub is a separate action/);
   assert.doesNotMatch(page(configFromEnv({})), /id="harness-open"/);
-});
-
-test("submits Harness work only inside the configured repository boundary", async () => {
-  let upstreamRequest;
-  const config = configFromEnv({
-    MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai",
-    MUNDUSX_HARNESS_UI_ENABLED: "true",
-    MUNDUSX_HARNESS_SERVICE_TOKEN: "server-secret",
-    MUNDUSX_HARNESS_TENANT_ID: "ehda-uat",
-    MUNDUSX_HARNESS_REPOSITORY_SOURCE_ID: "github:mundusx/control-plane",
-    MUNDUSX_HARNESS_BASE_REVISION: "a".repeat(40),
-    MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES: "apps/control-plane,docs",
-    MUNDUSX_HARNESS_VALIDATION_PROFILES: "control-plane-tests",
-  });
-  const result = await submitHarnessTask(
-    {
-      objective: "Add a bounded test",
-      repository_source_id: "github:attacker/override",
-      allowed_operations: ["file.read", "validation.run"],
-      execution_mode: "sandbox",
-    },
-    config,
-    async (url, options) => {
-      upstreamRequest = { url, options };
-      return jsonResponse({ task_id: "htask_abc", state: "created" });
-    },
-  );
-
-  const submitted = JSON.parse(upstreamRequest.options.body);
-  assert.equal(upstreamRequest.url, "https://uat.mundusx.ai/internal/harness/tasks");
-  assert.equal(upstreamRequest.options.headers.Authorization, "Bearer server-secret");
-  assert.equal(submitted.repository_source_id, "github:mundusx/control-plane");
-  assert.equal(submitted.tenant_id, "ehda-uat");
-  assert.deepEqual(submitted.allowed_path_prefixes, ["apps/control-plane", "docs"]);
-  assert.deepEqual(result, { task_id: "htask_abc", state: "created", approval: "required" });
-});
-
-test("authenticated Harness submission derives authority from the selected user grant", async () => {
-  let submitted;
-  const config = configFromEnv({
-    MUNDUSX_HARNESS_UI_ENABLED: "true",
-    MUNDUSX_HARNESS_SERVICE_TOKEN: "server-secret",
-    MUNDUSX_HARNESS_BASE_REVISION: "b".repeat(40),
-  });
-  const session = {
-    id: "ad36260d-40bc-44a9-b637-d03093e1f310",
-    harness_grants: [{
-      grant_id: "grant-1",
-      tenant_id: "tenant-authorized",
-      repository_source_id: "github:mundusx/authorized",
-      allowed_path_prefixes: ["apps/chat"],
-      validation_profiles: ["chat-tests"],
-      allowed_execution_modes: ["sandbox"],
-    }],
-  };
-  await submitHarnessTask({
-    grant_id: "grant-1",
-    objective: "Test account-bound submission",
-    execution_mode: "sandbox",
-    allowed_operations: ["file.read", "validation.run"],
-    tenant_id: "tenant-attacker",
-  }, config, async (_url, options) => {
-    submitted = JSON.parse(options.body);
-    return jsonResponse({ task_id: "htask_user", state: "created" });
-  }, session);
-
-  assert.equal(submitted.tenant_id, "tenant-authorized");
-  assert.equal(submitted.repository_source_id, "github:mundusx/authorized");
-  assert.equal(submitted.requested_by_user_id, session.id);
-  assert.equal(submitted.submitted_via, "chat-u");
+  assert.doesNotMatch(page(configFromEnv({})), /id="harness-form"/);
 });
 
 test("accepts an explicit chat model override without making it a default", () => {
@@ -3220,10 +3254,10 @@ test("falls back to a normal MundusX job when explicit tool mode has no matching
   assert.equal(result.status, "queued");
 });
 
-test("accepts at-prefixed web search requests for direct tools", async () => {
+test("routes direct tools automatically without an at-prefixed search mode", async () => {
   const calls = [];
   const result = await submitChatJob(
-    { message: "@ weather in Manila", toolMode: true },
+    { message: "weather in Manila", toolMode: true },
     configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
     async (url) => {
       calls.push(url);
@@ -3284,7 +3318,7 @@ test("returns immediate weather turns without polling the control plane", async 
   assert.equal(result.progress.strategy, "weather_tool");
 });
 
-test("adapts a Hermes OpenAI weather request to an immediate Chat-U tool response", async () => {
+test("adapts a Hermes OpenAI weather request to an immediate MundusX Chat tool response", async () => {
   const result = await submitOpenAiChatCompletion(
     {
       model: "mundusx-agnostic",
@@ -3367,7 +3401,7 @@ test("asks for a location instead of misrouting a locationless weather request",
   assert.equal(result.choices[0].message.content, "Which city or location would you like the weather for?");
 });
 
-test("adapts Hermes message history into Chat-U model context", async () => {
+test("adapts Hermes message history into MundusX Chat model context", async () => {
   let submittedJob = null;
   const result = await submitOpenAiChatCompletion(
     {
@@ -3725,7 +3759,7 @@ test("OpenAI adapter correlates its stable id and OpenWebUI chat id", async () =
   assert.deepEqual(conversationWrites.map((entry) => entry.role), ["user", "assistant"]);
 });
 
-test("generative Chat-U requests stream while deterministic and tool routes fall back", () => {
+test("generative MundusX Chat requests stream while deterministic and tool routes fall back", () => {
   assert.equal(canLiveStreamChatTurn({ message: "Explain distributed systems.", toolMode: false }), true);
   assert.equal(canLiveStreamChatTurn({ message: "Create a complete Java program", toolMode: false }), true);
   assert.equal(canLiveStreamChatTurn({ message: "Return a JSON schema for a customer record", toolMode: false }), true);
@@ -3734,7 +3768,7 @@ test("generative Chat-U requests stream while deterministic and tool routes fall
   assert.equal(canLiveStreamChatTurn({ message: "Latest NVIDIA news", toolMode: true }), false);
 });
 
-test("native Chat-U streams complete projects as upstream deltas arrive", async () => {
+test("native MundusX Chat streams complete projects as upstream deltas arrive", async () => {
   const prompt = "Give me a complete Node.js CRUD API for schools and students.";
   const requests = [];
   const responseEvents = [];
@@ -3887,7 +3921,7 @@ test("streaming relay exposes the first upstream delta before completion", async
   assert.equal(events.at(-1).type, "end");
 });
 
-test("deterministic Chat-U requests return an explicit polling fallback without upstream work", async () => {
+test("deterministic MundusX Chat requests return an explicit polling fallback without upstream work", async () => {
   const events = [];
   const response = {
     writeHead: (status, headers) => events.push({ status, headers }),
@@ -3908,7 +3942,7 @@ test("deterministic Chat-U requests return an explicit polling fallback without 
   assert.deepEqual(JSON.parse(events[1].value), { fallback: true, reason: "deterministic_or_tool_routed" });
 });
 
-test("live Chat-U stream preserves history and persists one user and assistant turn", async () => {
+test("live MundusX Chat stream preserves history and persists one user and assistant turn", async () => {
   const encoder = new TextEncoder();
   const writes = [];
   let upstreamRequest = null;
@@ -6187,6 +6221,19 @@ test("deleteChatConversation treats missing backend records as shallow local his
   assert.equal(result.conversation_id, "tool-only");
   assert.equal(result.deleted, false);
   assert.equal(result.persisted, false);
+});
+
+test("deleteChatConversation keeps local deletion when conversation storage is temporarily unavailable", async () => {
+  const result = await deleteChatConversation(
+    "conv-1",
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async () => jsonResponse({ error: "conversation storage unavailable" }, false, 502),
+  );
+
+  assert.equal(result.conversation_id, "conv-1");
+  assert.equal(result.deleted, false);
+  assert.equal(result.persisted, false);
+  assert.match(result.reason, /conversation storage unavailable/);
 });
 
 test("extracts a location that comes before the word weather", () => {

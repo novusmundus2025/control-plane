@@ -198,9 +198,30 @@ create table if not exists public.harness_tasks (
   expires_at_epoch bigint not null
 );
 
+create table if not exists public.harness_runners (
+  runner_id text primary key,
+  device_id text not null,
+  public_key_hex text not null,
+  kind text not null check (kind in ('local_user', 'ehda_hosted')),
+  owner_user_id uuid references public.users(id) on delete set null,
+  tenant_ids jsonb not null default '[]'::jsonb,
+  repository_source_ids jsonb not null default '[]'::jsonb,
+  local_projects jsonb not null default '[]'::jsonb,
+  execution_modes jsonb not null default '[]'::jsonb,
+  supported_operations jsonb not null default '[]'::jsonb,
+  network_default_disabled boolean not null default true,
+  max_workspace_mb integer not null check (max_workspace_mb > 0),
+  usable_memory_mb integer not null check (usable_memory_mb > 0),
+  parallel_slots integer not null check (parallel_slots > 0),
+  trusted_identity boolean not null default false,
+  ready boolean not null default false,
+  last_seen_epoch bigint not null
+);
+
 create table if not exists public.harness_attempts (
   attempt_id text primary key,
   task_id text not null references public.harness_tasks(task_id) on delete cascade,
+  runner_id text not null references public.harness_runners(runner_id) on delete restrict,
   node_id text references public.devices(node_id) on delete set null,
   execution_mode text not null default 'sandbox',
   state text not null,
@@ -231,7 +252,8 @@ create table if not exists public.harness_capacity_reservations (
   reservation_id text primary key,
   task_id text not null references public.harness_tasks(task_id) on delete cascade,
   attempt_id text not null references public.harness_attempts(attempt_id) on delete cascade,
-  node_id text not null references public.devices(node_id) on delete cascade,
+  runner_id text not null references public.harness_runners(runner_id) on delete restrict,
+  node_id text references public.devices(node_id) on delete set null,
   slots integer not null,
   state text not null,
   created_at_epoch bigint not null,
@@ -316,13 +338,78 @@ create index if not exists harness_tasks_tenant_idx
   on public.harness_tasks(tenant_id, created_at_epoch);
 create index if not exists harness_attempts_task_idx
   on public.harness_attempts(task_id, created_at_epoch);
-create index if not exists harness_attempts_node_state_idx
-  on public.harness_attempts(node_id, state);
+create index if not exists harness_runners_owner_ready_idx
+  on public.harness_runners(owner_user_id, ready, last_seen_epoch desc)
+  where ready = true;
+
+create table if not exists public.harness_runner_pairings (
+  pairing_hash text primary key,
+  user_id uuid not null references public.users(id) on delete cascade,
+  expires_at timestamptz not null,
+  consumed_at timestamptz,
+  runner_id text,
+  public_key_hex text,
+  created_at timestamptz not null default now(),
+  check (length(pairing_hash) = 64),
+  check (runner_id is null or length(runner_id) between 1 and 160),
+  check (public_key_hex is null or length(public_key_hex) >= 64)
+);
+
+create index if not exists harness_runner_pairings_user_idx
+  on public.harness_runner_pairings(user_id, created_at desc);
+create index if not exists harness_runner_pairings_expiry_idx
+  on public.harness_runner_pairings(expires_at)
+  where consumed_at is null;
+
+create table if not exists public.harness_runner_bootstrap_sessions (
+  session_id uuid primary key,
+  bootstrap_hash text not null unique,
+  approval_hash text not null unique,
+  device_id text not null,
+  public_key_hex text not null,
+  user_id uuid references public.users(id) on delete cascade,
+  approved_at timestamptz,
+  consumed_at timestamptz,
+  runner_id text,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  check (length(bootstrap_hash) = 64),
+  check (length(approval_hash) = 64),
+  check (length(device_id) between 1 and 160),
+  check (length(public_key_hex) between 64 and 256),
+  check (runner_id is null or length(runner_id) between 1 and 160)
+);
+
+create index if not exists harness_runner_bootstrap_user_idx
+  on public.harness_runner_bootstrap_sessions(user_id, created_at desc);
+create index if not exists harness_runner_bootstrap_expiry_idx
+  on public.harness_runner_bootstrap_sessions(expires_at)
+  where consumed_at is null;
+
+create table if not exists public.mcp_personal_access_tokens (
+  token_id uuid primary key default gen_random_uuid(),
+  user_id uuid not null references public.users(id) on delete cascade,
+  token_hash text not null unique check (length(token_hash) = 64),
+  name text not null check (length(name) between 1 and 80),
+  created_at timestamptz not null default now(),
+  expires_at timestamptz not null,
+  last_used_at timestamptz,
+  revoked_at timestamptz
+);
+
+create index if not exists mcp_personal_access_tokens_user_active_idx
+  on public.mcp_personal_access_tokens(user_id, created_at desc)
+  where revoked_at is null;
+create index if not exists mcp_personal_access_tokens_expiry_idx
+  on public.mcp_personal_access_tokens(expires_at)
+  where revoked_at is null;
+create index if not exists harness_attempts_runner_state_idx
+  on public.harness_attempts(runner_id, state);
 create unique index if not exists harness_active_reservation_attempt_idx
   on public.harness_capacity_reservations(attempt_id)
   where state = 'active';
-create index if not exists harness_active_reservation_node_idx
-  on public.harness_capacity_reservations(node_id, expires_at_epoch)
+create index if not exists harness_active_reservation_runner_idx
+  on public.harness_capacity_reservations(runner_id, expires_at_epoch)
   where state = 'active';
 create index if not exists harness_tool_calls_attempt_idx
   on public.harness_tool_calls(attempt_id, created_at_epoch);
@@ -338,7 +425,7 @@ create index if not exists harness_audit_events_task_idx
 create table if not exists public.harness_operational_policy (
   singleton boolean primary key default true check (singleton),
   kill_switch boolean not null default false,
-  drained_nodes jsonb not null default '[]'::jsonb,
+  drained_runners jsonb not null default '[]'::jsonb,
   tenant_max_active_attempts integer not null default 4,
   tenant_max_queued_tasks integer not null default 25,
   tenant_max_artifact_bytes bigint not null default 104857600,

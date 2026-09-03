@@ -49,6 +49,55 @@ test("repository normalization preserves live pull and push permissions", () => 
   });
 });
 
+test("new Java repositories are private user-owned projects with bounded Maven policy", async () => {
+  let githubRequest;
+  let policyInsert;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) { policyInsert = { sql, values }; return { rows: [] }; },
+  } });
+  store.githubJson = async (_userId, url, options) => {
+    githubRequest = { url, options };
+    return {
+      id: 84,
+      full_name: "alice/my-java-program",
+      private: true,
+      default_branch: "main",
+      owner: { login: "alice" },
+      permissions: { pull: true, push: true, admin: true },
+    };
+  };
+
+  const result = await store.createRepository("user-alice", {
+    name: "my-java-program",
+    description: "A tested Java project",
+    template: "java-maven",
+  });
+
+  assert.equal(githubRequest.url, "https://api.github.com/user/repos");
+  assert.equal(githubRequest.options.method, "POST");
+  assert.deepEqual(githubRequest.options.body, {
+    name: "my-java-program",
+    description: "A tested Java project",
+    private: true,
+    auto_init: true,
+  });
+  assert.equal(result.repository.full_name, "alice/my-java-program");
+  assert.equal(policyInsert.values[1], "alice/my-java-program");
+  assert.equal(policyInsert.values[2], "user:user-alice");
+  assert.deepEqual(policyInsert.values[3], ["src", "pom.xml", "README.md", ".gitignore"]);
+  assert.deepEqual(policyInsert.values[4], ["java-maven-test"]);
+  assert.deepEqual(policyInsert.values[5], ["hybrid"]);
+});
+
+test("repository creation rejects invalid names before calling GitHub", async () => {
+  const store = new PostgresAuthStore({}, { pool: {} });
+  store.githubJson = async () => assert.fail("GitHub must not be called");
+  await assert.rejects(
+    store.createRepository("user-1", { name: "owner/repository" }),
+    (error) => error.statusCode === 400,
+  );
+});
+
 test("repository browser masks obvious embedded credentials and blocks secret files", async () => {
   const store = new PostgresAuthStore({}, { pool: {} });
   store.authorizeRepository = async () => ({ id: 42, full_name: "owner/repo", default_branch: "main", permissions: { pull: true, push: false, admin: false } });
@@ -83,15 +132,84 @@ test("Harness authority intersects GitHub write rights with EHDA repository poli
   const store = new PostgresAuthStore({}, { pool });
   store.authorizeRepository = async () => ({ id: 42, full_name: "owner/repo", default_branch: "main", permissions: { pull: true, push: true, admin: false } });
   store.githubJson = async () => ({ sha: "a".repeat(40) });
+  store.harnessRunners = async () => [{ ready: true, fresh: true }];
   const authority = await store.harnessAuthority("user-1", "42", "sandbox", ["patch.apply"]);
   assert.equal(authority.repository_source_id, "github:42:owner/repo");
   assert.equal(authority.base_revision, "a".repeat(40));
   assert.deepEqual(authority.allowed_path_prefixes, ["src"]);
 });
 
+test("runner pairing stores only a one-time code digest", async () => {
+  const queries = [];
+  const client = {
+    async query(sql, values = []) { queries.push({ sql, values }); return { rows: [] }; },
+    release() {},
+  };
+  const store = new PostgresAuthStore({}, { pool: { async connect() { return client; } } });
+  const result = await store.createHarnessRunnerPairing("user-1");
+  assert.match(result.pairing_code, /^MX-[A-Za-z0-9_-]{32}$/);
+  const insert = queries.find((query) => query.sql.includes("insert into public.harness_runner_pairings"));
+  assert.equal(insert.values[0].length, 64);
+  assert.notEqual(insert.values[0], result.pairing_code);
+  assert.equal(result.expires_in_seconds, 600);
+});
+
+test("runner bootstrap stores only independent secret digests bound to a device key", async () => {
+  let inserted;
+  const store = new PostgresAuthStore({ publicOrigin: "https://chat.mundusx.ai" }, { pool: {
+    async query(sql, values) { inserted = { sql, values }; return { rows: [] }; },
+  } });
+  const result = await store.createHarnessRunnerBootstrap({
+    device_id: "runner-device-123",
+    public_key_hex: "ab".repeat(32),
+  });
+  assert.match(result.session_id, /^[0-9a-f-]{36}$/);
+  assert.match(result.bootstrap_secret, /^MXB-[A-Za-z0-9_-]{43}$/);
+  assert.match(result.approval_url, /^https:\/\/chat\.mundusx\.ai\/runner\/connect\?/);
+  assert.match(inserted.sql, /harness_runner_bootstrap_sessions/);
+  assert.equal(inserted.values[1].length, 64);
+  assert.equal(inserted.values[2].length, 64);
+  assert.notEqual(inserted.values[1], inserted.values[2]);
+  assert.doesNotMatch(JSON.stringify(inserted.values), new RegExp(result.bootstrap_secret));
+});
+
+test("runner bootstrap status confirms approval without echoing the one-use secret", async () => {
+  const expires = new Date(Date.now() + 60_000);
+  const store = new PostgresAuthStore({}, { pool: {
+    async query() { return { rows: [{ approved_at: new Date(), consumed_at: null, expires_at: expires }] }; },
+  } });
+  const secret = `MXB-${"A".repeat(43)}`;
+  assert.deepEqual(
+    await store.harnessRunnerBootstrapStatus("123e4567-e89b-42d3-a456-426614174000", secret),
+    { state: "approved" },
+  );
+});
+
+test("runner inventory exposes only bounded lowercase local project slugs", async () => {
+  const store = new PostgresAuthStore({}, { pool: {
+    async query() {
+      return { rows: [{
+        runner_id: "runner-1",
+        device_id: "device-1",
+        execution_modes: ["hybrid"],
+        supported_operations: ["file.read"],
+        local_projects: ["alpha", "my-java-program", "../another-user", "Bad Name"],
+        parallel_slots: 1,
+        ready: true,
+        trusted_identity: true,
+        last_seen_epoch: Math.floor(Date.now() / 1000),
+      }] };
+    },
+  } });
+  const [runner] = await store.harnessRunners("user-1");
+  assert.deepEqual(runner.local_projects, ["alpha", "my-java-program"]);
+  assert.equal(runner.fresh, true);
+});
+
 test("Harness authority rejects repositories without an active EHDA policy", async () => {
   const store = new PostgresAuthStore({}, { pool: { async query() { return { rows: [] }; } } });
   store.authorizeRepository = async () => ({ id: 42, full_name: "owner/repo", default_branch: "main", permissions: { pull: true, push: true, admin: false } });
+  store.githubJson = async () => [];
   await assert.rejects(
     store.harnessAuthority("user-1", "42", "sandbox", ["repository.status"]),
     (error) => error.statusCode === 403,
@@ -117,4 +235,50 @@ test("conversation ownership is claimed once and rejects another user", async ()
     store.authorizeConversation("user-b", conversation, true),
     (error) => error.statusCode === 404,
   );
+});
+
+test("MCP credentials are returned once and stored only as a digest", async () => {
+  let insert;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) {
+      insert = { sql, values };
+      return { rows: [{ token_id: "11111111-1111-4111-8111-111111111111", name: values[2] }] };
+    },
+  } });
+
+  const created = await store.createMcpToken("user-1", { name: "My Codex", expires_in_days: 30 });
+  assert.match(created.token, /^mxmcp_[A-Za-z0-9_-]{43}$/);
+  assert.equal(insert.values[1].length, 64);
+  assert.notEqual(insert.values[1], created.token);
+  assert.equal(insert.values[2], "My Codex");
+  assert.equal(insert.values[3], 30);
+});
+
+test("MCP bearer authentication resolves only an active token owner", async () => {
+  const queries = [];
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      if (sql.includes("from public.mcp_personal_access_tokens")) {
+        return { rows: [{ token_id: "token-id", id: "user-1", email: "user@example.com", role: "operator" }] };
+      }
+      return { rows: [] };
+    },
+  } });
+
+  const session = await store.mcpSession({ headers: { authorization: `Bearer mxmcp_${"a".repeat(43)}` } });
+  assert.equal(session.id, "user-1");
+  assert.equal(queries[0].values[0].length, 64);
+  assert.equal(await store.mcpSession({ headers: { authorization: "Bearer invalid" } }), null);
+});
+
+test("MCP token revocation is scoped to the authenticated owner", async () => {
+  let update;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) { update = { sql, values }; return { rowCount: 1, rows: [{ token_id: values[0] }] }; },
+  } });
+  const tokenId = "11111111-1111-4111-8111-111111111111";
+  assert.deepEqual(await store.revokeMcpToken("user-1", tokenId), { revoked: true, token_id: tokenId });
+  assert.deepEqual(update.values, [tokenId, "user-1"]);
+  assert.match(update.sql, /user_id = \$2::uuid/);
 });
