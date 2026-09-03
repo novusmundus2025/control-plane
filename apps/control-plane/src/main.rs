@@ -2899,7 +2899,6 @@ fn render_pagination_controls(path: &str, query: Option<&str>, pagination: &Pagi
 enum OperatorPage {
     Nodes,
     Jobs,
-    Harness,
     Credits,
     Registry,
     Settings,
@@ -2910,7 +2909,6 @@ impl OperatorPage {
         match path {
             "/nodes" => Some(Self::Nodes),
             "/jobs" => Some(Self::Jobs),
-            "/harness" => Some(Self::Harness),
             "/credits" => Some(Self::Credits),
             "/registry" => Some(Self::Registry),
             "/settings" => Some(Self::Settings),
@@ -2922,7 +2920,6 @@ impl OperatorPage {
         match self {
             Self::Nodes => "Nodes",
             Self::Jobs => "Jobs",
-            Self::Harness => "Coding Harness",
             Self::Credits => "Credits",
             Self::Registry => "Registry & Trust",
             Self::Settings => "Operator Settings",
@@ -2933,7 +2930,6 @@ impl OperatorPage {
         match self {
             Self::Nodes => "/nodes",
             Self::Jobs => "/jobs",
-            Self::Harness => "/harness",
             Self::Credits => "/credits",
             Self::Registry => "/registry",
             Self::Settings => "/settings",
@@ -2944,7 +2940,6 @@ impl OperatorPage {
         match self {
             Self::Nodes => "Nodes",
             Self::Jobs => "Jobs",
-            Self::Harness => "Harness",
             Self::Credits => "Credits",
             Self::Registry => "Registry",
             Self::Settings => "Settings",
@@ -2958,9 +2953,6 @@ impl OperatorPage {
             }
             Self::Jobs => {
                 r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>"#
-            }
-            Self::Harness => {
-                r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 9-4 3 4 3"/><path d="m16 9 4 3-4 3"/><path d="m14 5-4 14"/></svg>"#
             }
             Self::Credits => {
                 r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>"#
@@ -3357,7 +3349,6 @@ fn control_plane_operator_page(
             filters = control_filter_form(page, query, &jobs_api_href),
             job_detail_html = job_detail_html
         ),
-        OperatorPage::Harness => render_harness_console(state),
         OperatorPage::Credits => format!(
             r#"{filters}
             <section class="grid two">
@@ -3415,7 +3406,6 @@ fn control_plane_operator_page(
     let nav = [
         OperatorPage::Nodes,
         OperatorPage::Jobs,
-        OperatorPage::Harness,
         OperatorPage::Credits,
         OperatorPage::Registry,
         OperatorPage::Settings,
@@ -5336,9 +5326,6 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
             failed = selected_attr(query, "status", "failed"),
             events_href = escape_html(&filtered_api_href("/v1/job-events", query)),
         ),
-        OperatorPage::Harness => format!(
-            r#"<section class="toolbar"><a class="button" href="/internal/harness/tasks">Tasks JSON</a><a class="button" href="/internal/harness/operations">Operations JSON</a></section>"#
-        ),
         OperatorPage::Credits => format!(
             r#"<form class="toolbar" method="get" action="/credits">
               <input name="search" aria-label="Search credits" placeholder="Search ledger id, node, job, type" value="{search}" />
@@ -5651,7 +5638,6 @@ fn requires_operator_auth(method: &str, path: &str) -> bool {
             | ("GET", "/v1/jobs")
             | ("GET", "/v1/job-events")
             | ("GET", "/v1/credits")
-            | ("GET", "/harness")
             | ("POST", "/v1/jobs")
             | ("POST", "/v1/tool-rewards")
             | ("POST", "/v1/nodes/contribution-cap")
@@ -6890,7 +6876,7 @@ fn handle_connection_with_streams(
         ("POST", "/actions/harness/tasks") => match harness_task_request_from_form(&request.body)
             .and_then(|create| create_harness_task_from_operator(&state, supabase, create))
         {
-            Ok(()) => redirect_response("/harness"),
+            Ok(()) => redirect_response("/jobs"),
             Err(error) => json_response(
                 "400 Bad Request",
                 serde_json::json!({ "error": error, "code": "HARNESS_REQUEST_INVALID" }),
@@ -6902,7 +6888,7 @@ fn handle_connection_with_streams(
                 supabase,
                 harness_policy_request_from_form(&request.body),
             ) {
-                Ok(()) => redirect_response("/harness"),
+                Ok(()) => redirect_response("/jobs"),
                 Err(error) => json_response(
                     "400 Bad Request",
                     serde_json::json!({ "error": error, "code": "HARNESS_POLICY_INVALID" }),
@@ -6912,7 +6898,7 @@ fn handle_connection_with_streams(
         ("POST", path) if harness_action_task_id(path, "approve-uat").is_some() => {
             let task_id = harness_action_task_id(path, "approve-uat").expect("matched task id");
             match approve_harness_uat_from_operator(&state, supabase, task_id) {
-                Ok(()) => redirect_response("/harness"),
+                Ok(()) => redirect_response("/jobs"),
                 Err(error) => json_response(
                     "400 Bad Request",
                     serde_json::json!({ "error": error, "code": "HARNESS_APPROVAL_FAILED" }),
@@ -6922,7 +6908,7 @@ fn handle_connection_with_streams(
         ("POST", path) if harness_action_task_id(path, "cancel").is_some() => {
             let task_id = harness_action_task_id(path, "cancel").expect("matched task id");
             match cancel_harness_task_from_operator(&state, supabase, task_id) {
-                Ok(()) => redirect_response("/harness"),
+                Ok(()) => redirect_response("/jobs"),
                 Err(error) => json_response(
                     "400 Bad Request",
                     serde_json::json!({ "error": error, "code": "HARNESS_CANCEL_FAILED" }),
@@ -10970,6 +10956,8 @@ mod tests {
         assert!(html.contains("Large fleets should be controlled here"));
         assert!(html.contains("Developer APIs"));
         assert!(html.contains(r#"href="/nodes""#));
+        assert!(!html.contains(r#"href="/harness""#));
+        assert!(OperatorPage::from_path("/harness").is_none());
         assert!(html.contains(r#"href="/nodes?state=online""#));
         assert!(html.contains(r#"href="/v1/nodes?page=1&amp;page_size=25&amp;search=node-new&amp;start=1&amp;end=99&amp;state=online&amp;backend=m&amp;trust=trusted&amp;policy=allowed""#));
     }
@@ -11042,30 +11030,6 @@ mod tests {
             update.allowed_models,
             vec!["Qwen/Qwen2.5-0.5B-Instruct".to_string()]
         );
-    }
-
-    #[test]
-    fn harness_page_exposes_bounded_tools_and_uat_authority() {
-        let state = ControlPlaneState::default();
-        let html = control_plane_operator_page(
-            &state,
-            StorageSource::LocalJsonFallback,
-            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
-            OperatorPage::Harness,
-            None,
-        );
-
-        assert!(html.contains("Coding Harness"));
-        assert!(html.contains("repository.status"));
-        assert!(html.contains("patch.apply"));
-        assert!(html.contains("validation.run"));
-        assert!(html.contains("harness-operator-token"));
-        assert!(html.contains("Authorization"));
-        assert!(html.contains("never stored"));
-        assert!(html.contains("Approve UAT run") || html.contains("UAT authority boundary"));
-        assert!(html.to_ascii_lowercase().contains("do not authorize merge"));
-        assert!(!html.contains("shell.exec"));
-        assert!(!html.contains("Deploy production"));
     }
 
     #[test]
