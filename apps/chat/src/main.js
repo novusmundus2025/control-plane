@@ -14,6 +14,7 @@ import {
   submitHarnessTask as submitHarnessTaskFeature,
 } from "./features/harness/service.js";
 import { createMcpHttpController } from "./features/mcp/http-controller.js";
+import { createLocalAgentHttpController } from "./features/agent/http-controller.js";
 import { renderSkillsPage } from "./features/skills/page.js";
 import { createSkillRegistry } from "./features/skills/registry.js";
 import { httpError } from "./shared/http-error.js";
@@ -3165,8 +3166,9 @@ export function page(config = configFromEnv()) {
         const chatMessage = activeProject
           ? "Active local project: " + activeProject.slug + ". Respond in planning/chat mode and do not claim files were changed.\\n\\n" + message
           : message;
-        const streamed = await tryLiveChatTurn(pending, chatMessage, conversationId);
-        if (!streamed) {
+        const handledLocally = await tryLocalAgentTurn(pending, chatMessage, conversationId);
+        const streamed = handledLocally ? true : await tryLiveChatTurn(pending, chatMessage, conversationId);
+        if (!handledLocally && !streamed) {
           await runPolledChatTurn(pending, chatMessage, conversationId);
         }
         syncNetworkRuntimeStatus(true);
@@ -3251,6 +3253,54 @@ export function page(config = configFromEnv()) {
       }
 
       renderCompletedJob(pending, payload, conversationId);
+    }
+
+    async function tryLocalAgentTurn(pending, message, conversationId) {
+      const statusResponse = await fetch("/api/agent/status");
+      if (statusResponse.status === 401) return false;
+      const status = await readApiPayload(statusResponse, "local agent status failed");
+      if (!statusResponse.ok || !status.online) return false;
+
+      const created = await fetch("/api/agent/tasks", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt: message,
+          conversation_id: conversationId,
+          session_id: conversationId,
+          allow_mutations: false,
+        }),
+      });
+      const submitted = await readApiPayload(created, "local agent request failed");
+      if (!created.ok) throw new Error(submitted.error || "local agent request failed");
+
+      const body = pending.querySelector(".message-body");
+      if (body) body.textContent = "Connected to your local MundusX agent…";
+      setStatus("working", "Local agent");
+      let payload = submitted;
+      const deadline = Date.now() + 10 * 60 * 1000;
+      while (!["completed", "failed", "cancelled"].includes(payload.state)) {
+        if (Date.now() >= deadline) throw new Error("Local agent task timed out");
+        await sleep(1000);
+        const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
+        payload = await readApiPayload(polled, "local agent poll failed");
+        if (!polled.ok) throw new Error(payload.error || "local agent poll failed");
+      }
+      if (payload.state !== "completed") {
+        throw new Error(payload.error || (payload.state === "cancelled" ? "Local agent task was cancelled" : "Local agent task failed"));
+      }
+      const output = payload.result?.content
+        || payload.result?.choices?.[0]?.message?.content
+        || "(empty response)";
+      renderCompletedJob(pending, {
+        status: "completed",
+        output,
+        job_id: payload.task_id,
+        routing: "local-agent",
+        model: "mundusx-agent",
+      }, conversationId);
+      setStatus("ready", "Local agent");
+      return true;
     }
 
     async function tryLiveChatTurn(pending, message, conversationId) {
@@ -5101,6 +5151,11 @@ export function createServerApp(config = configFromEnv()) {
     publicOrigin: config.auth?.publicOrigin,
     sendJson,
   });
+  const handleLocalAgentRequest = createLocalAgentHttpController({
+    authStore,
+    readJsonBody,
+    sendJson,
+  });
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
@@ -5141,6 +5196,7 @@ export function createServerApp(config = configFromEnv()) {
         });
       }
       if (await handleMcpRequest({ request, response, url })) return;
+      if (await handleLocalAgentRequest({ request, response, url })) return;
       if (request.method === "OPTIONS" && url.pathname.startsWith("/v1/")) {
         return sendOpenAiJson(response, 204, null);
       }

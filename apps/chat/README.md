@@ -224,3 +224,11 @@ Model IDs filter: leave empty (auto-discovers mundusx-agnostic)
 ```
 
 The control plane accepts Open WebUI's default `stream=true`. When a streaming-capable node is available, ordinary text is automatically relayed as live OpenAI-compatible SSE. Structured modes and tool responses remain validated-buffered, and every stream ends with `[DONE]`.
+
+## Local MundusX agent
+
+Chat automatically prefers a connected local MundusX agent for ordinary turns
+and falls back to the Control Plane when no connector is online. Apply migration
+`0026_local_agent_bridge.sql`, create a token under Account > MCP connections,
+and run `mundusx connect --workspace .`. See
+`docs/mundusx-local-agent-bridge.md` for the security and protocol contract.
