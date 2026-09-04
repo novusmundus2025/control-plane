@@ -717,6 +717,8 @@ export function page(config = configFromEnv()) {
       margin: 6px 4px;
     }
     .account-menu-item {
+      position: relative;
+      z-index: 1;
       width: 100%;
       display: flex;
       align-items: center;
@@ -730,6 +732,8 @@ export function page(config = configFromEnv()) {
       text-align: left;
       text-decoration: none;
       cursor: pointer;
+      pointer-events: auto;
+      touch-action: manipulation;
       transition: background var(--motion-fast);
     }
     .account-menu-item:hover,
@@ -1974,7 +1978,6 @@ export function page(config = configFromEnv()) {
     const authGateEl = document.getElementById("auth-gate");
     const authMessageEl = document.getElementById("auth-message");
     const authEmailFormEl = document.getElementById("auth-email-form");
-    const accountLogoutEl = document.getElementById("account-logout");
     const accountMcpEl = document.getElementById("account-mcp");
     const mcpDialogEl = document.getElementById("mcp-dialog");
     const mcpDialogCloseEl = document.getElementById("mcp-dialog-close");
@@ -2245,7 +2248,7 @@ export function page(config = configFromEnv()) {
         currentUser = null;
         updateRunnerSetupState();
         if (document.body.dataset.authRequired === "true") {
-          authMessageEl.textContent = providers.github || providers.email ? "Choose a secure sign-in method." : "Authentication is not configured yet.";
+          authMessageEl.textContent = providers.google || providers.github || providers.email ? "Choose a secure sign-in method." : "Authentication is not configured yet.";
         } else {
           authGateEl.hidden = true;
         }
@@ -2473,13 +2476,24 @@ export function page(config = configFromEnv()) {
       authMessageEl.textContent = payload.message || payload.error || "Request complete.";
     });
 
-    accountLogoutEl?.addEventListener("click", async () => {
-      const response = await nativeFetch("/api/auth/logout", { method: "POST" });
-      if (!response.ok) {
+    accountMenuEl?.addEventListener("click", async (event) => {
+      const button = event.target.closest("#account-logout");
+      if (!button) return;
+      event.preventDefault();
+      event.stopPropagation();
+      button.disabled = true;
+      const label = button.querySelector("span");
+      if (label) label.textContent = "Signing out…";
+      try {
+        const response = await window.fetch("/api/auth/logout", { method: "POST" });
         const payload = await response.json().catch(() => ({}));
-        throw new Error(payload.error || "Sign out failed");
+        if (!response.ok) throw new Error(payload.error || "Sign out failed");
+        location.reload();
+      } catch (error) {
+        button.disabled = false;
+        if (label) label.textContent = "Log out";
+        showToast(error.message || "Sign out failed");
       }
-      location.reload();
     });
 
     bootstrapAuthentication();
