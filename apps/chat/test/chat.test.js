@@ -461,11 +461,9 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /composer-left-actions[\s\S]*id="active-project-open"/);
   assert.doesNotMatch(html, /id="web-search-toggle"/);
   assert.match(html, /id="active-project-name">Project<\/strong>/);
-  assert.match(html, /id="runtime-select"[^>]*aria-label="Agent runtime"/);
-  assert.match(html, /Local · MundusX/);
-  assert.match(html, /Local · Hermes/);
+  assert.doesNotMatch(html, /id="runtime-select"|class="runtime-detail"/);
   assert.match(html, /id="mutation-toggle"[^>]*aria-pressed="false"[^>]*hidden>Allow edits once/);
-  assert.match(html, /mundusx\.chat\.runtime\.v1:" \+ namespace/);
+  assert.match(html, /runtimePreference = "auto"/);
   assert.match(html, /runtime: options\.runtime \|\| "auto"/);
   assert.match(html, /workspace_relative: options\.workspaceRelative \|\| null/);
   assert.match(html, /mutationAllowed = false;[\s\S]*renderRuntimeControls\(\)/);

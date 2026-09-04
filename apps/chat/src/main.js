@@ -1936,7 +1936,6 @@ export function page(config = configFromEnv()) {
           <div class="composer-actions">
             <span class="composer-left-actions">
               ${config.harnessUiEnabled ? `<span class="active-project-context" id="active-project-context"><button class="tool-toggle project-context-open" id="active-project-open" type="button" aria-pressed="false" title="Choose a project"><span class="kbd" aria-hidden="true">⌁</span><strong id="active-project-name">Project</strong></button><button class="project-context-clear" id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project" hidden>&times;</button></span>` : ""}
-              <label class="runtime-picker" title="Choose where this conversation runs"><span>Run</span><select id="runtime-select" aria-label="Agent runtime"><option value="auto">Auto</option><option value="cloud">Cloud</option><option value="native">Local · MundusX</option><option value="hermes">Local · Hermes</option></select></label>
               <button class="tool-toggle mutation-toggle" id="mutation-toggle" type="button" aria-pressed="false" hidden>Allow edits once</button>
             </span>
             <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
@@ -1948,7 +1947,6 @@ export function page(config = configFromEnv()) {
           </div>
           <button class="send" id="send" type="submit" aria-label="Send">${ICON_ARROW_UP}</button>
         </div>
-        <div class="runtime-detail" id="runtime-detail">Auto uses your connected local runtime, then falls back to MundusX Cloud.</div>
         <div class="fine-print">MundusX may produce inaccurate information.</div>
       </form>
     </main>
@@ -2012,8 +2010,6 @@ export function page(config = configFromEnv()) {
     const projectCreateFieldsEl = document.getElementById("project-create-fields");
     const projectPurposeNoteEl = document.getElementById("project-purpose-note");
     const projectRunnerContextEl = document.getElementById("project-runner-context");
-    const runtimeSelectEl = document.getElementById("runtime-select");
-    const runtimeDetailEl = document.getElementById("runtime-detail");
     const mutationToggleEl = document.getElementById("mutation-toggle");
     const projectRunnerContextNameEl = document.getElementById("project-runner-context-name");
     const projectActionsEl = document.getElementById("project-actions");
@@ -2030,7 +2026,6 @@ export function page(config = configFromEnv()) {
     let activeProjectKey = "mundusx.chat.activeProject.v1:anonymous";
     let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
     let removedProjectsKey = "mundusx.chat.removedProjects.v1:anonymous";
-    let runtimePreferenceKey = "mundusx.chat.runtime.v1:anonymous";
     const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
     let activeProject = null;
     let availableProjectSlugs = [];
@@ -2053,10 +2048,7 @@ export function page(config = configFromEnv()) {
       activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
       recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
       removedProjectsKey = "mundusx.chat.removedProjects.v1:" + namespace;
-      runtimePreferenceKey = "mundusx.chat.runtime.v1:" + namespace;
-      const storedRuntime = localStorage.getItem(runtimePreferenceKey);
-      runtimePreference = ["auto", "cloud", "native", "hermes"].includes(storedRuntime) ? storedRuntime : "auto";
-      if (runtimeSelectEl) runtimeSelectEl.value = runtimePreference;
+      runtimePreference = "auto";
       try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
       try {
         removedProjectSlugs = JSON.parse(localStorage.getItem(removedProjectsKey) || "[]")
@@ -2742,34 +2734,13 @@ export function page(config = configFromEnv()) {
     }
 
     function renderRuntimeControls() {
-      if (!runtimeSelectEl || !runtimeDetailEl) return;
-      mutationToggleEl.hidden = !(activeProject && runtimePreference === "hermes");
+      const preferredHermesOnline = (lastLocalAgentStatus?.connections || []).some((connection) =>
+        connection.online && connection.capabilities?.preferred_agent === "hermes"
+      );
+      mutationToggleEl.hidden = !(activeProject && preferredHermesOnline);
       mutationToggleEl.setAttribute("aria-pressed", String(mutationAllowed));
       mutationToggleEl.textContent = mutationAllowed ? "Edits allowed · once" : "Allow edits once";
-      const details = {
-        auto: lastLocalAgentStatus?.online
-          ? "Auto · connected local agent first, MundusX Cloud fallback."
-          : "Auto · MundusX Cloud; no local connector is online.",
-        cloud: "Cloud · runs through the MundusX Control Plane; no local filesystem access.",
-        native: onlineRuntimeAvailable("native")
-          ? "Local · native MundusX agent on your connected device."
-          : "Local MundusX is unavailable. Start mundusx connect on this device.",
-        hermes: onlineRuntimeAvailable("hermes")
-          ? "Local · Hermes on your connected device. Skills and memory stay local."
-          : "Hermes is unavailable. Install/configure Hermes, then restart mundusx connect.",
-      };
-      runtimeDetailEl.textContent = details[runtimePreference];
     }
-
-    runtimeSelectEl?.addEventListener("change", () => {
-      runtimePreference = ["auto", "cloud", "native", "hermes"].includes(runtimeSelectEl.value)
-        ? runtimeSelectEl.value
-        : "auto";
-      mutationAllowed = false;
-      localStorage.setItem(runtimePreferenceKey, runtimePreference);
-      renderRuntimeControls();
-      promptEl?.focus();
-    });
 
     mutationToggleEl?.addEventListener("click", () => {
       mutationAllowed = !mutationAllowed;
