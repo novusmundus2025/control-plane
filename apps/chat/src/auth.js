@@ -334,6 +334,7 @@ export class PostgresAuthStore {
           select 1 from public.local_agent_connections runtime_connection
           where runtime_connection.connection_id = $2::uuid
             and runtime_connection.capabilities->'agent_runtimes' ? 'hermes'
+            and runtime_connection.capabilities->>'preferred_agent' = 'hermes'
         ) then 'hermes'
         else 'native'
       end,
