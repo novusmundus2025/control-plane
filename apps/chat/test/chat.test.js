@@ -507,7 +507,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(projects, /id="project-runner-setup" hidden/);
   assert.match(projects, /Run code on this computer/);
   assert.match(projects, /It is separate from contributor nodes/);
-  assert.match(projects, /id="harness-download"[^>]*download>Install MundusX \+ Hermes/);
+  assert.match(projects, /id="harness-download"[^>]*download>Download MundusX \+ Hermes/);
   assert.match(projects, /Compute contribution remains off unless you enable it separately/);
   assert.doesNotMatch(projects, /I installed it|Connect browser|pairing code/);
   assert.match(html, /runnerPairingPollTimer = window\.setTimeout/);
@@ -520,6 +520,9 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(projects, /MundusX-Setup\.exe/);
   assert.match(projects, /id="project-readiness"/);
   assert.match(projects, /id="project-readiness-refresh"[^>]*>Retry/);
+  assert.match(html, /Connect this computer/);
+  assert.match(html, /Chat cannot inspect installed apps directly/);
+  assert.doesNotMatch(html, /Local agent required/);
   assert.doesNotMatch(projects, /class="project-advanced"|Advanced controls|Allowed tools/);
   assert.doesNotMatch(html, /id="harness-open"|id="harness-dialog"|>Computer<\/button>/);
   assert.match(projects, /class="harness-submit"[^>]*disabled[^>]*>Create project/);
