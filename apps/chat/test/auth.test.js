@@ -386,7 +386,7 @@ test("local agent tasks persist only supported runtime selections", async () => 
   );
 });
 
-test("local agent claims select Hermes only from an advertising connector", async () => {
+test("local agent auto claims select Hermes only when advertised and preferred", async () => {
   const queries = [];
   const store = new PostgresAuthStore({}, { pool: {
     async query(sql, values) {
@@ -402,4 +402,5 @@ test("local agent claims select Hermes only from an advertising connector", asyn
   );
   assert.equal(task.runtime_selected, "hermes");
   assert.match(queries[0].sql, /capabilities->'agent_runtimes' \? 'hermes'/);
+  assert.match(queries[0].sql, /capabilities->>'preferred_agent' = 'hermes'/);
 });
