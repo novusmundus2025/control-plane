@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { createDeepAgentsRuntime, evaluateRuntimePair, filterAuthorityTools, normalizeRuntimeEvent, selectAgentRuntime } from "../src/index.js";
+import { createDeepAgentsRuntime, selectAgentRuntime } from "../src/index.js";
 
 const IDS = {
   task_id: "123e4567-e89b-42d3-a456-426614174000",
@@ -14,26 +14,6 @@ test("runtime selection prefers advertised Deep Agents and preserves native fall
   assert.equal(selectAgentRuntime("auto", {}), "native");
   assert.equal(selectAgentRuntime("native", {}), "native");
   assert.throws(() => selectAgentRuntime("deepagents", {}), /does not advertise/);
-  assert.equal(selectAgentRuntime("auto", { agent_runtimes: ["deepagents"] }, { deepAgentsPercent: 0, subject: "user-1" }), "native");
-});
-
-test("authority removes ungranted and unapproved mutation tools", () => {
-  const tools = [
-    { name: "file_read", readOnly: true },
-    { name: "patch_apply", readOnly: false },
-    { name: "shell_exec", readOnly: false },
-  ];
-  const authority = { allowed_operations: ["file.read", "patch.apply"] };
-  assert.deepEqual(filterAuthorityTools(tools, authority, false).map((tool) => tool.name), ["file_read"]);
-  assert.deepEqual(filterAuthorityTools(tools, authority, true).map((tool) => tool.name), ["file_read", "patch_apply"]);
-});
-
-test("runtime events and canary comparison expose bounded evidence", () => {
-  assert.deepEqual(normalizeRuntimeEvent({ type: "tool.started", name: "file.read", secret: "no" }), { type: "tool.started", name: "file.read" });
-  assert.deepEqual(evaluateRuntimePair({ output: "ok" }, { output: "better" }), {
-    native: { completed: true, output_chars: 2, error: null },
-    deepagents: { completed: true, output_chars: 6, error: null },
-  });
 });
 
 test("Deep Agents runtime binds MundusX authority and session identity", async () => {
@@ -43,7 +23,7 @@ test("Deep Agents runtime binds MundusX authority and session identity", async (
   const events = [];
   const runtime = createDeepAgentsRuntime({
     model: { provider: "mundusx" },
-    createTools(context) { toolContext = context; return [{ name: "file_read", readOnly: true }]; },
+    createTools(context) { toolContext = context; return [{ name: "file_read" }]; },
     agentFactory: async (options) => {
       agentOptions = options;
       return {

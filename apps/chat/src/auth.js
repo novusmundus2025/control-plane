@@ -330,21 +330,8 @@ export class PostgresAuthStore {
         else 'native' end,
       started_at = coalesce(started_at, now()), lease_expires_at = now() + interval '60 seconds'
     from candidate where task.task_id = candidate.task_id
-    returning task.task_id, task.user_id, task.conversation_id, task.session_id, task.prompt,
-      task.allow_mutations, task.runtime_selected, task.state,
-      jsonb_build_object(
-        'repository_source_id', 'local:' || task.user_id::text || ':' || task.session_id::text,
-        'allowed_operations', case when task.allow_mutations
-          then jsonb_build_array('repository.status', 'repository.diff', 'file.read', 'file.search', 'patch.apply', 'validation.run')
-          else jsonb_build_array('repository.status', 'repository.diff', 'file.read', 'file.search') end
-      ) as authority,
-      coalesce((select jsonb_agg(history.turn order by history.created_at) from (
-        select jsonb_build_object('prompt', previous.prompt, 'result', previous.result) as turn, previous.created_at
-        from public.local_agent_tasks previous
-        where previous.user_id = task.user_id and previous.session_id = task.session_id
-          and previous.task_id <> task.task_id and previous.state = 'completed'
-        order by previous.created_at desc limit 20
-      ) history), '[]'::jsonb) as history`, [userId, connectionId]);
+    returning task.task_id, task.conversation_id, task.session_id, task.prompt,
+      task.allow_mutations, task.runtime_selected, task.state`, [userId, connectionId]);
     await this.pool.query(`update public.local_agent_connections set last_seen_at = now()
       where connection_id = $1::uuid and user_id = $2::uuid and revoked_at is null`,
     [connectionId, userId]);
@@ -380,12 +367,11 @@ export class PostgresAuthStore {
       if (!Number.isSafeInteger(sequence) || sequence < 0 || !item?.event || typeof item.event !== "object") {
         throw Object.assign(new Error("Local agent event is invalid"), { statusCode: 400 });
       }
-      const event = normalizeLocalAgentEvent(item.event);
       await this.pool.query(`insert into public.local_agent_task_events (task_id, sequence, event)
         select task_id, $3, $4::jsonb from public.local_agent_tasks
         where task_id = $1::uuid and user_id = $2::uuid
         on conflict (task_id, sequence) do nothing`,
-      [taskId, userId, sequence, JSON.stringify(event)]);
+      [taskId, userId, sequence, JSON.stringify(item.event)]);
     }
     return { accepted: events.length };
   }
@@ -418,29 +404,6 @@ export class PostgresAuthStore {
     const events = await this.pool.query(`select sequence, event, created_at
       from public.local_agent_task_events where task_id = $1::uuid order by sequence limit 500`, [taskId]);
     return { ...result.rows[0], events: events.rows };
-  }
-
-  async localAgentSessions(userId) {
-    this.ensureReady();
-    const result = await this.pool.query(`select session_id,
-      min(created_at) as created_at, max(coalesce(completed_at, started_at, created_at)) as updated_at,
-      count(*)::int as turn_count,
-      (array_agg(state order by created_at desc))[1] as state,
-      (array_agg(runtime_selected order by created_at desc))[1] as runtime
-      from public.local_agent_tasks where user_id = $1::uuid
-      group by session_id order by updated_at desc limit 100`, [userId]);
-    return { sessions: result.rows };
-  }
-
-  async resumeLocalAgentSession(userId, sessionId, input = {}) {
-    this.ensureReady();
-    if (!UUID_PATTERN.test(String(sessionId || ""))) {
-      throw Object.assign(new Error("session_id must be a UUID"), { statusCode: 400 });
-    }
-    const found = await this.pool.query(`select 1 from public.local_agent_tasks
-      where session_id = $1::uuid and user_id = $2::uuid limit 1`, [sessionId, userId]);
-    if (found.rowCount !== 1) throw Object.assign(new Error("Agent session was not found"), { statusCode: 404 });
-    return this.createLocalAgentTask(userId, { ...input, session_id: sessionId });
   }
 
   async cancelLocalAgentTask(userId, taskId) {
@@ -1061,28 +1024,6 @@ export class PostgresAuthStore {
     [skillId, input.content, input.enabled !== false, session.id]);
     return result.rows[0];
   }
-}
-
-const LOCAL_AGENT_EVENT_TYPES = new Set([
-  "runtime.started", "runtime.completed", "runtime.progress", "model.requested", "model.message",
-  "plan.updated", "tool.proposed", "tool.started", "tool.completed", "approval.resolved",
-  "subagent.started", "subagent.completed", "checkpoint.saved", "context.compacted", "task.delegated",
-]);
-
-function normalizeLocalAgentEvent(input) {
-  const type = String(input.type || "runtime.progress").slice(0, 64);
-  if (!LOCAL_AGENT_EVENT_TYPES.has(type)) {
-    throw Object.assign(new Error("Local agent event type is not allowed"), { statusCode: 400 });
-  }
-  const event = { type };
-  if (input.name != null) event.name = String(input.name).slice(0, 128);
-  if (input.status != null) event.status = String(input.status).slice(0, 32);
-  if (input.metadata && typeof input.metadata === "object") {
-    event.metadata = Object.fromEntries(["tool", "step", "status", "subagent", "checkpoint"]
-      .filter((key) => input.metadata[key] != null)
-      .map((key) => [key, String(input.metadata[key]).slice(0, 256)]));
-  }
-  return event;
 }
 
 export function isSkillAdministrator(role) {

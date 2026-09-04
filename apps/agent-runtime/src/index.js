@@ -2,7 +2,7 @@ const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3
 
 export const AGENT_RUNTIMES = Object.freeze(["native", "deepagents"]);
 
-export function selectAgentRuntime(requested = "auto", capabilities = {}, rollout = {}) {
+export function selectAgentRuntime(requested = "auto", capabilities = {}) {
   const preference = String(requested || "auto").toLowerCase();
   if (!["auto", ...AGENT_RUNTIMES].includes(preference)) {
     throw new TypeError("agent runtime must be auto, native, or deepagents");
@@ -10,11 +10,7 @@ export function selectAgentRuntime(requested = "auto", capabilities = {}, rollou
   const advertised = new Set(Array.isArray(capabilities.agent_runtimes)
     ? capabilities.agent_runtimes.map((value) => String(value).toLowerCase())
     : []);
-  if (preference === "auto") {
-    if (!advertised.has("deepagents")) return "native";
-    const percent = Math.max(0, Math.min(100, Number(rollout.deepAgentsPercent ?? 100)));
-    return stableBucket(String(rollout.subject || "default")) < percent ? "deepagents" : "native";
-  }
+  if (preference === "auto") return advertised.has("deepagents") ? "deepagents" : "native";
   if (preference === "native") return "native";
   if (!advertised.has("deepagents")) {
     throw new Error("the connected MundusX runner does not advertise the deepagents runtime");
@@ -39,16 +35,15 @@ export class DeepAgentsRuntime {
     this.agentFactory = agentFactory;
   }
 
-  async run(task, { emit = async () => {}, resume = false } = {}) {
+  async run(task, { emit = async () => {} } = {}) {
     const request = normalizeTask(task);
-    const candidateTools = await this.createTools({
+    const tools = await this.createTools({
       authority: request.authority,
       allowMutations: request.allowMutations,
       taskId: request.taskId,
       userId: request.userId,
     });
-    if (!Array.isArray(candidateTools)) throw new TypeError("createTools must return an array");
-    const tools = filterAuthorityTools(candidateTools, request.authority, request.allowMutations);
+    if (!Array.isArray(tools)) throw new TypeError("createTools must return an array");
 
     const createAgent = this.agentFactory || await defaultAgentFactory();
     const agent = await createAgent(compact({
@@ -60,81 +55,22 @@ export class DeepAgentsRuntime {
       interruptOn: this.interruptOn,
     }));
     await emit({ type: "runtime.started", runtime: "deepagents", session_id: request.sessionId });
-    const input = { messages: [...request.history, { role: "user", content: request.prompt }] };
-    const config = {
+    const result = await agent.invoke({ messages: [{ role: "user", content: request.prompt }] }, {
       configurable: { thread_id: request.sessionId },
       metadata: {
         mundusx_task_id: request.taskId,
         mundusx_user_id: request.userId,
         mundusx_allow_mutations: request.allowMutations,
-        mundusx_resume: resume,
       },
-    };
-    const result = await invokeWithEvents(agent, input, config, emit);
+    });
     const normalized = normalizeResult(result, request);
     await emit({ type: "runtime.completed", runtime: "deepagents", session_id: request.sessionId });
     return normalized;
   }
 
   async resume(task, options) {
-    return this.run(task, { ...options, resume: true });
+    return this.run(task, options);
   }
-}
-
-export async function createLocalChatModel({ baseUrl = "http://127.0.0.1:11436/v1", apiKey = "mundusx-local", model = "mundusx-agent", temperature = 0 } = {}) {
-  const { ChatOpenAI } = await import("@langchain/openai");
-  return new ChatOpenAI({ model, temperature, apiKey, configuration: { baseURL: baseUrl } });
-}
-
-export function filterAuthorityTools(tools, authority = {}, allowMutations = false) {
-  const allowed = new Set(Array.isArray(authority.allowed_operations) ? authority.allowed_operations : []);
-  return tools.filter((candidate) => {
-    const operation = String(candidate.operation || candidate.name || "").replaceAll("_", ".");
-    if (!allowed.has(operation)) return false;
-    return allowMutations || candidate.readOnly === true || candidate.metadata?.read_only === true;
-  });
-}
-
-export function normalizeRuntimeEvent(value) {
-  const raw = Array.isArray(value) && value.length === 2 ? value[1] : value;
-  const type = raw?.type || raw?.event || (raw?.messages ? "model.message" : "runtime.progress");
-  const safe = { type: String(type).slice(0, 64) };
-  if (raw?.name) safe.name = String(raw.name).slice(0, 128);
-  if (raw?.status) safe.status = String(raw.status).slice(0, 32);
-  if (raw?.metadata && typeof raw.metadata === "object") safe.metadata = sanitizeMetadata(raw.metadata);
-  return safe;
-}
-
-export function evaluateRuntimePair(nativeResult, deepAgentsResult) {
-  const score = (value) => {
-    const output = String(value?.output || "").trim();
-    return { completed: output.length > 0, output_chars: output.length, error: value?.error ? String(value.error) : null };
-  };
-  return { native: score(nativeResult), deepagents: score(deepAgentsResult) };
-}
-
-async function invokeWithEvents(agent, input, config, emit) {
-  if (typeof agent.stream !== "function") return agent.invoke(input, config);
-  let final;
-  for await (const update of await agent.stream(input, { ...config, streamMode: "updates" })) {
-    final = Array.isArray(update) && update.length === 2 ? update[1] : update;
-    await emit(normalizeRuntimeEvent(update));
-  }
-  return final || { messages: [] };
-}
-
-function sanitizeMetadata(metadata) {
-  const result = {};
-  for (const key of ["tool", "step", "status", "subagent", "checkpoint"]) {
-    if (metadata[key] != null) result[key] = String(metadata[key]).slice(0, 256);
-  }
-  return result;
-}
-
-function stableBucket(subject) {
-  let hash = 2166136261;
-  for (const character of subject) hash = Math.imul(hash ^ character.charCodeAt(0), 16777619);
-  return (hash >>> 0) % 100;
 }
 
 async function defaultAgentFactory() {
@@ -161,20 +97,7 @@ function normalizeTask(task = {}) {
     prompt,
     authority: Object.freeze({ ...task.authority }),
     allowMutations: task.allow_mutations === true || task.allowMutations === true,
-    history: normalizeHistory(task.history),
   };
-}
-
-function normalizeHistory(value) {
-  if (!Array.isArray(value)) return [];
-  return value.slice(-40).flatMap((turn) => {
-    const prompt = String(turn?.prompt || "").slice(0, 16000);
-    const output = String(turn?.output || turn?.result?.content || "").slice(0, 32000);
-    return [
-      ...(prompt ? [{ role: "user", content: prompt }] : []),
-      ...(output ? [{ role: "assistant", content: output }] : []),
-    ];
-  });
 }
 
 function normalizeResult(result, request) {

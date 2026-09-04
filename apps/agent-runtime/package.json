@@ -3,7 +3,6 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "bin": { "mundusx-deepagents-runtime": "src/cli.js" },
   "scripts": {
     "test": "node --test test/*.test.js"
   },
@@ -11,8 +10,6 @@
     "node": ">=20"
   },
   "dependencies": {
-    "@langchain/langgraph": "1.4.10",
-    "@langchain/openai": "1.5.1",
     "deepagents": "1.13.3"
   }
 }
