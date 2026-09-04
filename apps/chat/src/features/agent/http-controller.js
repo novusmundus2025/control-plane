@@ -53,6 +53,16 @@ export function createLocalAgentHttpController({ authStore, readJsonBody, sendJs
       sendJson(response, 202, await authStore.createLocalAgentTask(session.id, body));
       return true;
     }
+    if (request.method === "GET" && url.pathname === "/api/agent/sessions") {
+      sendJson(response, 200, await authStore.localAgentSessions(session.id));
+      return true;
+    }
+    const sessionRoute = url.pathname.match(new RegExp(`^/api/agent/sessions/(${UUID})/resume$`, "i"));
+    if (sessionRoute && request.method === "POST") {
+      authStore.requireCsrf(request, session);
+      sendJson(response, 202, await authStore.resumeLocalAgentSession(session.id, sessionRoute[1], await readJsonBody(request)));
+      return true;
+    }
     const browserTask = url.pathname.match(new RegExp(`^/api/agent/tasks/(${UUID})(/cancel)?$`, "i"));
     if (browserTask && request.method === "GET" && !browserTask[2]) {
       sendJson(response, 200, await authStore.localAgentTask(session.id, browserTask[1]));
