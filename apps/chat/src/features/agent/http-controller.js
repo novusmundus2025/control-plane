@@ -10,6 +10,29 @@ export function createLocalAgentHttpController({ authStore, readJsonBody, sendJs
   return async function handleLocalAgentRequest({ request, response, url }) {
     if (!url.pathname.startsWith("/api/agent/")) return false;
 
+    if (request.method === "POST" && url.pathname === "/api/agent/bootstrap/sessions") {
+      sendJson(response, 201, await authStore.createLocalAgentBootstrap(await readJsonBody(request)));
+      return true;
+    }
+    const bootstrap = url.pathname.match(new RegExp(`^/api/agent/bootstrap/sessions/(${UUID})/(status|approval|approve)$`, "i"));
+    if (bootstrap && request.method === "POST" && bootstrap[2] === "status") {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await authStore.localAgentBootstrapStatus(bootstrap[1], body?.connector_token));
+      return true;
+    }
+    if (bootstrap && request.method === "POST" && bootstrap[2] === "approval") {
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await authStore.localAgentBootstrapApproval(bootstrap[1], body?.approval_token));
+      return true;
+    }
+    if (bootstrap && request.method === "POST" && bootstrap[2] === "approve") {
+      const session = await requireSession(request, authStore);
+      authStore.requireCsrf(request, session);
+      const body = await readJsonBody(request);
+      sendJson(response, 200, await authStore.approveLocalAgentBootstrap(session.id, bootstrap[1], body?.approval_token));
+      return true;
+    }
+
     if (request.method === "POST" && url.pathname === "/api/agent/connector/register") {
       const connector = await requireConnector(request, authStore);
       sendJson(response, 200, await authStore.registerLocalAgent(connector.id, await readJsonBody(request)));
