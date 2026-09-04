@@ -2474,7 +2474,11 @@ export function page(config = configFromEnv()) {
     });
 
     accountLogoutEl?.addEventListener("click", async () => {
-      await window.fetch("/api/auth/logout", { method: "POST" });
+      const response = await nativeFetch("/api/auth/logout", { method: "POST" });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "Sign out failed");
+      }
       location.reload();
     });
 

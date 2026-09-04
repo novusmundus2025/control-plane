@@ -75,6 +75,8 @@ test("renders a usable chat page", () => {
 
   assert.match(html, /MundusX Chat/);
   assert.match(html, /id="auth-google"/);
+  assert.match(html, /nativeFetch\("\/api\/auth\/logout", \{ method: "POST" \}\)/);
+  assert.doesNotMatch(html, /window\.fetch\("\/api\/auth\/logout"/);
   assert.match(html, /id="chat-main" class="is-empty-chat"/);
   assert.match(html, /Hello, my name is <span class="atlas-word">Atlas<\/span>\./);
   assert.match(html, /\.atlas-word::after/);
