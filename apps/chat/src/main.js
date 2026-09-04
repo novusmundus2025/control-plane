@@ -5279,7 +5279,7 @@ export function page(config = configFromEnv()) {
 </html>`;
 }
 
-function runnerConnectPage(url) {
+function runnerConnectPage(url, kind = "runner") {
   const requestedSessionId = String(url.searchParams.get("session") || "");
   const sessionId = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestedSessionId)
     ? requestedSessionId
@@ -5313,7 +5313,9 @@ function runnerConnectPage(url) {
   </main>
   <script>
     const sessionId = ${JSON.stringify(sessionId)};
-    const approvalStorageKey = "mundusx.runner.approval:" + sessionId;
+    const isAgent = ${JSON.stringify(kind === "agent")};
+    const resource = isAgent ? "agent" : "harness";
+    const approvalStorageKey = "mundusx." + resource + ".approval:" + sessionId;
     const fragmentToken = new URLSearchParams(location.hash.slice(1)).get("token") || "";
     if (fragmentToken) sessionStorage.setItem(approvalStorageKey, fragmentToken);
     const approvalToken = fragmentToken || sessionStorage.getItem(approvalStorageKey) || "";
@@ -5322,7 +5324,7 @@ function runnerConnectPage(url) {
     const device = document.getElementById("device");
     const approve = document.getElementById("approve");
     const signIn = document.getElementById("sign-in");
-    signIn.href = "/api/auth/github/start?return_to=" + encodeURIComponent(location.pathname + location.search);
+    signIn.href = "/api/auth/google/start?return_to=" + encodeURIComponent(location.pathname + location.search);
     let csrfToken = "";
     async function json(url, options) {
       const response = await fetch(url, options);
@@ -5332,21 +5334,21 @@ function runnerConnectPage(url) {
     }
     async function start() {
       try {
-        const details = await json("/api/harness/bootstrap/sessions/" + encodeURIComponent(sessionId) + "/approval", {
+        const details = await json("/api/" + resource + "/bootstrap/sessions/" + encodeURIComponent(sessionId) + "/approval", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ approval_token: approvalToken }),
         });
-        device.textContent = details.device_id;
+        device.textContent = details.device_name || details.device_id;
         device.hidden = false;
         if (details.state === "connected") { message.textContent = "This computer is connected. You can close this tab."; return; }
         const auth = await json("/api/auth/session");
         csrfToken = auth.csrf_token;
-        message.textContent = "Approve this user-owned runner to create files and run bounded tools on this computer.";
+        message.textContent = isAgent ? "Approve MundusX to work only in the local project folder you selected." : "Approve this user-owned runner to create files and run bounded tools on this computer.";
         approve.hidden = false;
       } catch (error) {
         if (String(error.message).includes("Authentication required")) {
-          message.textContent = "Sign in to approve this computer. Your GitHub credentials remain on this device.";
+          message.textContent = "Sign in with Google to approve this computer.";
           signIn.hidden = false;
         } else { message.textContent = error.message; message.className = "error"; }
       }
@@ -5355,12 +5357,12 @@ function runnerConnectPage(url) {
       approve.disabled = true;
       approve.textContent = "Connecting…";
       try {
-        await json("/api/harness/bootstrap/sessions/" + encodeURIComponent(sessionId) + "/approve", {
+        await json("/api/" + resource + "/bootstrap/sessions/" + encodeURIComponent(sessionId) + "/approve", {
           method: "POST",
           headers: { "Content-Type": "application/json", "X-MundusX-CSRF": csrfToken },
           body: JSON.stringify({ approval_token: approvalToken }),
         });
-        message.textContent = "Approved. The runner is finishing setup and your original task will resume automatically.";
+        message.textContent = "Approved. MundusX is connecting your local project. You can close this tab.";
         sessionStorage.removeItem(approvalStorageKey);
         approve.hidden = true;
         setTimeout(() => window.close(), 1800);
@@ -5427,6 +5429,9 @@ export function createServerApp(config = configFromEnv()) {
       }
       if (request.method === "GET" && url.pathname === "/runner/connect") {
         return sendHtml(response, runnerConnectPage(url));
+      }
+      if (request.method === "GET" && url.pathname === "/agent/connect") {
+        return sendHtml(response, runnerConnectPage(url, "agent"));
       }
       if (request.method === "GET" && url.pathname === "/assets/mundusx-logo.png") {
         return sendPng(response, await readFile(LOGO_PATH));

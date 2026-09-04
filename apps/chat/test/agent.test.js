@@ -22,6 +22,10 @@ function controllerFixture(overrides = {}) {
     async createLocalAgentTask(...args) { calls.push(["create", ...args]); return { task_id: TASK_ID }; },
     async localAgentTask(...args) { calls.push(["task", ...args]); return { task_id: TASK_ID, state: "running" }; },
     async cancelLocalAgentTask(...args) { calls.push(["cancel", ...args]); return { state: "cancelled" }; },
+    async createLocalAgentBootstrap(...args) { calls.push(["bootstrap", ...args]); return { session_id: TASK_ID }; },
+    async localAgentBootstrapStatus(...args) { calls.push(["bootstrap-status", ...args]); return { state: "pending" }; },
+    async localAgentBootstrapApproval(...args) { calls.push(["bootstrap-approval", ...args]); return { state: "pending" }; },
+    async approveLocalAgentBootstrap(...args) { calls.push(["bootstrap-approve", ...args]); return { state: "approved" }; },
     ...overrides,
   };
   return {
@@ -68,6 +72,16 @@ test("browser task submission is session, CSRF, and conversation scoped", async 
   assert.deepEqual(fixture.calls.map((call) => call[0]), ["csrf", "conversation", "create"]);
   assert.equal(fixture.calls[1][1], "browser-user");
   assert.equal(fixture.rendered().status, 202);
+});
+
+test("local agent bootstrap starts without auth and approval requires browser session plus CSRF", async () => {
+  const fixture = controllerFixture();
+  await fixture.controller({ request: { method: "POST", body: { device_name: "Laptop" } }, response: {}, url: new URL("https://chat.mundusx.ai/api/agent/bootstrap/sessions") });
+  assert.deepEqual(fixture.calls[0], ["bootstrap", { device_name: "Laptop" }]);
+  assert.equal(fixture.rendered().status, 201);
+  await fixture.controller({ request: { method: "POST", body: { approval_token: "secret" } }, response: {}, url: new URL(`https://chat.mundusx.ai/api/agent/bootstrap/sessions/${TASK_ID}/approve`) });
+  assert.deepEqual(fixture.calls.slice(1).map((call) => call[0]), ["csrf", "bootstrap-approve"]);
+  assert.equal(fixture.calls[2][1], "browser-user");
 });
 
 test("browser task submission forwards an explicit Hermes runtime selection", async () => {
