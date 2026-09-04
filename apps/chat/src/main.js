@@ -2749,11 +2749,16 @@ export function page(config = configFromEnv()) {
       });
     }
 
-    function renderRuntimeControls() {
-      const preferredHermesOnline = (lastLocalAgentStatus?.connections || []).some((connection) =>
-        connection.online && connection.capabilities?.preferred_agent === "hermes"
+    function preferredHermesOnline() {
+      return (lastLocalAgentStatus?.connections || []).some((connection) =>
+        connection.online
+        && connection.capabilities?.preferred_agent === "hermes"
+        && (connection.capabilities?.agent_runtimes || []).includes("hermes")
       );
-      mutationToggleEl.hidden = !(activeProject && preferredHermesOnline);
+    }
+
+    function renderRuntimeControls() {
+      mutationToggleEl.hidden = !(activeProject && preferredHermesOnline());
       mutationToggleEl.setAttribute("aria-pressed", String(mutationAllowed));
       mutationToggleEl.textContent = mutationAllowed ? "Edits allowed · once" : "Allow edits once";
     }
@@ -3254,14 +3259,14 @@ export function page(config = configFromEnv()) {
 
       try {
         if (activeProject && requiresLocalProjectAction(message)) {
-          if (runtimePreference === "hermes") {
+          if (runtimePreference === "hermes" || (runtimePreference === "auto" && preferredHermesOnline())) {
             if (!mutationAllowed) {
               throw new Error("This project request can change files. Turn on ‘Allow edits once’, then send it again.");
             }
             mutationAllowed = false;
             renderRuntimeControls();
             const handledBySelectedRuntime = await tryLocalAgentTurn(pending, message, conversationId, {
-              runtime: runtimePreference,
+              runtime: "hermes",
               workspaceRelative: activeProject.slug,
               allowMutations: true,
             });
