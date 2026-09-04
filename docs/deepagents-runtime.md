@@ -16,20 +16,10 @@ Old runners remain valid: when no runtime capability is advertised, `auto` selec
 
 ## Deployment phases
 
-- Phase 1 — complete: runtime package, selection contract, database negotiation, native fallback, and authority/session tests.
-- Phase 2 — complete: the pinned Deep Agents runtime has a LangChain adapter for the loopback MundusX model; the connector advertises it only when the optional runtime executable is installed.
-- Phase 3 — complete: the immutable authority envelope filters caller-supplied tools, the virtual filesystem is rooted at the selected workspace, and write operations remain blocked unless the task carries explicit mutation approval.
-- Phase 4 — complete: normalized allowlisted events cross the connector, completed turns provide a durable bounded checkpoint for resume, and browser and CLI session APIs use the same session UUID.
-- Phase 5 — complete but conservative: stable percentage canaries and native-versus-Deep-Agents evidence are available. `auto` selects Deep Agents only on a connector that proves the runtime is installed, so old installations remain native without a migration.
-
-The optional executable implements a narrow stdin/stdout contract:
-
-```text
-mundusx-deepagents-runtime run-json --workspace <absolute-path>
-```
-
-The connector locates it through `MUNDUSX_DEEPAGENTS_BIN`. It never advertises
-Deep Agents merely because the control plane supports it. This prevents a task
-from being leased to an incapable machine.
+- Phase 1 (this change): runtime package, selection contract, database negotiation, native fallback, authority/session tests.
+- Phase 2: embed `@mundusx/agent-runtime` in the local MundusX connector and adapt the selected local model to LangChain's chat-model interface.
+- Phase 3: expose only policy-derived repository, patch, validation, and MCP tools; require approval for mutation tools.
+- Phase 4: stream normalized plan/tool/subagent events, persist checkpoints, and implement `mundusx agent resume` and `sessions` over the same UUID.
+- Phase 5: canary opt-in, evaluation against the native runtime, then make `auto` prefer Deep Agents on capable runners.
 
 The `deepagents` dependency is pinned. Upgrades require contract tests because its profile APIs are still evolving.
