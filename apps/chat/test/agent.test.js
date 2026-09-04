@@ -70,6 +70,18 @@ test("browser task submission is session, CSRF, and conversation scoped", async 
   assert.equal(fixture.rendered().status, 202);
 });
 
+test("browser task submission forwards an explicit Hermes runtime selection", async () => {
+  const fixture = controllerFixture();
+  await fixture.controller({
+    request: { method: "POST", body: { prompt: "inspect this repository", runtime: "hermes" } },
+    response: {},
+    url: new URL("https://chat.mundusx.ai/api/agent/tasks"),
+  });
+  const createCall = fixture.calls.find((call) => call[0] === "create");
+  assert.equal(createCall[2].runtime, "hermes");
+  assert.equal(fixture.rendered().status, 202);
+});
+
 test("connector endpoints reject missing MCP credentials", async () => {
   const fixture = controllerFixture({ async mcpSession() { return null; } });
   await assert.rejects(

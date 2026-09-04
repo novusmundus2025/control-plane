@@ -22,6 +22,32 @@ If it is offline, Chat uses the existing Control Plane path. Repository-changing
 requests remain non-mutating unless a separate, explicit approval flow grants
 that authority.
 
+## Runtime selection
+
+The connector reports the runtimes actually available on that user's machine.
+`auto` prefers Hermes when its version probe succeeds and otherwise selects the
+native MundusX loop. A caller may request `native` or `hermes` explicitly; a
+Hermes-only task remains queued rather than being claimed by an incapable
+device. Runtime selection is stored with the task for auditability.
+
+```text
+Internet / MundusX cloud                    User's local machine
+┌───────────────────────────────┐  HTTPS   ┌──────────────────────────────┐
+│ chat.mundusx.ai               │◄────────►│ mundusx connect              │
+│ Google user + task ownership  │          │ workspace + user credentials │
+│ runtime selection + audit     │          │                              │
+│ no filesystem/shell authority │          │ ┌─────────┐  ┌────────────┐  │
+└───────────────────────────────┘          │ │ native  │  │ Hermes     │  │
+                                           │ │ runtime │  │ runtime    │  │
+                                           │ └─────────┘  └────────────┘  │
+                                           └──────────────────────────────┘
+```
+
+Hermes remains a local, single-user component. Google authentication identifies
+the Chat account; the MCP connection token binds one local connector to that
+same account. MundusX does not upload Hermes configuration, provider keys,
+skills, memories, transcripts, or tool results.
+
 ## Protocol and privacy
 
 The v1 bridge uses `/api/agent/connector/*` with the existing user-scoped MCP

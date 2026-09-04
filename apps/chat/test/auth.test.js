@@ -355,3 +355,43 @@ test("MCP token revocation is scoped to the authenticated owner", async () => {
   assert.deepEqual(update.values, [tokenId, "user-1"]);
   assert.match(update.sql, /user_id = \$2::uuid/);
 });
+
+test("local agent tasks persist only supported runtime selections", async () => {
+  let insert;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) {
+      insert = { sql, values };
+      return { rows: [{ task_id: values[0], runtime_requested: values[6] }] };
+    },
+  } });
+  const sessionId = "11111111-1111-4111-8111-111111111111";
+  const created = await store.createLocalAgentTask("22222222-2222-4222-8222-222222222222", {
+    prompt: "inspect this repository", session_id: sessionId, runtime: "HERMES",
+  });
+  assert.equal(created.runtime_requested, "hermes");
+  assert.equal(insert.values[6], "hermes");
+  await assert.rejects(
+    store.createLocalAgentTask("22222222-2222-4222-8222-222222222222", {
+      prompt: "inspect", session_id: sessionId, runtime: "deepagents",
+    }),
+    (error) => error.statusCode === 400,
+  );
+});
+
+test("local agent claims select Hermes only from an advertising connector", async () => {
+  const queries = [];
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) {
+      queries.push({ sql, values });
+      return sql.includes("with candidate")
+        ? { rows: [{ runtime_requested: "auto", runtime_selected: "hermes" }] }
+        : { rows: [] };
+    },
+  } });
+  const task = await store.claimLocalAgentTask(
+    "22222222-2222-4222-8222-222222222222",
+    "11111111-1111-4111-8111-111111111111",
+  );
+  assert.equal(task.runtime_selected, "hermes");
+  assert.match(queries[0].sql, /capabilities->'agent_runtimes' \? 'hermes'/);
+});
