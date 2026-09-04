@@ -1477,6 +1477,12 @@ export function page(config = configFromEnv()) {
       box-shadow: 0 10px 28px rgba(15, 23, 42, 0.07);
     }
     .composer-left-actions { grid-column:1; grid-row:1; align-self:center; display:flex; align-items:center; gap:2px; min-width:0; }
+    .runtime-picker { display:inline-flex; align-items:center; gap:4px; padding:0 4px; color:var(--muted-2); }
+    .runtime-picker select { max-width:150px; border:0; border-radius:9px; padding:7px 24px 7px 7px; color:var(--text); background:var(--panel-2); font:inherit; font-size:12px; cursor:pointer; }
+    .runtime-picker select:focus-visible { outline:2px solid color-mix(in srgb,var(--blue) 45%,transparent); outline-offset:1px; }
+    .mutation-toggle[hidden] { display:none; }
+    .mutation-toggle[aria-pressed="true"] { color:#b45309; font-weight:750; }
+    .runtime-detail { width:min(880px,100%); margin:6px auto 0; padding:0 20px; color:var(--muted-2); font-size:11px; text-align:left; }
     .active-project-context { min-width:0; display:flex; align-items:center; color:var(--muted-2); }
     .active-project-context[hidden] { display: none; }
     .active-project-context .project-context-open { min-width:0; }
@@ -1930,6 +1936,8 @@ export function page(config = configFromEnv()) {
           <div class="composer-actions">
             <span class="composer-left-actions">
               ${config.harnessUiEnabled ? `<span class="active-project-context" id="active-project-context"><button class="tool-toggle project-context-open" id="active-project-open" type="button" aria-pressed="false" title="Choose a project"><span class="kbd" aria-hidden="true">⌁</span><strong id="active-project-name">Project</strong></button><button class="project-context-clear" id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project" hidden>&times;</button></span>` : ""}
+              <label class="runtime-picker" title="Choose where this conversation runs"><span>Run</span><select id="runtime-select" aria-label="Agent runtime"><option value="auto">Auto</option><option value="cloud">Cloud</option><option value="native">Local · MundusX</option><option value="hermes">Local · Hermes</option></select></label>
+              <button class="tool-toggle mutation-toggle" id="mutation-toggle" type="button" aria-pressed="false" hidden>Allow edits once</button>
             </span>
             <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
             <span class="voice-controls" id="voice-controls">
@@ -1940,6 +1948,7 @@ export function page(config = configFromEnv()) {
           </div>
           <button class="send" id="send" type="submit" aria-label="Send">${ICON_ARROW_UP}</button>
         </div>
+        <div class="runtime-detail" id="runtime-detail">Auto uses your connected local runtime, then falls back to MundusX Cloud.</div>
         <div class="fine-print">MundusX may produce inaccurate information.</div>
       </form>
     </main>
@@ -2003,6 +2012,9 @@ export function page(config = configFromEnv()) {
     const projectCreateFieldsEl = document.getElementById("project-create-fields");
     const projectPurposeNoteEl = document.getElementById("project-purpose-note");
     const projectRunnerContextEl = document.getElementById("project-runner-context");
+    const runtimeSelectEl = document.getElementById("runtime-select");
+    const runtimeDetailEl = document.getElementById("runtime-detail");
+    const mutationToggleEl = document.getElementById("mutation-toggle");
     const projectRunnerContextNameEl = document.getElementById("project-runner-context-name");
     const projectActionsEl = document.getElementById("project-actions");
     const appToastEl = document.getElementById("app-toast");
@@ -2018,6 +2030,7 @@ export function page(config = configFromEnv()) {
     let activeProjectKey = "mundusx.chat.activeProject.v1:anonymous";
     let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
     let removedProjectsKey = "mundusx.chat.removedProjects.v1:anonymous";
+    let runtimePreferenceKey = "mundusx.chat.runtime.v1:anonymous";
     const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
     let activeProject = null;
     let availableProjectSlugs = [];
@@ -2032,11 +2045,18 @@ export function page(config = configFromEnv()) {
     let runnerPairingPollTimer = null;
     let pendingRunnerAction = null;
     let pendingRunnerResumeInProgress = false;
+    let runtimePreference = "auto";
+    let mutationAllowed = false;
+    let lastLocalAgentStatus = null;
     let appToastTimer = null;
     function loadStoredProjectContext(namespace) {
       activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
       recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
       removedProjectsKey = "mundusx.chat.removedProjects.v1:" + namespace;
+      runtimePreferenceKey = "mundusx.chat.runtime.v1:" + namespace;
+      const storedRuntime = localStorage.getItem(runtimePreferenceKey);
+      runtimePreference = ["auto", "cloud", "native", "hermes"].includes(storedRuntime) ? storedRuntime : "auto";
+      if (runtimeSelectEl) runtimeSelectEl.value = runtimePreference;
       try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
       try {
         removedProjectSlugs = JSON.parse(localStorage.getItem(removedProjectsKey) || "[]")
@@ -2054,6 +2074,7 @@ export function page(config = configFromEnv()) {
         localStorage.removeItem(activeProjectKey);
       }
       renderActiveProject();
+      renderRuntimeControls();
     }
     loadStoredProjectContext("anonymous");
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -2245,6 +2266,10 @@ export function page(config = configFromEnv()) {
         conversationCachePrefix = "mundusx.chat.conversation.v1:" + namespace + ":";
         loadStoredProjectContext(namespace);
         loadHarnessRunners().catch(() => {});
+        nativeFetch("/api/agent/status")
+          .then((response) => response.ok ? response.json() : null)
+          .then((status) => { lastLocalAgentStatus = status; renderRuntimeControls(); })
+          .catch(() => {});
         activeHistoryId = localStorage.getItem(conversationIdKey);
         const name = user.display_name || user.email;
         document.querySelectorAll("[data-account-name]").forEach((node) => node.textContent = name);
@@ -2704,7 +2729,53 @@ export function page(config = configFromEnv()) {
         ? "Ask Atlas to work on " + activeProject.slug + "..."
         : "Ask everyone...";
       renderProjectMenu();
+      renderRuntimeControls();
     }
+
+    function onlineRuntimeAvailable(runtime) {
+      if (!lastLocalAgentStatus?.online) return false;
+      return (lastLocalAgentStatus.connections || []).some((connection) => {
+        if (!connection.online) return false;
+        const runtimes = connection.capabilities?.agent_runtimes || ["native"];
+        return runtimes.includes(runtime);
+      });
+    }
+
+    function renderRuntimeControls() {
+      if (!runtimeSelectEl || !runtimeDetailEl) return;
+      mutationToggleEl.hidden = !(activeProject && runtimePreference === "hermes");
+      mutationToggleEl.setAttribute("aria-pressed", String(mutationAllowed));
+      mutationToggleEl.textContent = mutationAllowed ? "Edits allowed · once" : "Allow edits once";
+      const details = {
+        auto: lastLocalAgentStatus?.online
+          ? "Auto · connected local agent first, MundusX Cloud fallback."
+          : "Auto · MundusX Cloud; no local connector is online.",
+        cloud: "Cloud · runs through the MundusX Control Plane; no local filesystem access.",
+        native: onlineRuntimeAvailable("native")
+          ? "Local · native MundusX agent on your connected device."
+          : "Local MundusX is unavailable. Start mundusx connect on this device.",
+        hermes: onlineRuntimeAvailable("hermes")
+          ? "Local · Hermes on your connected device. Skills and memory stay local."
+          : "Hermes is unavailable. Install/configure Hermes, then restart mundusx connect.",
+      };
+      runtimeDetailEl.textContent = details[runtimePreference];
+    }
+
+    runtimeSelectEl?.addEventListener("change", () => {
+      runtimePreference = ["auto", "cloud", "native", "hermes"].includes(runtimeSelectEl.value)
+        ? runtimeSelectEl.value
+        : "auto";
+      mutationAllowed = false;
+      localStorage.setItem(runtimePreferenceKey, runtimePreference);
+      renderRuntimeControls();
+      promptEl?.focus();
+    });
+
+    mutationToggleEl?.addEventListener("click", () => {
+      mutationAllowed = !mutationAllowed;
+      renderRuntimeControls();
+      promptEl?.focus();
+    });
 
     function renderProjectMenu() {
       if (!projectContextListEl) return;
@@ -3196,6 +3267,27 @@ export function page(config = configFromEnv()) {
 
       try {
         if (activeProject && requiresLocalProjectAction(message)) {
+          if (runtimePreference === "hermes") {
+            if (!mutationAllowed) {
+              throw new Error("This project request can change files. Turn on ‘Allow edits once’, then send it again.");
+            }
+            const handledBySelectedRuntime = await tryLocalAgentTurn(pending, message, conversationId, {
+              runtime: runtimePreference,
+              workspaceRelative: activeProject.slug,
+              allowMutations: true,
+            });
+            mutationAllowed = false;
+            renderRuntimeControls();
+            if (!handledBySelectedRuntime) throw new Error("The selected local runtime is not connected.");
+            syncNetworkRuntimeStatus(true);
+            return;
+          }
+          if (runtimePreference === "native") {
+            throw new Error("Native local project edits use the bounded MundusX runner. Choose Auto for that runner, or Local · Hermes for Hermes execution.");
+          }
+          if (runtimePreference === "cloud") {
+            throw new Error("MundusX Cloud cannot directly modify this local project. Choose Auto, Local · MundusX, or Local · Hermes.");
+          }
           if (!localRunnerReady) {
             await loadHarnessRunners().catch(() => []);
           }
@@ -3214,7 +3306,16 @@ export function page(config = configFromEnv()) {
         const chatMessage = activeProject
           ? "Active local project: " + activeProject.slug + ". Respond in planning/chat mode and do not claim files were changed.\\n\\n" + message
           : message;
-        const handledLocally = await tryLocalAgentTurn(pending, chatMessage, conversationId);
+        const handledLocally = runtimePreference === "cloud" ? false : await tryLocalAgentTurn(
+          pending,
+          chatMessage,
+          conversationId,
+          {
+            runtime: runtimePreference === "auto" ? "auto" : runtimePreference,
+            workspaceRelative: activeProject?.slug || null,
+            allowMutations: false,
+          },
+        );
         const streamed = handledLocally ? true : await tryLiveChatTurn(pending, chatMessage, conversationId);
         if (!handledLocally && !streamed) {
           await runPolledChatTurn(pending, chatMessage, conversationId);
@@ -3303,11 +3404,24 @@ export function page(config = configFromEnv()) {
       renderCompletedJob(pending, payload, conversationId);
     }
 
-    async function tryLocalAgentTurn(pending, message, conversationId) {
+    async function tryLocalAgentTurn(pending, message, conversationId, options = {}) {
       const statusResponse = await fetch("/api/agent/status");
-      if (statusResponse.status === 401) return false;
+      if (statusResponse.status === 401) {
+        if (options.runtime && options.runtime !== "auto") throw new Error("Sign in before using a local runtime.");
+        return false;
+      }
       const status = await readApiPayload(statusResponse, "local agent status failed");
-      if (!statusResponse.ok || !status.online) return false;
+      lastLocalAgentStatus = statusResponse.ok ? status : null;
+      renderRuntimeControls();
+      if (!statusResponse.ok || !status.online) {
+        if (options.runtime && options.runtime !== "auto") throw new Error("The selected local runtime is not connected.");
+        return false;
+      }
+      if (options.runtime && options.runtime !== "auto" && !onlineRuntimeAvailable(options.runtime)) {
+        throw new Error(options.runtime === "hermes"
+          ? "Hermes is not available on the connected device. Run hermes setup and restart mundusx connect."
+          : "The native MundusX agent is not available on the connected device.");
+      }
 
       const created = await fetch("/api/agent/tasks", {
         method: "POST",
@@ -3316,15 +3430,18 @@ export function page(config = configFromEnv()) {
           prompt: message,
           conversation_id: conversationId,
           session_id: conversationId,
-          allow_mutations: false,
+          allow_mutations: options.allowMutations === true,
+          runtime: options.runtime || "auto",
+          workspace_relative: options.workspaceRelative || null,
         }),
       });
       const submitted = await readApiPayload(created, "local agent request failed");
       if (!created.ok) throw new Error(submitted.error || "local agent request failed");
 
       const body = pending.querySelector(".message-body");
-      if (body) body.textContent = "Connected to your local MundusX agent…";
-      setStatus("working", "Local agent");
+      const runtimeLabel = options.runtime === "hermes" ? "Hermes" : options.runtime === "native" ? "MundusX Local" : "local agent";
+      if (body) body.textContent = "Connected to " + runtimeLabel + " on your device…";
+      setStatus("working", runtimeLabel);
       let payload = submitted;
       const deadline = Date.now() + 10 * 60 * 1000;
       while (!["completed", "failed", "cancelled"].includes(payload.state)) {
@@ -3345,9 +3462,9 @@ export function page(config = configFromEnv()) {
         output,
         job_id: payload.task_id,
         routing: "local-agent",
-        model: "mundusx-agent",
+        model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
       }, conversationId);
-      setStatus("ready", "Local agent");
+      setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
       return true;
     }
 

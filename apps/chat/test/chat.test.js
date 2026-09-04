@@ -461,6 +461,14 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /composer-left-actions[\s\S]*id="active-project-open"/);
   assert.doesNotMatch(html, /id="web-search-toggle"/);
   assert.match(html, /id="active-project-name">Project<\/strong>/);
+  assert.match(html, /id="runtime-select"[^>]*aria-label="Agent runtime"/);
+  assert.match(html, /Local · MundusX/);
+  assert.match(html, /Local · Hermes/);
+  assert.match(html, /id="mutation-toggle"[^>]*aria-pressed="false"[^>]*hidden>Allow edits once/);
+  assert.match(html, /mundusx\.chat\.runtime\.v1:" \+ namespace/);
+  assert.match(html, /runtime: options\.runtime \|\| "auto"/);
+  assert.match(html, /workspace_relative: options\.workspaceRelative \|\| null/);
+  assert.match(html, /mutationAllowed = false;[\s\S]*renderRuntimeControls\(\)/);
   assert.match(html, /id="project-context-menu"/);
   assert.match(html, /id="project-context-new"[^>]*>\+ New project/);
   assert.match(html, /id="project-context-list"/);
@@ -483,6 +491,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /closeProjects\(\);[\s\S]*showToast\('Project "/);
   assert.doesNotMatch(html, /repositoryDialogEl\?\.close\(\)/);
   assert.match(html, /requiresLocalProjectAction\(message\)/);
+  assert.match(html, /runtimePreference === "hermes"/);
   assert.match(html, /openProjects\(\{ showRunnerSetup: true, project: activeProject \}\)/);
   assert.match(html, /existingProjectMode = Boolean\(showRunnerSetup && project\?\.slug\)/);
   assert.match(html, /repositoryDialogTitleEl\.textContent = existingProjectMode \? "Connect local runner" : "Create project"/);
