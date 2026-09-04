@@ -50,7 +50,7 @@ MUNDUSX_WEB_SEARCH_DAILY_BUDGET=<optional daily call cap; 0 or unset means unlim
 ```
 
 MundusX Chat uses per-user PostgreSQL sessions by default. Run migrations through
-`0029_agent_runtime_selection.sql`,
+`0028_google_identity.sql`,
 configure at least one login provider, and keep the database and provider secrets server-side:
 
 ```text
