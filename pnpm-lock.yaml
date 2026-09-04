@@ -10,9 +10,15 @@ importers:
 
   apps/agent-runtime:
     dependencies:
+      '@langchain/langgraph':
+        specifier: 1.4.10
+        version: 1.4.10(@langchain/core@1.2.9)(zod@4.5.4)
+      '@langchain/openai':
+        specifier: 1.5.1
+        version: 1.5.1(@langchain/core@1.2.9)
       deepagents:
         specifier: 1.13.3
-        version: 1.13.3(@langchain/core@1.2.9)(@langchain/langgraph-checkpoint@1.1.5)(@langchain/langgraph-sdk@1.10.0)(@langchain/langgraph@1.4.13)(langchain@1.5.10)(langsmith@0.9.0)
+        version: 1.13.3(@langchain/core@1.2.9)(@langchain/langgraph-checkpoint@1.1.5)(@langchain/langgraph-sdk@1.10.0)(@langchain/langgraph@1.4.10)(langchain@1.5.10)(langsmith@0.9.0)
 
   apps/chat:
     dependencies:
@@ -96,8 +102,33 @@ packages:
       p-retry: 7.1.1
     dev: false
 
-  /@langchain/langgraph@1.4.13(@langchain/core@1.2.9)(zod@4.5.4):
-    resolution: {integrity: sha512-LO1ak6jNQ9jR13tm7Ay4Yh2/otrH7LNVUwWTAI7WJigVdW5Fb6LuYSZUzVn4S7sVSiyVFfnrUcDTd8c7eAzPrQ==}
+  /@langchain/langgraph-sdk@1.9.31(@langchain/core@1.2.9):
+    resolution: {integrity: sha512-y1sSdq39IPb6mOX43+JiSezVbUdA8EBEJ1gvn91GP0jrLG0EcSApeRDCjRouyDpPXZ51bQXEQhA8CiHM0mzcAw==}
+    peerDependencies:
+      '@langchain/core': ^1.1.48
+      react: ^18 || ^19
+      react-dom: ^18 || ^19
+      svelte: ^4.0.0 || ^5.0.0
+      vue: ^3.0.0
+    peerDependenciesMeta:
+      react:
+        optional: true
+      react-dom:
+        optional: true
+      svelte:
+        optional: true
+      vue:
+        optional: true
+    dependencies:
+      '@langchain/core': 1.2.9
+      '@langchain/protocol': 0.0.18
+      '@types/json-schema': 7.0.15
+      p-queue: 9.3.3
+      p-retry: 7.1.1
+    dev: false
+
+  /@langchain/langgraph@1.4.10(@langchain/core@1.2.9)(zod@4.5.4):
+    resolution: {integrity: sha512-QBNbbIWDp3pcyvaINGEYHdekGYSQm6ZYuC9/h7arEAZckAl5mRLaoRGw5t61V4Bf+rspEj2VcylqNAN3fcdBNQ==}
     engines: {node: '>=18'}
     peerDependencies:
       '@langchain/core': ^1.1.48
@@ -105,13 +136,32 @@ packages:
     dependencies:
       '@langchain/core': 1.2.9
       '@langchain/langgraph-checkpoint': 1.1.5(@langchain/core@1.2.9)
-      '@langchain/langgraph-sdk': 1.10.0(@langchain/core@1.2.9)
+      '@langchain/langgraph-sdk': 1.9.31(@langchain/core@1.2.9)
       '@langchain/protocol': 0.0.18
       '@standard-schema/spec': 1.1.0
       zod: 4.5.4
     transitivePeerDependencies:
       - react
       - react-dom
+      - svelte
+      - vue
+    dev: false
+
+  /@langchain/openai@1.5.1(@langchain/core@1.2.9):
+    resolution: {integrity: sha512-7Ndik936Wta8+BLHjRZmkxEFLFKyNINc6ecKu4t//YQqTxboHAUotzae7Otqe3IRaE5NqsDiIvVqN6nYEe6ruw==}
+    engines: {node: '>=20'}
+    peerDependencies:
+      '@langchain/core': ^1.2.0
+    dependencies:
+      '@langchain/core': 1.2.9
+      js-tiktoken: 1.0.21
+      openai: 6.49.0(zod@4.5.4)
+      zod: 4.5.4
+    transitivePeerDependencies:
+      - '@aws-sdk/credential-provider-node'
+      - '@smithy/hash-node'
+      - '@smithy/signature-v4'
+      - ws
     dev: false
 
   /@langchain/protocol@0.0.18:
@@ -319,7 +369,7 @@ packages:
       ms: 2.1.3
     dev: false
 
-  /deepagents@1.13.3(@langchain/core@1.2.9)(@langchain/langgraph-checkpoint@1.1.5)(@langchain/langgraph-sdk@1.10.0)(@langchain/langgraph@1.4.13)(langchain@1.5.10)(langsmith@0.9.0):
+  /deepagents@1.13.3(@langchain/core@1.2.9)(@langchain/langgraph-checkpoint@1.1.5)(@langchain/langgraph-sdk@1.10.0)(@langchain/langgraph@1.4.10)(langchain@1.5.10)(langsmith@0.9.0):
     resolution: {integrity: sha512-ApjoznYieCpMRFH7TlxNYU9n1QVQp+IGJyzVnxRV0UFqfalDATI64ddWnrBoaHaLU1qb3bMrqgvKPInjlsPjgA==}
     peerDependencies:
       '@langchain/core': ^1.2.9
@@ -330,7 +380,7 @@ packages:
       langsmith: '>=0.7.1 <0.10.0'
     dependencies:
       '@langchain/core': 1.2.9
-      '@langchain/langgraph': 1.4.13(@langchain/core@1.2.9)(zod@4.5.4)
+      '@langchain/langgraph': 1.4.10(@langchain/core@1.2.9)(zod@4.5.4)
       '@langchain/langgraph-checkpoint': 1.1.5(@langchain/core@1.2.9)
       '@langchain/langgraph-sdk': 1.10.0(@langchain/core@1.2.9)
       fast-glob: 3.3.3
@@ -665,7 +715,7 @@ packages:
       '@langchain/core': ^1.2.9
     dependencies:
       '@langchain/core': 1.2.9
-      '@langchain/langgraph': 1.4.13(@langchain/core@1.2.9)(zod@4.5.4)
+      '@langchain/langgraph': 1.4.10(@langchain/core@1.2.9)(zod@4.5.4)
       '@langchain/langgraph-checkpoint': 1.1.5(@langchain/core@1.2.9)
       langsmith: 0.9.0
       zod: 4.5.4
@@ -676,6 +726,8 @@ packages:
       - openai
       - react
       - react-dom
+      - svelte
+      - vue
       - ws
     dev: false
 
@@ -785,6 +837,29 @@ packages:
     resolution: {integrity: sha512-lNaJgI+2Q5URQBkccEKHTQOPaXdUxnZZElQTZY0MFUAuaEqe1E+Nyvgdz/aIyNi6Z9MzO5dv1H8n58/GELp3+w==}
     dependencies:
       wrappy: 1.0.2
+    dev: false
+
+  /openai@6.49.0(zod@4.5.4):
+    resolution: {integrity: sha512-aYCc0C6L864eR6WSYIwQGyXriw/nIyZx0ObvhzOEVuk0zoBDpynjSbrionWI7q65B5H8jJX0DXR9snEzM6bfPg==}
+    peerDependencies:
+      '@aws-sdk/credential-provider-node': '>=3.972.0 <4'
+      '@smithy/hash-node': '>=4.3.0 <5'
+      '@smithy/signature-v4': '>=5.4.0 <6'
+      ws: ^8.18.0
+      zod: ^3.25 || ^4.0
+    peerDependenciesMeta:
+      '@aws-sdk/credential-provider-node':
+        optional: true
+      '@smithy/hash-node':
+        optional: true
+      '@smithy/signature-v4':
+        optional: true
+      ws:
+        optional: true
+      zod:
+        optional: true
+    dependencies:
+      zod: 4.5.4
     dev: false
 
   /p-finally@1.0.0:
