@@ -74,7 +74,13 @@ test("renders a usable chat page", () => {
   );
 
   assert.match(html, /MundusX Chat/);
+  assert.match(html, /id="auth-gate"[^>]*hidden/);
   assert.match(html, /id="auth-google"/);
+  assert.match(html, /Continue your chat/);
+  assert.doesNotMatch(html, /id="auth-github"/);
+  assert.doesNotMatch(html, /id="auth-email-form"/);
+  assert.match(html, /if \(!currentUser && document\.body\.dataset\.authRequired === "true"\)/);
+  assert.match(html, /sessionStorage\.setItem\(pendingAuthPromptKey, message\)/);
   assert.match(html, /accountMenuEl\?\.addEventListener\("click"/);
   assert.match(html, /window\.fetch\("\/api\/auth\/logout", \{ method: "POST" \}\)/);
   assert.match(html, /label\.textContent = "Signing out…"/);

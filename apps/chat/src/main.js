@@ -1632,16 +1632,23 @@ export function page(config = configFromEnv()) {
     .projects-dialog .harness-form textarea,.projects-dialog .harness-form select,.projects-dialog .harness-form input[type="text"],.projects-dialog .harness-form input:not([type]) { min-height:42px; color:var(--text); background:color-mix(in srgb,var(--panel) 92%,var(--bg)); }
     .projects-dialog .harness-form input:focus { border-color:color-mix(in srgb,var(--purple) 56%,var(--line-strong)); outline:3px solid color-mix(in srgb,var(--purple) 12%,transparent); }
     .projects-dialog .project-browser { margin-top: 16px; padding: 13px 2px 0; }
-    .auth-gate { position: fixed; inset: 0; z-index: 1000; display: grid; place-items: center; background: rgba(246,247,252,.96); }
+    .auth-gate { position:fixed; inset:0; z-index:1000; display:grid; place-items:center; padding:20px; background:rgba(12,15,31,.28); backdrop-filter:blur(8px); }
     .auth-gate[hidden] { display: none; }
-    .auth-card { width: min(420px, calc(100vw - 32px)); padding: 30px; border: 1px solid var(--line); border-radius: 18px; background: white; box-shadow: 0 18px 60px rgba(28,31,60,.12); display: grid; gap: 16px; }
+    .auth-card { position:relative; width:min(410px,calc(100vw - 32px)); padding:32px; border:1px solid var(--line); border-radius:22px; color:var(--text); background:color-mix(in srgb,var(--panel) 96%,var(--bg)); box-shadow:0 28px 80px rgba(19,20,50,.28); display:grid; gap:18px; }
     .auth-card h1,.auth-card p { margin: 0; }
-    .auth-card p { color: var(--muted); }
-    .auth-github,.auth-email button { min-height: 44px; border: 1px solid var(--line-strong); border-radius: 10px; font: inherit; font-weight: 700; cursor: pointer; }
-    .auth-github { display: grid; place-items: center; color: white; background: #17171f; text-decoration: none; }
-    .auth-email { display: grid; gap: 9px; }
-    .auth-email input { min-height: 42px; border: 1px solid var(--line-strong); border-radius: 10px; padding: 0 12px; font: inherit; }
+    .auth-card h1 { font-size:28px; letter-spacing:-.03em; }
+    .auth-card p { color:var(--muted); line-height:1.55; }
+    .auth-brand { display:flex; align-items:center; gap:10px; font-weight:800; }
+    .auth-brand img { width:30px; height:30px; object-fit:contain; }
+    .auth-close { position:absolute; top:16px; right:16px; width:34px; height:34px; display:grid; place-items:center; border:0; border-radius:50%; color:var(--muted); background:transparent; font:600 22px/1 inherit; cursor:pointer; }
+    .auth-close:hover,.auth-close:focus-visible { color:var(--text); background:var(--panel-2); outline:0; }
+    .auth-google { min-height:50px; display:flex; align-items:center; justify-content:center; gap:12px; border:1px solid var(--line-strong); border-radius:12px; color:#202124; background:#fff; box-shadow:0 2px 8px rgba(20,24,45,.08); font-weight:700; text-decoration:none; transition:transform .18s ease,box-shadow .18s ease; }
+    .auth-google:hover,.auth-google:focus-visible { transform:translateY(-1px); box-shadow:0 7px 18px rgba(20,24,45,.13); outline:3px solid color-mix(in srgb,var(--blue) 18%,transparent); }
+    .auth-google[aria-disabled="true"] { pointer-events:none; opacity:.5; }
+    .auth-google svg { width:20px; height:20px; flex:0 0 auto; }
+    .auth-privacy { font-size:12px; }
     .auth-message { min-height: 20px; font-size: 13px; color: var(--muted); }
+    .account-widget[hidden] { display:none; }
     .repository-path { display: flex; align-items: center; gap: 10px; margin: 12px 0; }
     .repository-entries { display: grid; gap: 6px; max-height: 320px; overflow: auto; }
     .repository-entry { border: 1px solid var(--line); border-radius: 8px; background: white; padding: 9px 11px; text-align: left; cursor: pointer; }
@@ -1835,14 +1842,14 @@ export function page(config = configFromEnv()) {
   </style>
 </head>
 <body data-auth-required="${config.auth?.required ? "true" : "false"}">
-  <div class="auth-gate" id="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title">
+  <div class="auth-gate" id="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
     <div class="auth-card">
-      <h1 id="auth-title">Sign in to MundusX</h1>
-      <p>Your chats and local Projects permissions are tied to your individual account.</p>
-      <a class="auth-github" id="auth-google" href="/api/auth/google/start">Continue with Google</a>
-      <a class="auth-github" id="auth-github" href="/api/auth/github/start">Continue with GitHub</a>
-      <form class="auth-email" id="auth-email-form"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="email" required><button type="submit">Email me a sign-in link</button></form>
-      <div class="auth-message" id="auth-message">Checking your session…</div>
+      <button class="auth-close" id="auth-close" type="button" aria-label="Close sign-in">&times;</button>
+      <div class="auth-brand"><img src="/assets/mundusx-logo.png" alt=""><span>MundusX</span></div>
+      <div><h1 id="auth-title">Continue your chat</h1><p>Sign in to send your message and keep your conversations synced.</p></div>
+      <a class="auth-google" id="auth-google" href="/api/auth/google/start?return_to=/"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.07H12v3.92h5.38a4.6 4.6 0 0 1-2 3.02v2.54h3.24c1.9-1.75 2.98-4.33 2.98-7.41Z"/><path fill="#34A853" d="M12 22c2.7 0 4.97-.9 6.62-2.36l-3.24-2.54c-.9.6-2.05.96-3.38.96-2.6 0-4.81-1.76-5.6-4.13H3.06v2.62A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.4 13.93A6 6 0 0 1 6.09 12c0-.67.11-1.32.31-1.93V7.45H3.06A10 10 0 0 0 2 12c0 1.61.39 3.14 1.06 4.55l3.34-2.62Z"/><path fill="#EA4335" d="M12 5.94c1.47 0 2.79.51 3.83 1.5l2.87-2.88A9.62 9.62 0 0 0 12 2a10 10 0 0 0-8.94 5.45l3.34 2.62c.79-2.37 3-4.13 5.6-4.13Z"/></svg><span>Continue with Google</span></a>
+      <p class="auth-privacy">Google verifies your identity. Your Google password is never shared with MundusX.</p>
+      <div class="auth-message" id="auth-message" aria-live="polite"></div>
     </div>
   </div>
   <div class="shell" data-control-plane="${escapeHtml(config.controlPlaneUrl)}">
@@ -1868,7 +1875,7 @@ export function page(config = configFromEnv()) {
         <button type="button" data-action="pin" role="menuitem">Pin chat</button>
         <button class="danger" type="button" data-action="delete" role="menuitem">Delete</button>
       </div>
-      <div class="account-widget">
+      <div class="account-widget" id="account-widget" hidden>
         <div class="account-menu" id="account-menu">
           <button class="account-menu-header" type="button">
             <span class="account-avatar" data-account-avatar>MX</span>
@@ -1977,7 +1984,9 @@ export function page(config = configFromEnv()) {
     const voiceStatusEl = document.getElementById("voice-status");
     const authGateEl = document.getElementById("auth-gate");
     const authMessageEl = document.getElementById("auth-message");
-    const authEmailFormEl = document.getElementById("auth-email-form");
+    const authGoogleEl = document.getElementById("auth-google");
+    const authCloseEl = document.getElementById("auth-close");
+    const accountWidgetEl = document.getElementById("account-widget");
     const accountMcpEl = document.getElementById("account-mcp");
     const mcpDialogEl = document.getElementById("mcp-dialog");
     const mcpDialogCloseEl = document.getElementById("mcp-dialog-close");
@@ -2002,6 +2011,7 @@ export function page(config = configFromEnv()) {
     const themeDarkEl = document.getElementById("theme-dark");
     let authCsrfToken = null;
     let currentUser = null;
+    const pendingAuthPromptKey = "mundusx.chat.pendingAuthPrompt.v1";
     let historyKey = "mundusx.chat.pending.history.v1";
     let conversationIdKey = "mundusx.chat.pending.conversationId.v1";
     let conversationCachePrefix = "mundusx.chat.pending.conversation.v1:";
@@ -2220,9 +2230,7 @@ export function page(config = configFromEnv()) {
 
     async function bootstrapAuthentication() {
       const providers = await nativeFetch("/api/auth/providers").then((value) => value.json()).catch(() => ({}));
-      document.getElementById("auth-google").hidden = !providers.google;
-      document.getElementById("auth-github").hidden = !providers.github;
-      authEmailFormEl.hidden = !providers.email;
+      authGoogleEl?.setAttribute("aria-disabled", String(!providers.google));
       try {
         const response = await nativeFetch("/api/auth/session");
         if (!response.ok) throw new Error("Sign in required");
@@ -2242,17 +2250,32 @@ export function page(config = configFromEnv()) {
         document.querySelectorAll("[data-account-name]").forEach((node) => node.textContent = name);
         document.querySelectorAll("[data-account-email]").forEach((node) => node.textContent = user.email);
         document.querySelectorAll("[data-account-avatar]").forEach((node) => node.textContent = name.split(/\\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase());
+        accountWidgetEl.hidden = false;
+        const pendingPrompt = sessionStorage.getItem(pendingAuthPromptKey);
+        if (pendingPrompt && !promptEl.value.trim()) {
+          promptEl.value = pendingPrompt;
+          promptEl.dispatchEvent(new Event("input", { bubbles: true }));
+          sessionStorage.removeItem(pendingAuthPromptKey);
+        }
         renderHistory();
         authGateEl.hidden = true;
       } catch {
         currentUser = null;
+        accountWidgetEl.hidden = true;
         updateRunnerSetupState();
-        if (document.body.dataset.authRequired === "true") {
-          authMessageEl.textContent = providers.google || providers.github || providers.email ? "Choose a secure sign-in method." : "Authentication is not configured yet.";
-        } else {
-          authGateEl.hidden = true;
-        }
+        authMessageEl.textContent = providers.google ? "" : "Google sign-in is not configured yet.";
+        authGateEl.hidden = true;
       }
+    }
+
+    function openAuthentication() {
+      authGateEl.hidden = false;
+      authGoogleEl?.focus();
+    }
+
+    function closeAuthentication() {
+      authGateEl.hidden = true;
+      promptEl?.focus();
     }
 
     function setWorkspaceDestination(destination) {
@@ -2466,15 +2489,14 @@ export function page(config = configFromEnv()) {
         event.preventDefault();
         closeMcpConnections();
       }
+      if (authGateEl && !authGateEl.hidden) {
+        event.preventDefault();
+        closeAuthentication();
+      }
     });
 
-    authEmailFormEl?.addEventListener("submit", async (event) => {
-      event.preventDefault();
-      authMessageEl.textContent = "Sending a single-use link…";
-      const response = await nativeFetch("/api/auth/email/start", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ email: new FormData(authEmailFormEl).get("email") }) });
-      const payload = await response.json().catch(() => ({}));
-      authMessageEl.textContent = payload.message || payload.error || "Request complete.";
-    });
+    authCloseEl?.addEventListener("click", closeAuthentication);
+    authGateEl?.addEventListener("click", (event) => { if (event.target === authGateEl) closeAuthentication(); });
 
     accountMenuEl?.addEventListener("click", async (event) => {
       const button = event.target.closest("#account-logout");
@@ -3155,6 +3177,11 @@ export function page(config = configFromEnv()) {
       event.preventDefault();
       const message = promptEl.value.trim();
       if (!message) return;
+      if (!currentUser && document.body.dataset.authRequired === "true") {
+        sessionStorage.setItem(pendingAuthPromptKey, message);
+        openAuthentication();
+        return;
+      }
 
       activeHistoryLoadToken += 1;
       followLatestMessage = true;
