@@ -17,6 +17,13 @@ the loopback agent API on that machine.
    mundusx connect --workspace .
    ```
 
+To expose projects stored in the standard local projects directory, connect its
+parent directory:
+
+```powershell
+mundusx connect --workspace "$env:USERPROFILE\Documents\mundusx\projects"
+```
+
 When the connector is online, ordinary Chat requests prefer the local agent.
 If it is offline, Chat uses the existing Control Plane path. Repository-changing
 requests remain non-mutating unless a separate, explicit approval flow grants
@@ -29,6 +36,21 @@ The connector reports the runtimes actually available on that user's machine.
 native MundusX loop. A caller may request `native` or `hermes` explicitly; a
 Hermes-only task remains queued rather than being claimed by an incapable
 device. Runtime selection is stored with the task for auditability.
+
+Chat exposes four per-account browser choices:
+
+- **Auto** tries a connected local runtime and falls back to MundusX Cloud.
+- **Cloud** never requests local filesystem access.
+- **Local · MundusX** selects the native local agent.
+- **Local · Hermes** requires an advertising Hermes connector and never falls
+  back silently to another runtime.
+
+For an active Project, selecting Hermes runs it below the connector workspace
+using only the validated project slug. File-changing work requires the visible
+one-task edit grant; it resets immediately after submission. Absolute paths,
+parent traversal, and projects outside the connector workspace are rejected.
+Auto continues to use the bounded MundusX runner and its approval flow for
+project mutations.
 
 ```text
 Internet / MundusX cloud                    User's local machine

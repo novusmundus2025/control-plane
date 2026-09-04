@@ -361,18 +361,26 @@ test("local agent tasks persist only supported runtime selections", async () => 
   const store = new PostgresAuthStore({}, { pool: {
     async query(sql, values) {
       insert = { sql, values };
-      return { rows: [{ task_id: values[0], runtime_requested: values[6] }] };
+      return { rows: [{ task_id: values[0], runtime_requested: values[6], workspace_relative: values[7] }] };
     },
   } });
   const sessionId = "11111111-1111-4111-8111-111111111111";
   const created = await store.createLocalAgentTask("22222222-2222-4222-8222-222222222222", {
-    prompt: "inspect this repository", session_id: sessionId, runtime: "HERMES",
+    prompt: "inspect this repository", session_id: sessionId, runtime: "HERMES", workspace_relative: "my-project",
   });
   assert.equal(created.runtime_requested, "hermes");
   assert.equal(insert.values[6], "hermes");
+  assert.equal(created.workspace_relative, "my-project");
+  assert.equal(insert.values[7], "my-project");
   await assert.rejects(
     store.createLocalAgentTask("22222222-2222-4222-8222-222222222222", {
       prompt: "inspect", session_id: sessionId, runtime: "deepagents",
+    }),
+    (error) => error.statusCode === 400,
+  );
+  await assert.rejects(
+    store.createLocalAgentTask("22222222-2222-4222-8222-222222222222", {
+      prompt: "inspect", session_id: sessionId, workspace_relative: "../escape",
     }),
     (error) => error.statusCode === 400,
   );
