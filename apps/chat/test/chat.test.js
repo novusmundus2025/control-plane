@@ -469,6 +469,8 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /id="mutation-toggle"[^>]*aria-pressed="false"[^>]*hidden>Allow edits once/);
   assert.match(html, /runtimePreference = "auto"/);
   assert.match(html, /runtime: options\.runtime \|\| "auto"/);
+  assert.match(html, /runtimePreference === "auto" && preferredHermesOnline\(\)/);
+  assert.match(html, /runtime: "hermes"/);
   assert.match(html, /workspace_relative: options\.workspaceRelative \|\| null/);
   assert.match(html, /mutationAllowed = false;[\s\S]*renderRuntimeControls\(\)/);
   assert.match(html, /id="project-context-menu"/);
