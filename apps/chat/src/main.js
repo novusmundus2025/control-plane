@@ -244,7 +244,7 @@ export function page(config = configFromEnv()) {
         </section>
         <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
           <span class="readiness-dot" aria-hidden="true"></span>
-          <span><strong id="project-readiness-title">Checking local runner…</strong><small id="project-readiness-text">Looking for your project workspace service.</small></span>
+          <span><strong id="project-readiness-title">Checking connection…</strong><small id="project-readiness-text">Looking for a computer connected to this account.</small></span>
           <button id="project-readiness-refresh" type="button">Retry</button>
         </div>
         <section class="project-runner-setup" id="project-runner-setup" hidden>
@@ -252,8 +252,8 @@ export function page(config = configFromEnv()) {
             <span class="project-runner-context-icon" aria-hidden="true">⌁</span>
             <span><strong>Run code on this computer</strong><small>A lightweight user-owned runner keeps files and Git credentials on your device. It is separate from contributor nodes.</small></span>
           </div>
-          <a class="harness-download primary" id="harness-download" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" download>Install MundusX + Hermes</a>
-          <p id="harness-runner-status" aria-live="polite">Install the developer agent and connect a folder. Compute contribution remains off unless you enable it separately.</p>
+          <a class="harness-download primary" id="harness-download" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" download>Download MundusX + Hermes</a>
+          <p id="harness-runner-status" aria-live="polite">After installation, connect this computer to your account and approve it in the browser. Compute contribution remains off unless you enable it separately.</p>
         </section>
         <footer class="project-actions" id="project-actions">
           <output id="harness-result" aria-live="polite"></output>
@@ -2346,13 +2346,13 @@ export function page(config = configFromEnv()) {
       if (!harnessRunnerStatusEl) return;
       if (harnessDownloadEl) {
         harnessDownloadEl.hidden = ready;
-        harnessDownloadEl.textContent = runnerDownloadStarted && !ready ? "Installer downloaded · waiting…" : "Install MundusX + Hermes";
+        harnessDownloadEl.textContent = runnerDownloadStarted && !ready ? "Installer downloaded · awaiting connection…" : "Download MundusX + Hermes";
       }
       if (ready) harnessRunnerStatusEl.textContent = "Agent ready. Files, commands, and Git stay on this computer.";
       else if (agentMissing) harnessRunnerStatusEl.textContent = "MundusX is connected, but no coding agent is available. Install or enable Hermes, then retry.";
       else if (paired) harnessRunnerStatusEl.textContent = "Connected but offline. Start the MundusX runner on this computer.";
       else if (runnerPairingInProgress) harnessRunnerStatusEl.textContent = "Open the downloaded installer and approve this computer in the browser. Waiting for it to connect…";
-      else harnessRunnerStatusEl.textContent = "Install the developer agent, connect a folder, then return here. Compute contribution remains off unless you enable it separately.";
+      else harnessRunnerStatusEl.textContent = "No computer is connected to this account. Download MundusX, finish setup, and approve the browser connection. Compute contribution remains off unless enabled separately.";
     }
 
     function stopRunnerPairingPoll() {
@@ -2733,17 +2733,17 @@ export function page(config = configFromEnv()) {
               ? "Connected but offline. Start MundusX on this computer."
               : runnerPairingInProgress
                 ? "Waiting for installer approval and runner startup…"
-                : "No developer agent found on this account.";
+                : "No computer is connected to this account yet.";
       harnessRunnerStatusEl.textContent = statusText;
       if (projectReadinessEl) projectReadinessEl.dataset.state = localRunnerReady ? "ready" : paired ? "offline" : "setup";
-      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Local agent required";
+      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Connect this computer";
       if (projectReadinessTextEl) projectReadinessTextEl.textContent = localRunnerReady
         ? "Your project will run locally. Contributor mode is separate and remains optional."
         : agentMissing
           ? "Install Hermes or select the native MundusX Agent, then retry."
           : paired
             ? "Start MundusX on the connected computer, then retry."
-            : "Install MundusX with Hermes and connect the project folder on this computer.";
+            : "Chat cannot inspect installed apps directly. Install MundusX, complete its browser approval, then retry.";
       if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = localRunnerReady || (!runnerSetupRequested && !agentMissing && paired);
       updateProjectCreateAvailability();
       renderRuntimeControls();
