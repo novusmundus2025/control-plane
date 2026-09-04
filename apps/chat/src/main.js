@@ -5452,6 +5452,22 @@ export function createServerApp(config = configFromEnv()) {
         });
       }
       if (await handleMcpRequest({ request, response, url })) return;
+      if (url.pathname.startsWith("/api/agent/model/v1/")) {
+        const connector = await authStore.mcpSession(request);
+        if (!connector) throw httpError(401, "A connected MundusX agent credential is required");
+        if (request.method === "GET" && url.pathname === "/api/agent/model/v1/models") {
+          return sendOpenAiJson(response, 200, openAiModelsResponse());
+        }
+        if (request.method === "POST" && url.pathname === "/api/agent/model/v1/chat/completions") {
+          const body = await readJsonBody(request);
+          const routedBody = { ...body, model: PUBLIC_MODEL_ID };
+          if (routedBody.stream === true) {
+            return await streamOpenAiChatCompletion(response, routedBody, config);
+          }
+          return sendOpenAiJson(response, 200, await submitOpenAiChatCompletion(routedBody, config));
+        }
+        throw httpError(404, "Unknown connected-agent model route");
+      }
       if (await handleLocalAgentRequest({ request, response, url })) return;
       if (request.method === "OPTIONS" && url.pathname.startsWith("/v1/")) {
         return sendOpenAiJson(response, 204, null);
