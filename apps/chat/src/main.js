@@ -3271,13 +3271,13 @@ export function page(config = configFromEnv()) {
             if (!mutationAllowed) {
               throw new Error("This project request can change files. Turn on ‘Allow edits once’, then send it again.");
             }
+            mutationAllowed = false;
+            renderRuntimeControls();
             const handledBySelectedRuntime = await tryLocalAgentTurn(pending, message, conversationId, {
               runtime: runtimePreference,
               workspaceRelative: activeProject.slug,
               allowMutations: true,
             });
-            mutationAllowed = false;
-            renderRuntimeControls();
             if (!handledBySelectedRuntime) throw new Error("The selected local runtime is not connected.");
             syncNetworkRuntimeStatus(true);
             return;
