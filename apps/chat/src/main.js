@@ -19,7 +19,7 @@ import { renderSkillsPage } from "./features/skills/page.js";
 import { createSkillRegistry, validateSkillDraft } from "./features/skills/registry.js";
 import { createSkillsHttpController } from "./features/skills/http-controller.js";
 import { httpError } from "./shared/http-error.js";
-import { RELEASE_BACKEND_BASE_URL, releaseDownloadLocation } from "./release-downloads.js";
+import { releaseDownloadLocation } from "./release-downloads.js";
 import {
   detectChatQualityFlags,
   detectCompleteCodeQualityFlags,
@@ -143,7 +143,7 @@ export function configFromEnv(env = process.env) {
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
     harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
-      || `${RELEASE_BACKEND_BASE_URL}/mundusx-harness-setup-windows-x86_64.exe`,
+      || "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
@@ -245,14 +245,15 @@ export function page(config = configFromEnv()) {
         <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
           <span class="readiness-dot" aria-hidden="true"></span>
           <span><strong id="project-readiness-title">Checking local runner…</strong><small id="project-readiness-text">Looking for your project workspace service.</small></span>
+          <button id="project-readiness-refresh" type="button">Retry</button>
         </div>
         <section class="project-runner-setup" id="project-runner-setup" hidden>
           <div class="runner-one-click">
             <span class="project-runner-context-icon" aria-hidden="true">⌁</span>
             <span><strong>Run code on this computer</strong><small>A lightweight user-owned runner keeps files and Git credentials on your device. It is separate from contributor nodes.</small></span>
           </div>
-          <a class="harness-download primary" id="harness-download" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" download>Connect this computer</a>
-          <p id="harness-runner-status" aria-live="polite">One install and one browser approval. Future sessions reconnect automatically.</p>
+          <a class="harness-download primary" id="harness-download" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" download>Install MundusX + Hermes</a>
+          <p id="harness-runner-status" aria-live="polite">Install the developer agent and connect a folder. Compute contribution remains off unless you enable it separately.</p>
         </section>
         <footer class="project-actions" id="project-actions">
           <output id="harness-result" aria-live="polite"></output>
@@ -1986,6 +1987,7 @@ export function page(config = configFromEnv()) {
     const projectReadinessTitleEl = document.getElementById("project-readiness-title");
     const projectReadinessEl = document.getElementById("project-readiness");
     const projectReadinessTextEl = document.getElementById("project-readiness-text");
+    const projectReadinessRefreshEl = document.getElementById("project-readiness-refresh");
     const projectRunnerSetupEl = document.getElementById("project-runner-setup");
     const activeProjectContextEl = document.getElementById("active-project-context");
     const activeProjectNameEl = document.getElementById("active-project-name");
@@ -2044,6 +2046,7 @@ export function page(config = configFromEnv()) {
     let removedProjectSlugs = [];
     let readyHarnessModes = new Set();
     let localRunnerReady = false;
+    let localProjectAgentReady = false;
     let runnerSetupRequested = false;
     let runnerTargetProject = null;
     let runnerDownloadStarted = false;
@@ -2339,16 +2342,17 @@ export function page(config = configFromEnv()) {
       updateRunnerSetupState();
     }
 
-    function updateRunnerSetupState({ paired = false, ready = false } = {}) {
+    function updateRunnerSetupState({ paired = false, ready = false, agentMissing = false } = {}) {
       if (!harnessRunnerStatusEl) return;
       if (harnessDownloadEl) {
         harnessDownloadEl.hidden = ready;
-        harnessDownloadEl.textContent = runnerDownloadStarted && !ready ? "Installer downloaded · waiting…" : "Connect this computer";
+        harnessDownloadEl.textContent = runnerDownloadStarted && !ready ? "Installer downloaded · waiting…" : "Install MundusX + Hermes";
       }
-      if (ready) harnessRunnerStatusEl.textContent = "Connected. Local coding actions are ready.";
+      if (ready) harnessRunnerStatusEl.textContent = "Agent ready. Files, commands, and Git stay on this computer.";
+      else if (agentMissing) harnessRunnerStatusEl.textContent = "MundusX is connected, but no coding agent is available. Install or enable Hermes, then retry.";
       else if (paired) harnessRunnerStatusEl.textContent = "Connected but offline. Start the MundusX runner on this computer.";
       else if (runnerPairingInProgress) harnessRunnerStatusEl.textContent = "Open the downloaded installer and approve this computer in the browser. Waiting for it to connect…";
-      else harnessRunnerStatusEl.textContent = "One install and one browser approval. Future sessions reconnect automatically.";
+      else harnessRunnerStatusEl.textContent = "Install the developer agent, connect a folder, then return here. Compute contribution remains off unless you enable it separately.";
     }
 
     function stopRunnerPairingPoll() {
@@ -2366,7 +2370,7 @@ export function page(config = configFromEnv()) {
       runnerPairingPollTimer = window.setTimeout(async () => {
         try {
           const runners = await loadHarnessRunners();
-          if (localRunnerReady || runners.length) {
+          if (localProjectAgentReady || runners.length) {
             runnerPairingInProgress = false;
             stopRunnerPairingPoll();
             return;
@@ -2383,7 +2387,8 @@ export function page(config = configFromEnv()) {
       repositoryDialogEl.hidden = false;
       return loadHarnessRunners().catch((error) => {
         if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
-        if (projectReadinessEl) projectReadinessEl.hidden = true;
+        if (projectReadinessEl) projectReadinessEl.hidden = false;
+        if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = "Agent check failed";
         if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Local runner status unavailable";
         if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = !runnerTargetProject;
         if (harnessRunnerStatusEl && currentUser) harnessRunnerStatusEl.textContent = error.message || "Local runner status unavailable";
@@ -2659,16 +2664,49 @@ export function page(config = configFromEnv()) {
     });
     async function loadHarnessRunners() {
       if (!harnessRunnerStatusEl) return [];
-      harnessRunnerStatusEl.textContent = "Checking runner connection…";
+      if (!currentUser) {
+        localRunnerReady = false;
+        localProjectAgentReady = false;
+        if (projectReadinessEl) {
+          projectReadinessEl.hidden = false;
+          projectReadinessEl.dataset.state = "offline";
+        }
+        if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = "Sign in to connect a local project";
+        if (projectReadinessTextEl) projectReadinessTextEl.textContent = "Use Google sign-in, then MundusX can check only your own connected devices.";
+        if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = true;
+        updateProjectCreateAvailability();
+        return [];
+      }
+      harnessRunnerStatusEl.textContent = "Checking developer agent…";
+      localRunnerReady = false;
+      localProjectAgentReady = false;
+      lastLocalAgentStatus = null;
       if (projectReadinessEl) projectReadinessEl.dataset.state = "checking";
-      if (projectReadinessEl) projectReadinessEl.hidden = true;
-      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = "Checking local runner…";
-      const response = await fetch("/api/harness/runners");
-      const payload = await response.json();
-      if (!response.ok) throw new Error(payload.error || "Runner status could not be loaded");
+      if (projectReadinessEl) projectReadinessEl.hidden = false;
+      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = "Checking local agent…";
+      if (projectReadinessTextEl) projectReadinessTextEl.textContent = "Looking for MundusX Agent or Hermes on your connected computer.";
+      const [agentResponse, runnerResponse] = await Promise.all([
+        fetch("/api/agent/status"),
+        fetch("/api/harness/runners"),
+      ]);
+      const agentStatus = await agentResponse.json();
+      const payload = await runnerResponse.json();
+      if (!agentResponse.ok) throw new Error(agentStatus.error || "Agent status could not be loaded");
+      if (!runnerResponse.ok) throw new Error(payload.error || "Runner status could not be loaded");
+      lastLocalAgentStatus = agentStatus;
+      const connections = Array.isArray(agentStatus.connections) ? agentStatus.connections : [];
+      const onlineConnections = connections.filter((connection) => connection.online);
+      const readyConnection = onlineConnections.find((connection) => {
+        const runtimes = Array.isArray(connection.capabilities?.agent_runtimes)
+          ? connection.capabilities.agent_runtimes
+          : [];
+        return runtimes.includes("hermes") || runtimes.includes("native");
+      });
+      const agentMissing = onlineConnections.length > 0 && !readyConnection;
       const ready = payload.runners.find((runner) => runner.ready && runner.fresh);
-      const paired = payload.runners.length > 0;
-      localRunnerReady = Boolean(ready);
+      const paired = connections.length > 0 || payload.runners.length > 0;
+      localProjectAgentReady = Boolean(readyConnection);
+      localRunnerReady = localProjectAgentReady || Boolean(ready);
       readyHarnessModes = new Set(ready?.execution_modes || []);
       availableProjectSlugs = Array.from(new Set([
         ...availableProjectSlugs,
@@ -2681,21 +2719,35 @@ export function page(config = configFromEnv()) {
         runnerPairingInProgress = false;
         stopRunnerPairingPoll();
       }
-      updateRunnerSetupState({ paired, ready: Boolean(ready) });
-      const statusText = ready
-        ? "Ready · " + ready.parallel_slots + " local slot" + (ready.parallel_slots === 1 ? "" : "s")
-        : payload.runners.length
-          ? "Connected but offline. Start the MundusX runner on this computer."
-          : runnerPairingInProgress
-            ? "Waiting for installer approval and runner startup…"
-            : "Connect this computer when you first ask MundusX to create or run code.";
+      updateRunnerSetupState({ paired, ready: localRunnerReady, agentMissing });
+      const runtime = readyConnection?.capabilities?.preferred_agent
+        || readyConnection?.capabilities?.agent_runtimes?.[0]
+        || null;
+      const statusText = readyConnection
+        ? "Ready · " + (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent")
+        : ready
+          ? "Ready · bounded MundusX runner"
+          : agentMissing
+            ? "Agent required. Install or enable Hermes on this computer."
+            : paired
+              ? "Connected but offline. Start MundusX on this computer."
+              : runnerPairingInProgress
+                ? "Waiting for installer approval and runner startup…"
+                : "No developer agent found on this account.";
       harnessRunnerStatusEl.textContent = statusText;
-      if (projectReadinessEl) projectReadinessEl.dataset.state = ready ? "ready" : paired ? "offline" : "setup";
-      if (projectReadinessEl) projectReadinessEl.hidden = true;
-      if (projectReadinessTextEl) projectReadinessTextEl.textContent = ready ? "New projects will be created under documents\\\\mundusx\\\\projects" : paired ? "Start the paired runner to create this project" : "Set up the runner once on this device";
-      if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = Boolean(ready) || !runnerSetupRequested;
+      if (projectReadinessEl) projectReadinessEl.dataset.state = localRunnerReady ? "ready" : paired ? "offline" : "setup";
+      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Local agent required";
+      if (projectReadinessTextEl) projectReadinessTextEl.textContent = localRunnerReady
+        ? "Your project will run locally. Contributor mode is separate and remains optional."
+        : agentMissing
+          ? "Install Hermes or select the native MundusX Agent, then retry."
+          : paired
+            ? "Start MundusX on the connected computer, then retry."
+            : "Install MundusX with Hermes and connect the project folder on this computer.";
+      if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = localRunnerReady || (!runnerSetupRequested && !agentMissing && paired);
       updateProjectCreateAvailability();
-      if (ready) void resumePendingRunnerAction();
+      renderRuntimeControls();
+      if (localRunnerReady) void resumePendingRunnerAction();
       return payload.runners;
     }
 
@@ -2749,16 +2801,22 @@ export function page(config = configFromEnv()) {
       });
     }
 
-    function preferredHermesOnline() {
-      return (lastLocalAgentStatus?.connections || []).some((connection) =>
-        connection.online
-        && connection.capabilities?.preferred_agent === "hermes"
-        && (connection.capabilities?.agent_runtimes || []).includes("hermes")
-      );
+    function preferredProjectRuntime() {
+      for (const connection of lastLocalAgentStatus?.connections || []) {
+        if (!connection.online) continue;
+        const runtimes = Array.isArray(connection.capabilities?.agent_runtimes)
+          ? connection.capabilities.agent_runtimes
+          : [];
+        const preferred = connection.capabilities?.preferred_agent;
+        if (preferred && runtimes.includes(preferred)) return preferred;
+        if (runtimes.includes("hermes")) return "hermes";
+        if (runtimes.includes("native")) return "native";
+      }
+      return null;
     }
 
     function renderRuntimeControls() {
-      mutationToggleEl.hidden = !(activeProject && preferredHermesOnline());
+      mutationToggleEl.hidden = !(activeProject && preferredProjectRuntime());
       mutationToggleEl.setAttribute("aria-pressed", String(mutationAllowed));
       mutationToggleEl.textContent = mutationAllowed ? "Edits allowed · once" : "Allow edits once";
     }
@@ -2858,9 +2916,13 @@ export function page(config = configFromEnv()) {
       }
       const button = event.target.closest("button[data-project-slug]");
       if (!button) return;
-      setActiveProject({ slug: button.dataset.projectSlug });
+      const selectedProject = { slug: button.dataset.projectSlug };
       if (projectContextMenuEl) projectContextMenuEl.hidden = true;
-      promptEl?.focus();
+      void loadHarnessRunners().then(() => {
+        if (!localRunnerReady) return openProjects({ showRunnerSetup: true, project: selectedProject });
+        setActiveProject(selectedProject);
+        promptEl?.focus();
+      }).catch(() => openProjects({ showRunnerSetup: true, project: selectedProject }));
     });
     document.addEventListener("click", (event) => {
       if (!projectContextMenuEl || projectContextMenuEl.hidden) return;
@@ -2876,7 +2938,7 @@ export function page(config = configFromEnv()) {
       updateProjectCreateAvailability();
     });
     function updateProjectCreateAvailability() {
-      if (harnessSubmitEl) harnessSubmitEl.disabled = !projectSlugEl?.value.trim();
+      if (harnessSubmitEl) harnessSubmitEl.disabled = !projectSlugEl?.value.trim() || !localRunnerReady;
     }
     function projectExecutionMode(template) {
       const preferred = template === "java-maven" ? ["hybrid", "sandbox"] : ["sandbox", "hybrid"];
@@ -2905,12 +2967,31 @@ export function page(config = configFromEnv()) {
       updateRunnerSetupState();
       pollRunnerPairing();
     });
-    harnessFormEl?.addEventListener("submit", (event) => {
+    projectReadinessRefreshEl?.addEventListener("click", () => {
+      if (!currentUser) {
+        openAuthentication();
+        return;
+      }
+      void loadHarnessRunners().catch((error) => {
+        if (projectReadinessEl) projectReadinessEl.dataset.state = "offline";
+        if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = "Agent check failed";
+        if (projectReadinessTextEl) projectReadinessTextEl.textContent = error.message || "Local agent status unavailable";
+      });
+    });
+    harnessFormEl?.addEventListener("submit", async (event) => {
       event.preventDefault();
       const data = new FormData(harnessFormEl);
       const projectSlug = normalizeProjectSlug(data.get("project_slug"));
       if (!projectSlug) {
         harnessResultEl.textContent = "Enter a lowercase project name";
+        return;
+      }
+      await loadHarnessRunners().catch(() => []);
+      if (!localRunnerReady) {
+        harnessResultEl.textContent = currentUser
+          ? "A connected local coding agent is required before creating this project."
+          : "Sign in with Google before connecting a local project.";
+        if (!currentUser) openAuthentication();
         return;
       }
       setActiveProject({ slug: projectSlug });
@@ -3259,14 +3340,16 @@ export function page(config = configFromEnv()) {
 
       try {
         if (activeProject && requiresLocalProjectAction(message)) {
-          if (runtimePreference === "hermes" || (runtimePreference === "auto" && preferredHermesOnline())) {
+          await loadHarnessRunners().catch(() => []);
+          const projectRuntime = preferredProjectRuntime();
+          if (projectRuntime) {
             if (!mutationAllowed) {
               throw new Error("This project request can change files. Turn on ‘Allow edits once’, then send it again.");
             }
             mutationAllowed = false;
             renderRuntimeControls();
             const handledBySelectedRuntime = await tryLocalAgentTurn(pending, message, conversationId, {
-              runtime: "hermes",
+              runtime: projectRuntime,
               workspaceRelative: activeProject.slug,
               allowMutations: true,
             });
@@ -3279,9 +3362,6 @@ export function page(config = configFromEnv()) {
           }
           if (runtimePreference === "cloud") {
             throw new Error("MundusX Cloud cannot directly modify this local project. Choose Auto, Local · MundusX, or Local · Hermes.");
-          }
-          if (!localRunnerReady) {
-            await loadHarnessRunners().catch(() => []);
           }
           if (!localRunnerReady) {
             const body = pending.querySelector(".message-body");
