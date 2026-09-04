@@ -19,7 +19,80 @@ test("GitHub access remains disabled until credentials and encryption exist", ()
     resendApiKey: "key",
     emailFrom: "",
   }, { pool: {} });
-  assert.deepEqual(store.providers(), { github: false, email: false });
+  assert.deepEqual(store.providers(), { github: false, google: false, email: false });
+});
+
+test("Google provider is enabled only with both OAuth credentials", () => {
+  const config = authConfigFromEnv({
+    MUNDUSX_GOOGLE_CLIENT_ID: "google-client",
+    MUNDUSX_GOOGLE_CLIENT_SECRET: "google-secret",
+  });
+  assert.equal(new PostgresAuthStore(config, { pool: {} }).providers().google, true);
+});
+
+test("Google login starts a bounded PKCE and state flow", async () => {
+  let insert;
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client",
+    googleClientSecret: "google-secret",
+    publicOrigin: "https://chat.mundusx.ai",
+  }, { pool: { async query(sql, values) { insert = { sql, values }; return { rows: [] }; } } });
+  const location = new URL(await store.startGoogle("//evil.example"));
+  assert.equal(location.origin, "https://accounts.google.com");
+  assert.equal(location.searchParams.get("redirect_uri"), "https://chat.mundusx.ai/api/auth/google/callback");
+  assert.equal(location.searchParams.get("scope"), "openid email profile");
+  assert.equal(location.searchParams.get("code_challenge_method"), "S256");
+  assert.equal(insert.values[2], "/");
+  assert.match(insert.sql, /google_oauth/);
+});
+
+test("Google callback maps a verified subject to a MundusX session without storing tokens", async () => {
+  const clientQueries = [];
+  const client = { async query(sql) { clientQueries.push(sql); return { rows: [] }; }, release() {} };
+  const pool = {
+    async query() { return { rowCount: 1, rows: [{ code_verifier: "verifier", redirect_path: "/skills" }] }; },
+    async connect() { return client; },
+  };
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    return url.includes("/token")
+      ? { ok: true, async json() { return { access_token: "short-lived-token" }; } }
+      : { ok: true, async json() { return { sub: "google-subject", email: "User@Example.com", email_verified: true, name: "Example User" }; } };
+  };
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client", googleClientSecret: "google-secret", publicOrigin: "https://chat.mundusx.ai",
+  }, { pool, fetchImpl });
+  let identity;
+  let session;
+  store.upsertIdentity = async (_client, value) => { identity = value; return "user-id"; };
+  store.createSession = async (_response, userId, provider) => { session = { userId, provider }; };
+  const destination = await store.finishGoogle(new URLSearchParams({ state: "state", code: "code" }), {});
+  assert.equal(destination, "/skills");
+  assert.deepEqual(identity, { provider: "google", subject: "google-subject", email: "user@example.com", displayName: "Example User", profile: { picture: null } });
+  assert.deepEqual(session, { userId: "user-id", provider: "google" });
+  assert.equal(requests.length, 2);
+  assert.match(String(requests[0].options.body), /code_verifier=verifier/);
+  assert.deepEqual(clientQueries, ["begin", "commit"]);
+});
+
+test("Google callback rejects an account without a verified email", async () => {
+  let connected = false;
+  const pool = {
+    async query() { return { rowCount: 1, rows: [{ code_verifier: "verifier", redirect_path: "/" }] }; },
+    async connect() { connected = true; throw new Error("must not create a session"); },
+  };
+  const fetchImpl = async (url) => url.includes("/token")
+    ? { ok: true, async json() { return { access_token: "short-lived-token" }; } }
+    : { ok: true, async json() { return { sub: "google-subject", email: "user@example.com", email_verified: false }; } };
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client", googleClientSecret: "google-secret", publicOrigin: "https://chat.mundusx.ai",
+  }, { pool, fetchImpl });
+  await assert.rejects(
+    store.finishGoogle(new URLSearchParams({ state: "state", code: "code" }), {}),
+    (error) => error.statusCode === 403 && /verified email/.test(error.message),
+  );
+  assert.equal(connected, false);
 });
 
 test("GitHub provider requires a valid 32-byte encryption key", () => {

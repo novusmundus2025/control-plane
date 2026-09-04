@@ -50,7 +50,7 @@ MUNDUSX_WEB_SEARCH_DAILY_BUDGET=<optional daily call cap; 0 or unset means unlim
 ```
 
 MundusX Chat uses per-user PostgreSQL sessions by default. Run migrations through
-`0027_user_and_global_skills.sql`,
+`0028_google_identity.sql`,
 configure at least one login provider, and keep the database and provider secrets server-side:
 
 ```text
@@ -59,6 +59,8 @@ MUNDUSX_DATABASE_POOL_URL=<PgBouncer DATABASE_URL reference>
 MUNDUSX_PUBLIC_ORIGIN=https://chat.mundusx.ai
 MUNDUSX_GITHUB_CLIENT_ID=<GitHub App client id>
 MUNDUSX_GITHUB_CLIENT_SECRET=<GitHub App client secret>
+MUNDUSX_GOOGLE_CLIENT_ID=<Google OAuth web client id>
+MUNDUSX_GOOGLE_CLIENT_SECRET=<Google OAuth web client secret>
 MUNDUSX_AUTH_ENCRYPTION_KEY=<base64-encoded 32-byte key>
 RESEND_API_KEY=<optional, enables verified-email links>
 MUNDUSX_AUTH_EMAIL_FROM=MundusX <login@your-verified-domain.example>
@@ -77,6 +79,11 @@ the browser. New Projects are local-first; publication creates a private reposit
 Imported repositories derive a policy from safe top-level paths. MundusX Chat then pins the
 current default-branch commit. A
 browser cannot choose its own tenant, unverified repository, validation command, or base revision.
+
+Google login uses the web-server OAuth flow with state and PKCE and requests only `openid email
+profile`. Configure its exact authorized redirect URI as
+`${MUNDUSX_PUBLIC_ORIGIN}/api/auth/google/callback`. The verified Google subject is linked to the
+internal MundusX user; Google access and refresh tokens are not stored.
 
 The local-first **Projects** workspace is disabled by default. To expose it,
 provide the server-side Harness token and runner download page:
@@ -137,6 +144,8 @@ Railway provides `PORT`; the app reads it automatically.
 | `MUNDUSX_PUBLIC_ORIGIN` | `https://chat.mundusx.ai` | Exact browser origin and OAuth callback base; also enforced for CSRF checks |
 | `MUNDUSX_GITHUB_CLIENT_ID` | unset | Enables GitHub App user authorization when paired with its secret |
 | `MUNDUSX_GITHUB_CLIENT_SECRET` | unset | Server-only GitHub App client secret |
+| `MUNDUSX_GOOGLE_CLIENT_ID` | unset | Enables Google login when paired with its client secret |
+| `MUNDUSX_GOOGLE_CLIENT_SECRET` | unset | Server-only Google OAuth web client secret |
 | `MUNDUSX_AUTH_ENCRYPTION_KEY` | unset | Base64-encoded 32-byte AES key required to encrypt GitHub user/refresh tokens at rest |
 | `RESEND_API_KEY` | unset | Enables verified-email single-use login links when paired with a sender |
 | `MUNDUSX_AUTH_EMAIL_FROM` | unset | Verified sender used for sign-in links |

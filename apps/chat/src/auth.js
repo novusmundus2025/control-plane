@@ -115,6 +115,8 @@ export function authConfigFromEnv(env = process.env) {
     publicOrigin: String(env.MUNDUSX_PUBLIC_ORIGIN ?? "https://chat.mundusx.ai").replace(/\/$/, ""),
     githubClientId: String(env.MUNDUSX_GITHUB_CLIENT_ID ?? "").trim(),
     githubClientSecret: String(env.MUNDUSX_GITHUB_CLIENT_SECRET ?? "").trim(),
+    googleClientId: String(env.MUNDUSX_GOOGLE_CLIENT_ID ?? "").trim(),
+    googleClientSecret: String(env.MUNDUSX_GOOGLE_CLIENT_SECRET ?? "").trim(),
     encryptionKey: encryptionKey(String(env.MUNDUSX_AUTH_ENCRYPTION_KEY ?? "").trim()),
     resendApiKey: String(env.RESEND_API_KEY ?? "").trim(),
     emailFrom: String(env.MUNDUSX_AUTH_EMAIL_FROM ?? "").trim(),
@@ -135,6 +137,7 @@ export class PostgresAuthStore {
   providers() {
     return {
       github: Boolean(this.config.githubClientId && this.config.githubClientSecret && this.config.encryptionKey),
+      google: Boolean(this.config.googleClientId && this.config.googleClientSecret),
       email: Boolean(this.config.resendApiKey && this.config.emailFrom),
     };
   }
@@ -825,6 +828,79 @@ export class PostgresAuthStore {
       await this.storeGithubToken(client, userId, exchanged);
       await client.query("commit");
       await this.createSession(response, userId, "github", client);
+      return safeRedirect(found.rows[0].redirect_path);
+    } catch (error) {
+      await client.query("rollback").catch(() => {});
+      throw error;
+    } finally { client.release(); }
+  }
+
+  async startGoogle(redirectPath = "/") {
+    this.ensureReady();
+    if (!this.providers().google) throw Object.assign(new Error("Google login is unavailable"), { statusCode: 503 });
+    const state = token();
+    const verifier = token(48);
+    const challenge = createHash("sha256").update(verifier).digest("base64url");
+    await this.pool.query(`insert into public.auth_challenges
+      (challenge_hash, challenge_type, code_verifier, redirect_path, expires_at)
+      values ($1, 'google_oauth', $2, $3, now() + ($4 * interval '1 second'))`,
+    [digest(state), verifier, safeRedirect(redirectPath), CHALLENGE_SECONDS]);
+    const params = new URLSearchParams({
+      client_id: this.config.googleClientId,
+      redirect_uri: `${this.config.publicOrigin}/api/auth/google/callback`,
+      response_type: "code",
+      scope: "openid email profile",
+      state,
+      code_challenge: challenge,
+      code_challenge_method: "S256",
+      access_type: "online",
+      prompt: "select_account",
+    });
+    return `https://accounts.google.com/o/oauth2/v2/auth?${params}`;
+  }
+
+  async finishGoogle(query, response) {
+    this.ensureReady();
+    const state = String(query.get("state") || "");
+    const code = String(query.get("code") || "");
+    const found = await this.pool.query(`update public.auth_challenges set consumed_at = now()
+      where challenge_hash = $1 and challenge_type = 'google_oauth' and consumed_at is null and expires_at > now()
+      returning code_verifier, redirect_path`, [digest(state)]);
+    if (!code || found.rowCount !== 1) throw Object.assign(new Error("Invalid or expired Google login"), { statusCode: 400 });
+    const tokenResponse = await this.fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        client_id: this.config.googleClientId,
+        client_secret: this.config.googleClientSecret,
+        code,
+        code_verifier: found.rows[0].code_verifier,
+        grant_type: "authorization_code",
+        redirect_uri: `${this.config.publicOrigin}/api/auth/google/callback`,
+      }),
+    });
+    const exchanged = await tokenResponse.json().catch(() => ({}));
+    if (!tokenResponse.ok || !exchanged.access_token) throw Object.assign(new Error("Google login verification failed"), { statusCode: 502 });
+    const profileResponse = await this.fetch("https://openidconnect.googleapis.com/v1/userinfo", {
+      headers: { Authorization: `Bearer ${exchanged.access_token}`, Accept: "application/json" },
+    });
+    const profile = await profileResponse.json().catch(() => ({}));
+    const email = normalizeEmail(profile.email);
+    if (!profileResponse.ok || !profile.sub || profile.email_verified !== true || !email) {
+      throw Object.assign(new Error("Google account needs a verified email"), { statusCode: 403 });
+    }
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      const userId = await this.upsertIdentity(client, {
+        provider: "google",
+        subject: String(profile.sub),
+        email,
+        displayName: String(profile.name || email.split("@")[0]),
+        profile: { picture: profile.picture || null },
+      });
+      await client.query("commit");
+      await this.createSession(response, userId, "google", client);
       return safeRedirect(found.rows[0].redirect_path);
     } catch (error) {
       await client.query("rollback").catch(() => {});
