@@ -95,6 +95,48 @@ test("Google callback rejects an account without a verified email", async () => 
   assert.equal(connected, false);
 });
 
+test("local agent tasks preserve a validated runtime preference", async () => {
+  let inserted;
+  const store = new PostgresAuthStore({}, {
+    pool: { async query(sql, values) { inserted = { sql, values }; return { rows: [{ runtime_requested: values[6] }] }; } },
+  });
+  const result = await store.createLocalAgentTask(
+    "323e4567-e89b-42d3-a456-426614174000",
+    { prompt: "inspect", session_id: "223e4567-e89b-42d3-a456-426614174000", runtime: "deepagents" },
+  );
+  assert.equal(inserted.values[6], "deepagents");
+  assert.match(inserted.sql, /runtime_requested/);
+  assert.equal(result.runtime_requested, "deepagents");
+  await assert.rejects(
+    store.createLocalAgentTask("323e4567-e89b-42d3-a456-426614174000", {
+      prompt: "inspect", session_id: "223e4567-e89b-42d3-a456-426614174000", runtime: "untrusted",
+    }),
+    /runtime must be auto, native, or deepagents/,
+  );
+});
+
+test("local agent claims negotiate Deep Agents only with an advertising connector", async () => {
+  const queries = [];
+  const store = new PostgresAuthStore({}, {
+    pool: {
+      async query(sql) {
+        queries.push(sql);
+        return queries.length === 1
+          ? { rows: [{ runtime_selected: "deepagents" }] }
+          : { rows: [] };
+      },
+    },
+  });
+  const result = await store.claimLocalAgentTask(
+    "323e4567-e89b-42d3-a456-426614174000",
+    "423e4567-e89b-42d3-a456-426614174000",
+  );
+  assert.equal(result.runtime_selected, "deepagents");
+  assert.match(queries[0], /capabilities->'agent_runtimes'/);
+  assert.match(queries[0], /task\.runtime_requested = 'deepagents'/);
+  assert.match(queries[0], /else 'native'/);
+});
+
 test("GitHub provider requires a valid 32-byte encryption key", () => {
   const config = authConfigFromEnv({
     MUNDUSX_GITHUB_CLIENT_ID: "client",
