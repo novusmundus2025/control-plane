@@ -280,18 +280,22 @@ export class PostgresAuthStore {
     const prompt = String(input.prompt || input.message || "").trim();
     const conversationId = input.conversation_id || input.conversationId || null;
     const sessionId = String(input.session_id || randomUUID());
+    const runtimeRequested = String(input.runtime || "auto").trim().toLowerCase();
     if (!prompt || prompt.length > 16000 || !UUID_PATTERN.test(sessionId)) {
       throw Object.assign(new Error("Local agent task is invalid"), { statusCode: 400 });
     }
     if (conversationId && !UUID_PATTERN.test(String(conversationId))) {
       throw Object.assign(new Error("conversation_id must be a UUID"), { statusCode: 400 });
     }
+    if (!["auto", "native", "hermes"].includes(runtimeRequested)) {
+      throw Object.assign(new Error("runtime must be auto, native, or hermes"), { statusCode: 400 });
+    }
     const taskId = randomUUID();
     const result = await this.pool.query(`insert into public.local_agent_tasks
-      (task_id, user_id, conversation_id, session_id, prompt, allow_mutations)
-      values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6)
-      returning task_id, conversation_id, session_id, state, created_at`,
-    [taskId, userId, conversationId, sessionId, prompt, input.allow_mutations === true]);
+      (task_id, user_id, conversation_id, session_id, prompt, allow_mutations, runtime_requested)
+      values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7)
+      returning task_id, conversation_id, session_id, runtime_requested, state, created_at`,
+    [taskId, userId, conversationId, sessionId, prompt, input.allow_mutations === true, runtimeRequested]);
     return result.rows[0];
   }
 
@@ -309,14 +313,28 @@ export class PostgresAuthStore {
         and (
         state = 'queued' or (state = 'running' and lease_expires_at < now())
       )
+        and (runtime_requested <> 'hermes' or exists (
+          select 1 from public.local_agent_connections runtime_connection
+          where runtime_connection.connection_id = $2::uuid
+            and runtime_connection.capabilities->'agent_runtimes' ? 'hermes'
+        ))
       order by created_at for update skip locked limit 1
     )
     update public.local_agent_tasks task set
       state = 'running', connection_id = $2::uuid,
+      runtime_selected = case
+        when task.runtime_requested = 'hermes' then 'hermes'
+        when task.runtime_requested = 'auto' and exists (
+          select 1 from public.local_agent_connections runtime_connection
+          where runtime_connection.connection_id = $2::uuid
+            and runtime_connection.capabilities->'agent_runtimes' ? 'hermes'
+        ) then 'hermes'
+        else 'native'
+      end,
       started_at = coalesce(started_at, now()), lease_expires_at = now() + interval '60 seconds'
     from candidate where task.task_id = candidate.task_id
     returning task.task_id, task.conversation_id, task.session_id, task.prompt,
-      task.allow_mutations, task.state`, [userId, connectionId]);
+      task.allow_mutations, task.runtime_requested, task.runtime_selected, task.state`, [userId, connectionId]);
     await this.pool.query(`update public.local_agent_connections set last_seen_at = now()
       where connection_id = $1::uuid and user_id = $2::uuid and revoked_at is null`,
     [connectionId, userId]);
@@ -382,7 +400,7 @@ export class PostgresAuthStore {
       throw Object.assign(new Error("task_id must be a UUID"), { statusCode: 400 });
     }
     const result = await this.pool.query(`select task_id, conversation_id, session_id, state,
-      result, error, created_at, started_at, completed_at, cancelled_at
+      runtime_requested, runtime_selected, result, error, created_at, started_at, completed_at, cancelled_at
       from public.local_agent_tasks where task_id = $1::uuid and user_id = $2::uuid`,
     [taskId, userId]);
     if (result.rowCount !== 1) throw Object.assign(new Error("Local agent task was not found"), { statusCode: 404 });
