@@ -608,6 +608,11 @@ export function page(config = configFromEnv()) {
       border-top: 1px solid var(--line);
       padding-top: 14px;
     }
+    .guest-widget { margin-top:auto; padding:12px; border:1px solid var(--border); border-radius:16px; background:var(--panel); box-shadow:0 10px 28px rgba(29,35,68,.08); }
+    .guest-widget strong { display:block; color:var(--text); font-size:14px; margin-bottom:4px; }
+    .guest-widget p { color:var(--muted); font-size:12px; line-height:1.45; margin:0 0 12px; }
+    .guest-login { width:100%; min-height:42px; border:0; border-radius:11px; background:linear-gradient(135deg,#477dff,#7657ed); color:#fff; font:700 14px Inter,Segoe UI,sans-serif; cursor:pointer; box-shadow:0 8px 20px rgba(91,92,235,.2); }
+    .guest-login:hover,.guest-login:focus-visible { filter:brightness(1.05); transform:translateY(-1px); }
     .account-bar {
       width: 100%;
       display: flex;
@@ -1881,6 +1886,11 @@ export function page(config = configFromEnv()) {
         <button type="button" data-action="pin" role="menuitem">Pin chat</button>
         <button class="danger" type="button" data-action="delete" role="menuitem">Delete</button>
       </div>
+      <div class="guest-widget" id="guest-widget">
+        <strong>Try MundusX</strong>
+        <p>Explore Chat and Projects. Sign in when you want to send, save conversations, or connect your local agent.</p>
+        <button class="guest-login" id="guest-login" type="button">Log in with Google</button>
+      </div>
       <div class="account-widget" id="account-widget" hidden>
         <div class="account-menu" id="account-menu">
           <button class="account-menu-header" type="button">
@@ -1966,6 +1976,8 @@ export function page(config = configFromEnv()) {
     const historyMenuEl = document.getElementById("history-context-menu");
     const newChatEl = document.getElementById("new-chat");
     const accountBarEl = document.getElementById("account-bar");
+    const guestWidgetEl = document.getElementById("guest-widget");
+    const guestLoginEl = document.getElementById("guest-login");
     const accountMenuEl = document.getElementById("account-menu");
     const harnessFormEl = document.getElementById("harness-form");
     const harnessResultEl = document.getElementById("harness-result");
@@ -2268,6 +2280,7 @@ export function page(config = configFromEnv()) {
         document.querySelectorAll("[data-account-email]").forEach((node) => node.textContent = user.email);
         document.querySelectorAll("[data-account-avatar]").forEach((node) => node.textContent = name.split(/\\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase());
         accountWidgetEl.hidden = false;
+        guestWidgetEl.hidden = true;
         const pendingPrompt = sessionStorage.getItem(pendingAuthPromptKey);
         if (pendingPrompt && !promptEl.value.trim()) {
           promptEl.value = pendingPrompt;
@@ -2279,6 +2292,7 @@ export function page(config = configFromEnv()) {
       } catch {
         currentUser = null;
         accountWidgetEl.hidden = true;
+        guestWidgetEl.hidden = false;
         updateRunnerSetupState();
         authMessageEl.textContent = providers.google ? "" : "Google sign-in is not configured yet.";
         authGateEl.hidden = true;
@@ -2294,6 +2308,8 @@ export function page(config = configFromEnv()) {
       authGateEl.hidden = true;
       promptEl?.focus();
     }
+
+    guestLoginEl?.addEventListener("click", openAuthentication);
 
     function setWorkspaceDestination(destination) {
       const projectsActive = destination === "projects";

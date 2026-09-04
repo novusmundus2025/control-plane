@@ -445,6 +445,10 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /id="repository-open"[^>]*>[\s\S]*?<span>Projects<\/span>/);
   assert.match(workspaceNav, /Chats[\s\S]*id="repository-open"[\s\S]*Projects/);
   assert.match(html, /class="account-menu-item" href="\/skills"[\s\S]*>Skills<\/span>/);
+  assert.match(html, /id="guest-widget"[\s\S]*Explore Chat and Projects/);
+  assert.match(html, /id="guest-login"[^>]*>Log in with Google<\/button>/);
+  assert.match(html, /guestLoginEl\?\.addEventListener\("click", openAuthentication\)/);
+  assert.match(html, /guestWidgetEl\.hidden = true/);
   assert.doesNotMatch(workspaceNav, />Agents<|>Nodes</);
   assert.doesNotMatch(mainHeader, /id="repository-open"|>Projects<\/button>/);
   assert.match(mainHeader, /id="repository-open-mobile"[^>]*aria-label="Open Projects"/);
