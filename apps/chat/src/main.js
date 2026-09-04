@@ -1835,6 +1835,7 @@ export function page(config = configFromEnv()) {
     <div class="auth-card">
       <h1 id="auth-title">Sign in to MundusX</h1>
       <p>Your chats and local Projects permissions are tied to your individual account.</p>
+      <a class="auth-github" id="auth-google" href="/api/auth/google/start">Continue with Google</a>
       <a class="auth-github" id="auth-github" href="/api/auth/github/start">Continue with GitHub</a>
       <form class="auth-email" id="auth-email-form"><label for="auth-email">Email</label><input id="auth-email" name="email" type="email" autocomplete="email" required><button type="submit">Email me a sign-in link</button></form>
       <div class="auth-message" id="auth-message">Checking your session…</div>
@@ -2216,6 +2217,7 @@ export function page(config = configFromEnv()) {
 
     async function bootstrapAuthentication() {
       const providers = await nativeFetch("/api/auth/providers").then((value) => value.json()).catch(() => ({}));
+      document.getElementById("auth-google").hidden = !providers.google;
       document.getElementById("auth-github").hidden = !providers.github;
       authEmailFormEl.hidden = !providers.email;
       try {
@@ -5243,6 +5245,16 @@ export function createServerApp(config = configFromEnv()) {
       }
       if (request.method === "GET" && url.pathname === "/api/auth/github/start") {
         const location = await authStore.startGithub(url.searchParams.get("return_to") || "/");
+        response.writeHead(302, { Location: location });
+        return response.end();
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/google/start") {
+        const location = await authStore.startGoogle(url.searchParams.get("return_to") || "/");
+        response.writeHead(302, { Location: location });
+        return response.end();
+      }
+      if (request.method === "GET" && url.pathname === "/api/auth/google/callback") {
+        const location = await authStore.finishGoogle(url.searchParams, response);
         response.writeHead(302, { Location: location });
         return response.end();
       }
