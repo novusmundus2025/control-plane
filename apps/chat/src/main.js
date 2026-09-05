@@ -143,7 +143,7 @@ export function configFromEnv(env = process.env) {
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
     harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
-      || "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe?release=cli-v0.1.52",
+      || "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe?release=cli-v0.1.53",
     latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "cli-v0.1.52",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
@@ -2736,7 +2736,7 @@ export function page(config = configFromEnv()) {
       const knownConnection = readyConnection || connections[0] || null;
       const installedVersion = knownConnection?.capabilities?.client_version || "unknown";
       const updateAvailable = Boolean(knownConnection)
-        && installedVersion !== latestLocalAgentVersion;
+        && !releaseVersionAtLeast(installedVersion, latestLocalAgentVersion);
       if (projectAgentUpdateEl) {
         projectAgentUpdateEl.hidden = !(updateAvailable || (paired && !localRunnerReady));
         projectAgentUpdateEl.textContent = paired && !localRunnerReady
@@ -2759,7 +2759,7 @@ export function page(config = configFromEnv()) {
       if (projectReadinessEl) projectReadinessEl.dataset.state = localRunnerReady ? "ready" : paired ? "offline" : "setup";
       if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = updateAvailable ? "Agent update available" : localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Connect this computer";
       if (projectReadinessTextEl) projectReadinessTextEl.textContent = localRunnerReady
-        ? (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent") + " · Installed " + installedVersion + " · Latest " + latestLocalAgentVersion + ". Your project tools run locally; model inference uses MundusX EHDA."
+        ? (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent") + " · Installed " + installedVersion + " · Required " + latestLocalAgentVersion + " or newer. Your project tools run locally; model inference uses MundusX EHDA."
         : agentMissing
           ? "Install Hermes or select the native MundusX Agent, then retry."
           : paired
@@ -2801,6 +2801,20 @@ export function page(config = configFromEnv()) {
 
     function normalizeProjectSlug(value) {
       return String(value || "").toLowerCase().trim().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 80);
+    }
+
+    function releaseVersionAtLeast(installed, required) {
+      const parse = (value) => {
+        const match = String(value || "").match(/(?:cli-v)?(\d+)\.(\d+)\.(\d+)/);
+        return match ? match.slice(1).map(Number) : null;
+      };
+      const current = parse(installed);
+      const minimum = parse(required);
+      if (!current || !minimum) return installed === required;
+      for (let index = 0; index < 3; index += 1) {
+        if (current[index] !== minimum[index]) return current[index] > minimum[index];
+      }
+      return true;
     }
 
     function renderActiveProject() {
