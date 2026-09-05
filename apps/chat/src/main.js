@@ -3609,7 +3609,15 @@ export function page(config = configFromEnv()) {
         renderLocalAgentProgress(pending, payload, runtimeLabel, { onCancel: cancelTask, cancelling: cancellationRequested });
       }
       if (payload.state !== "completed") {
-        throw new Error(payload.error || (payload.state === "cancelled" ? "Local agent task was cancelled" : "Local agent task failed"));
+        const changedFiles = Array.isArray(payload.result?.changed_files)
+          ? payload.result.changed_files.filter(Boolean).slice(0, 20)
+          : [];
+        const partial = changedFiles.length
+          ? "\\n\\nFiles changed before the failure:\\n" + changedFiles.map((path) => "- " + path).join("\\n")
+          : "";
+        throw new Error(
+          (payload.error || (payload.state === "cancelled" ? "Local agent task was cancelled" : "Local agent task failed")) + partial,
+        );
       }
       const output = payload.result?.content
         || payload.result?.choices?.[0]?.message?.content
