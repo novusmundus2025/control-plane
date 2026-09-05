@@ -5905,9 +5905,11 @@ export function parseFirstJsonObject(value) {
 export async function streamHermesToolCompletion(response, body, config = configFromEnv(), fetchImpl = fetch) {
   const completionId = normalizeOpenAiCompletionId(body?.request_id);
   startOpenAiStream(response, "agent-tools", completionId);
+  response.flushHeaders?.();
   // Force proxy headers/body onto the wire before waiting on EHDA. A delayed
   // first byte can otherwise be classified as an unresponsive application.
   response.write(openAiSseStartFrame(completionId));
+  response.write(`: ${" ".repeat(2048)}\n\n`);
   const heartbeat = setInterval(() => {
     if (!response.writableEnded) response.write(": keep-alive\n\n");
   }, 10_000);
