@@ -3545,6 +3545,30 @@ test("Open WebUI adapter exposes a discoverable model and buffered SSE completio
   assert.match(body, /data: \[DONE\]/);
 });
 
+test("OpenAI SSE completion preserves Hermes tool calls", () => {
+  const body = openAiSseBody({
+    id: "chatcmpl-tool",
+    created: 123,
+    model: "mundusx-agnostic",
+    choices: [{
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_test",
+          type: "function",
+          function: { name: "write_file", arguments: '{"path":"package.json","content":"{}"}' },
+        }],
+      },
+      finish_reason: "tool_calls",
+    }],
+  });
+  assert.match(body, /"tool_calls":\[\{"index":0,"id":"call_test"/);
+  assert.match(body, /"name":"write_file"/);
+  assert.match(body, /"finish_reason":"tool_calls"/);
+  assert.match(body, /data: \[DONE\]/);
+});
+
 test("Open WebUI stream starts with a standard stable assistant identity chunk", () => {
   const frame = openAiSseStartFrame("chatcmpl-openwebui-stable", 123);
   const chunk = JSON.parse(frame.replace(/^data: /, "").trim());

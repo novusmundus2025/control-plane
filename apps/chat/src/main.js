@@ -5526,7 +5526,11 @@ export function createServerApp(config = configFromEnv()) {
           const body = await readJsonBody(request);
           const routedBody = { ...body, model: PUBLIC_MODEL_ID };
           if (Array.isArray(routedBody.tools) && routedBody.tools.length) {
-            return sendOpenAiJson(response, 200, await submitHermesToolCompletion(routedBody, config));
+            // Hermes' OpenAI adapter consumes agent turns as SSE even though it
+            // omits the optional `stream` request field. This is a private
+            // connected-agent route, so tool-bearing requests are always
+            // returned as a standards-compatible buffered stream.
+            return sendOpenAiStream(response, await submitHermesToolCompletion(routedBody, config));
           }
           if (routedBody.stream === true) {
             return await streamOpenAiChatCompletion(response, routedBody, config);
@@ -6158,17 +6162,37 @@ export function openAiSseFrames(completion, { buffered = true, roleAlreadySent =
     model: PUBLIC_MODEL_ID,
   };
   const content = String(choice?.message?.content ?? "");
-  const pieces = buffered ? [content] : splitOrdinaryStreamContent(content);
+  const toolCalls = Array.isArray(choice?.message?.tool_calls) ? choice.message.tool_calls : [];
+  const pieces = content ? (buffered ? [content] : splitOrdinaryStreamContent(content)) : [];
   const contentChunks = pieces.map((piece, index) => ({
     ...base,
     choices: [{ index: 0, delta: { ...(!roleAlreadySent && index === 0 ? { role: "assistant" } : {}), content: piece }, finish_reason: null }],
+  }));
+  const toolChunks = toolCalls.map((toolCall, index) => ({
+    ...base,
+    choices: [{
+      index: 0,
+      delta: {
+        ...(!roleAlreadySent && contentChunks.length === 0 && index === 0 ? { role: "assistant" } : {}),
+        tool_calls: [{
+          index,
+          id: toolCall.id,
+          type: toolCall.type || "function",
+          function: {
+            name: toolCall.function?.name,
+            arguments: String(toolCall.function?.arguments ?? "{}"),
+          },
+        }],
+      },
+      finish_reason: null,
+    }],
   }));
   const finalChunk = {
     ...base,
     choices: [{ index: 0, delta: {}, finish_reason: choice?.finish_reason ?? "stop" }],
     ...(completion?.usage ? { usage: completion.usage } : {}),
   };
-  return [...contentChunks, finalChunk].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`);
+  return [...contentChunks, ...toolChunks, finalChunk].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`);
 }
 
 function splitOrdinaryStreamContent(value, targetChars = 120) {
