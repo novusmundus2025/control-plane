@@ -2811,7 +2811,9 @@ export function page(config = configFromEnv()) {
       };
       const current = parse(installed);
       const minimum = parse(required);
-      if (!current || !minimum) return installed === required;
+      // Missing or legacy version metadata cannot prove that an update is needed.
+      // Connection health is handled separately by the heartbeat state.
+      if (!current || !minimum) return true;
       // Release tags and executable package versions are independent counters.
       // Treat them as incomparable rather than forcing users into an update loop.
       if (current.channel !== minimum.channel) return true;
