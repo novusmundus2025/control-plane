@@ -5943,6 +5943,7 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
   const result = await submitChatTurn({
     message: routerPrompt,
     systemPrompt: systemContext || "You are the model inside a bounded coding agent.",
+    internalAgentTurn: true,
     executionMode: "single",
     toolMode: false,
     structuredOutput: false,
@@ -6504,7 +6505,8 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
 
   const toolMode = isToolModeEnabled(body);
   const toolMessage = message;
-  const compoundToolPrompt = isMultiIntentPlanningCandidate(toolMessage);
+  const internalAgentTurn = body?.internalAgentTurn === true;
+  const compoundToolPrompt = !internalAgentTurn && isMultiIntentPlanningCandidate(toolMessage);
 
   if (compoundToolPrompt) {
     const compoundJob = await fetchPlannedCompoundToolJob(toolMessage, config, fetchImpl, body?.voicePersona);
@@ -6513,7 +6515,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     }
   }
 
-  if (!compoundToolPrompt) {
+  if (!compoundToolPrompt && !internalAgentTurn) {
     if (isNodeExpressMysqlCustomerCrudRequest(toolMessage)) {
       return recordAssistantTurn(conversationId, config, fetchImpl, fetchNodeExpressMysqlCustomerCrudJob(toolMessage));
     }
@@ -6582,7 +6584,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     }
   }
 
-  if (toolMode && needsGrounding(toolMessage)) {
+  if (!internalAgentTurn && toolMode && needsGrounding(toolMessage)) {
     const groundingQuery = extractGeneralLookupTopic(toolMessage) || toolMessage;
     const webSearchJob = await fetchWebSearchJob(message, groundingQuery, config, fetchImpl, {
       model: body?.model,

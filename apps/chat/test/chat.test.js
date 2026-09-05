@@ -1704,6 +1704,37 @@ test("routes MundusX benefits questions to grounded product knowledge", async ()
   assert.doesNotMatch(result.output, /smart contracts|Ethereum Virtual Machine/i);
 });
 
+test("internal Hermes turns bypass public chat shortcuts", async () => {
+  let submittedJob;
+  const result = await submitChatJob(
+    {
+      message: "Continue the MundusX agent conversation and select the next action.",
+      systemPrompt: "You are the model inside a bounded coding agent.",
+      internalAgentTurn: true,
+      executionMode: "single",
+      toolMode: false,
+      skipQualityValidation: true,
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url, init = {}) => {
+      if (String(url).includes("/v1/nodes")) return jsonResponse({ nodes: [] });
+      if (String(url).endsWith("/v1/jobs") && init.method === "POST") {
+        submittedJob = JSON.parse(init.body);
+        return jsonResponse({
+          job_id: "job-hermes-internal",
+          job: { job_id: "job-hermes-internal", status: "completed", output: '{"kind":"final","content":"done"}' },
+        });
+      }
+      throw new Error(`unexpected URL ${url}`);
+    },
+  );
+
+  assert.equal(result.job_id, "job-hermes-internal");
+  assert.notEqual(result.model, "mundusx-knowledge");
+  assert.match(submittedJob.prompt, /select the next action/i);
+  assert.equal(submittedJob.system_prompt, "You are the model inside a bounded coding agent.");
+});
+
 test("routes weather questions to wttr without queuing an LLM job", async () => {
   const calls = [];
   const fetchImpl = async (url) => {
