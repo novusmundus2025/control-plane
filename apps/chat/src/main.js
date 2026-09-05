@@ -144,7 +144,7 @@ export function configFromEnv(env = process.env) {
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
     harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
       || "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe?release=cli-v0.1.53",
-    latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "cli-v0.1.52",
+    latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "0.1.35",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
@@ -2805,14 +2805,18 @@ export function page(config = configFromEnv()) {
 
     function releaseVersionAtLeast(installed, required) {
       const parse = (value) => {
-        const match = String(value || "").match(/(?:cli-v)?(\d+)\.(\d+)\.(\d+)/);
-        return match ? match.slice(1).map(Number) : null;
+        const text = String(value || "").trim();
+        const match = text.match(/^(cli-v)?(\d+)\.(\d+)\.(\d+)$/);
+        return match ? { channel: match[1] ? "release" : "binary", parts: match.slice(2).map(Number) } : null;
       };
       const current = parse(installed);
       const minimum = parse(required);
       if (!current || !minimum) return installed === required;
+      // Release tags and executable package versions are independent counters.
+      // Treat them as incomparable rather than forcing users into an update loop.
+      if (current.channel !== minimum.channel) return true;
       for (let index = 0; index < 3; index += 1) {
-        if (current[index] !== minimum[index]) return current[index] > minimum[index];
+        if (current.parts[index] !== minimum.parts[index]) return current.parts[index] > minimum.parts[index];
       }
       return true;
     }
