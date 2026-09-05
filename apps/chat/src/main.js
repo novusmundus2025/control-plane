@@ -6480,7 +6480,10 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(502, "control plane did not return a job id");
   }
   rememberPromptForJob(jobId, message);
-  rememberValidationContractForJob(jobId, { structuredOutput: body?.structuredOutput === true });
+  rememberValidationContractForJob(jobId, {
+    structuredOutput: body?.structuredOutput === true,
+    skipQualityValidation: body?.skipQualityValidation === true,
+  });
   const contextUsage = plannedContextUsage({
     contextWindowTokens,
     systemPrompt: jobBody.system_prompt,
@@ -9872,8 +9875,10 @@ function forgetContextUsageForJob(jobId) {
 
 function rememberValidationContractForJob(jobId, contract) {
   const key = String(jobId ?? "").trim();
-  if (!key || !contract?.structuredOutput) return;
-  validationContractByJobId.set(key, { structuredOutput: true });
+  const structuredOutput = contract?.structuredOutput === true;
+  const skipQualityValidation = contract?.skipQualityValidation === true;
+  if (!key || (!structuredOutput && !skipQualityValidation)) return;
+  validationContractByJobId.set(key, { structuredOutput, skipQualityValidation });
   while (validationContractByJobId.size > MAX_TRACKED_PROMPT_CONTEXTS) {
     validationContractByJobId.delete(validationContractByJobId.keys().next().value);
   }
@@ -10078,6 +10083,7 @@ export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = f
     prompt,
     contextUsage,
     structuredOutput: validationContract?.structuredOutput === true,
+    skipQualityValidation: validationContract?.skipQualityValidation === true,
   });
   if (["completed", "failed"].includes(String(formatted.status ?? "").toLowerCase())) {
     forgetPromptForJob(jobId);
