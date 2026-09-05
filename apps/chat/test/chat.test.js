@@ -23,6 +23,7 @@ import {
   extractWeatherLocation,
   extractWeatherDayOffset,
   inferChatRequestTimeoutSeconds,
+  isRetryableHermesModelFailure,
   isFocusedQuotedRequest,
   isWeatherResourceRequest,
   normalizeWeatherWordTypos,
@@ -3624,6 +3625,12 @@ test("Hermes routing safely repairs an unescaped nested arguments object", () =>
     '{"kind":"tool","name":"unknown","arguments":"{"command":"whoami"}"}',
     [{ name: "terminal" }],
   ), null);
+});
+
+test("Hermes model turns retry only transient gateway failures", () => {
+  assert.equal(isRetryableHermesModelFailure("HTTP 502: Application failed to respond"), true);
+  assert.equal(isRetryableHermesModelFailure("connection reset by peer"), true);
+  assert.equal(isRetryableHermesModelFailure("invalid project-agent request"), false);
 });
 
 test("Open WebUI stream starts with a standard stable assistant identity chunk", () => {

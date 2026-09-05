@@ -5948,7 +5948,7 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
     "Conversation:",
     JSON.stringify(transcript),
   ].join("\n");
-  const result = await submitChatTurn({
+  const turn = {
     message: routerPrompt,
     systemPrompt: systemContext || "You are the model inside a bounded coding agent.",
     internalAgentTurn: true,
@@ -5958,7 +5958,21 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
     skipQualityValidation: true,
     maxTokens: Math.min(Number(body?.max_tokens || 2048), 4096),
     temperature: 0,
-  }, config, fetchImpl);
+  };
+  let result;
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      result = await submitChatTurn({ ...turn, requestId: attempt ? undefined : body?.request_id }, config, fetchImpl);
+      if (String(result?.status || "").toLowerCase() === "completed" || !isRetryableHermesModelFailure(result?.error)) break;
+      lastError = new Error(result?.error || "MundusX agent model request failed");
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableHermesModelFailure(error?.message)) throw error;
+    }
+    if (attempt < 2) await delay(750 * (attempt + 1));
+  }
+  if (!result && lastError) throw lastError;
   if (String(result?.status || "").toLowerCase() !== "completed") {
     throw httpError(502, result?.error || "MundusX agent model request failed");
   }
@@ -6000,6 +6014,11 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
     model: PUBLIC_MODEL_ID,
     choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
   };
+}
+
+export function isRetryableHermesModelFailure(value) {
+  return /\b(?:408|425|429|500|502|503|504)\b|application failed to respond|timed?\s*out|temporar(?:y|ily)|connection (?:reset|closed|refused)/i
+    .test(String(value || ""));
 }
 
 export function parseFirstJsonObject(value) {
