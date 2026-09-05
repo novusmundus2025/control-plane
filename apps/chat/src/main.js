@@ -2334,12 +2334,12 @@ export function page(config = configFromEnv()) {
     function configureProjectsDialog({ showRunnerSetup = false, project = null } = {}) {
       const existingProjectMode = Boolean(showRunnerSetup && project?.slug);
       runnerTargetProject = existingProjectMode ? project : null;
-      if (repositoryDialogTitleEl) repositoryDialogTitleEl.textContent = existingProjectMode ? "Connect local runner" : "Create project";
-      if (projectCreateFieldsEl) projectCreateFieldsEl.hidden = existingProjectMode;
-      if (projectPurposeNoteEl) projectPurposeNoteEl.hidden = existingProjectMode;
+      if (repositoryDialogTitleEl) repositoryDialogTitleEl.textContent = existingProjectMode ? "Connect local runner" : localRunnerReady ? "Create project" : "Connect this computer";
+      if (projectCreateFieldsEl) projectCreateFieldsEl.hidden = existingProjectMode || !localRunnerReady;
+      if (projectPurposeNoteEl) projectPurposeNoteEl.hidden = existingProjectMode || !localRunnerReady;
       if (projectRunnerContextEl) projectRunnerContextEl.hidden = !existingProjectMode;
       if (projectRunnerContextNameEl) projectRunnerContextNameEl.textContent = existingProjectMode ? project.slug : "Project";
-      if (projectActionsEl) projectActionsEl.hidden = existingProjectMode;
+      if (projectActionsEl) projectActionsEl.hidden = existingProjectMode || !localRunnerReady;
       if (projectRunnerSetupEl) {
         projectRunnerSetupEl.hidden = !existingProjectMode;
       }
@@ -2740,9 +2740,10 @@ export function page(config = configFromEnv()) {
       if (projectAgentUpdateEl) {
         projectAgentUpdateEl.hidden = !(updateAvailable || (paired && !localRunnerReady));
         projectAgentUpdateEl.textContent = paired && !localRunnerReady
-          ? "Repair"
+          ? (updateAvailable ? "Update & reconnect" : "Reconnect")
           : installedVersion === "unknown" ? "Install latest" : "Update";
       }
+      if (projectReadinessRefreshEl) projectReadinessRefreshEl.hidden = paired && !localRunnerReady;
       const statusText = readyConnection
         ? "Ready · " + (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent")
         : ready
@@ -2764,6 +2765,12 @@ export function page(config = configFromEnv()) {
           : paired
             ? "Wait a few seconds and retry. If it stays offline, choose Repair; no terminal is required."
             : "Chat cannot inspect installed apps directly. Install MundusX, complete its browser approval, then retry.";
+      if (!runnerTargetProject) {
+        if (repositoryDialogTitleEl) repositoryDialogTitleEl.textContent = localRunnerReady ? "Create project" : "Connect this computer";
+        if (projectCreateFieldsEl) projectCreateFieldsEl.hidden = !localRunnerReady;
+        if (projectPurposeNoteEl) projectPurposeNoteEl.hidden = !localRunnerReady;
+        if (projectActionsEl) projectActionsEl.hidden = !localRunnerReady;
+      }
       if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = localRunnerReady || (!runnerSetupRequested && !agentMissing && paired);
       updateProjectCreateAvailability();
       renderRuntimeControls();
