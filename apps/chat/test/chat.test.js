@@ -35,6 +35,7 @@ import {
   openAiSseBody,
   openAiSseFrames,
   openAiSseStartFrame,
+  parseFirstJsonObject,
   page,
   pollChatJob,
   redactSensitiveText,
@@ -3567,6 +3568,13 @@ test("OpenAI SSE completion preserves Hermes tool calls", () => {
   assert.match(body, /"name":"write_file"/);
   assert.match(body, /"finish_reason":"tool_calls"/);
   assert.match(body, /data: \[DONE\]/);
+});
+
+test("Hermes routing selects the first complete JSON tool decision", () => {
+  assert.deepEqual(
+    parseFirstJsonObject('preface {"kind":"tool","name":"read_file","arguments":{"path":"C:\\\\tmp\\\\a.json"}} {"kind":"final","content":"later"}'),
+    { kind: "tool", name: "read_file", arguments: { path: "C:\\tmp\\a.json" } },
+  );
 });
 
 test("Open WebUI stream starts with a standard stable assistant identity chunk", () => {

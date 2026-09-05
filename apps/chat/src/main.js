@@ -5842,8 +5842,7 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
   }
   const raw = String(result?.output || "").trim();
   const normalized = normalizeRequestedStructuredOutput(raw, true);
-  let decision;
-  try { decision = JSON.parse(normalized); } catch { decision = null; }
+  const decision = parseFirstJsonObject(normalized) ?? parseFirstJsonObject(raw);
   const created = Math.floor(Date.now() / 1000);
   const id = normalizeOpenAiCompletionId(body?.request_id);
   const selected = tools.find((tool) => tool.name === decision?.name);
@@ -5876,6 +5875,31 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
     model: PUBLIC_MODEL_ID,
     choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
   };
+}
+
+export function parseFirstJsonObject(value) {
+  const text = String(value ?? "");
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "{") continue;
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (let cursor = start; cursor < text.length; cursor += 1) {
+      const char = text[cursor];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') quoted = false;
+        continue;
+      }
+      if (char === '"') quoted = true;
+      else if (char === "{") depth += 1;
+      else if (char === "}" && --depth === 0) {
+        try { return JSON.parse(text.slice(start, cursor + 1)); } catch { break; }
+      }
+    }
+  }
+  return null;
 }
 
 export async function streamHermesToolCompletion(response, body, config = configFromEnv(), fetchImpl = fetch) {
