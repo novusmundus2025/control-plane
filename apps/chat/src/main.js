@@ -5530,7 +5530,7 @@ export function createServerApp(config = configFromEnv()) {
             // omits the optional `stream` request field. This is a private
             // connected-agent route, so tool-bearing requests are always
             // returned as a standards-compatible buffered stream.
-            return sendOpenAiStream(response, await submitHermesToolCompletion(routedBody, config));
+            return await streamHermesToolCompletion(response, routedBody, config);
           }
           if (routedBody.stream === true) {
             return await streamOpenAiChatCompletion(response, routedBody, config);
@@ -5876,6 +5876,24 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
     model: PUBLIC_MODEL_ID,
     choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
   };
+}
+
+export async function streamHermesToolCompletion(response, body, config = configFromEnv(), fetchImpl = fetch) {
+  startOpenAiStream(response, "agent-tools");
+  const heartbeat = setInterval(() => {
+    if (!response.writableEnded) response.write(": keep-alive\n\n");
+  }, 10_000);
+  heartbeat.unref?.();
+  try {
+    const completion = await submitHermesToolCompletion(body, config, fetchImpl);
+    for (const frame of openAiSseFrames(completion, { buffered: true })) response.write(frame);
+    response.end("data: [DONE]\n\n");
+  } catch (error) {
+    const payload = { error: { message: error.message ?? "agent model request failed", type: "mundusx_agent_error" } };
+    response.end(`data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`);
+  } finally {
+    clearInterval(heartbeat);
+  }
 }
 
 export function requiresValidatedStreaming(message, body = {}) {
