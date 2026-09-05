@@ -426,3 +426,23 @@ test("local agent auto claims select Hermes only when advertised and preferred",
   assert.match(queries[0].sql, /capabilities->'agent_runtimes' \? 'hermes'/);
   assert.match(queries[0].sql, /capabilities->>'preferred_agent' = 'hermes'/);
 });
+
+test("project model jobs safely requeue retryable failures with the same idempotency key", async () => {
+  let insert;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) {
+      insert = { sql, values };
+      return { rowCount: 1, rows: [{ job_id: values[0], state: "queued" }] };
+    },
+  } });
+  const created = await store.createProjectModelJob("22222222-2222-4222-8222-222222222222", {
+    project_task_id: "33333333-3333-4333-8333-333333333333",
+    connection_id: "11111111-1111-4111-8111-111111111111",
+    idempotency_key: "stable-model-turn-key",
+  });
+  assert.equal(created.state, "queued");
+  assert.match(insert.sql, /on conflict \(user_id, project_task_id, idempotency_key\)/);
+  assert.match(insert.sql, /error->>'retryable'/);
+  assert.match(insert.sql, /then 'queued'/);
+  assert.equal(insert.values[2], "stable-model-turn-key");
+});

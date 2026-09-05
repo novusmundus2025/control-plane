@@ -515,7 +515,43 @@ export class PostgresAuthStore {
       (job_id, user_id, project_task_id, idempotency_key, request)
       select $1::uuid, $2::uuid, task_id, $3, $4::jsonb from public.local_agent_tasks
       where task_id = $5::uuid and user_id = $2::uuid and connection_id = $6::uuid and state = 'running'
-      on conflict (user_id, project_task_id, idempotency_key) do update set idempotency_key = excluded.idempotency_key
+      on conflict (user_id, project_task_id, idempotency_key) do update set
+        state = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then 'queued'
+          else public.project_model_jobs.state
+        end,
+        started_at = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then null
+          else public.project_model_jobs.started_at
+        end,
+        completed_at = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then null
+          else public.project_model_jobs.completed_at
+        end,
+        result = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then null
+          else public.project_model_jobs.result
+        end,
+        error = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then null
+          else public.project_model_jobs.error
+        end,
+        expires_at = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then now() + interval '10 minutes'
+          else public.project_model_jobs.expires_at
+        end
       returning job_id, project_task_id, state, created_at, expires_at`,
     [jobId, userId, key, JSON.stringify(input), taskId, connectionId]);
     if (result.rowCount !== 1) throw Object.assign(new Error("Running project task was not found"), { statusCode: 404 });
