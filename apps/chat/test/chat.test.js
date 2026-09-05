@@ -3627,6 +3627,20 @@ test("Hermes routing safely repairs an unescaped nested arguments object", () =>
   ), null);
 });
 
+test("Hermes routing accepts an allowed tool name used as the decision kind", () => {
+  assert.deepEqual(
+    parseHermesToolDecision(
+      '{"kind":"terminal","arguments":{"command":"ls -la"}}',
+      [{ name: "terminal" }, { name: "write_file" }],
+    ),
+    { kind: "tool", name: "terminal", arguments: { command: "ls -la" } },
+  );
+  assert.equal(
+    parseHermesToolDecision('{"kind":"unknown","arguments":{"command":"whoami"}}', [{ name: "terminal" }]),
+    null,
+  );
+});
+
 test("Hermes model turns retry only transient gateway failures", () => {
   assert.equal(isRetryableHermesModelFailure("HTTP 502: Application failed to respond"), true);
   assert.equal(isRetryableHermesModelFailure("connection reset by peer"), true);

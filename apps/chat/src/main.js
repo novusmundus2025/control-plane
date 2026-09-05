@@ -6050,11 +6050,16 @@ export function parseHermesToolDecision(value, tools = []) {
   const text = String(value ?? "");
   const parsed = parseFirstJsonObject(text);
   const allowed = new Set(tools.map((tool) => String(tool?.name || "")).filter(Boolean));
-  if (parsed?.kind === "tool" && allowed.has(String(parsed.name || ""))) {
+  const parsedName = parsed?.kind === "tool"
+    ? String(parsed.name || "")
+    : allowed.has(String(parsed?.kind || ""))
+      ? String(parsed.kind)
+      : "";
+  if (parsedName && allowed.has(parsedName)) {
     let args = parsed.arguments;
     if (typeof args === "string") args = parseFirstJsonObject(args);
     if (args && typeof args === "object" && !Array.isArray(args)) {
-      return { ...parsed, arguments: args };
+      return { ...parsed, kind: "tool", name: parsedName, arguments: args };
     }
   }
 
