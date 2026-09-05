@@ -5955,7 +5955,10 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
   }
   const raw = String(result?.output || "").trim();
   const normalized = normalizeRequestedStructuredOutput(raw, true);
-  const decision = parseFirstJsonObject(normalized) ?? parseFirstJsonObject(raw);
+  const decision = parseHermesToolDecision(normalized, tools)
+    ?? parseHermesToolDecision(raw, tools)
+    ?? parseFirstJsonObject(normalized)
+    ?? parseFirstJsonObject(raw);
   const created = Math.floor(Date.now() / 1000);
   const id = normalizeOpenAiCompletionId(body?.request_id);
   const selected = tools.find((tool) => tool.name === decision?.name);
@@ -6013,6 +6016,31 @@ export function parseFirstJsonObject(value) {
     }
   }
   return null;
+}
+
+export function parseHermesToolDecision(value, tools = []) {
+  const text = String(value ?? "");
+  const parsed = parseFirstJsonObject(text);
+  const allowed = new Set(tools.map((tool) => String(tool?.name || "")).filter(Boolean));
+  if (parsed?.kind === "tool" && allowed.has(String(parsed.name || ""))) {
+    let args = parsed.arguments;
+    if (typeof args === "string") args = parseFirstJsonObject(args);
+    if (args && typeof args === "object" && !Array.isArray(args)) {
+      return { ...parsed, arguments: args };
+    }
+  }
+
+  // Small models sometimes quote a JSON arguments object without escaping its
+  // inner quotes. Recover only the explicit tool/name/arguments shape and only
+  // when the named tool was offered by Hermes for this turn.
+  if (!/["']kind["']\s*:\s*["']tool["']/i.test(text)) return null;
+  const name = text.match(/["']name["']\s*:\s*["']([A-Za-z0-9_.:-]+)["']/i)?.[1];
+  if (!name || !allowed.has(name)) return null;
+  const marker = text.search(/["']arguments["']\s*:/i);
+  if (marker < 0) return null;
+  const argumentsObject = parseFirstJsonObject(text.slice(marker));
+  if (!argumentsObject || Array.isArray(argumentsObject)) return null;
+  return { kind: "tool", name, arguments: argumentsObject };
 }
 
 export async function streamHermesToolCompletion(response, body, config = configFromEnv(), fetchImpl = fetch) {

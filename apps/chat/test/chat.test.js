@@ -36,6 +36,7 @@ import {
   openAiSseFrames,
   openAiSseStartFrame,
   parseFirstJsonObject,
+  parseHermesToolDecision,
   page,
   pollChatJob,
   redactSensitiveText,
@@ -3580,6 +3581,18 @@ test("Hermes routing selects the first complete JSON tool decision", () => {
     parseFirstJsonObject('preface {"kind":"tool","name":"read_file","arguments":{"path":"C:\\\\tmp\\\\a.json"}} {"kind":"final","content":"later"}'),
     { kind: "tool", name: "read_file", arguments: { path: "C:\\tmp\\a.json" } },
   );
+});
+
+test("Hermes routing safely repairs an unescaped nested arguments object", () => {
+  const decision = parseHermesToolDecision(
+    '{"kind":"tool","name":"terminal","arguments":"{"command":"npm init -y"}"}',
+    [{ name: "terminal" }],
+  );
+  assert.deepEqual(decision, { kind: "tool", name: "terminal", arguments: { command: "npm init -y" } });
+  assert.equal(parseHermesToolDecision(
+    '{"kind":"tool","name":"unknown","arguments":"{"command":"whoami"}"}',
+    [{ name: "terminal" }],
+  ), null);
 });
 
 test("Open WebUI stream starts with a standard stable assistant identity chunk", () => {
