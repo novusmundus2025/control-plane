@@ -5829,6 +5829,7 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
     executionMode: "single",
     toolMode: false,
     structuredOutput: false,
+    skipQualityValidation: true,
     maxTokens: Math.min(Number(body?.max_tokens || 2048), 4096),
     temperature: 0,
   }, config, fetchImpl);
@@ -6390,7 +6391,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   const model = String(body?.model ?? config.modelOverride ?? "").trim();
   const capacityProfile = await fetchChatCapacityProfile(config, fetchImpl, model);
   const contextWindowTokens = capacityProfile?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
-  let systemPrompt = buildChatSystemPrompt(message, body?.voicePersona, body?.skillContext);
+  let systemPrompt = body?.systemPrompt || buildChatSystemPrompt(message, body?.voicePersona, body?.skillContext);
   if (body?.qualityRetry === true) {
     systemPrompt += " This is an internal validation retry. Return a corrected complete answer only. Do not repeat words, clauses, sentences, or sections. Satisfy every requested method, entrypoint, call relationship, import, and formatting requirement. For code requests, use readable multiline source code in one fenced block.";
   }
@@ -6493,6 +6494,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     prompt: message,
     contextUsage,
     structuredOutput: body?.structuredOutput === true,
+    skipQualityValidation: body?.skipQualityValidation === true,
   });
   return formatted.status === "completed"
     ? recordAssistantTurn(conversationId, config, fetchImpl, formatted)
@@ -10165,7 +10167,9 @@ function formatChatJob(jobId, job, fallbackModel, options = {}) {
     ? normalizeRequestedStructuredOutput(promotedOutput, options.structuredOutput === true)
     : "";
   const output = job.status === "completed"
-    ? normalizeCompleteCodeOutput(structuredOutput, options.prompt)
+    ? options.skipQualityValidation === true
+      ? promotedOutput
+      : normalizeCompleteCodeOutput(structuredOutput, options.prompt)
     : "";
   const partialOutput = job.status === "completed" || !job.graph_execution_enabled
     ? ""
@@ -10179,20 +10183,20 @@ function formatChatJob(jobId, job, fallbackModel, options = {}) {
     : 0;
   const promptLower = String(options.prompt ?? "").toLowerCase();
   const verifyCompletedOutput = CHAT_VERIFIER_ENABLED || looksLikeMathRequest(promptLower);
-  const verifierFlags = verifyCompletedOutput && job.status === "completed"
+  const verifierFlags = options.skipQualityValidation !== true && verifyCompletedOutput && job.status === "completed"
     ? detectChatQualityFlags(sourceOutput, rawOutput, output, options.prompt)
     : [];
-  const codeFlags = job.status === "completed"
+  const codeFlags = options.skipQualityValidation !== true && job.status === "completed"
     ? detectCompleteCodeQualityFlags(output, options.prompt)
     : [];
-  const repetitionFlags = job.status === "completed"
+  const repetitionFlags = options.skipQualityValidation !== true && job.status === "completed"
     ? detectDegenerateRepetitionQualityFlags(output)
     : [];
-  const structuredFlags = job.status === "completed"
+  const structuredFlags = options.skipQualityValidation !== true && job.status === "completed"
     ? detectStructuredOutputQualityFlags(output, options.structuredOutput === true)
     : [];
   const finishReason = inferChatFinishReason(job, progress);
-  const tokenLimitFlags = job.status === "completed" && finishReason === "length" &&
+  const tokenLimitFlags = options.skipQualityValidation !== true && job.status === "completed" && finishReason === "length" &&
     (job.max_tokens_source === "auto" || options.structuredOutput === true || requiresValidatedStreaming(options.prompt))
     ? [{ code: "output_token_limit", severity: "reject", message: "MundusX reached the output token limit before completing a validated answer. Please retry." }]
     : [];
