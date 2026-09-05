@@ -95,6 +95,28 @@ test("Google callback rejects an account without a verified email", async () => 
   assert.equal(connected, false);
 });
 
+test("Google callback accepts the verified_email compatibility claim", async () => {
+  const client = { async query() { return { rows: [] }; }, release() {} };
+  const pool = {
+    async query() { return { rowCount: 1, rows: [{ code_verifier: "verifier", redirect_path: "/projects" }] }; },
+    async connect() { return client; },
+  };
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client", googleClientSecret: "google-secret", publicOrigin: "https://chat.mundusx.ai",
+  }, {
+    pool,
+    fetchImpl: async (url) => String(url).includes("/token")
+      ? { ok: true, async json() { return { access_token: "access" }; } }
+      : { ok: true, async json() { return { sub: "google-subject", email: "User@Example.com", verified_email: true, name: "Example User" }; } },
+  });
+  let identity;
+  store.upsertIdentity = async (_client, value) => { identity = value; return "user-id"; };
+  store.createSession = async () => {};
+  const destination = await store.finishGoogle(new URLSearchParams({ state: "state", code: "code" }), {});
+  assert.equal(destination, "/projects");
+  assert.equal(identity.email, "user@example.com");
+});
+
 test("GitHub provider requires a valid 32-byte encryption key", () => {
   const config = authConfigFromEnv({
     MUNDUSX_GITHUB_CLIENT_ID: "client",

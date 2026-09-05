@@ -1035,7 +1035,11 @@ export class PostgresAuthStore {
     });
     const profile = await profileResponse.json().catch(() => ({}));
     const email = normalizeEmail(profile.email);
-    if (!profileResponse.ok || !profile.sub || profile.email_verified !== true || !email) {
+    const emailVerified = profile.email_verified === true
+      || profile.email_verified === "true"
+      || profile.verified_email === true
+      || profile.verified_email === "true";
+    if (!profileResponse.ok || !profile.sub || !emailVerified || !email) {
       throw Object.assign(new Error("Google account needs a verified email"), { statusCode: 403 });
     }
     const client = await this.pool.connect();
