@@ -236,9 +236,9 @@ export function page(config = configFromEnv()) {
       ${config.harnessUiEnabled ? `
       <form id="harness-form" class="harness-form">
         <section class="project-section project-create-fields" id="project-create-fields">
-          <label class="project-field-wide">Project name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-project" autocomplete="off" required></label>
+          <label class="project-field-wide">New project folder name<input name="project_slug" maxlength="80" pattern="[a-z0-9]+(?:-[a-z0-9]+)*" placeholder="my-app" autocomplete="off" required></label>
         </section>
-        <p class="project-purpose-note" id="project-purpose-note"><span aria-hidden="true">✦</span><span>Projects keep chats and files together so you can continue where you left off.</span></p>
+        <p class="project-purpose-note" id="project-purpose-note"><span aria-hidden="true">✦</span><span>This creates a folder inside the local workspace you approved. Its chats and files stay together.</span></p>
         <section class="project-runner-context" id="project-runner-context" hidden>
           <span class="project-runner-context-icon" aria-hidden="true">⌁</span>
           <span><strong id="project-runner-context-name">Project</strong><small>This project and its chat are already saved. Connect this device before creating files or running commands.</small></span>
