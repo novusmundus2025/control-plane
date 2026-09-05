@@ -5342,6 +5342,7 @@ function runnerConnectPage(url, kind = "runner") {
     button, a.button { display: block; box-sizing: border-box; width: 100%; padding: 12px 16px; border: 0; border-radius: 11px; background: linear-gradient(135deg,#3984ff,#7655ee); color: white; font: inherit; font-weight: 700; text-align: center; text-decoration: none; cursor: pointer; }
     [hidden] { display: none !important; }
     button:disabled { opacity: .6; cursor: wait; } .error { color: #b42318; }
+    .hint { margin: 12px 0 0; font-size: 13px; }
     @media (prefers-color-scheme: dark) { body { background:#080b18; color:#f4f5fb; } main { background:#111526; border-color:#29304a; } p { color:#aab1c7; } .device { background:#1b2034; } }
   </style>
 </head>
@@ -5351,7 +5352,8 @@ function runnerConnectPage(url, kind = "runner") {
     <p id="message">Checking the runner connection…</p>
     <div class="device" id="device" hidden></div>
     <button id="approve" hidden>Approve this computer</button>
-    <a class="button" id="sign-in" hidden>Sign in to continue</a>
+    <a class="button" id="sign-in" hidden>Sign in with Google</a>
+    <p class="hint" id="auth-hint" hidden>This browser is not signed in. You can safely authenticate here even if MundusX is open in another browser.</p>
   </main>
   <script>
     const sessionId = ${JSON.stringify(sessionId)};
@@ -5366,6 +5368,7 @@ function runnerConnectPage(url, kind = "runner") {
     const device = document.getElementById("device");
     const approve = document.getElementById("approve");
     const signIn = document.getElementById("sign-in");
+    const authHint = document.getElementById("auth-hint");
     signIn.href = "/api/auth/google/start?return_to=" + encodeURIComponent(location.pathname + location.search);
     let csrfToken = "";
     async function json(url, options) {
@@ -5390,8 +5393,9 @@ function runnerConnectPage(url, kind = "runner") {
         approve.hidden = false;
       } catch (error) {
         if (String(error.message).includes("Authentication required")) {
-          message.textContent = "Sign in with Google to approve this computer.";
+          message.textContent = "This browser is not signed in to MundusX.";
           signIn.hidden = false;
+          authHint.hidden = false;
         } else { message.textContent = error.message; message.className = "error"; }
       }
     }
@@ -5408,7 +5412,18 @@ function runnerConnectPage(url, kind = "runner") {
         sessionStorage.removeItem(approvalStorageKey);
         approve.hidden = true;
         setTimeout(() => window.close(), 1800);
-      } catch (error) { message.textContent = error.message; message.className = "error"; approve.disabled = false; approve.textContent = "Try again"; }
+      } catch (error) {
+        message.textContent = error.message;
+        message.className = "error";
+        approve.disabled = false;
+        approve.textContent = "Try again";
+        if (String(error.message).includes("Authentication required")) {
+          approve.hidden = true;
+          signIn.textContent = "Re-authenticate with Google";
+          signIn.hidden = false;
+          authHint.hidden = false;
+        }
+      }
     });
     start();
   </script>
