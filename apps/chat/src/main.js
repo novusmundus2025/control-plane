@@ -143,7 +143,7 @@ export function configFromEnv(env = process.env) {
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
     harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
-      || "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe?release=cli-v0.1.47",
+      || "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe?release=cli-v0.1.48",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
