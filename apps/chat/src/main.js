@@ -2354,7 +2354,7 @@ export function page(config = configFromEnv()) {
       }
       if (ready) harnessRunnerStatusEl.textContent = "Agent ready. Files, commands, and Git stay on this computer.";
       else if (agentMissing) harnessRunnerStatusEl.textContent = "MundusX is connected, but no coding agent is available. Install or enable Hermes, then retry.";
-      else if (paired) harnessRunnerStatusEl.textContent = "Connected but offline. Start the MundusX runner on this computer.";
+      else if (paired) harnessRunnerStatusEl.textContent = "Connected but offline. MundusX normally restarts itself; use Repair if it does not reconnect.";
       else if (runnerPairingInProgress) harnessRunnerStatusEl.textContent = "Open the downloaded installer and approve this computer in the browser. Waiting for it to connect…";
       else harnessRunnerStatusEl.textContent = "No computer is connected to this account. Download MundusX, finish setup, and approve the browser connection. Compute contribution remains off unless enabled separately.";
     }
@@ -2728,12 +2728,15 @@ export function page(config = configFromEnv()) {
       const runtime = readyConnection?.capabilities?.preferred_agent
         || readyConnection?.capabilities?.agent_runtimes?.[0]
         || null;
-      const installedVersion = readyConnection?.capabilities?.client_version || "unknown";
-      const updateAvailable = Boolean(readyConnection)
+      const knownConnection = readyConnection || connections[0] || null;
+      const installedVersion = knownConnection?.capabilities?.client_version || "unknown";
+      const updateAvailable = Boolean(knownConnection)
         && installedVersion !== latestLocalAgentVersion;
       if (projectAgentUpdateEl) {
-        projectAgentUpdateEl.hidden = !updateAvailable;
-        projectAgentUpdateEl.textContent = installedVersion === "unknown" ? "Install latest" : "Update";
+        projectAgentUpdateEl.hidden = !(updateAvailable || (paired && !localRunnerReady));
+        projectAgentUpdateEl.textContent = paired && !localRunnerReady
+          ? "Repair"
+          : installedVersion === "unknown" ? "Install latest" : "Update";
       }
       const statusText = readyConnection
         ? "Ready · " + (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent")
@@ -2742,7 +2745,7 @@ export function page(config = configFromEnv()) {
           : agentMissing
             ? "Agent required. Install or enable Hermes on this computer."
             : paired
-              ? "Connected but offline. Start MundusX on this computer."
+              ? "Connected but offline. MundusX should restart automatically."
               : runnerPairingInProgress
                 ? "Waiting for installer approval and runner startup…"
                 : "No computer is connected to this account yet.";
@@ -2754,7 +2757,7 @@ export function page(config = configFromEnv()) {
         : agentMissing
           ? "Install Hermes or select the native MundusX Agent, then retry."
           : paired
-            ? "Start MundusX on the connected computer, then retry."
+            ? "Wait a few seconds and retry. If it stays offline, choose Repair; no terminal is required."
             : "Chat cannot inspect installed apps directly. Install MundusX, complete its browser approval, then retry.";
       if (projectRunnerSetupEl) projectRunnerSetupEl.hidden = localRunnerReady || (!runnerSetupRequested && !agentMissing && paired);
       updateProjectCreateAvailability();
