@@ -5525,6 +5525,9 @@ export function createServerApp(config = configFromEnv()) {
         if (request.method === "POST" && url.pathname === "/api/agent/model/v1/chat/completions") {
           const body = await readJsonBody(request);
           const routedBody = { ...body, model: PUBLIC_MODEL_ID };
+          if (Array.isArray(routedBody.tools) && routedBody.tools.length) {
+            return sendOpenAiJson(response, 200, await submitHermesToolCompletion(routedBody, config));
+          }
           if (routedBody.stream === true) {
             return await streamOpenAiChatCompletion(response, routedBody, config);
           }
@@ -5780,6 +5783,93 @@ export async function submitOpenAiChatCompletion(body, config = configFromEnv(),
       tool: result.tool ?? null,
       execution_mode: result.execution_mode ?? null,
     },
+  };
+}
+
+export async function submitHermesToolCompletion(body, config = configFromEnv(), fetchImpl = fetch) {
+  const messages = Array.isArray(body?.messages) ? body.messages : [];
+  if (!messages.length) throw httpError(400, "messages must be a non-empty array");
+  const tools = body.tools
+    .filter((entry) => entry?.type === "function" && entry?.function?.name)
+    .map((entry) => ({
+      name: String(entry.function.name),
+      description: String(entry.function.description || ""),
+      parameters: entry.function.parameters || { type: "object", properties: {} },
+    }));
+  if (!tools.length) return submitOpenAiChatCompletion({ ...body, tools: undefined }, config, fetchImpl);
+
+  const systemContext = messages
+    .filter((entry) => entry?.role === "system")
+    .map((entry) => openAiMessageText(entry?.content))
+    .filter(Boolean)
+    .join("\n\n");
+  const transcript = messages
+    .filter((entry) => entry?.role !== "system")
+    .map((entry) => ({
+      role: String(entry?.role || "user"),
+      content: openAiMessageText(entry?.content),
+      tool_calls: entry?.tool_calls || undefined,
+      tool_call_id: entry?.tool_call_id || undefined,
+      name: entry?.name || undefined,
+    }));
+  const routerPrompt = [
+    "Continue the agent conversation below. Select exactly one next action.",
+    "Return only one JSON object in one of these forms:",
+    '{"kind":"tool","name":"an_available_tool_name","arguments":{}}',
+    '{"kind":"final","content":"the final response"}',
+    "Use kind=tool whenever filesystem or command work is still required. Never claim work succeeded before tool results prove it.",
+    "Available tools:",
+    JSON.stringify(tools),
+    "Conversation:",
+    JSON.stringify(transcript),
+  ].join("\n");
+  const result = await submitChatTurn({
+    message: routerPrompt,
+    systemPrompt: systemContext || "You are the model inside a bounded coding agent.",
+    executionMode: "single",
+    toolMode: false,
+    structuredOutput: false,
+    maxTokens: Math.min(Number(body?.max_tokens || 2048), 4096),
+    temperature: 0,
+  }, config, fetchImpl);
+  if (String(result?.status || "").toLowerCase() !== "completed") {
+    throw httpError(502, result?.error || "MundusX agent model request failed");
+  }
+  const raw = String(result?.output || "").trim();
+  const normalized = normalizeRequestedStructuredOutput(raw, true);
+  let decision;
+  try { decision = JSON.parse(normalized); } catch { decision = null; }
+  const created = Math.floor(Date.now() / 1000);
+  const id = normalizeOpenAiCompletionId(body?.request_id);
+  const selected = tools.find((tool) => tool.name === decision?.name);
+  if (decision?.kind === "tool" && selected && decision.arguments && typeof decision.arguments === "object") {
+    return {
+      id,
+      object: "chat.completion",
+      created,
+      model: PUBLIC_MODEL_ID,
+      choices: [{
+        index: 0,
+        message: {
+          role: "assistant",
+          content: null,
+          tool_calls: [{
+            id: `call_${crypto.randomUUID().replace(/-/g, "")}`,
+            type: "function",
+            function: { name: selected.name, arguments: JSON.stringify(decision.arguments) },
+          }],
+        },
+        finish_reason: "tool_calls",
+      }],
+    };
+  }
+  const content = String(decision?.content || raw || "The agent could not determine its next action.");
+  return {
+    id,
+    object: "chat.completion",
+    created,
+    model: PUBLIC_MODEL_ID,
+    choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
   };
 }
 
