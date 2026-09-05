@@ -5903,17 +5903,18 @@ export function parseFirstJsonObject(value) {
 }
 
 export async function streamHermesToolCompletion(response, body, config = configFromEnv(), fetchImpl = fetch) {
-  startOpenAiStream(response, "agent-tools");
+  const completionId = normalizeOpenAiCompletionId(body?.request_id);
+  startOpenAiStream(response, "agent-tools", completionId);
   // Force proxy headers/body onto the wire before waiting on EHDA. A delayed
   // first byte can otherwise be classified as an unresponsive application.
-  response.write(": connected\n\n");
+  response.write(openAiSseStartFrame(completionId));
   const heartbeat = setInterval(() => {
     if (!response.writableEnded) response.write(": keep-alive\n\n");
   }, 10_000);
   heartbeat.unref?.();
   try {
     const completion = await submitHermesToolCompletion(body, config, fetchImpl);
-    for (const frame of openAiSseFrames(completion, { buffered: true })) response.write(frame);
+    for (const frame of openAiSseFrames(completion, { buffered: true, roleAlreadySent: true })) response.write(frame);
     response.end("data: [DONE]\n\n");
   } catch (error) {
     const payload = { error: { message: error.message ?? "agent model request failed", type: "mundusx_agent_error" } };
