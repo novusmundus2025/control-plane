@@ -2372,6 +2372,7 @@ export function page(config = configFromEnv()) {
         return;
       }
       runnerPairingPollTimer = window.setTimeout(async () => {
+        runnerPairingPollTimer = null;
         try {
           const runners = await loadHarnessRunners();
           if (localProjectAgentReady || runners.length) {
@@ -2720,9 +2721,13 @@ export function page(config = configFromEnv()) {
         .filter((slug) => !removedProjectSlugs.includes(slug)).sort().slice(0, 100);
       localStorage.setItem(recentProjectsKey, JSON.stringify(availableProjectSlugs));
       renderProjectMenu();
-      if (ready || paired) {
+      if (ready) {
         runnerPairingInProgress = false;
         stopRunnerPairingPoll();
+      } else if (paired && !runnerPairingInProgress) {
+        runnerPairingInProgress = true;
+        runnerPairingExpiresAt = Date.now() + 10 * 60 * 1000;
+        pollRunnerPairing();
       }
       updateRunnerSetupState({ paired, ready: localRunnerReady, agentMissing });
       const runtime = readyConnection?.capabilities?.preferred_agent
