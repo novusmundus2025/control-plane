@@ -143,7 +143,8 @@ export function configFromEnv(env = process.env) {
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
     harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
-      || "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe?release=cli-v0.1.48",
+      || "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe?release=cli-v0.1.49",
+    latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "cli-v0.1.49",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
@@ -245,6 +246,7 @@ export function page(config = configFromEnv()) {
         <div class="project-readiness" id="project-readiness" data-state="checking" aria-live="polite">
           <span class="readiness-dot" aria-hidden="true"></span>
           <span><strong id="project-readiness-title">Checking connection…</strong><small id="project-readiness-text">Looking for a computer connected to this account.</small></span>
+          <a id="project-agent-update" href="${escapeHtml(config.harnessRunnerDownloadUrl)}" download hidden>Update</a>
           <button id="project-readiness-refresh" type="button">Retry</button>
         </div>
         <section class="project-runner-setup" id="project-runner-setup" hidden>
@@ -1565,7 +1567,7 @@ export function page(config = configFromEnv()) {
     .harness-boundary,.harness-form { display: grid; gap: 14px; }
     .harness-boundary { padding: 12px; border-radius: 10px; background: var(--bg); }
     .project-readiness { display: flex; align-items: center; gap: 10px; border: 1px solid var(--line); background: var(--bg); }
-    .project-readiness button { border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--text); padding: 7px 10px; font: inherit; cursor: pointer; }
+    .project-readiness button,.project-readiness a { border: 1px solid var(--line-strong); border-radius: 8px; background: var(--panel); color: var(--text); padding: 7px 10px; font: inherit; cursor: pointer; text-decoration:none; }
     .readiness-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 999px; background: var(--muted-2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted-2) 15%, transparent); }
     [data-state="ready"] > .readiness-dot { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 15%, transparent); }
     [data-state="offline"] > .readiness-dot { background: #d98c16; box-shadow: 0 0 0 4px rgba(217,140,22,.14); }
@@ -1984,6 +1986,8 @@ export function page(config = configFromEnv()) {
     const harnessResultEl = document.getElementById("harness-result");
     const harnessRunnerStatusEl = document.getElementById("harness-runner-status");
     const harnessDownloadEl = document.getElementById("harness-download");
+    const projectAgentUpdateEl = document.getElementById("project-agent-update");
+    const latestLocalAgentVersion = ${JSON.stringify(config.latestLocalAgentVersion)};
     const projectReadinessTitleEl = document.getElementById("project-readiness-title");
     const projectReadinessEl = document.getElementById("project-readiness");
     const projectReadinessTextEl = document.getElementById("project-readiness-text");
@@ -2664,6 +2668,7 @@ export function page(config = configFromEnv()) {
     });
     async function loadHarnessRunners() {
       if (!harnessRunnerStatusEl) return [];
+      if (projectAgentUpdateEl) projectAgentUpdateEl.hidden = true;
       if (!currentUser) {
         localRunnerReady = false;
         localProjectAgentReady = false;
@@ -2723,6 +2728,13 @@ export function page(config = configFromEnv()) {
       const runtime = readyConnection?.capabilities?.preferred_agent
         || readyConnection?.capabilities?.agent_runtimes?.[0]
         || null;
+      const installedVersion = readyConnection?.capabilities?.client_version || "unknown";
+      const updateAvailable = Boolean(readyConnection)
+        && installedVersion !== latestLocalAgentVersion;
+      if (projectAgentUpdateEl) {
+        projectAgentUpdateEl.hidden = !updateAvailable;
+        projectAgentUpdateEl.textContent = installedVersion === "unknown" ? "Install latest" : "Update";
+      }
       const statusText = readyConnection
         ? "Ready · " + (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent")
         : ready
@@ -2736,9 +2748,9 @@ export function page(config = configFromEnv()) {
                 : "No computer is connected to this account yet.";
       harnessRunnerStatusEl.textContent = statusText;
       if (projectReadinessEl) projectReadinessEl.dataset.state = localRunnerReady ? "ready" : paired ? "offline" : "setup";
-      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Connect this computer";
+      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = updateAvailable ? "Agent update available" : localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Connect this computer";
       if (projectReadinessTextEl) projectReadinessTextEl.textContent = localRunnerReady
-        ? "Your project will run locally. Contributor mode is separate and remains optional."
+        ? (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent") + " · Installed " + installedVersion + " · Latest " + latestLocalAgentVersion + ". Your project tools run locally; model inference uses MundusX EHDA."
         : agentMissing
           ? "Install Hermes or select the native MundusX Agent, then retry."
           : paired
