@@ -457,7 +457,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(projects, /<h2 id="project-dialog-title">Create project<\/h2>/);
   assert.match(projects, /id="repository-dialog-close"[^>]*type="button"[^>]*aria-label="Close"/);
   assert.match(projects, /id="project-create-fields"[\s\S]*name="project_slug"[^>]*pattern="\[a-z0-9\]/);
-  assert.match(projects, /Projects keep chats and files together/);
+  assert.match(projects, /This creates a folder inside the local workspace you approved/);
   assert.doesNotMatch(projects, /documents\\mundusx\\projects|Default memory|class="project-mark"/);
   assert.doesNotMatch(projects, /Project type|Java \(Maven\)|Project options|name="project_template"/);
   assert.doesNotMatch(projects, /Files stay on your device|GitHub is optional/);
@@ -499,11 +499,15 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /const projectRuntime = preferredProjectRuntime\(\)/);
   assert.match(html, /openProjects\(\{ showRunnerSetup: true, project: activeProject \}\)/);
   assert.match(html, /existingProjectMode = Boolean\(showRunnerSetup && project\?\.slug\)/);
-  assert.match(html, /repositoryDialogTitleEl\.textContent = existingProjectMode \? "Connect local runner" : "Create project"/);
+  assert.match(html, /repositoryDialogTitleEl\.textContent = existingProjectMode \? "Connect local runner" : localRunnerReady \? "Create project" : "Connect this computer"/);
   assert.match(html, /projectCreateFieldsEl\.hidden = existingProjectMode/);
   assert.match(html, /projectRunnerContextNameEl\.textContent = existingProjectMode \? project\.slug : "Project"/);
   assert.match(html, /projectActionsEl\.hidden = existingProjectMode/);
   assert.match(html, /Respond in planning\/chat mode and do not claim files were changed/);
+  assert.match(html, /!activeProject \|\| runtimePreference === "cloud" \? false : await tryLocalAgentTurn/);
+  assert.match(html, /Connection interrupted; reconnecting/);
+  assert.match(html, /Local agent task timed out/);
+  assert.match(html, /\/api\/agent\/tasks\/" \+ encodeURIComponent\(submitted\.task_id\) \+ "\/cancel"/);
   assert.match(html, /inferProjectTemplate[\s\S]*java\|maven\|spring\|junit\|gradle/);
   assert.match(projects, /id="project-runner-setup" hidden/);
   assert.match(projects, /Run code on this computer/);

@@ -3425,7 +3425,9 @@ export function page(config = configFromEnv()) {
         const chatMessage = activeProject
           ? "Active local project: " + activeProject.slug + ". Respond in planning/chat mode and do not claim files were changed.\\n\\n" + message
           : message;
-        const handledLocally = runtimePreference === "cloud" ? false : await tryLocalAgentTurn(
+        // A normal conversation never invokes a local harness. Local execution
+        // is activated only by an explicitly attached project.
+        const handledLocally = !activeProject || runtimePreference === "cloud" ? false : await tryLocalAgentTurn(
           pending,
           chatMessage,
           conversationId,
@@ -3563,12 +3565,46 @@ export function page(config = configFromEnv()) {
       setStatus("working", runtimeLabel);
       let payload = submitted;
       const deadline = Date.now() + 10 * 60 * 1000;
+      let pollRecoveryDeadline = 0;
+      let cancellationRequested = false;
+      const cancelTask = async () => {
+        if (cancellationRequested) return;
+        cancellationRequested = true;
+        renderLocalAgentProgress(pending, payload, runtimeLabel, { cancelling: true });
+        const cancelled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id) + "/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const cancelPayload = await readApiPayload(cancelled, "local agent cancellation failed");
+        if (!cancelled.ok) {
+          cancellationRequested = false;
+          throw new Error(cancelPayload.error || "local agent cancellation failed");
+        }
+        payload = cancelPayload;
+      };
+      renderLocalAgentProgress(pending, payload, runtimeLabel, { onCancel: cancelTask });
       while (!["completed", "failed", "cancelled"].includes(payload.state)) {
         if (Date.now() >= deadline) throw new Error("Local agent task timed out");
         await sleep(1000);
-        const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
-        payload = await readApiPayload(polled, "local agent poll failed");
-        if (!polled.ok) throw new Error(payload.error || "local agent poll failed");
+        try {
+          const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
+          payload = await readApiPayload(polled, "local agent poll failed");
+          if (!polled.ok) {
+            const error = new Error(payload.error || "local agent poll failed");
+            error.status = polled.status;
+            throw error;
+          }
+          pollRecoveryDeadline = 0;
+        } catch (pollError) {
+          const status = Number(pollError?.status);
+          const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
+          pollRecoveryDeadline ||= Date.now() + 120000;
+          if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
+          renderLocalAgentProgress(pending, payload, runtimeLabel, { reconnecting: true, onCancel: cancelTask });
+          continue;
+        }
+        renderLocalAgentProgress(pending, payload, runtimeLabel, { onCancel: cancelTask, cancelling: cancellationRequested });
       }
       if (payload.state !== "completed") {
         throw new Error(payload.error || (payload.state === "cancelled" ? "Local agent task was cancelled" : "Local agent task failed"));
@@ -3585,6 +3621,44 @@ export function page(config = configFromEnv()) {
       }, conversationId);
       setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
       return true;
+    }
+
+    function renderLocalAgentProgress(pending, payload, runtimeLabel, options = {}) {
+      const body = pending.querySelector(".message-body");
+      if (!body) return;
+      const events = Array.isArray(payload?.events) ? payload.events : [];
+      const latest = events.at(-1)?.event || null;
+      const labels = {
+        harness_started: "Starting agent harness",
+        model_turn_queued: "Planning the next step",
+        model_turn_completed: "Plan received",
+        tool_started: "Running a project tool",
+        tool_completed: "Project tool completed",
+        file_changed: "Updating project files",
+        verification_started: "Running verification",
+        verification_completed: "Verification completed",
+      };
+      const summary = options.cancelling
+        ? "Stopping project work"
+        : options.reconnecting
+          ? "Connection interrupted; reconnecting"
+          : String(latest?.summary || labels[latest?.type] || "Working in the project");
+      body.textContent = runtimeLabel + " · " + summary + "…";
+      if (typeof options.onCancel === "function" && !["completed", "failed", "cancelled"].includes(payload?.state)) {
+        const actions = document.createElement("div");
+        actions.className = "message-error-actions";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "message-retry-button";
+        cancel.textContent = options.cancelling ? "Stopping…" : "Stop";
+        cancel.disabled = options.cancelling === true;
+        cancel.addEventListener("click", () => void options.onCancel().catch((error) => {
+          showToast(error?.message || "Could not stop local task");
+        }));
+        actions.appendChild(cancel);
+        body.appendChild(actions);
+      }
+      setStatus("working", summary);
     }
 
     async function tryLiveChatTurn(pending, message, conversationId) {
