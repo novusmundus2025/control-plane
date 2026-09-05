@@ -2743,7 +2743,9 @@ export function page(config = configFromEnv()) {
           ? (updateAvailable ? "Update & reconnect" : "Reconnect")
           : installedVersion === "unknown" ? "Install latest" : "Update";
       }
-      if (projectReadinessRefreshEl) projectReadinessRefreshEl.hidden = paired && !localRunnerReady;
+      // A healthy connector is authoritative. Do not leave a stale manual
+      // retry action visible after automatic readiness polling succeeds.
+      if (projectReadinessRefreshEl) projectReadinessRefreshEl.hidden = localRunnerReady || (paired && !localRunnerReady);
       const statusText = readyConnection
         ? "Ready · " + (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent")
         : ready

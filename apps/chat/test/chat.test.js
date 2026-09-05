@@ -520,6 +520,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /pendingRunnerAction = \{ pending, message, project: activeProject, conversationId \}/);
   assert.match(html, /Runner connected\. Resuming your request/);
   assert.match(html, /if \(localRunnerReady\) void resumePendingRunnerAction\(\)/);
+  assert.match(html, /projectReadinessRefreshEl\.hidden = localRunnerReady \|\| \(paired && !localRunnerReady\)/);
   assert.doesNotMatch(projects, />Create pairing code</);
   assert.doesNotMatch(projects, /<details|Set up local runner/);
   assert.match(projects, /MundusX-Setup\.exe/);
