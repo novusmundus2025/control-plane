@@ -4946,7 +4946,8 @@ export function page(config = configFromEnv()) {
     function formatJobMeta(payload) {
       const progress = payload.progress || {};
       const units = progress.total ? " / " + progress.completed + "/" + progress.total + " " + progressUnit(progress) : "";
-      return "job " + payload.job_id + " / " + payload.status + " / mode " + payload.execution_mode + units;
+      const mode = payload.execution_mode || payload.runtime_selected || "local-agent";
+      return "job " + payload.job_id + " / " + payload.status + " / mode " + mode + units;
     }
 
     function progressUnit(progress) {
