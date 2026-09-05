@@ -5319,6 +5319,7 @@ function runnerConnectPage(url, kind = "runner") {
     h1 { margin: 0 0 10px; font-size: 24px; } p { color: #626a80; line-height: 1.5; }
     .device { margin: 20px 0; padding: 14px 16px; border-radius: 12px; background: #f0f2f8; font-weight: 650; }
     button, a.button { display: block; box-sizing: border-box; width: 100%; padding: 12px 16px; border: 0; border-radius: 11px; background: linear-gradient(135deg,#3984ff,#7655ee); color: white; font: inherit; font-weight: 700; text-align: center; text-decoration: none; cursor: pointer; }
+    [hidden] { display: none !important; }
     button:disabled { opacity: .6; cursor: wait; } .error { color: #b42318; }
     @media (prefers-color-scheme: dark) { body { background:#080b18; color:#f4f5fb; } main { background:#111526; border-color:#29304a; } p { color:#aab1c7; } .device { background:#1b2034; } }
   </style>
