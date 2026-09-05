@@ -5519,6 +5519,43 @@ export function createServerApp(config = configFromEnv()) {
       if (url.pathname.startsWith("/api/agent/model/v1/")) {
         const connector = await authStore.mcpSession(request);
         if (!connector) throw httpError(401, "A connected MundusX agent credential is required");
+        if (request.method === "POST" && url.pathname === "/api/agent/model/v1/jobs") {
+          const body = await readJsonBody(request);
+          if (body?.protocol !== "mundusx-project-agent/v1" || body?.model !== PUBLIC_MODEL_ID ||
+              !Array.isArray(body?.messages) || !Array.isArray(body?.tools)) {
+            throw httpError(400, "Invalid project-agent v1 model job");
+          }
+          const accepted = await authStore.createProjectModelJob(connector.id, body);
+          queueMicrotask(async () => {
+            const modelRequest = await authStore.startProjectModelJob(connector.id, accepted.job_id).catch(() => null);
+            if (!modelRequest) return;
+            try {
+              const completion = await submitHermesToolCompletion(modelRequest, config);
+              await authStore.finishProjectModelJob(connector.id, accepted.job_id, completion);
+            } catch (error) {
+              await authStore.finishProjectModelJob(connector.id, accepted.job_id, null, {
+                code: "model_turn_failed", message: String(error?.message || error).slice(0, 1000), retryable: true,
+              }).catch(() => {});
+            }
+          });
+          return sendOpenAiJson(response, 202, {
+            protocol: "mundusx-project-agent/v1", job_id: accepted.job_id, status: accepted.state, retry_after_ms: 500,
+          });
+        }
+        const asyncJob = url.pathname.match(/^\/api\/agent\/model\/v1\/jobs\/([0-9a-f-]+)(\/cancel)?$/i);
+        if (asyncJob && request.method === "GET" && !asyncJob[2]) {
+          const job = await authStore.projectModelJob(connector.id, asyncJob[1]);
+          return sendOpenAiJson(response, 200, {
+            protocol: "mundusx-project-agent/v1", job_id: job.job_id, status: job.state,
+            ...(job.state === "completed" ? { result: job.result } : {}),
+            ...(job.error ? { error: job.error } : {}),
+            ...(["queued", "running"].includes(job.state) ? { retry_after_ms: 500 } : {}),
+          });
+        }
+        if (asyncJob && request.method === "POST" && asyncJob[2]) {
+          const job = await authStore.cancelProjectModelJob(connector.id, asyncJob[1]);
+          return sendOpenAiJson(response, 200, { protocol: "mundusx-project-agent/v1", job_id: job.job_id, status: job.state });
+        }
         if (request.method === "GET" && url.pathname === "/api/agent/model/v1/models") {
           return sendOpenAiJson(response, 200, openAiModelsResponse());
         }
