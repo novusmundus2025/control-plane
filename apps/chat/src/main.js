@@ -1582,6 +1582,9 @@ export function page(config = configFromEnv()) {
     .readiness-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 999px; background: var(--muted-2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted-2) 15%, transparent); }
     [data-state="ready"] > .readiness-dot { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 15%, transparent); }
     [data-state="offline"] > .readiness-dot { background: #d98c16; box-shadow: 0 0 0 4px rgba(217,140,22,.14); }
+    .project-readiness[data-state="update"] { border-color: #efc46b; background: #fff8df; }
+    [data-state="update"] > .readiness-dot { background: #d98c16; box-shadow: 0 0 0 4px rgba(217,140,22,.18); }
+    [data-state="update"] #project-agent-update { border-color: #d98c16; background: #fff3c4; color: #7a4700; font-weight: 750; }
     .command-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; margin-top: 9px; }
     .command-row[hidden] { display: none; }
     .command-row code { min-width: 0; overflow-wrap: anywhere; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); user-select: all; font-size: 12px; }
@@ -2740,7 +2743,6 @@ export function page(config = configFromEnv()) {
         runnerPairingExpiresAt = Date.now() + 10 * 60 * 1000;
         pollRunnerPairing();
       }
-      updateRunnerSetupState({ paired, ready: localRunnerReady, agentMissing });
       const runtime = readyConnection?.capabilities?.preferred_agent
         || readyConnection?.capabilities?.agent_runtimes?.[0]
         || null;
@@ -2748,16 +2750,22 @@ export function page(config = configFromEnv()) {
       const installedVersion = knownConnection?.capabilities?.client_version || "unknown";
       const updateAvailable = Boolean(knownConnection)
         && !releaseVersionAtLeast(installedVersion, latestLocalAgentVersion);
+      localRunnerReady = localRunnerReady && !updateAvailable;
+      updateRunnerSetupState({ paired, ready: localRunnerReady, agentMissing });
       if (projectAgentUpdateEl) {
         projectAgentUpdateEl.hidden = !(updateAvailable || (paired && !localRunnerReady));
-        projectAgentUpdateEl.textContent = paired && !localRunnerReady
-          ? (updateAvailable ? "Update & reconnect" : "Reconnect")
+        projectAgentUpdateEl.textContent = updateAvailable
+          ? "Update now"
+          : paired && !localRunnerReady
+          ? "Reconnect"
           : installedVersion === "unknown" ? "Install latest" : "Update";
       }
       // A healthy connector is authoritative. Do not leave a stale manual
       // retry action visible after automatic readiness polling succeeds.
       if (projectReadinessRefreshEl) projectReadinessRefreshEl.hidden = localRunnerReady || (paired && !localRunnerReady);
-      const statusText = readyConnection
+      const statusText = updateAvailable
+        ? "Update required · Installed " + installedVersion + " · Latest " + latestLocalAgentVersion
+        : readyConnection
         ? "Ready · " + (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent")
         : ready
           ? "Ready · bounded MundusX runner"
@@ -2769,9 +2777,11 @@ export function page(config = configFromEnv()) {
                 ? "Waiting for installer approval and runner startup…"
                 : "No computer is connected to this account yet.";
       harnessRunnerStatusEl.textContent = statusText;
-      if (projectReadinessEl) projectReadinessEl.dataset.state = localRunnerReady ? "ready" : paired ? "offline" : "setup";
-      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = updateAvailable ? "Agent update available" : localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Connect this computer";
-      if (projectReadinessTextEl) projectReadinessTextEl.textContent = localRunnerReady
+      if (projectReadinessEl) projectReadinessEl.dataset.state = updateAvailable ? "update" : localRunnerReady ? "ready" : paired ? "offline" : "setup";
+      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = updateAvailable ? "Update required" : localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Connect this computer";
+      if (projectReadinessTextEl) projectReadinessTextEl.textContent = updateAvailable
+        ? "Installed " + installedVersion + " · Required " + latestLocalAgentVersion + " or newer. Update now to create or run local projects."
+        : localRunnerReady
         ? (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent") + " · Installed " + installedVersion + " · Required " + latestLocalAgentVersion + " or newer. Your project tools run locally; model inference uses MundusX EHDA."
         : agentMissing
           ? "Install Hermes or select the native MundusX Agent, then retry."
@@ -2819,19 +2829,16 @@ export function page(config = configFromEnv()) {
     function releaseVersionAtLeast(installed, required) {
       const parse = (value) => {
         const text = String(value || "").trim();
-        const match = text.match(/^(cli-v)?(\d+)\.(\d+)\.(\d+)$/);
-        return match ? { channel: match[1] ? "release" : "binary", parts: match.slice(2).map(Number) } : null;
+        const match = text.match(/^(?:(?:cli-)?v)?(\\d+)\\.(\\d+)\\.(\\d+)$/);
+        return match ? match.slice(1).map(Number) : null;
       };
       const current = parse(installed);
       const minimum = parse(required);
-      // Missing or legacy version metadata cannot prove that an update is needed.
-      // Connection health is handled separately by the heartbeat state.
+      // Missing or legacy version metadata cannot prove that an update is needed;
+      // connection health is handled separately by the heartbeat state.
       if (!current || !minimum) return true;
-      // Release tags and executable package versions are independent counters.
-      // Treat them as incomparable rather than forcing users into an update loop.
-      if (current.channel !== minimum.channel) return true;
       for (let index = 0; index < 3; index += 1) {
-        if (current.parts[index] !== minimum.parts[index]) return current.parts[index] > minimum.parts[index];
+        if (current[index] !== minimum[index]) return current[index] > minimum[index];
       }
       return true;
     }
