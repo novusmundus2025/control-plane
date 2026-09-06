@@ -173,6 +173,35 @@ test("Google callback rejects a verified ID-token claim that does not match user
   );
 });
 
+test("Google callback verifies an omitted email claim through Google's tokeninfo endpoint", async () => {
+  const client = { async query() { return { rows: [] }; }, release() {} };
+  const pool = {
+    async query() { return { rowCount: 1, rows: [{ code_verifier: "verifier", redirect_path: "/projects" }] }; },
+    async connect() { return client; },
+  };
+  const requests = [];
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client", googleClientSecret: "google-secret", publicOrigin: "https://chat.mundusx.ai",
+  }, {
+    pool,
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      if (String(url).includes("/tokeninfo")) return { ok: true, async json() { return {
+        iss: "accounts.google.com", aud: "google-client", exp: String(Math.floor(Date.now() / 1000) + 300),
+        sub: "google-subject", email: "user@example.com", email_verified: "true",
+      }; } };
+      if (String(url).includes("/token")) return { ok: true, async json() { return { access_token: "access", id_token: "opaque-google-token" }; } };
+      return { ok: true, async json() { return { sub: "google-subject", email: "User@Example.com", name: "Example User" }; } };
+    },
+  });
+  let identity;
+  store.upsertIdentity = async (_client, value) => { identity = value; return "user-id"; };
+  store.createSession = async () => {};
+  assert.equal(await store.finishGoogle(new URLSearchParams({ state: "state", code: "code" }), {}), "/projects");
+  assert.equal(identity.email, "user@example.com");
+  assert.equal(requests.length, 3);
+});
+
 test("GitHub provider requires a valid 32-byte encryption key", () => {
   const config = authConfigFromEnv({
     MUNDUSX_GITHUB_CLIENT_ID: "client",
