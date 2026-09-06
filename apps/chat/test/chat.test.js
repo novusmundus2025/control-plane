@@ -528,6 +528,11 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(projects, /MundusX-Setup\.exe/);
   assert.match(projects, /mundusx\/releases\/releases\/download\/cli-windows-v0\.1\.57\/MundusX-Setup\.exe/);
   assert.match(html, /const latestLocalAgentVersion = "0\.1\.57"/);
+  assert.match(html, /projectReadinessEl\.dataset\.state = updateAvailable \? "update"/);
+  assert.match(html, /projectReadinessTitleEl\.textContent = updateAvailable \? "Update required"/);
+  assert.match(html, /projectAgentUpdateEl\.textContent = updateAvailable[\s\S]*?"Update now"/);
+  assert.match(html, /project-readiness\[data-state="update"\]/);
+  assert.match(html, /\(\\d\+\)\\\.\(\\d\+\)\\\.\(\\d\+\)/);
   assert.match(projects, /id="project-readiness"/);
   assert.match(projects, /id="project-readiness-refresh"[^>]*>Retry/);
   assert.match(html, /Connect this computer/);
