@@ -127,6 +127,24 @@ const WELCOME_INNER_HTML = `<div class="welcome-inner">
               </div>
             </div>`;
 
+export function parseAgentModelProviders(env = process.env) {
+  const urls = String(env.MUNDUSX_AGENT_MODEL_BASE_URLS ?? "")
+    .split(",")
+    .map((value) => normalizeOrigin(value.trim()))
+    .filter(Boolean);
+  const keys = String(env.MUNDUSX_AGENT_MODEL_API_KEYS ?? "")
+    .split(",")
+    .map((value) => value.trim());
+  const models = String(env.MUNDUSX_AGENT_MODEL_IDS ?? "")
+    .split(",")
+    .map((value) => value.trim());
+  return urls.map((baseUrl, index) => ({
+    baseUrl,
+    apiKey: keys[index] || keys[0] || "",
+    model: models[index] || models[0] || "",
+  }));
+}
+
 export function configFromEnv(env = process.env) {
   const harnessUiEnabled = ["1", "true", "yes"].includes(
     String(env.MUNDUSX_HARNESS_UI_ENABLED ?? "").trim().toLowerCase(),
@@ -150,6 +168,7 @@ export function configFromEnv(env = process.env) {
       || "https://github.com/mundusx/releases/releases/download/cli-windows-v0.1.57/MundusX-Setup.exe",
     latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "0.1.57",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
+    agentModelProviders: parseAgentModelProviders(env),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
       env.VALKEY_URL ??
@@ -5748,11 +5767,11 @@ export function createServerApp(config = configFromEnv()) {
           const body = await readJsonBody(request);
           const routedBody = { ...body, model: PUBLIC_MODEL_ID };
           if (Array.isArray(routedBody.tools) && routedBody.tools.length) {
-            // Hermes' OpenAI adapter consumes agent turns as SSE even though it
-            // omits the optional `stream` request field. This is a private
-            // connected-agent route, so tool-bearing requests are always
-            // returned as a standards-compatible buffered stream.
-            return await streamHermesToolCompletion(response, routedBody, config);
+            // Preserve Hermes' native OpenAI messages and tool schema all the
+            // way to the selected model runtime. The control plane is the
+            // default provider; deployments may configure additional native
+            // providers for health-based failover.
+            return await relayNativeHermesToolStream(response, routedBody, config);
           }
           if (routedBody.stream === true) {
             return await streamOpenAiChatCompletion(response, routedBody, config);
@@ -6120,6 +6139,162 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
 export function isRetryableHermesModelFailure(value) {
   return /\b(?:408|425|429|500|502|503|504)\b|application failed to respond|timed?\s*out|temporar(?:y|ily)|connection (?:reset|closed|refused)/i
     .test(String(value || ""));
+}
+
+const agentProviderCircuits = new Map();
+const AGENT_PROVIDER_FAILURE_THRESHOLD = 2;
+const AGENT_PROVIDER_COOLDOWN_MS = 30_000;
+const AGENT_PROVIDER_FIRST_EVENT_TIMEOUT_MS = 60_000;
+
+export function resetAgentProviderCircuits() {
+  agentProviderCircuits.clear();
+}
+
+function agentProviderAvailable(provider, now = Date.now()) {
+  return (agentProviderCircuits.get(provider.baseUrl)?.openUntil || 0) <= now;
+}
+
+function noteAgentProviderSuccess(provider) {
+  agentProviderCircuits.delete(provider.baseUrl);
+}
+
+function noteAgentProviderFailure(provider, now = Date.now()) {
+  const previous = agentProviderCircuits.get(provider.baseUrl) || { failures: 0, openUntil: 0 };
+  const failures = previous.failures + 1;
+  agentProviderCircuits.set(provider.baseUrl, {
+    failures,
+    openUntil: failures >= AGENT_PROVIDER_FAILURE_THRESHOLD ? now + AGENT_PROVIDER_COOLDOWN_MS : 0,
+  });
+}
+
+function nativeChatCompletionUrl(baseUrl) {
+  const normalized = String(baseUrl || "").replace(/\/+$/, "");
+  return normalized.endsWith("/v1") ? `${normalized}/chat/completions` : `${normalized}/v1/chat/completions`;
+}
+
+function inspectNativeOpenAiEvents(text) {
+  for (const event of String(text || "").split(/\r?\n\r?\n/)) {
+    const data = event.split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const value = JSON.parse(data);
+      if (value?.error) return { error: String(value.error.message || value.error) };
+      if (Array.isArray(value?.choices)) return { valid: true };
+    } catch {
+      // Wait for a complete SSE event before deciding that the provider is bad.
+    }
+  }
+  return {};
+}
+
+export async function relayNativeHermesToolStream(
+  response,
+  body,
+  config = configFromEnv(),
+  fetchImpl = fetch,
+) {
+  const configured = Array.isArray(config.agentModelProviders) && config.agentModelProviders.length
+    ? config.agentModelProviders
+    : [{
+        baseUrl: config.controlPlaneUrl,
+        apiKey: config.operatorToken || "",
+        model: config.modelOverride || PUBLIC_MODEL_ID,
+      }];
+  const available = configured.filter((provider) => agentProviderAvailable(provider));
+  const providers = available.length ? available : configured;
+  let lastError = "No native agent model provider is configured";
+
+  for (const provider of providers) {
+    const controller = new AbortController();
+    let timeout = setTimeout(() => controller.abort(), AGENT_PROVIDER_FIRST_EVENT_TIMEOUT_MS);
+    timeout.unref?.();
+    let reader;
+    try {
+      const upstreamBody = { ...body, stream: true };
+      delete upstreamBody.protocol;
+      delete upstreamBody.project_task_id;
+      delete upstreamBody.connection_id;
+      delete upstreamBody.request_id;
+      if (provider.model) upstreamBody.model = provider.model;
+      else if (config.modelOverride) upstreamBody.model = config.modelOverride;
+      const upstream = await fetchImpl(nativeChatCompletionUrl(provider.baseUrl), {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+          ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+        },
+        body: JSON.stringify(upstreamBody),
+        signal: controller.signal,
+      });
+      if (!upstream.ok) {
+        const detail = (await upstream.text()).trim().slice(0, 500);
+        lastError = `native agent provider returned ${upstream.status}: ${detail || upstream.statusText}`;
+        if (![408, 425, 429, 500, 502, 503, 504].includes(upstream.status)) throw httpError(upstream.status, lastError);
+        noteAgentProviderFailure(provider);
+        continue;
+      }
+      if (!upstream.body?.getReader) {
+        lastError = "native agent provider did not return a readable SSE stream";
+        noteAgentProviderFailure(provider);
+        continue;
+      }
+
+      reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      const buffered = [];
+      let inspected = "";
+      let accepted = false;
+      while (!accepted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => controller.abort(), AGENT_PROVIDER_FIRST_EVENT_TIMEOUT_MS);
+        timeout.unref?.();
+        buffered.push(value);
+        inspected += decoder.decode(value, { stream: true });
+        const verdict = inspectNativeOpenAiEvents(inspected);
+        if (verdict.error) {
+          lastError = verdict.error;
+          break;
+        }
+        if (verdict.valid) accepted = true;
+        if (inspected.length > 65_536) {
+          lastError = "native agent provider sent no valid OpenAI SSE event";
+          break;
+        }
+      }
+      if (!accepted) {
+        noteAgentProviderFailure(provider);
+        await reader.cancel().catch(() => {});
+        continue;
+      }
+
+      clearTimeout(timeout);
+      noteAgentProviderSuccess(provider);
+      startOpenAiStream(response, "native-agent-tools");
+      for (const chunk of buffered) response.write(chunk);
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        response.write(value);
+      }
+      return response.end();
+    } catch (error) {
+      lastError = error?.name === "AbortError"
+        ? "native agent provider timed out before its first OpenAI event"
+        : String(error?.message || error);
+      noteAgentProviderFailure(provider);
+      await reader?.cancel?.().catch(() => {});
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw httpError(502, `All native agent model providers failed: ${lastError}`);
 }
 
 export function parseFirstJsonObject(value) {

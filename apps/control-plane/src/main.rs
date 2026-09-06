@@ -8798,7 +8798,27 @@ fn handle_connection_with_streams(
                     let completion_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
                     let created = now_unix_seconds_u64();
                     let wants_stream = request_body.stream.unwrap_or(false);
-                    let (system_prompt, prompt) = chat_messages_to_prompt(&request_body.messages);
+                    let native_tool_turn = request_body
+                        .tools
+                        .as_ref()
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|tools| !tools.is_empty());
+                    let (system_prompt, prompt) = if native_tool_turn {
+                        let mut native_request = request_body.clone();
+                        // The worker returns a complete native assistant message;
+                        // the control plane wraps it as SSE after validation.
+                        native_request.stream = Some(false);
+                        (
+                            None,
+                            format!(
+                                "__MUNDUSX_OPENAI_TOOL_TURN_V1__{}",
+                                serde_json::to_string(&native_request)
+                                    .expect("validated OpenAI request serializes")
+                            ),
+                        )
+                    } else {
+                        chat_messages_to_prompt(&request_body.messages)
+                    };
                     let metadata_request = chat_gateway::is_openwebui_metadata_request(&prompt);
                     let sensitive_history = system_prompt
                         .as_deref()
@@ -8813,7 +8833,7 @@ fn handle_connection_with_streams(
                             return write_chat_error(&mut stream, "400 Bad Request", &error);
                         }
                     };
-                    match if mode.is_none() {
+                    match if mode.is_none() && !native_tool_turn {
                         tools::execute(&request_body.messages)
                     } else {
                         Ok(None)
@@ -8891,7 +8911,11 @@ fn handle_connection_with_streams(
                         execution_mode: if mode.is_some() || metadata_request || sensitive_history {
                             JobExecutionMode::Single
                         } else {
-                            JobExecutionMode::Auto
+                            if native_tool_turn {
+                                JobExecutionMode::Single
+                            } else {
+                                JobExecutionMode::Auto
+                            }
                         },
                         // Plan without forcing single execution; eligible direct jobs are
                         // upgraded to live streaming after the graph decision is known.
@@ -9668,6 +9692,9 @@ mod tests {
         ChatMessage {
             role: role.to_string(),
             content: serde_json::Value::String(content.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }
     }
 

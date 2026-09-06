@@ -39,12 +39,15 @@ import {
   openAiSseStartFrame,
   parseFirstJsonObject,
   parseHermesToolDecision,
+  parseAgentModelProviders,
   page,
   pollChatJob,
   redactSensitiveText,
   selectChatSkills,
   requiresValidatedStreaming,
   relayControlPlaneOpenAiStream,
+  relayNativeHermesToolStream,
+  resetAgentProviderCircuits,
   submitChatJob,
   submitChatTurn,
   submitOpenAiChatCompletion,
@@ -4097,6 +4100,70 @@ test("streaming relay exposes the first upstream delta before completion", async
   assert.equal(result.completionId, "chatcmpl-live");
   assert.equal(result.finishReason, "stop");
   assert.equal(events.at(-1).type, "end");
+});
+
+test("native Hermes providers preserve OpenAI tools and fail over before streaming", async () => {
+  resetAgentProviderCircuits();
+  const requests = [];
+  const encoder = new TextEncoder();
+  const events = [];
+  const response = {
+    writableEnded: false,
+    writeHead: (status, headers) => events.push({ type: "headers", status, headers }),
+    flushHeaders: () => events.push({ type: "flush" }),
+    write: (value) => { events.push({ type: "write", value: Buffer.from(value).toString("utf8") }); return true; },
+    end(value) { this.writableEnded = true; events.push({ type: "end", value }); },
+  };
+  const body = {
+    model: "mundusx-agnostic",
+    stream: true,
+    messages: [{ role: "user", content: "Inspect the repository" }],
+    tools: [{ type: "function", function: { name: "search_files", parameters: { type: "object" } } }],
+    tool_choice: "auto",
+    project_task_id: "private-task",
+  };
+  const config = configFromEnv({
+    MUNDUSX_AGENT_MODEL_BASE_URLS: "https://primary.example/v1,https://backup.example/v1",
+    MUNDUSX_AGENT_MODEL_API_KEYS: "primary-secret,backup-secret",
+    MUNDUSX_AGENT_MODEL_IDS: "tool-model-a,tool-model-b",
+  });
+  await relayNativeHermesToolStream(response, body, config, async (url, init) => {
+    requests.push({ url, init, body: JSON.parse(init.body) });
+    if (url.includes("primary.example")) return new Response("unavailable", { status: 502 });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          'data: {"id":"chatcmpl-tools","choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search_files","arguments":"{\\"pattern\\":\\"*.java\\"}"}}]},"finish_reason":null}]}\n\n' +
+          'data: {"id":"chatcmpl-tools","choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n' +
+          'data: [DONE]\n\n',
+        ));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, "https://backup.example/v1/chat/completions");
+  assert.equal(requests[1].init.headers.Authorization, "Bearer backup-secret");
+  assert.deepEqual(requests[1].body.tools, body.tools);
+  assert.deepEqual(requests[1].body.messages, body.messages);
+  assert.equal(requests[1].body.tool_choice, "auto");
+  assert.equal(requests[1].body.model, "tool-model-b");
+  assert.equal(requests[1].body.project_task_id, undefined);
+  assert.match(events.find((event) => event.type === "write")?.value || "", /tool_calls/);
+  assert.equal(events[0].headers["X-MundusX-Stream-Mode"], "native-agent-tools");
+  assert.equal(response.writableEnded, true);
+});
+
+test("agent model provider configuration keeps aligned models and credentials", () => {
+  assert.deepEqual(parseAgentModelProviders({
+    MUNDUSX_AGENT_MODEL_BASE_URLS: "https://one.example, https://two.example/v1/",
+    MUNDUSX_AGENT_MODEL_API_KEYS: "key-one,key-two",
+    MUNDUSX_AGENT_MODEL_IDS: "model-one,model-two",
+  }), [
+    { baseUrl: "https://one.example", apiKey: "key-one", model: "model-one" },
+    { baseUrl: "https://two.example/v1", apiKey: "key-two", model: "model-two" },
+  ]);
 });
 
 test("deterministic MundusX Chat requests return an explicit polling fallback without upstream work", async () => {
