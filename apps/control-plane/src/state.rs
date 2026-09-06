@@ -4546,6 +4546,9 @@ fn compact_code_output_failure_reason(output: &str, effective_max_tokens: u32) -
 }
 
 fn code_quality_gate_applies(job: &JobRecord) -> bool {
+    if job.prompt.starts_with("__MUNDUSX_OPENAI_TOOL_TURN_V1__") {
+        return false;
+    }
     if job.classification.task_type != RequestTaskType::Coding
         || job.classification.output_format != ExpectedOutputFormat::Code
     {
@@ -6067,6 +6070,25 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
         execution_constraints.push("complete_code_output".to_string());
     }
 
+    let mut capability_requirements = capability_requirements_for_request(
+        &lower,
+        task_type,
+        complexity,
+        context_size,
+        detailed_research_prompt,
+    );
+    if request
+        .prompt
+        .starts_with("__MUNDUSX_OPENAI_TOOL_TURN_V1__")
+    {
+        capability_requirements.push(CapabilityRequirement {
+            capability: "tool_use".to_string(),
+            weight: 100,
+            minimum_score: 60,
+            required: true,
+        });
+    }
+
     RequestClassification {
         task_type,
         complexity,
@@ -6074,13 +6096,7 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
         output_format,
         context_size,
         execution_constraints,
-        capability_requirements: capability_requirements_for_request(
-            &lower,
-            task_type,
-            complexity,
-            context_size,
-            detailed_research_prompt,
-        ),
+        capability_requirements,
         classification_confidence: 85,
         reason: format!(
             "deterministic classifier matched {} task with {:?} complexity and {:?} context",
@@ -9076,6 +9092,22 @@ mod tests {
         assert_eq!(classification.task_type, RequestTaskType::Coding);
         assert_eq!(classification.complexity, RequestComplexity::Medium);
         assert_eq!(classification.output_format, ExpectedOutputFormat::Code);
+    }
+
+    #[test]
+    fn native_openai_tool_turn_requires_a_tool_capable_model() {
+        let request = classification_request(concat!(
+            "__MUNDUSX_OPENAI_TOOL_TURN_V1__",
+            r#"{"messages":[{"role":"user","content":"inspect files"}],"tools":[{"type":"function","function":{"name":"search_files"}}]}"#
+        ));
+        let classification = classify_job_request(&request);
+        let requirement = classification
+            .capability_requirements
+            .iter()
+            .find(|requirement| requirement.capability == "tool_use")
+            .expect("tool-use requirement");
+        assert!(requirement.required);
+        assert_eq!(requirement.minimum_score, 60);
     }
 
     #[test]
