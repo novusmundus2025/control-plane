@@ -95,6 +95,28 @@ test("Google callback rejects an account without a verified email", async () => 
   assert.equal(connected, false);
 });
 
+test("Google callback accepts the verified_email compatibility claim", async () => {
+  const client = { async query() { return { rows: [] }; }, release() {} };
+  const pool = {
+    async query() { return { rowCount: 1, rows: [{ code_verifier: "verifier", redirect_path: "/projects" }] }; },
+    async connect() { return client; },
+  };
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client", googleClientSecret: "google-secret", publicOrigin: "https://chat.mundusx.ai",
+  }, {
+    pool,
+    fetchImpl: async (url) => String(url).includes("/token")
+      ? { ok: true, async json() { return { access_token: "access" }; } }
+      : { ok: true, async json() { return { sub: "google-subject", email: "User@Example.com", verified_email: true, name: "Example User" }; } },
+  });
+  let identity;
+  store.upsertIdentity = async (_client, value) => { identity = value; return "user-id"; };
+  store.createSession = async () => {};
+  const destination = await store.finishGoogle(new URLSearchParams({ state: "state", code: "code" }), {});
+  assert.equal(destination, "/projects");
+  assert.equal(identity.email, "user@example.com");
+});
+
 test("GitHub provider requires a valid 32-byte encryption key", () => {
   const config = authConfigFromEnv({
     MUNDUSX_GITHUB_CLIENT_ID: "client",
@@ -403,4 +425,24 @@ test("local agent auto claims select Hermes only when advertised and preferred",
   assert.equal(task.runtime_selected, "hermes");
   assert.match(queries[0].sql, /capabilities->'agent_runtimes' \? 'hermes'/);
   assert.match(queries[0].sql, /capabilities->>'preferred_agent' = 'hermes'/);
+});
+
+test("project model jobs safely requeue retryable failures with the same idempotency key", async () => {
+  let insert;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) {
+      insert = { sql, values };
+      return { rowCount: 1, rows: [{ job_id: values[0], state: "queued" }] };
+    },
+  } });
+  const created = await store.createProjectModelJob("22222222-2222-4222-8222-222222222222", {
+    project_task_id: "33333333-3333-4333-8333-333333333333",
+    connection_id: "11111111-1111-4111-8111-111111111111",
+    idempotency_key: "stable-model-turn-key",
+  });
+  assert.equal(created.state, "queued");
+  assert.match(insert.sql, /on conflict \(user_id, project_task_id, idempotency_key\)/);
+  assert.match(insert.sql, /error->>'retryable'/);
+  assert.match(insert.sql, /then 'queued'/);
+  assert.equal(insert.values[2], "stable-model-turn-key");
 });
