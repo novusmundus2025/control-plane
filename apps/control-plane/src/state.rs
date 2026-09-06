@@ -6082,7 +6082,7 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
         .starts_with("__MUNDUSX_OPENAI_TOOL_TURN_V1__")
     {
         capability_requirements.push(CapabilityRequirement {
-            capability: "tool_use".to_string(),
+            capability: "native_tool_calls_v1".to_string(),
             weight: 100,
             minimum_score: 60,
             required: true,
@@ -9104,7 +9104,7 @@ mod tests {
         let requirement = classification
             .capability_requirements
             .iter()
-            .find(|requirement| requirement.capability == "tool_use")
+            .find(|requirement| requirement.capability == "native_tool_calls_v1")
             .expect("tool-use requirement");
         assert!(requirement.required);
         assert_eq!(requirement.minimum_score, 60);
