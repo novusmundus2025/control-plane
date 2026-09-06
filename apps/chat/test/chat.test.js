@@ -4155,6 +4155,23 @@ test("native Hermes providers preserve OpenAI tools and fail over before streami
   assert.equal(response.writableEnded, true);
 });
 
+test("native Hermes tools fail fast when the MundusX model node is outdated", async () => {
+  resetAgentProviderCircuits();
+  const response = { writeHead() {}, write() {}, end() {} };
+  const config = configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" });
+  await assert.rejects(
+    relayNativeHermesToolStream(response, {
+      model: "mundusx-agnostic",
+      messages: [{ role: "user", content: "Inspect the project" }],
+      tools: [{ type: "function", function: { name: "search_files", parameters: { type: "object" } } }],
+    }, config, async (url) => {
+      assert.match(url, /\/v1\/nodes/);
+      return jsonResponse({ items: [{ state: "ready", capabilities: { supported_tools: ["tool_use"] } }] });
+    }),
+    /shared model node needs an agent upgrade/,
+  );
+});
+
 test("agent model provider configuration keeps aligned models and credentials", () => {
   assert.deepEqual(parseAgentModelProviders({
     MUNDUSX_AGENT_MODEL_BASE_URLS: "https://one.example, https://two.example/v1/",
