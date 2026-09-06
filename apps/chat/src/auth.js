@@ -502,6 +502,93 @@ export class PostgresAuthStore {
     return result.rows[0];
   }
 
+  async createProjectModelJob(userId, input) {
+    this.ensureReady();
+    const taskId = String(input.project_task_id || "");
+    const connectionId = String(input.connection_id || "");
+    const key = String(input.idempotency_key || "");
+    if (!UUID_PATTERN.test(taskId) || !UUID_PATTERN.test(connectionId) || key.length < 16 || key.length > 128) {
+      throw Object.assign(new Error("Project model job identity is invalid"), { statusCode: 400 });
+    }
+    const jobId = randomUUID();
+    const result = await this.pool.query(`insert into public.project_model_jobs
+      (job_id, user_id, project_task_id, idempotency_key, request)
+      select $1::uuid, $2::uuid, task_id, $3, $4::jsonb from public.local_agent_tasks
+      where task_id = $5::uuid and user_id = $2::uuid and connection_id = $6::uuid and state = 'running'
+      on conflict (user_id, project_task_id, idempotency_key) do update set
+        state = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then 'queued'
+          else public.project_model_jobs.state
+        end,
+        started_at = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then null
+          else public.project_model_jobs.started_at
+        end,
+        completed_at = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then null
+          else public.project_model_jobs.completed_at
+        end,
+        result = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then null
+          else public.project_model_jobs.result
+        end,
+        error = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then null
+          else public.project_model_jobs.error
+        end,
+        expires_at = case
+          when public.project_model_jobs.state in ('failed', 'expired')
+            and coalesce((public.project_model_jobs.error->>'retryable')::boolean, false)
+          then now() + interval '10 minutes'
+          else public.project_model_jobs.expires_at
+        end
+      returning job_id, project_task_id, state, created_at, expires_at`,
+    [jobId, userId, key, JSON.stringify(input), taskId, connectionId]);
+    if (result.rowCount !== 1) throw Object.assign(new Error("Running project task was not found"), { statusCode: 404 });
+    return result.rows[0];
+  }
+
+  async startProjectModelJob(userId, jobId) {
+    const result = await this.pool.query(`update public.project_model_jobs set state='running', started_at=now()
+      where job_id=$1::uuid and user_id=$2::uuid and state='queued' returning request`, [jobId, userId]);
+    return result.rows[0]?.request ?? null;
+  }
+
+  async finishProjectModelJob(userId, jobId, result, error = null) {
+    const state = error ? "failed" : "completed";
+    await this.pool.query(`update public.project_model_jobs set state=$3, result=$4::jsonb, error=$5::jsonb, completed_at=now()
+      where job_id=$1::uuid and user_id=$2::uuid and state='running'`,
+    [jobId, userId, state, JSON.stringify(result ?? null), JSON.stringify(error)]);
+  }
+
+  async projectModelJob(userId, jobId) {
+    if (!UUID_PATTERN.test(String(jobId))) throw Object.assign(new Error("Model job was not found"), { statusCode: 404 });
+    await this.pool.query(`update public.project_model_jobs set state='expired'
+      where job_id=$1::uuid and user_id=$2::uuid and state in ('queued','running') and expires_at <= now()`, [jobId, userId]);
+    const result = await this.pool.query(`select job_id, project_task_id, state, result, error, created_at, started_at, completed_at, expires_at
+      from public.project_model_jobs where job_id=$1::uuid and user_id=$2::uuid`, [jobId, userId]);
+    const row = result.rows[0];
+    if (!row) throw Object.assign(new Error("Model job was not found"), { statusCode: 404 });
+    return row;
+  }
+
+  async cancelProjectModelJob(userId, jobId) {
+    const result = await this.pool.query(`update public.project_model_jobs set state='cancelled', completed_at=now()
+      where job_id=$1::uuid and user_id=$2::uuid and state in ('queued','running') returning job_id, state`, [jobId, userId]);
+    if (result.rowCount !== 1) throw Object.assign(new Error("Model job cannot be cancelled"), { statusCode: 409 });
+    return result.rows[0];
+  }
+
   async authorizeConversation(userId, conversationId, create = false) {
     if (!conversationId) throw Object.assign(new Error("conversation id is required"), { statusCode: 400 });
     try {
@@ -984,7 +1071,11 @@ export class PostgresAuthStore {
     });
     const profile = await profileResponse.json().catch(() => ({}));
     const email = normalizeEmail(profile.email);
-    if (!profileResponse.ok || !profile.sub || profile.email_verified !== true || !email) {
+    const emailVerified = profile.email_verified === true
+      || profile.email_verified === "true"
+      || profile.verified_email === true
+      || profile.verified_email === "true";
+    if (!profileResponse.ok || !profile.sub || !emailVerified || !email) {
       throw Object.assign(new Error("Google account needs a verified email"), { statusCode: 403 });
     }
     const client = await this.pool.connect();

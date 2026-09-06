@@ -985,6 +985,17 @@ export function page(config = configFromEnv()) {
     .message.error .message-body {
       color: #b3231f;
     }
+    .agent-progress-timeline {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .agent-progress-step.is-active {
+      color: var(--purple);
+      font-weight: 700;
+    }
     .message-error-actions {
       display: flex;
       align-items: center;
@@ -2743,7 +2754,9 @@ export function page(config = configFromEnv()) {
           ? (updateAvailable ? "Update & reconnect" : "Reconnect")
           : installedVersion === "unknown" ? "Install latest" : "Update";
       }
-      if (projectReadinessRefreshEl) projectReadinessRefreshEl.hidden = paired && !localRunnerReady;
+      // A healthy connector is authoritative. Do not leave a stale manual
+      // retry action visible after automatic readiness polling succeeds.
+      if (projectReadinessRefreshEl) projectReadinessRefreshEl.hidden = localRunnerReady || (paired && !localRunnerReady);
       const statusText = readyConnection
         ? "Ready · " + (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent")
         : ready
@@ -3425,7 +3438,9 @@ export function page(config = configFromEnv()) {
         const chatMessage = activeProject
           ? "Active local project: " + activeProject.slug + ". Respond in planning/chat mode and do not claim files were changed.\\n\\n" + message
           : message;
-        const handledLocally = runtimePreference === "cloud" ? false : await tryLocalAgentTurn(
+        // A normal conversation never invokes a local harness. Local execution
+        // is activated only by an explicitly attached project.
+        const handledLocally = !activeProject || runtimePreference === "cloud" ? false : await tryLocalAgentTurn(
           pending,
           chatMessage,
           conversationId,
@@ -3563,15 +3578,57 @@ export function page(config = configFromEnv()) {
       setStatus("working", runtimeLabel);
       let payload = submitted;
       const deadline = Date.now() + 10 * 60 * 1000;
+      let pollRecoveryDeadline = 0;
+      let cancellationRequested = false;
+      const cancelTask = async () => {
+        if (cancellationRequested) return;
+        cancellationRequested = true;
+        renderLocalAgentProgress(pending, payload, runtimeLabel, { cancelling: true });
+        const cancelled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id) + "/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const cancelPayload = await readApiPayload(cancelled, "local agent cancellation failed");
+        if (!cancelled.ok) {
+          cancellationRequested = false;
+          throw new Error(cancelPayload.error || "local agent cancellation failed");
+        }
+        payload = cancelPayload;
+      };
+      renderLocalAgentProgress(pending, payload, runtimeLabel, { onCancel: cancelTask });
       while (!["completed", "failed", "cancelled"].includes(payload.state)) {
         if (Date.now() >= deadline) throw new Error("Local agent task timed out");
         await sleep(1000);
-        const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
-        payload = await readApiPayload(polled, "local agent poll failed");
-        if (!polled.ok) throw new Error(payload.error || "local agent poll failed");
+        try {
+          const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
+          payload = await readApiPayload(polled, "local agent poll failed");
+          if (!polled.ok) {
+            const error = new Error(payload.error || "local agent poll failed");
+            error.status = polled.status;
+            throw error;
+          }
+          pollRecoveryDeadline = 0;
+        } catch (pollError) {
+          const status = Number(pollError?.status);
+          const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
+          pollRecoveryDeadline ||= Date.now() + 120000;
+          if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
+          renderLocalAgentProgress(pending, payload, runtimeLabel, { reconnecting: true, onCancel: cancelTask });
+          continue;
+        }
+        renderLocalAgentProgress(pending, payload, runtimeLabel, { onCancel: cancelTask, cancelling: cancellationRequested });
       }
       if (payload.state !== "completed") {
-        throw new Error(payload.error || (payload.state === "cancelled" ? "Local agent task was cancelled" : "Local agent task failed"));
+        const changedFiles = Array.isArray(payload.result?.changed_files)
+          ? payload.result.changed_files.filter(Boolean).slice(0, 20)
+          : [];
+        const partial = changedFiles.length
+          ? "\\n\\nFiles changed before the failure:\\n" + changedFiles.map((path) => "- " + path).join("\\n")
+          : "";
+        throw new Error(
+          (payload.error || (payload.state === "cancelled" ? "Local agent task was cancelled" : "Local agent task failed")) + partial,
+        );
       }
       const output = payload.result?.content
         || payload.result?.choices?.[0]?.message?.content
@@ -3585,6 +3642,64 @@ export function page(config = configFromEnv()) {
       }, conversationId);
       setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
       return true;
+    }
+
+    function renderLocalAgentProgress(pending, payload, runtimeLabel, options = {}) {
+      const body = pending.querySelector(".message-body");
+      if (!body) return;
+      const events = Array.isArray(payload?.events) ? payload.events : [];
+      const latest = events.at(-1)?.event || null;
+      const labels = {
+        harness_started: "Starting agent harness",
+        model_turn_queued: "Planning the next step",
+        model_turn_completed: "Plan received",
+        skills_selected: "Loading project skills",
+        skills_unavailable: "Continuing without optional skills",
+        tool_started: "Running a project tool",
+        tool_completed: "Project tool completed",
+        file_changed: "Updating project files",
+        verification_started: "Running verification",
+        verification_completed: "Verification completed",
+      };
+      const summary = options.cancelling
+        ? "Stopping project work"
+        : options.reconnecting
+          ? "Connection interrupted; reconnecting"
+          : String(latest?.summary || labels[latest?.type] || "Working in the project");
+      const steps = events
+        .map((item) => String(item?.event?.summary || labels[item?.event?.type] || "").trim())
+        .filter(Boolean)
+        .filter((value, index, values) => index === 0 || value !== values[index - 1])
+        .slice(-4);
+      body.replaceChildren();
+      const heading = document.createElement("strong");
+      heading.textContent = runtimeLabel + " is working";
+      body.appendChild(heading);
+      const timeline = document.createElement("div");
+      timeline.className = "agent-progress-timeline";
+      for (const [index, step] of steps.entries()) {
+        const row = document.createElement("div");
+        row.className = "agent-progress-step" + (index === steps.length - 1 ? " is-active" : "");
+        row.textContent = (index === steps.length - 1 ? "● " : "✓ ") + step;
+        timeline.appendChild(row);
+      }
+      if (!steps.length) timeline.textContent = "● " + summary;
+      body.appendChild(timeline);
+      if (typeof options.onCancel === "function" && !["completed", "failed", "cancelled"].includes(payload?.state)) {
+        const actions = document.createElement("div");
+        actions.className = "message-error-actions";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "message-retry-button";
+        cancel.textContent = options.cancelling ? "Stopping…" : "Stop";
+        cancel.disabled = options.cancelling === true;
+        cancel.addEventListener("click", () => void options.onCancel().catch((error) => {
+          showToast(error?.message || "Could not stop local task");
+        }));
+        actions.appendChild(cancel);
+        body.appendChild(actions);
+      }
+      setStatus("working", summary);
     }
 
     async function tryLiveChatTurn(pending, message, conversationId) {
@@ -5519,6 +5634,43 @@ export function createServerApp(config = configFromEnv()) {
       if (url.pathname.startsWith("/api/agent/model/v1/")) {
         const connector = await authStore.mcpSession(request);
         if (!connector) throw httpError(401, "A connected MundusX agent credential is required");
+        if (request.method === "POST" && url.pathname === "/api/agent/model/v1/jobs") {
+          const body = await readJsonBody(request);
+          if (body?.protocol !== "mundusx-project-agent/v1" || body?.model !== PUBLIC_MODEL_ID ||
+              !Array.isArray(body?.messages) || !Array.isArray(body?.tools)) {
+            throw httpError(400, "Invalid project-agent v1 model job");
+          }
+          const accepted = await authStore.createProjectModelJob(connector.id, body);
+          queueMicrotask(async () => {
+            const modelRequest = await authStore.startProjectModelJob(connector.id, accepted.job_id).catch(() => null);
+            if (!modelRequest) return;
+            try {
+              const completion = await submitHermesToolCompletion(modelRequest, config);
+              await authStore.finishProjectModelJob(connector.id, accepted.job_id, completion);
+            } catch (error) {
+              await authStore.finishProjectModelJob(connector.id, accepted.job_id, null, {
+                code: "model_turn_failed", message: String(error?.message || error).slice(0, 1000), retryable: true,
+              }).catch(() => {});
+            }
+          });
+          return sendOpenAiJson(response, 202, {
+            protocol: "mundusx-project-agent/v1", job_id: accepted.job_id, status: accepted.state, retry_after_ms: 500,
+          });
+        }
+        const asyncJob = url.pathname.match(/^\/api\/agent\/model\/v1\/jobs\/([0-9a-f-]+)(\/cancel)?$/i);
+        if (asyncJob && request.method === "GET" && !asyncJob[2]) {
+          const job = await authStore.projectModelJob(connector.id, asyncJob[1]);
+          return sendOpenAiJson(response, 200, {
+            protocol: "mundusx-project-agent/v1", job_id: job.job_id, status: job.state,
+            ...(job.state === "completed" ? { result: job.result } : {}),
+            ...(job.error ? { error: job.error } : {}),
+            ...(["queued", "running"].includes(job.state) ? { retry_after_ms: 500 } : {}),
+          });
+        }
+        if (asyncJob && request.method === "POST" && asyncJob[2]) {
+          const job = await authStore.cancelProjectModelJob(connector.id, asyncJob[1]);
+          return sendOpenAiJson(response, 200, { protocol: "mundusx-project-agent/v1", job_id: job.job_id, status: job.state });
+        }
         if (request.method === "GET" && url.pathname === "/api/agent/model/v1/models") {
           return sendOpenAiJson(response, 200, openAiModelsResponse());
         }
@@ -5827,22 +5979,40 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
     "Conversation:",
     JSON.stringify(transcript),
   ].join("\n");
-  const result = await submitChatTurn({
+  const turn = {
     message: routerPrompt,
     systemPrompt: systemContext || "You are the model inside a bounded coding agent.",
+    internalAgentTurn: true,
     executionMode: "single",
     toolMode: false,
     structuredOutput: false,
     skipQualityValidation: true,
     maxTokens: Math.min(Number(body?.max_tokens || 2048), 4096),
     temperature: 0,
-  }, config, fetchImpl);
+  };
+  let result;
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      result = await submitChatTurn({ ...turn, requestId: attempt ? undefined : body?.request_id }, config, fetchImpl);
+      if (String(result?.status || "").toLowerCase() === "completed" || !isRetryableHermesModelFailure(result?.error)) break;
+      lastError = new Error(result?.error || "MundusX agent model request failed");
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableHermesModelFailure(error?.message)) throw error;
+    }
+    if (attempt < 2) await delay(750 * (attempt + 1));
+  }
+  if (!result && lastError) throw lastError;
   if (String(result?.status || "").toLowerCase() !== "completed") {
     throw httpError(502, result?.error || "MundusX agent model request failed");
   }
   const raw = String(result?.output || "").trim();
   const normalized = normalizeRequestedStructuredOutput(raw, true);
-  const decision = parseFirstJsonObject(normalized) ?? parseFirstJsonObject(raw);
+  const decision = parseHermesToolDecision(normalized, tools)
+    ?? parseHermesToolDecision(raw, tools)
+    ?? parseFirstJsonObject(normalized)
+    ?? parseFirstJsonObject(raw);
   const created = Math.floor(Date.now() / 1000);
   const id = normalizeOpenAiCompletionId(body?.request_id);
   const selected = tools.find((tool) => tool.name === decision?.name);
@@ -5877,6 +6047,11 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
   };
 }
 
+export function isRetryableHermesModelFailure(value) {
+  return /\b(?:408|425|429|500|502|503|504)\b|application failed to respond|timed?\s*out|temporar(?:y|ily)|connection (?:reset|closed|refused)/i
+    .test(String(value || ""));
+}
+
 export function parseFirstJsonObject(value) {
   const text = String(value ?? "");
   for (let start = 0; start < text.length; start += 1) {
@@ -5900,6 +6075,36 @@ export function parseFirstJsonObject(value) {
     }
   }
   return null;
+}
+
+export function parseHermesToolDecision(value, tools = []) {
+  const text = String(value ?? "");
+  const parsed = parseFirstJsonObject(text);
+  const allowed = new Set(tools.map((tool) => String(tool?.name || "")).filter(Boolean));
+  const parsedName = parsed?.kind === "tool"
+    ? String(parsed.name || "")
+    : allowed.has(String(parsed?.kind || ""))
+      ? String(parsed.kind)
+      : "";
+  if (parsedName && allowed.has(parsedName)) {
+    let args = parsed.arguments;
+    if (typeof args === "string") args = parseFirstJsonObject(args);
+    if (args && typeof args === "object" && !Array.isArray(args)) {
+      return { ...parsed, kind: "tool", name: parsedName, arguments: args };
+    }
+  }
+
+  // Small models sometimes quote a JSON arguments object without escaping its
+  // inner quotes. Recover only the explicit tool/name/arguments shape and only
+  // when the named tool was offered by Hermes for this turn.
+  if (!/["']kind["']\s*:\s*["']tool["']/i.test(text)) return null;
+  const name = text.match(/["']name["']\s*:\s*["']([A-Za-z0-9_.:-]+)["']/i)?.[1];
+  if (!name || !allowed.has(name)) return null;
+  const marker = text.search(/["']arguments["']\s*:/i);
+  if (marker < 0) return null;
+  const argumentsObject = parseFirstJsonObject(text.slice(marker));
+  if (!argumentsObject || Array.isArray(argumentsObject)) return null;
+  return { kind: "tool", name, arguments: argumentsObject };
 }
 
 export async function streamHermesToolCompletion(response, body, config = configFromEnv(), fetchImpl = fetch) {
@@ -6363,7 +6568,8 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
 
   const toolMode = isToolModeEnabled(body);
   const toolMessage = message;
-  const compoundToolPrompt = isMultiIntentPlanningCandidate(toolMessage);
+  const internalAgentTurn = body?.internalAgentTurn === true;
+  const compoundToolPrompt = !internalAgentTurn && isMultiIntentPlanningCandidate(toolMessage);
 
   if (compoundToolPrompt) {
     const compoundJob = await fetchPlannedCompoundToolJob(toolMessage, config, fetchImpl, body?.voicePersona);
@@ -6372,7 +6578,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     }
   }
 
-  if (!compoundToolPrompt) {
+  if (!compoundToolPrompt && !internalAgentTurn) {
     if (isNodeExpressMysqlCustomerCrudRequest(toolMessage)) {
       return recordAssistantTurn(conversationId, config, fetchImpl, fetchNodeExpressMysqlCustomerCrudJob(toolMessage));
     }
@@ -6441,7 +6647,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     }
   }
 
-  if (toolMode && needsGrounding(toolMessage)) {
+  if (!internalAgentTurn && toolMode && needsGrounding(toolMessage)) {
     const groundingQuery = extractGeneralLookupTopic(toolMessage) || toolMessage;
     const webSearchJob = await fetchWebSearchJob(message, groundingQuery, config, fetchImpl, {
       model: body?.model,
