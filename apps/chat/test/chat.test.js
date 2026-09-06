@@ -526,7 +526,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(projects, />Create pairing code</);
   assert.doesNotMatch(projects, /<details|Set up local runner/);
   assert.match(projects, /MundusX-Setup\.exe/);
-  assert.match(projects, /cli-windows-v0\.1\.56\/MundusX-Setup\.exe/);
+  assert.match(projects, /mundusx\/releases\/releases\/download\/cli-windows-v0\.1\.56\/MundusX-Setup\.exe/);
   assert.match(projects, /id="project-readiness"/);
   assert.match(projects, /id="project-readiness-refresh"[^>]*>Retry/);
   assert.match(html, /Connect this computer/);
