@@ -61,6 +61,20 @@ function googleIdTokenClaims(idToken, clientId, profile) {
   }
 }
 
+function verifiedGoogleEmailClaim(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+function matchingGoogleIdentity(claims, clientId, profile) {
+  const issuer = String(claims?.iss || "");
+  const audience = Array.isArray(claims?.aud) ? claims.aud : [claims?.aud];
+  return ["accounts.google.com", "https://accounts.google.com"].includes(issuer)
+    && audience.includes(clientId)
+    && Number(claims?.exp || 0) > Math.floor(Date.now() / 1000)
+    && String(claims?.sub || "") === String(profile?.sub || "")
+    && normalizeEmail(claims?.email) === normalizeEmail(profile?.email);
+}
+
 function parseCookies(header = "") {
   return Object.fromEntries(header.split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
     const at = part.indexOf("=");
@@ -1091,13 +1105,24 @@ export class PostgresAuthStore {
     });
     const profile = await profileResponse.json().catch(() => ({}));
     const email = normalizeEmail(profile.email);
-    const idTokenClaims = googleIdTokenClaims(exchanged.id_token, this.config.googleClientId, profile);
-    const emailVerified = profile.email_verified === true
-      || profile.email_verified === "true"
-      || profile.verified_email === true
-      || profile.verified_email === "true"
-      || idTokenClaims?.email_verified === true
-      || idTokenClaims?.email_verified === "true";
+    let idTokenClaims = googleIdTokenClaims(exchanged.id_token, this.config.googleClientId, profile);
+    let emailVerified = verifiedGoogleEmailClaim(profile.email_verified)
+      || verifiedGoogleEmailClaim(profile.verified_email)
+      || verifiedGoogleEmailClaim(idTokenClaims?.email_verified);
+    // Google Workspace and compatibility profiles do not always expose
+    // email_verified through userinfo. Ask Google's verification endpoint to
+    // validate the issued ID token before rejecting an otherwise matching user.
+    if (!emailVerified && exchanged.id_token) {
+      const tokenInfoResponse = await this.fetch(
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(exchanged.id_token)}`,
+        { headers: { Accept: "application/json" } },
+      );
+      const tokenInfo = await tokenInfoResponse.json().catch(() => ({}));
+      if (tokenInfoResponse.ok && matchingGoogleIdentity(tokenInfo, this.config.googleClientId, profile)) {
+        idTokenClaims = tokenInfo;
+        emailVerified = verifiedGoogleEmailClaim(tokenInfo.email_verified);
+      }
+    }
     if (!profileResponse.ok || !profile.sub || !emailVerified || !email) {
       throw Object.assign(new Error("Google account needs a verified email"), { statusCode: 403 });
     }
