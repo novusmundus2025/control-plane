@@ -143,8 +143,8 @@ export function configFromEnv(env = process.env) {
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
     harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
-      || "https://github.com/mundusx/releases/releases/download/cli-windows-v0.1.57/MundusX-Setup.exe",
-    latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "0.1.57",
+      || "https://github.com/mundusx/releases/releases/download/cli-windows-v0.1.58/MundusX-Setup.exe",
+    latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "0.1.58",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
@@ -2389,7 +2389,7 @@ export function page(config = configFromEnv()) {
         runnerPairingPollTimer = null;
         try {
           const runners = await loadHarnessRunners();
-          if (localProjectAgentReady || runners.length) {
+          if (localRunnerReady) {
             runnerPairingInProgress = false;
             stopRunnerPairingPoll();
             return;
@@ -3033,6 +3033,23 @@ export function page(config = configFromEnv()) {
       runnerPairingExpiresAt = Date.now() + 10 * 60 * 1000;
       updateRunnerSetupState();
       pollRunnerPairing();
+    });
+    projectAgentUpdateEl?.addEventListener("click", () => {
+      runnerDownloadStarted = true;
+      runnerPairingInProgress = true;
+      runnerPairingExpiresAt = Date.now() + 10 * 60 * 1000;
+      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = "Installing update…";
+      if (projectReadinessTextEl) projectReadinessTextEl.textContent = "MundusX will reconnect automatically after setup finishes. You can leave this dialog open.";
+      pollRunnerPairing();
+    });
+    const refreshRunnerAfterInstaller = () => {
+      if (repositoryDialogEl?.hidden || !currentUser) return;
+      void loadHarnessRunners().catch(() => {});
+      if (runnerPairingInProgress) pollRunnerPairing();
+    };
+    window.addEventListener("focus", refreshRunnerAfterInstaller);
+    document.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "visible") refreshRunnerAfterInstaller();
     });
     projectReadinessRefreshEl?.addEventListener("click", () => {
       if (!currentUser) {

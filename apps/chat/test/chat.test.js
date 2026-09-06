@@ -518,6 +518,10 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(projects, /Compute contribution remains off unless you enable it separately/);
   assert.doesNotMatch(projects, /I installed it|Connect browser|pairing code/);
   assert.match(html, /runnerPairingPollTimer = window\.setTimeout/);
+  assert.match(html, /if \(localRunnerReady\) \{/);
+  assert.match(html, /projectAgentUpdateEl\?\.addEventListener\("click"/);
+  assert.match(html, /window\.addEventListener\("focus", refreshRunnerAfterInstaller\)/);
+  assert.match(html, /document\.visibilityState === "visible"/);
   assert.match(html, /Waiting for installer approval and runner startup/);
   assert.match(html, /pendingRunnerAction = \{ pending, message, project: activeProject, conversationId \}/);
   assert.match(html, /Runner connected\. Resuming your request/);
@@ -526,8 +530,8 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(projects, />Create pairing code</);
   assert.doesNotMatch(projects, /<details|Set up local runner/);
   assert.match(projects, /MundusX-Setup\.exe/);
-  assert.match(projects, /mundusx\/releases\/releases\/download\/cli-windows-v0\.1\.57\/MundusX-Setup\.exe/);
-  assert.match(html, /const latestLocalAgentVersion = "0\.1\.57"/);
+  assert.match(projects, /mundusx\/releases\/releases\/download\/cli-windows-v0\.1\.58\/MundusX-Setup\.exe/);
+  assert.match(html, /const latestLocalAgentVersion = "0\.1\.58"/);
   assert.match(html, /projectReadinessEl\.dataset\.state = updateAvailable \? "update"/);
   assert.match(html, /projectReadinessTitleEl\.textContent = updateAvailable \? "Update required"/);
   assert.match(html, /projectAgentUpdateEl\.textContent = updateAvailable[\s\S]*?"Update now"/);
