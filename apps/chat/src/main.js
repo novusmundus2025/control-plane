@@ -985,6 +985,17 @@ export function page(config = configFromEnv()) {
     .message.error .message-body {
       color: #b3231f;
     }
+    .agent-progress-timeline {
+      display: grid;
+      gap: 6px;
+      margin-top: 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .agent-progress-step.is-active {
+      color: var(--purple);
+      font-weight: 700;
+    }
     .message-error-actions {
       display: flex;
       align-items: center;
@@ -3642,6 +3653,8 @@ export function page(config = configFromEnv()) {
         harness_started: "Starting agent harness",
         model_turn_queued: "Planning the next step",
         model_turn_completed: "Plan received",
+        skills_selected: "Loading project skills",
+        skills_unavailable: "Continuing without optional skills",
         tool_started: "Running a project tool",
         tool_completed: "Project tool completed",
         file_changed: "Updating project files",
@@ -3653,7 +3666,25 @@ export function page(config = configFromEnv()) {
         : options.reconnecting
           ? "Connection interrupted; reconnecting"
           : String(latest?.summary || labels[latest?.type] || "Working in the project");
-      body.textContent = runtimeLabel + " · " + summary + "…";
+      const steps = events
+        .map((item) => String(item?.event?.summary || labels[item?.event?.type] || "").trim())
+        .filter(Boolean)
+        .filter((value, index, values) => index === 0 || value !== values[index - 1])
+        .slice(-4);
+      body.replaceChildren();
+      const heading = document.createElement("strong");
+      heading.textContent = runtimeLabel + " is working";
+      body.appendChild(heading);
+      const timeline = document.createElement("div");
+      timeline.className = "agent-progress-timeline";
+      for (const [index, step] of steps.entries()) {
+        const row = document.createElement("div");
+        row.className = "agent-progress-step" + (index === steps.length - 1 ? " is-active" : "");
+        row.textContent = (index === steps.length - 1 ? "● " : "✓ ") + step;
+        timeline.appendChild(row);
+      }
+      if (!steps.length) timeline.textContent = "● " + summary;
+      body.appendChild(timeline);
       if (typeof options.onCancel === "function" && !["completed", "failed", "cancelled"].includes(payload?.state)) {
         const actions = document.createElement("div");
         actions.className = "message-error-actions";
