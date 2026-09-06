@@ -6191,6 +6191,44 @@ function inspectNativeOpenAiEvents(text) {
   return {};
 }
 
+async function requireNativeToolNode(provider, config, fetchImpl) {
+  const providerBase = String(provider?.baseUrl || "").replace(/\/+$/, "");
+  const controlPlaneBase = String(config?.controlPlaneUrl || "").replace(/\/+$/, "");
+  if (!providerBase || providerBase !== controlPlaneBase) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  timeout.unref?.();
+  try {
+    const upstream = await fetchImpl(`${controlPlaneBase}/v1/nodes?page=1&page_size=100`, {
+      headers: provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {},
+      signal: controller.signal,
+    });
+    if (!upstream.ok) return; // The completion endpoint remains authoritative.
+    const payload = await upstream.json();
+    const nodes = Array.isArray(payload) ? payload : payload?.items || payload?.nodes || [];
+    const capable = nodes.some((node) => {
+      if (!['ready', 'online'].includes(String(node?.state || node?.status || '').toLowerCase())) return false;
+      const tools = [
+        ...(node?.capabilities?.supported_tools || []),
+        ...(node?.worker_health?.capabilities?.supported_tools || []),
+      ];
+      return tools.includes('native_tool_calls_v1');
+    });
+    if (!capable) {
+      throw httpError(
+        503,
+        'Hermes native tools are unavailable because the shared model node needs an agent upgrade. The local project runner is healthy; ordinary users do not need to reinstall it.',
+      );
+    }
+  } catch (error) {
+    if (error?.statusCode === 503 || error?.status === 503) throw error;
+    // Discovery must not turn a transient status failure into a false outage.
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
 export async function relayNativeHermesToolStream(
   response,
   body,
@@ -6214,6 +6252,7 @@ export async function relayNativeHermesToolStream(
     timeout.unref?.();
     let reader;
     try {
+      await requireNativeToolNode(provider, config, fetchImpl);
       const upstreamBody = { ...body, stream: true };
       delete upstreamBody.protocol;
       delete upstreamBody.project_task_id;
