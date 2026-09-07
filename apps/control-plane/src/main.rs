@@ -705,11 +705,16 @@ fn activate_held_chat_job(
 
 fn should_enable_live_stream(
     wants_stream: bool,
+    native_tool_turn: bool,
     mode: Option<&str>,
     record: &JobRecord,
     streaming_node_available: bool,
 ) -> bool {
-    wants_stream && mode.is_none() && !record.graph_execution_enabled && streaming_node_available
+    wants_stream
+        && !native_tool_turn
+        && mode.is_none()
+        && !record.graph_execution_enabled
+        && streaming_node_available
 }
 
 fn job_artifacts_path(job_id: &str) -> String {
@@ -8949,8 +8954,13 @@ fn handle_connection_with_streams(
                     });
                     // Plan first with buffered delivery so the graph remains authoritative.
                     // Only direct jobs are upgraded to live worker deltas.
+                    // Native Hermes turns must be buffered until the worker's
+                    // internal result envelope is decoded. Streaming that raw
+                    // envelope would expose it as assistant text instead of an
+                    // OpenAI `delta.tool_calls` event.
                     let live_stream_job = should_enable_live_stream(
                         wants_stream,
+                        native_tool_turn,
                         mode.as_deref(),
                         &submitted,
                         streaming_node_available,
@@ -9674,10 +9684,14 @@ mod tests {
             },
             "1".to_string(),
         );
-        assert!(should_enable_live_stream(true, None, &direct, true));
-        assert!(!should_enable_live_stream(true, None, &direct, false));
+        assert!(should_enable_live_stream(true, false, None, &direct, true));
+        assert!(!should_enable_live_stream(
+            true, false, None, &direct, false
+        ));
+        assert!(!should_enable_live_stream(true, true, None, &direct, true));
         assert!(!should_enable_live_stream(
             true,
+            false,
             Some("speakai"),
             &direct,
             true
@@ -9685,7 +9699,7 @@ mod tests {
 
         let mut graph = direct;
         graph.graph_execution_enabled = true;
-        assert!(!should_enable_live_stream(true, None, &graph, true));
+        assert!(!should_enable_live_stream(true, false, None, &graph, true));
     }
 
     fn chat_message(role: &str, content: &str) -> ChatMessage {

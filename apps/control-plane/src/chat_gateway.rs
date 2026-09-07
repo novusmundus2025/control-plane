@@ -502,11 +502,20 @@ pub fn completion_response(
         .and_then(|value| value.get("message"))
         .cloned()
         .unwrap_or_else(|| json!({"role": "assistant", "content": content}));
-    let finish_reason = native_message
+    let native_finish_reason = native_message
         .as_ref()
         .and_then(|value| value.get("finish_reason"))
         .and_then(Value::as_str)
         .unwrap_or(finish_reason);
+    let finish_reason = if message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|tool_calls| !tool_calls.is_empty())
+    {
+        "tool_calls"
+    } else {
+        native_finish_reason
+    };
     json!({
         "id": id,
         "object": "chat.completion",
@@ -975,6 +984,30 @@ mod tests {
         assert!(stream.contains("\"tool_calls\""));
         assert!(stream.contains("\"finish_reason\":\"tool_calls\""));
         assert!(stream.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[test]
+    fn normalizes_native_tool_call_finish_reason() {
+        let native = concat!(
+            "__MUNDUSX_OPENAI_TOOL_RESULT_V1__",
+            r#"{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"terminal","arguments":"{\"command\":\"pwd\"}"}}]},"finish_reason":"stop"}"#
+        );
+        let completion = completion_response(
+            "chatcmpl-tools",
+            1,
+            "mundusx-agnostic",
+            native,
+            "stop",
+            None,
+            None,
+        );
+
+        assert_eq!(completion["choices"][0]["finish_reason"], "tool_calls");
+        let stream = sse_finish(&completion);
+        assert!(
+            stream.contains("\"delta\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\"")
+        );
+        assert!(!stream.contains("__MUNDUSX_OPENAI_TOOL_RESULT_V1__"));
     }
 
     #[test]
