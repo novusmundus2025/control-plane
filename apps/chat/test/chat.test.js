@@ -542,7 +542,12 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /projectActionsEl\.hidden = existingProjectMode/);
   assert.match(html, /Respond in planning\/chat mode and do not claim files were changed/);
   assert.match(html, /!activeProject \|\| runtimePreference === "cloud" \? false : await tryLocalAgentTurn/);
-  assert.match(html, /Connection interrupted; reconnecting/);
+  assert.match(html, /Reconnecting without losing progress/);
+  assert.match(html, /statusEl\.hidden = Boolean\(activeProject\)/);
+  assert.match(html, /className = "agent-progress-orb"/);
+  assert.match(html, /className = "agent-progress-current"/);
+  assert.match(html, /Running a command/);
+  assert.doesNotMatch(html, /row\.textContent = \(index === steps\.length - 1 \? "● " : "✓ "\)/);
   assert.match(html, /Local agent task timed out/);
   assert.match(html, /\/api\/agent\/tasks\/" \+ encodeURIComponent\(submitted\.task_id\) \+ "\/cancel"/);
   assert.match(html, /inferProjectTemplate[\s\S]*java\|maven\|spring\|junit\|gradle/);
