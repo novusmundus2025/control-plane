@@ -1077,6 +1077,8 @@ export function page(config = configFromEnv()) {
     .agent-progress-history { display:grid; gap:5px; padding-left:3px; color:var(--muted-2); font-size:12px; }
     .agent-progress-step { display:flex; align-items:center; gap:7px; }
     .agent-progress-check { color:var(--green); font-weight:800; }
+    .agent-progress-meta { display:flex; flex-wrap:wrap; gap:5px 12px; color:var(--muted-2); font-size:11px; font-variant-numeric:tabular-nums; }
+    .agent-progress-meta span { white-space:nowrap; }
     @keyframes hermes-pulse { 70% { box-shadow:0 0 0 7px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
     @keyframes hermes-shimmer { 55%,100% { transform:translateX(120%); } }
     @keyframes hermes-float { 0%,100% { transform:translateY(0) rotate(0); } 50% { transform:translateY(-2px) rotate(8deg); } }
@@ -3682,13 +3684,31 @@ export function page(config = configFromEnv()) {
       if (body) body.textContent = "Connected to " + runtimeLabel + " on your device…";
       if (activeHistoryId === conversationId) setStatus("working", runtimeLabel);
       let payload = submitted;
-      const deadline = Date.now() + 10 * 60 * 1000;
+      const progressStartedAt = Date.now();
+      let progressLastActivityAt = progressStartedAt;
+      let progressMarker = "";
       let pollRecoveryDeadline = 0;
       let cancellationRequested = false;
+      const renderProgress = (extra = {}) => {
+        const events = Array.isArray(payload?.events) ? payload.events : [];
+        const latestEvent = events.at(-1);
+        const marker = [payload?.state, events.length, latestEvent?.sequence, latestEvent?.event?.type, latestEvent?.event?.summary].join(":");
+        if (marker !== progressMarker) {
+          progressMarker = marker;
+          progressLastActivityAt = Date.now();
+        }
+        renderLocalAgentProgress(pending, payload, runtimeLabel, {
+          onCancel: cancelTask,
+          conversationId,
+          startedAt: progressStartedAt,
+          lastActivityAt: progressLastActivityAt,
+          ...extra,
+        });
+      };
       const cancelTask = async () => {
         if (cancellationRequested) return;
         cancellationRequested = true;
-        renderLocalAgentProgress(pending, payload, runtimeLabel, { cancelling: true, conversationId });
+        renderProgress({ cancelling: true });
         const cancelled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id) + "/cancel", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -3701,9 +3721,8 @@ export function page(config = configFromEnv()) {
         }
         payload = cancelPayload;
       };
-      renderLocalAgentProgress(pending, payload, runtimeLabel, { onCancel: cancelTask, conversationId });
+      renderProgress();
       while (!["completed", "failed", "cancelled"].includes(payload.state)) {
-        if (Date.now() >= deadline) throw new Error("Local agent task timed out");
         await sleep(1000);
         try {
           const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
@@ -3719,10 +3738,10 @@ export function page(config = configFromEnv()) {
           const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
           pollRecoveryDeadline ||= Date.now() + 120000;
           if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
-          renderLocalAgentProgress(pending, payload, runtimeLabel, { reconnecting: true, onCancel: cancelTask, conversationId });
+          renderProgress({ reconnecting: true });
           continue;
         }
-        renderLocalAgentProgress(pending, payload, runtimeLabel, { onCancel: cancelTask, cancelling: cancellationRequested, conversationId });
+        renderProgress({ cancelling: cancellationRequested });
       }
       if (payload.state !== "completed") {
         const changedFiles = Array.isArray(payload.result?.changed_files)
@@ -3834,6 +3853,40 @@ export function page(config = configFromEnv()) {
       currentText.textContent = summary;
       current.append(dot, currentText);
       timeline.appendChild(current);
+      const formatDuration = (milliseconds) => {
+        const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+        if (seconds < 60) return seconds + "s";
+        const minutes = Math.floor(seconds / 60);
+        return minutes + "m " + String(seconds % 60).padStart(2, "0") + "s";
+      };
+      const formatTokens = (value) => {
+        const number = Number(value || 0);
+        if (number < 1000) return String(number);
+        return (number / 1000).toFixed(number >= 10000 ? 0 : 1) + "k";
+      };
+      const telemetryEvent = [...events].reverse().find((item) => Number(item?.event?.metadata?.telemetry?.context_length) > 0);
+      const telemetry = telemetryEvent?.event?.metadata?.telemetry || {};
+      const now = Date.now();
+      const meta = document.createElement("div");
+      meta.className = "agent-progress-meta";
+      const facts = [
+        "Elapsed " + formatDuration(now - Number(options.startedAt || now)),
+        "Last activity " + formatDuration(now - Number(options.lastActivityAt || now)) + " ago",
+      ];
+      const contextLength = Number(telemetry.context_length || 0);
+      const contextRemaining = Number(telemetry.context_remaining || 0);
+      if (contextLength > 0) {
+        const remainingPercent = Math.max(0, Math.min(100, Math.round(contextRemaining / contextLength * 100)));
+        facts.push("Context left " + remainingPercent + "% · " + formatTokens(contextRemaining) + " tokens");
+      }
+      if (Number(telemetry.api_calls || 0) > 0) facts.push(telemetry.api_calls + " model turns");
+      if (Number(telemetry.compressions || 0) > 0) facts.push(telemetry.compressions + " context rebuilds");
+      for (const fact of facts) {
+        const item = document.createElement("span");
+        item.textContent = fact;
+        meta.appendChild(item);
+      }
+      timeline.appendChild(meta);
       body.appendChild(timeline);
       if (typeof options.onCancel === "function" && !["completed", "failed", "cancelled"].includes(payload?.state)) {
         const actions = document.createElement("div");
