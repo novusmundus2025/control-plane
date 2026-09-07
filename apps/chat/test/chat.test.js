@@ -512,6 +512,10 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /workspace_relative: options\.workspaceRelative \|\| null/);
   assert.match(html, /projectPermissionsKey = "mundusx\.chat\.projectPermissions\.v1:" \+ namespace/);
   assert.match(html, /localStorage\.setItem\(projectPermissionsKey, JSON\.stringify\(projectPermissions\)\)/);
+  assert.match(html, /mundusx\.chat\.activeAgentTask\.v1:/);
+  assert.match(html, /localStorage\.setItem\(activeAgentTaskKey, JSON\.stringify/);
+  assert.match(html, /resumePersistedLocalAgentTask\(\)/);
+  assert.match(html, /Reconnecting to the active/);
   assert.match(html, /projectPermissionMode\(activeProject\.slug\) === "full"/);
   assert.match(html, /window\.confirm\('Allow Hermes to edit files and run commands in project/);
   assert.doesNotMatch(html, /Allow edits once|Edits allowed · once|mutationAllowed/);

@@ -2152,6 +2152,7 @@ export function page(config = configFromEnv()) {
     let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
     let removedProjectsKey = "mundusx.chat.removedProjects.v1:anonymous";
     let projectPermissionsKey = "mundusx.chat.projectPermissions.v1:anonymous";
+    let activeAgentTaskKey = "mundusx.chat.activeAgentTask.v1:anonymous";
     const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
     let activeProject = null;
     let availableProjectSlugs = [];
@@ -2176,6 +2177,7 @@ export function page(config = configFromEnv()) {
       recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
       removedProjectsKey = "mundusx.chat.removedProjects.v1:" + namespace;
       projectPermissionsKey = "mundusx.chat.projectPermissions.v1:" + namespace;
+      activeAgentTaskKey = "mundusx.chat.activeAgentTask.v1:" + namespace;
       runtimePreference = "auto";
       try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
       try {
@@ -2409,6 +2411,9 @@ export function page(config = configFromEnv()) {
         }
         renderHistory();
         authGateEl.hidden = true;
+        resumePersistedLocalAgentTask().catch((error) => {
+          console.warn("Unable to resume the active Hermes task", error);
+        });
       } catch {
         currentUser = null;
         accountWidgetEl.hidden = true;
@@ -3698,6 +3703,16 @@ export function page(config = configFromEnv()) {
       const submitted = await readApiPayload(created, "local agent request failed");
       if (!created.ok) throw new Error(submitted.error || "local agent request failed");
 
+      localStorage.setItem(activeAgentTaskKey, JSON.stringify({
+        taskId: submitted.task_id,
+        conversationId,
+        message,
+        runtime: options.runtime || "auto",
+        runtimeLabel: options.runtime === "hermes" ? "Hermes" : options.runtime === "native" ? "MundusX Local" : "local agent",
+        projectSlug: options.workspaceRelative || null,
+        startedAt: Date.now(),
+      }));
+
       const body = pending.querySelector(".message-body");
       const runtimeLabel = options.runtime === "hermes" ? "Hermes" : options.runtime === "native" ? "MundusX Local" : "local agent";
       if (body) body.textContent = "Connected to " + runtimeLabel + " on your device…";
@@ -3763,6 +3778,7 @@ export function page(config = configFromEnv()) {
         renderProgress({ cancelling: cancellationRequested });
       }
       if (payload.state !== "completed") {
+        clearActiveAgentTask(submitted.task_id);
         const changedFiles = Array.isArray(payload.result?.changed_files)
           ? payload.result.changed_files.filter(Boolean).slice(0, 20)
           : [];
@@ -3783,10 +3799,125 @@ export function page(config = configFromEnv()) {
         routing: "local-agent",
         model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
       }, conversationId);
+      clearActiveAgentTask(submitted.task_id);
       if (activeHistoryId === conversationId) {
         setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
       }
       return true;
+    }
+
+    function clearActiveAgentTask(taskId) {
+      try {
+        const active = JSON.parse(localStorage.getItem(activeAgentTaskKey) || "null");
+        if (!taskId || active?.taskId === taskId) localStorage.removeItem(activeAgentTaskKey);
+      } catch {
+        localStorage.removeItem(activeAgentTaskKey);
+      }
+    }
+
+    async function resumePersistedLocalAgentTask() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(activeAgentTaskKey) || "null"); } catch { saved = null; }
+      if (!saved?.taskId || !saved?.conversationId) return false;
+
+      const response = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId));
+      const payload = await readApiPayload(response, "active local agent task unavailable");
+      if (!response.ok) {
+        if ([404, 410].includes(response.status)) clearActiveAgentTask(saved.taskId);
+        return false;
+      }
+
+      const historyItem = readHistory().find((item) => (item.conversationId || item.id) === saved.conversationId);
+      if (historyItem) await loadHistoryItem(historyItem);
+      else {
+        activeHistoryId = saved.conversationId;
+        localStorage.setItem(conversationIdKey, saved.conversationId);
+        clearConversation();
+        if (saved.message) addMessage(saved.message, "user");
+      }
+
+      if (["completed", "failed", "cancelled"].includes(payload.state)) {
+        clearActiveAgentTask(saved.taskId);
+        if (payload.state === "completed") {
+          renderCompletedJob(addMessage("", "assistant"), {
+            status: "completed",
+            output: payload.result?.content || payload.result?.choices?.[0]?.message?.content || "(empty response)",
+            job_id: payload.task_id,
+            routing: "local-agent",
+            model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
+          }, saved.conversationId);
+        }
+        return true;
+      }
+
+      const pending = addMessage("Reconnecting to the active " + (saved.runtimeLabel || "local agent") + " task…", "assistant", "Working");
+      setStatus("working", saved.runtimeLabel || "Hermes");
+      await resumeLocalAgentPolling(pending, payload, saved);
+      return true;
+    }
+
+    async function resumeLocalAgentPolling(pending, initialPayload, saved) {
+      let payload = initialPayload;
+      let lastActivityAt = Date.now();
+      let marker = "";
+      let pollRecoveryDeadline = 0;
+      let cancellationRequested = false;
+      const startedAt = Number(saved.startedAt || Date.now());
+      const renderProgress = (extra = {}) => {
+        const events = Array.isArray(payload?.events) ? payload.events : [];
+        const latestEvent = events.at(-1);
+        const nextMarker = [payload?.state, events.length, latestEvent?.sequence, latestEvent?.event?.type, latestEvent?.event?.summary].join(":");
+        if (nextMarker !== marker) {
+          marker = nextMarker;
+          lastActivityAt = Date.now();
+        }
+        renderLocalAgentProgress(pending, payload, saved.runtimeLabel || "Hermes", {
+          conversationId: saved.conversationId,
+          startedAt,
+          lastActivityAt,
+          onCancel: async () => {
+            if (cancellationRequested) return;
+            cancellationRequested = true;
+            const cancelled = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId) + "/cancel", {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+            });
+            payload = await readApiPayload(cancelled, "local agent cancellation failed");
+          },
+          ...extra,
+        });
+      };
+      renderProgress();
+      while (!["completed", "failed", "cancelled"].includes(payload.state)) {
+        await sleep(1000);
+        try {
+          const response = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId));
+          payload = await readApiPayload(response, "local agent poll failed");
+          if (!response.ok) {
+            const error = new Error(payload.error || "local agent poll failed");
+            error.status = response.status;
+            throw error;
+          }
+          pollRecoveryDeadline = 0;
+        } catch (pollError) {
+          const status = Number(pollError?.status);
+          const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
+          pollRecoveryDeadline ||= Date.now() + 120000;
+          if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
+          renderProgress({ reconnecting: true, cancelling: cancellationRequested });
+          continue;
+        }
+        renderProgress({ cancelling: cancellationRequested });
+      }
+      clearActiveAgentTask(saved.taskId);
+      if (payload.state !== "completed") throw new Error(payload.error || "Local agent task " + payload.state);
+      renderCompletedJob(pending, {
+        status: "completed",
+        output: payload.result?.content || payload.result?.choices?.[0]?.message?.content || "(empty response)",
+        job_id: payload.task_id,
+        routing: "local-agent",
+        model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
+      }, saved.conversationId);
+      setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
     }
 
     function renderLocalAgentProgress(pending, payload, runtimeLabel, options = {}) {
