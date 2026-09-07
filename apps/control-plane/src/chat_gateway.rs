@@ -582,12 +582,29 @@ pub fn sse_finish(completion: &Value) -> String {
         .as_str()
         .unwrap_or("stop");
     if let Some(tool_calls) = message.get("tool_calls").filter(|value| value.is_array()) {
+        // OpenAI streaming clients assemble tool-call fragments by index. The
+        // completed assistant message does not include that streaming-only
+        // field, so add it while converting the buffered message to an SSE
+        // delta.
+        let indexed_tool_calls = tool_calls
+            .as_array()
+            .expect("tool_calls was checked as an array")
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                let mut call = call.clone();
+                if let Some(fields) = call.as_object_mut() {
+                    fields.insert("index".to_string(), json!(index));
+                }
+                call
+            })
+            .collect::<Vec<_>>();
         let chunk = json!({
             "id": id,
             "object": "chat.completion.chunk",
             "created": created,
             "model": model,
-            "choices": [{"index": 0, "delta": {"role": "assistant", "content": Value::Null, "tool_calls": tool_calls}, "finish_reason": Value::Null}]
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": Value::Null, "tool_calls": indexed_tool_calls}, "finish_reason": Value::Null}]
         });
         format!(
             "data: {chunk}\n\n{}",
@@ -982,6 +999,7 @@ mod tests {
         );
         let stream = sse_finish(&completion);
         assert!(stream.contains("\"tool_calls\""));
+        assert!(stream.contains("\"index\":0"));
         assert!(stream.contains("\"finish_reason\":\"tool_calls\""));
         assert!(stream.ends_with("data: [DONE]\n\n"));
     }
@@ -1007,6 +1025,7 @@ mod tests {
         assert!(
             stream.contains("\"delta\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\"")
         );
+        assert!(stream.contains("\"index\":0"));
         assert!(!stream.contains("__MUNDUSX_OPENAI_TOOL_RESULT_V1__"));
     }
 
