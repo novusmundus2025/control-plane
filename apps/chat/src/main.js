@@ -1589,7 +1589,9 @@ export function page(config = configFromEnv()) {
     .runtime-picker select { max-width:150px; border:0; border-radius:9px; padding:7px 24px 7px 7px; color:var(--text); background:var(--panel-2); font:inherit; font-size:12px; cursor:pointer; }
     .runtime-picker select:focus-visible { outline:2px solid color-mix(in srgb,var(--blue) 45%,transparent); outline-offset:1px; }
     .mutation-toggle[hidden] { display:none; }
-    .mutation-toggle[aria-pressed="true"] { color:#b45309; font-weight:750; }
+    .mutation-toggle { max-width:150px; border:0; border-radius:9px; padding:7px 24px 7px 8px; color:var(--muted); background:var(--panel-2); font:inherit; font-size:12px; cursor:pointer; }
+    .mutation-toggle[data-mode="full"] { color:#b45309; font-weight:750; }
+    .mutation-toggle:focus-visible { outline:2px solid color-mix(in srgb,var(--purple) 42%,transparent); outline-offset:1px; }
     .runtime-detail { width:min(880px,100%); margin:6px auto 0; padding:0 20px; color:var(--muted-2); font-size:11px; text-align:left; }
     .active-project-context { min-width:0; display:flex; align-items:center; color:var(--muted-2); }
     .active-project-context[hidden] { display: none; }
@@ -2052,7 +2054,7 @@ export function page(config = configFromEnv()) {
           <div class="composer-actions">
             <span class="composer-left-actions">
               ${config.harnessUiEnabled ? `<span class="active-project-context" id="active-project-context"><button class="tool-toggle project-context-open" id="active-project-open" type="button" aria-pressed="false" title="Choose a project"><span class="kbd" aria-hidden="true">⌁</span><strong id="active-project-name">Project</strong></button><button class="project-context-clear" id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project" hidden>&times;</button></span>` : ""}
-              <button class="tool-toggle mutation-toggle" id="mutation-toggle" type="button" aria-pressed="false" hidden>Allow edits once</button>
+              <select class="mutation-toggle" id="mutation-toggle" aria-label="Project access" title="Access is saved for this project" hidden><option value="ask">Ask before edits</option><option value="full">Full access</option></select>
             </span>
             <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
             <span class="voice-controls" id="voice-controls">
@@ -2149,6 +2151,7 @@ export function page(config = configFromEnv()) {
     let activeProjectKey = "mundusx.chat.activeProject.v1:anonymous";
     let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
     let removedProjectsKey = "mundusx.chat.removedProjects.v1:anonymous";
+    let projectPermissionsKey = "mundusx.chat.projectPermissions.v1:anonymous";
     const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
     let activeProject = null;
     let availableProjectSlugs = [];
@@ -2165,13 +2168,14 @@ export function page(config = configFromEnv()) {
     let pendingRunnerAction = null;
     let pendingRunnerResumeInProgress = false;
     let runtimePreference = "auto";
-    let mutationAllowed = false;
+    let projectPermissions = {};
     let lastLocalAgentStatus = null;
     let appToastTimer = null;
     function loadStoredProjectContext(namespace) {
       activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
       recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
       removedProjectsKey = "mundusx.chat.removedProjects.v1:" + namespace;
+      projectPermissionsKey = "mundusx.chat.projectPermissions.v1:" + namespace;
       runtimePreference = "auto";
       try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
       try {
@@ -2185,6 +2189,10 @@ export function page(config = configFromEnv()) {
           .filter((slug) => !removedProjectSlugs.includes(slug))
           .slice(0, 100);
       } catch { availableProjectSlugs = []; }
+      try {
+        const storedPermissions = JSON.parse(localStorage.getItem(projectPermissionsKey) || "{}");
+        projectPermissions = storedPermissions && typeof storedPermissions === "object" ? storedPermissions : {};
+      } catch { projectPermissions = {}; }
       if (activeProject?.slug && removedProjectSlugs.includes(activeProject.slug)) {
         activeProject = null;
         localStorage.removeItem(activeProjectKey);
@@ -2978,12 +2986,23 @@ export function page(config = configFromEnv()) {
 
     function renderRuntimeControls() {
       mutationToggleEl.hidden = !(activeProject && preferredProjectRuntime());
-      mutationToggleEl.setAttribute("aria-pressed", String(mutationAllowed));
-      mutationToggleEl.textContent = mutationAllowed ? "Edits allowed · once" : "Allow edits once";
+      const mode = projectPermissionMode(activeProject?.slug);
+      mutationToggleEl.value = mode;
+      mutationToggleEl.dataset.mode = mode;
     }
 
-    mutationToggleEl?.addEventListener("click", () => {
-      mutationAllowed = !mutationAllowed;
+    function projectPermissionMode(slug) {
+      return slug && projectPermissions[slug] === "full" ? "full" : "ask";
+    }
+
+    function saveProjectPermission(slug, mode) {
+      if (!slug) return;
+      projectPermissions = { ...projectPermissions, [slug]: mode === "full" ? "full" : "ask" };
+      localStorage.setItem(projectPermissionsKey, JSON.stringify(projectPermissions));
+    }
+
+    mutationToggleEl?.addEventListener("change", () => {
+      saveProjectPermission(activeProject?.slug, mutationToggleEl.value);
       renderRuntimeControls();
       promptEl?.focus();
     });
@@ -3467,7 +3486,6 @@ export function page(config = configFromEnv()) {
       setWorkspaceDestination("chats");
       setActiveProject(null);
       pendingRunnerAction = null;
-      mutationAllowed = false;
       renderRuntimeControls();
       activeHistoryLoadToken += 1;
       loadingHistoryConversationId = null;
@@ -3493,6 +3511,12 @@ export function page(config = configFromEnv()) {
         openAuthentication();
         return;
       }
+      const mutatingProjectRequest = Boolean(activeProject && requiresLocalProjectAction(message));
+      const allowProjectMutation = mutatingProjectRequest && (
+        projectPermissionMode(activeProject.slug) === "full"
+        || window.confirm('Allow Hermes to edit files and run commands in project "' + activeProject.slug + '" for this task?')
+      );
+      if (mutatingProjectRequest && !allowProjectMutation) return;
 
       activeHistoryLoadToken += 1;
       followLatestMessage = true;
@@ -3510,15 +3534,10 @@ export function page(config = configFromEnv()) {
           await loadHarnessRunners().catch(() => []);
           const projectRuntime = preferredProjectRuntime();
           if (projectRuntime) {
-            if (!mutationAllowed) {
-              throw new Error("This project request can change files. Turn on ‘Allow edits once’, then send it again.");
-            }
-            mutationAllowed = false;
-            renderRuntimeControls();
             const handledBySelectedRuntime = await tryLocalAgentTurn(pending, message, conversationId, {
               runtime: projectRuntime,
               workspaceRelative: activeProject.slug,
-              allowMutations: true,
+              allowMutations: allowProjectMutation,
             });
             if (!handledBySelectedRuntime) throw new Error("The selected local runtime is not connected.");
             syncNetworkRuntimeStatus(true);
