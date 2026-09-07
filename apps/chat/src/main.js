@@ -1021,14 +1021,66 @@ export function page(config = configFromEnv()) {
     }
     .agent-progress-timeline {
       display: grid;
-      gap: 6px;
-      margin-top: 10px;
+      gap: 8px;
+      margin-top: 12px;
       color: var(--muted);
       font-size: 13px;
     }
-    .agent-progress-step.is-active {
-      color: var(--purple);
-      font-weight: 700;
+    .agent-progress-heading { display:flex; align-items:center; gap:9px; }
+    .agent-progress-orb {
+      width: 20px;
+      height: 20px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 7px;
+      color: white;
+      background: linear-gradient(135deg, var(--blue), var(--purple));
+      box-shadow: 0 5px 18px color-mix(in srgb, var(--purple) 28%, transparent);
+      animation: hermes-float 2.4s ease-in-out infinite;
+    }
+    .agent-progress-orb::before { content:"✦"; font-size:11px; }
+    .agent-progress-current {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: fit-content;
+      max-width: 100%;
+      min-height: 34px;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--purple) 18%, var(--line));
+      border-radius: 12px;
+      padding: 7px 12px;
+      color: var(--text);
+      background: color-mix(in srgb, var(--purple) 5%, var(--panel));
+      font-weight: 650;
+    }
+    .agent-progress-current::after {
+      content:"";
+      position:absolute;
+      inset:0;
+      transform:translateX(-120%);
+      background:linear-gradient(100deg,transparent,color-mix(in srgb,var(--purple) 10%,transparent),transparent);
+      animation:hermes-shimmer 2.2s ease-in-out infinite;
+      pointer-events:none;
+    }
+    .agent-progress-dot {
+      width: 7px;
+      height: 7px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: var(--purple);
+      box-shadow: 0 0 0 0 color-mix(in srgb,var(--purple) 38%,transparent);
+      animation: hermes-pulse 1.6s ease-out infinite;
+    }
+    .agent-progress-history { display:grid; gap:5px; padding-left:3px; color:var(--muted-2); font-size:12px; }
+    .agent-progress-step { display:flex; align-items:center; gap:7px; }
+    .agent-progress-check { color:var(--green); font-weight:800; }
+    @keyframes hermes-pulse { 70% { box-shadow:0 0 0 7px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
+    @keyframes hermes-shimmer { 55%,100% { transform:translateX(120%); } }
+    @keyframes hermes-float { 0%,100% { transform:translateY(0) rotate(0); } 50% { transform:translateY(-2px) rotate(8deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .agent-progress-orb,.agent-progress-dot,.agent-progress-current::after { animation:none; }
     }
     .message-error-actions {
       display: flex;
@@ -2893,6 +2945,9 @@ export function page(config = configFromEnv()) {
         : "Ask everyone...";
       renderProjectMenu();
       renderRuntimeControls();
+      // Project execution already has a detailed inline Hermes timeline. The
+      // global status pill duplicates raw tool events and distracts from it.
+      if (statusEl) statusEl.hidden = Boolean(activeProject);
     }
 
     function onlineRuntimeAvailable(runtime) {
@@ -3150,6 +3205,7 @@ export function page(config = configFromEnv()) {
     function setStatus(state, label) {
       statusEl.dataset.state = state;
       statusTextEl.textContent = label;
+      statusEl.hidden = Boolean(activeProject);
     }
 
     function isIdleRuntimeStatus() {
@@ -3699,41 +3755,85 @@ export function page(config = configFromEnv()) {
       if (!body) return;
       const events = Array.isArray(payload?.events) ? payload.events : [];
       const latest = events.at(-1)?.event || null;
-      const labels = {
-        harness_started: "Starting agent harness",
-        model_turn_queued: "Planning the next step",
-        model_turn_completed: "Plan received",
-        skills_selected: "Loading project skills",
-        skills_unavailable: "Continuing without optional skills",
-        tool_started: "Running a project tool",
-        tool_completed: "Project tool completed",
-        file_changed: "Updating project files",
-        verification_started: "Running verification",
-        verification_completed: "Verification completed",
+      const friendlyEvent = (event, active = false) => {
+        const type = event?.type || "";
+        const tool = String(event?.metadata?.tool || "").toLowerCase();
+        if (type === "tool_started") {
+          if (tool === "terminal") return "Running a command";
+          if (["write_file", "patch", "apply_patch"].includes(tool)) return "Writing project files";
+          if (["search_files", "read_file"].includes(tool)) return "Exploring the codebase";
+          return "Using " + (tool || "a project tool").replaceAll("_", " ");
+        }
+        if (type === "tool_completed") {
+          if (active) return "Reviewing the tool result";
+          if (tool === "terminal") return "Command finished";
+          if (["write_file", "patch", "apply_patch"].includes(tool)) return "Project files updated";
+          return (tool ? tool.replaceAll("_", " ") : "Tool") + " completed";
+        }
+        if (type === "skills_selected") {
+          const skills = Array.isArray(event?.metadata?.skills) ? event.metadata.skills : [];
+          return skills.length ? "Using " + skills.map((skill) => String(skill).replaceAll("-", " ")).join(", ") : "Loading project skills";
+        }
+        const labels = {
+          harness_started: "Starting in your project",
+          model_turn_queued: "Planning the next step",
+          model_requested: "Thinking through the next step",
+          model_turn_completed: active ? "Preparing the next action" : "Model step completed",
+          skills_unavailable: "Continuing with built-in tools",
+          file_changed: "Updating project files",
+          verification_started: "Checking the work",
+          verification_completed: "Checks completed",
+          agent_progress: "Working through the task",
+        };
+        return labels[type] || String(event?.summary || "Working through the task");
       };
       const summary = options.cancelling
-        ? "Stopping project work"
+        ? "Stopping safely"
         : options.reconnecting
-          ? "Connection interrupted; reconnecting"
-          : String(latest?.summary || labels[latest?.type] || "Working in the project");
-      const steps = events
-        .map((item) => String(item?.event?.summary || labels[item?.event?.type] || "").trim())
+          ? "Reconnecting without losing progress"
+          : friendlyEvent(latest, true);
+      const steps = events.slice(0, -1)
+        .map((item) => friendlyEvent(item?.event, false).trim())
         .filter(Boolean)
         .filter((value, index, values) => index === 0 || value !== values[index - 1])
-        .slice(-4);
+        .slice(-3);
       body.replaceChildren();
+      const headingRow = document.createElement("div");
+      headingRow.className = "agent-progress-heading";
+      const orb = document.createElement("span");
+      orb.className = "agent-progress-orb";
+      orb.setAttribute("aria-hidden", "true");
       const heading = document.createElement("strong");
       heading.textContent = runtimeLabel + " is working";
-      body.appendChild(heading);
+      headingRow.append(orb, heading);
+      body.appendChild(headingRow);
       const timeline = document.createElement("div");
       timeline.className = "agent-progress-timeline";
-      for (const [index, step] of steps.entries()) {
-        const row = document.createElement("div");
-        row.className = "agent-progress-step" + (index === steps.length - 1 ? " is-active" : "");
-        row.textContent = (index === steps.length - 1 ? "● " : "✓ ") + step;
-        timeline.appendChild(row);
+      if (steps.length) {
+        const history = document.createElement("div");
+        history.className = "agent-progress-history";
+        for (const step of steps) {
+          const row = document.createElement("div");
+          row.className = "agent-progress-step";
+          const check = document.createElement("span");
+          check.className = "agent-progress-check";
+          check.textContent = "✓";
+          const text = document.createElement("span");
+          text.textContent = step;
+          row.append(check, text);
+          history.appendChild(row);
+        }
+        timeline.appendChild(history);
       }
-      if (!steps.length) timeline.textContent = "● " + summary;
+      const current = document.createElement("div");
+      current.className = "agent-progress-current";
+      const dot = document.createElement("span");
+      dot.className = "agent-progress-dot";
+      dot.setAttribute("aria-hidden", "true");
+      const currentText = document.createElement("span");
+      currentText.textContent = summary;
+      current.append(dot, currentText);
+      timeline.appendChild(current);
       body.appendChild(timeline);
       if (typeof options.onCancel === "function" && !["completed", "failed", "cancelled"].includes(payload?.state)) {
         const actions = document.createElement("div");
