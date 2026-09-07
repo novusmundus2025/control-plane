@@ -558,6 +558,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /Elapsed " \+ formatDuration/);
   assert.match(html, /Last activity " \+ formatDuration/);
   assert.match(html, /Context left " \+ remainingPercent/);
+  assert.match(html, /Number\(candidate\?\.context_used\) > 0/);
   assert.match(html, /telemetry\.api_calls/);
   assert.match(html, /\/api\/agent\/tasks\/" \+ encodeURIComponent\(submitted\.task_id\) \+ "\/cancel"/);
   assert.match(html, /inferProjectTemplate[\s\S]*java\|maven\|spring\|junit\|gradle/);

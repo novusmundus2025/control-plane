@@ -3883,7 +3883,14 @@ export function page(config = configFromEnv()) {
         if (number < 1000) return String(number);
         return (number / 1000).toFixed(number >= 10000 ? 0 : 1) + "k";
       };
-      const telemetryEvent = [...events].reverse().find((item) => Number(item?.event?.metadata?.telemetry?.context_length) > 0);
+      // A provider may advertise its context window without returning token
+      // usage. In that case context_used is zero/unknown, not proof that the
+      // entire window remains. Only surface context telemetry once Hermes has
+      // received a real prompt-token count from the provider.
+      const telemetryEvent = [...events].reverse().find((item) => {
+        const candidate = item?.event?.metadata?.telemetry;
+        return Number(candidate?.context_length) > 0 && Number(candidate?.context_used) > 0;
+      });
       const telemetry = telemetryEvent?.event?.metadata?.telemetry || {};
       const now = Date.now();
       const meta = document.createElement("div");
@@ -3894,7 +3901,7 @@ export function page(config = configFromEnv()) {
       ];
       const contextLength = Number(telemetry.context_length || 0);
       const contextRemaining = Number(telemetry.context_remaining || 0);
-      if (contextLength > 0) {
+      if (contextLength > 0 && contextRemaining >= 0) {
         const remainingPercent = Math.max(0, Math.min(100, Math.round(contextRemaining / contextLength * 100)));
         facts.push("Context left " + remainingPercent + "% · " + formatTokens(contextRemaining) + " tokens");
       }
