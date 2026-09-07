@@ -4158,7 +4158,7 @@ test("native Hermes providers preserve OpenAI tools and fail over before streami
 test("native Hermes tools fail fast when the MundusX model node is outdated", async () => {
   resetAgentProviderCircuits();
   const response = { writeHead() {}, write() {}, end() {} };
-  const config = configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" });
+  const config = configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://mundusx.ai" });
   await assert.rejects(
     relayNativeHermesToolStream(response, {
       model: "mundusx-agnostic",
