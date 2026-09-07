@@ -544,6 +544,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /!activeProject \|\| runtimePreference === "cloud" \? false : await tryLocalAgentTurn/);
   assert.match(html, /Reconnecting without losing progress/);
   assert.match(html, /statusEl\.hidden = Boolean\(activeProject\)/);
+  assert.match(html, /\.runtime-status-sentinel\[hidden\] \{ display: none; \}/);
   assert.match(html, /className = "agent-progress-orb"/);
   assert.match(html, /className = "agent-progress-current"/);
   assert.match(html, /Running a command/);

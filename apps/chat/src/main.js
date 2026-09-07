@@ -826,6 +826,7 @@ export function page(config = configFromEnv()) {
       text-transform: uppercase;
       background: #fff;
     }
+    .runtime-status-sentinel[hidden] { display: none; }
     .status-dot {
       width: 7px;
       height: 7px;
@@ -3792,10 +3793,9 @@ export function page(config = configFromEnv()) {
         : options.reconnecting
           ? "Reconnecting without losing progress"
           : friendlyEvent(latest, true);
-      const steps = events.slice(0, -1)
+      const steps = [...new Set(events.slice(0, -1)
         .map((item) => friendlyEvent(item?.event, false).trim())
-        .filter(Boolean)
-        .filter((value, index, values) => index === 0 || value !== values[index - 1])
+        .filter(Boolean))]
         .slice(-3);
       body.replaceChildren();
       const headingRow = document.createElement("div");
