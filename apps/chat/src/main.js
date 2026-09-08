@@ -2305,6 +2305,9 @@ export function page(config = configFromEnv()) {
         document.querySelectorAll("[data-account-avatar]").forEach((node) => node.textContent = name.split(/\\s+/).map((part) => part[0]).join("").slice(0, 2).toUpperCase());
         accountWidgetEl.hidden = false;
         guestWidgetEl.hidden = true;
+        await restoreActiveConversation().catch(() => {
+          setStatus("error", "Unable to restore conversation");
+        });
         const pendingPrompt = sessionStorage.getItem(pendingAuthPromptKey);
         if (pendingPrompt && !promptEl.value.trim()) {
           promptEl.value = pendingPrompt;
@@ -5112,6 +5115,16 @@ export function page(config = configFromEnv()) {
         }
         historyListEl.appendChild(group);
       }
+    }
+
+    async function restoreActiveConversation() {
+      const conversationId = activeHistoryId;
+      if (!conversationId) return;
+      const item = readHistory().find((entry) => (entry.conversationId || entry.id) === conversationId);
+      // New Chat reserves an ID without creating history or messages.
+      // Keep that explicit blank selection instead of opening another chat.
+      if (!item && !readCachedConversation(conversationId).length) return;
+      await loadHistoryItem(item || { conversationId });
     }
 
     async function loadHistoryItem(item) {
