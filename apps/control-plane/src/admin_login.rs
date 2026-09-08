@@ -275,13 +275,27 @@ pub fn handle(
             if let Some(token) = cookie(headers, SESSION_COOKIE) {
                 state().lock().expect("admin logout").sessions.remove(token);
             }
-            Some(redirect("/auth/login", &set_cookie(SESSION_COOKIE, "", 0)))
+            Some(redirect("/", &set_cookie(SESSION_COOKIE, "", 0)))
         }
         _ => Some(response("404 Not Found", "Not found", "")),
     }
 }
 
-pub fn decorate(mut html: String, is_admin: bool) -> String {
+pub fn session_email(headers: &BTreeMap<String, String>) -> Option<String> {
+    if !session_authorized("GET", headers) {
+        return None;
+    }
+    let token = cookie(headers, SESSION_COOKIE)?;
+    state()
+        .lock()
+        .ok()?
+        .sessions
+        .get(token)
+        .map(|(email, _)| email.clone())
+}
+
+pub fn decorate(mut html: String, email: Option<&str>) -> String {
+    let is_admin = email.is_some();
     if !is_admin {
         let forms = regex::Regex::new(
             r#"(?is)(<form\b[^>]*\bmethod\s*=\s*["']post["'][^>]*>)(.*?)</form>"#,
@@ -296,7 +310,14 @@ pub fn decorate(mut html: String, is_admin: bool) -> String {
     } else {
         r#"<a href="/auth/login" style="display:block;font:inherit;padding:9px 14px;border:1px solid #26303b;border-radius:8px;background:#0b1420;color:#f6fbff;text-decoration:none">Admin sign-in</a>"#
     };
-    html = html.replace("</body>", &format!(r#"<div style="position:fixed;right:18px;bottom:18px;z-index:1000">{control}</div></body>"#));
+    let (label, detail) = match email {
+        Some(email) => ("Admin", super::escape_html(email)),
+        None => ("Public access", "View only".to_string()),
+    };
+    let card = format!(
+        r#"<div class="side-card" id="admin-account" style="display:grid;gap:10px;min-width:0"><div style="min-width:0"><strong>{label}</strong><div class="meta" title="{detail}" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{detail}</div></div>{control}</div>"#
+    );
+    html = html.replace(r#"<div id="admin-account"></div>"#, &card);
     html
 }
 
@@ -356,13 +377,15 @@ mod tests {
 
     #[test]
     fn public_views_disable_only_mutation_forms() {
-        let page = r#"<body><form method="get"><input name="filter"></form><form method="post" action="/actions/admission-policy"><input name="policy"><button>Apply</button></form></body>"#;
-        let public = decorate(page.into(), false);
+        let page = r#"<body><div id="admin-account"></div><form method="get"><input name="filter"></form><form method="post" action="/actions/admission-policy"><input name="policy"><button>Apply</button></form></body>"#;
+        let public = decorate(page.into(), None);
         assert!(public.contains("<form method=\"get\"><input name=\"filter\">"));
         assert!(public.contains("<fieldset disabled"));
         assert!(public.contains("Admin sign-in"));
         assert!(!public.contains("action=\"/auth/logout\""));
-        let admin = decorate(page.into(), true);
+        assert!(public.contains("Public access"));
+        let admin = decorate(page.into(), Some("admin@example.com"));
+        assert!(admin.contains("admin@example.com"));
         assert!(!admin.contains("<fieldset disabled"));
         assert!(admin.contains("action=\"/auth/logout\""));
         assert!(!public_request("POST", "/v1/nodes/policy-override"));
@@ -507,6 +530,9 @@ mod tests {
         assert!(handle("POST", "/auth/logout", None, &headers)
             .unwrap()
             .contains("Max-Age=0"));
+        assert!(handle("POST", "/auth/logout", None, &headers)
+            .unwrap()
+            .contains("Location: /\r\n"));
         assert!(!session_authorized("GET", &headers));
     }
 }

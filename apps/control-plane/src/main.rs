@@ -3792,10 +3792,7 @@ button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ fon
             <div style="color:#54b9ff;margin-top:10px;">Healthy</div>
           </div>
           <img class="sidebar-vehicle" src="{vehicle_path}" alt="Mercedes-Benz vehicle" />
-          <div class="side-card operator">
-            <div class="avatar">EH</div>
-            <div><strong>Operator</strong><div class="meta">operator@ehda.local</div></div>
-          </div>
+          <div id="admin-account"></div>
           <div class="foot">EHDA Control Plane<br/>v1.0.0</div>
         </div>
       </aside>
@@ -5090,10 +5087,7 @@ button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ fon
             <div class="meta" style="margin-top:8px;">All systems operational</div>
           </div>
           <img class="sidebar-vehicle" src="{vehicle_path}" alt="Mercedes-Benz vehicle" />
-          <div class="side-card operator">
-            <div class="avatar">EH</div>
-            <div><strong>Operator</strong><div class="meta">operator@ehda.local</div></div>
-          </div>
+          <div id="admin-account"></div>
           <div class="foot">EHDA Control Plane<br/>v1.0.0</div>
         </div>
       </aside>
@@ -9676,7 +9670,7 @@ fn handle_connection_with_streams(
     let response = if admin_login::enabled() && admin_login::browser_page(&request.method, clean_path) {
         if let Some((head, body)) = response.split_once("\r\n\r\n") {
             let status = head.lines().next().unwrap_or("HTTP/1.1 200 OK").trim_start_matches("HTTP/1.1 ");
-            html_response(status, &admin_login::decorate(body.to_string(), admin_login::session_authorized("GET", &request.headers)))
+            html_response(status, &admin_login::decorate(body.to_string(), admin_login::session_email(&request.headers).as_deref()))
         } else { response }
     } else { response };
     let _ = stream.write_all(response.as_bytes());
