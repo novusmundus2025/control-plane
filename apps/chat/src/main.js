@@ -1804,7 +1804,8 @@ export function page(config = configFromEnv()) {
       .shell { grid-template-columns: 1fr; }
       aside { display: none; }
       header { justify-content:flex-start; padding:0 14px; gap:10px; }
-      .header-projects:not([hidden]) { display:inline-flex; }
+      #repository-open, #repository-open-mobile, #repository-dialog,
+      #active-project-context, #project-context-menu, #mutation-toggle { display:none !important; }
       .theme-switch { margin-left:auto; }
       .conversation { padding: 24px 14px 20px; }
       main.is-empty-chat { grid-template-rows: 58px minmax(0, 0.9fr) minmax(0, 1.1fr); }
@@ -2066,6 +2067,8 @@ export function page(config = configFromEnv()) {
     let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
     let removedProjectsKey = "mundusx.chat.removedProjects.v1:anonymous";
     const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
+    const mobileProjectsViewport = window.matchMedia("(max-width: 860px)");
+    function projectsAvailableOnDevice() { return !mobileProjectsViewport.matches; }
     let activeProject = null;
     let availableProjectSlugs = [];
     let removedProjectSlugs = [];
@@ -2410,6 +2413,7 @@ export function page(config = configFromEnv()) {
     }
 
     async function openProjects({ showRunnerSetup = false, project = null } = {}) {
+      if (!projectsAvailableOnDevice()) return;
       runnerSetupRequested = showRunnerSetup;
       configureProjectsDialog({ showRunnerSetup, project });
       setWorkspaceDestination("projects");
@@ -2848,10 +2852,12 @@ export function page(config = configFromEnv()) {
     }
 
     function renderActiveProject() {
+      // Ignore the desktop selection on mobile without deleting its saved value.
+      if (!projectsAvailableOnDevice()) activeProject = null;
       const valid = activeProject
         && /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(activeProject.slug || "");
       if (!valid) activeProject = null;
-      if (activeProjectContextEl) activeProjectContextEl.hidden = false;
+      if (activeProjectContextEl) activeProjectContextEl.hidden = !projectsAvailableOnDevice();
       if (activeProjectNameEl) activeProjectNameEl.textContent = activeProject?.slug || "Project";
       if (activeProjectOpenEl) activeProjectOpenEl.setAttribute("aria-pressed", String(Boolean(activeProject)));
       if (activeProjectOpenEl) activeProjectOpenEl.title = activeProject ? "Change active project" : "Choose a project";
@@ -2953,6 +2959,7 @@ export function page(config = configFromEnv()) {
     }
 
     function setActiveProject(project) {
+      if (!projectsAvailableOnDevice()) return;
       activeProject = project;
       if (project) {
         rememberProject(project.slug);
@@ -2963,6 +2970,7 @@ export function page(config = configFromEnv()) {
     }
 
     activeProjectOpenEl?.addEventListener("click", (event) => {
+      if (!projectsAvailableOnDevice()) return;
       event.stopPropagation();
       if (projectContextMenuEl) projectContextMenuEl.hidden = !projectContextMenuEl.hidden;
     });
@@ -3001,6 +3009,17 @@ export function page(config = configFromEnv()) {
       projectContextMenuEl.hidden = true;
     });
     renderActiveProject();
+
+    mobileProjectsViewport.addEventListener("change", () => {
+      if (!projectsAvailableOnDevice()) {
+        closeProjects();
+        if (projectContextMenuEl) projectContextMenuEl.hidden = true;
+      }
+      try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); }
+      catch { activeProject = null; }
+      renderActiveProject();
+      renderRuntimeControls();
+    });
 
     const projectSlugEl = harnessFormEl?.elements.namedItem("project_slug");
     projectSlugEl?.addEventListener("input", () => {
@@ -3066,6 +3085,7 @@ export function page(config = configFromEnv()) {
     });
     harnessFormEl?.addEventListener("submit", async (event) => {
       event.preventDefault();
+      if (!projectsAvailableOnDevice()) return;
       const data = new FormData(harnessFormEl);
       const projectSlug = normalizeProjectSlug(data.get("project_slug"));
       if (!projectSlug) {
@@ -3493,6 +3513,7 @@ export function page(config = configFromEnv()) {
     });
 
     async function runActiveProjectTask(pending, message, project) {
+      if (!projectsAvailableOnDevice()) throw new Error("Projects are available on desktop.");
       const projectTemplate = inferProjectTemplate(message);
       const response = await fetch("/api/harness/tasks", {
         method: "POST",
