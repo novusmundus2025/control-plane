@@ -545,6 +545,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /closeProjects\(\);[\s\S]*showToast\('Project "/);
   assert.doesNotMatch(html, /repositoryDialogEl\?\.close\(\)/);
   assert.match(html, /requiresLocalProjectAction\(message\)/);
+  assert.match(html, /what\|which\|where\|when\|who\|why/);
   assert.match(html, /\(\?:ask\|know\|understand\)/);
   assert.match(html, /\(\?:changes\?\|files\?\|steps\?\|requirements\?\)/);
   assert.match(html, /const projectRuntime = preferredProjectRuntime\(\)/);
