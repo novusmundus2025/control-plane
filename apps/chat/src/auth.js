@@ -279,15 +279,17 @@ export class PostgresAuthStore {
       expires_at timestamptz not null,
       created_at timestamptz not null default now()
     )`);
+    const deviceId = input.device_id == null ? null : String(input.device_id);
+    if (deviceId !== null && !UUID_PATTERN.test(deviceId)) throw Object.assign(new Error("Device id is invalid"), { statusCode: 400 });
     const deviceName = String(input.device_name || "MundusX developer").trim();
     if (!deviceName || deviceName.length > 160) throw Object.assign(new Error("Device name is invalid"), { statusCode: 400 });
     const sessionId = randomUUID();
     const connectorToken = `${MCP_TOKEN_PREFIX}${token()}`;
     const approvalToken = token();
     await this.pool.query(`insert into public.local_agent_bootstrap_sessions
-      (session_id, connector_hash, approval_hash, device_name, expires_at)
-      values ($1, $2, $3, $4, now() + ($5 * interval '1 second'))`,
-    [sessionId, digest(connectorToken), digest(approvalToken), deviceName, LOCAL_AGENT_BOOTSTRAP_SECONDS]);
+      (session_id, connector_hash, approval_hash, device_name, expires_at, device_id)
+      values ($1, $2, $3, $4, now() + ($5 * interval '1 second'), $6::uuid)`,
+    [sessionId, digest(connectorToken), digest(approvalToken), deviceName, LOCAL_AGENT_BOOTSTRAP_SECONDS, deviceId]);
     return {
       session_id: sessionId,
       connector_token: connectorToken,
@@ -311,16 +313,30 @@ export class PostgresAuthStore {
     const client = await this.pool.connect();
     try {
       await client.query("begin");
-      const result = await client.query(`update public.local_agent_bootstrap_sessions
-        set user_id = coalesce(user_id, $3), approved_at = coalesce(approved_at, now())
+      // Serialize rotations for an account, including concurrent browser approvals.
+      await client.query("select id from public.users where id = $1 for update", [userId]);
+      const result = await client.query(`select connector_hash, device_name, device_id, expires_at, approved_at
+        from public.local_agent_bootstrap_sessions
         where session_id = $1 and approval_hash = $2 and expires_at > now()
-          and (user_id is null or user_id = $3)
-        returning connector_hash, device_name, expires_at`, [sessionId, digest(approvalToken || ""), userId]);
+          and (user_id is null or user_id = $3) for update`, [sessionId, digest(approvalToken || ""), userId]);
       const row = result.rows[0];
       if (!row) throw Object.assign(new Error("Computer connection is invalid or expired"), { statusCode: 409 });
-      await client.query(`insert into public.mcp_personal_access_tokens
-        (user_id, token_hash, name, expires_at) values ($1, $2, $3, now() + interval '365 days')
-        on conflict (token_hash) do nothing`, [userId, row.connector_hash, `Local project · ${row.device_name}`.slice(0, 80)]);
+      if (row.approved_at) {
+        const existing = await client.query(`select token_id from public.mcp_personal_access_tokens
+          where user_id = $1 and token_hash = $2 and revoked_at is null and expires_at > now()`, [userId, row.connector_hash]);
+        if (!existing.rows[0]) throw Object.assign(new Error("This pairing was replaced. Use the latest pairing."), { statusCode: 409 });
+      } else {
+        await client.query(`update public.local_agent_bootstrap_sessions
+          set user_id = $2, approved_at = now() where session_id = $1`, [sessionId, userId]);
+        if (row.device_id) {
+          await client.query(`update public.mcp_personal_access_tokens set revoked_at = now()
+            where user_id = $1 and device_id = $2::uuid and revoked_at is null`, [userId, row.device_id]);
+        }
+        await client.query(`insert into public.mcp_personal_access_tokens
+          (user_id, token_hash, name, device_id, expires_at)
+          values ($1, $2, $3, $4::uuid, now() + interval '365 days')`,
+        [userId, row.connector_hash, `Local project · ${row.device_name}`.slice(0, 80), row.device_id]);
+      }
       await client.query("commit");
       return { session_id: sessionId, device_name: row.device_name, state: "approved", expires_at: row.expires_at };
     } catch (error) { await client.query("rollback").catch(() => {}); throw error; }
@@ -339,10 +355,18 @@ export class PostgresAuthStore {
 
   async listMcpTokens(userId) {
     this.ensureReady();
-    const result = await this.pool.query(`select token_id, name, created_at, expires_at, last_used_at
-      from public.mcp_personal_access_tokens
-      where user_id = $1 and revoked_at is null and expires_at > now()
-      order by created_at desc limit 20`, [userId]);
+    const result = await this.pool.query(`select t.token_id, t.name, t.created_at, t.expires_at, t.last_used_at,
+        t.device_id, c.device_name,
+        case when t.device_id is not null then 'device'
+          when b.session_id is not null then 'legacy_device' else 'manual' end as connection_kind,
+        case when t.expires_at <= now() then 'reconnect_needed'
+          when c.last_seen_at > now() - interval '45 seconds' and c.revoked_at is null then 'online'
+          else 'offline' end as device_status
+      from public.mcp_personal_access_tokens t
+      left join public.local_agent_connections c on c.user_id = t.user_id and c.device_id = t.device_id
+      left join public.local_agent_bootstrap_sessions b on b.connector_hash = t.token_hash and b.user_id = t.user_id
+      where t.user_id = $1 and t.revoked_at is null and (t.device_id is not null or t.expires_at > now())
+      order by t.created_at desc`, [userId]);
     return result.rows;
   }
 
@@ -358,9 +382,9 @@ export class PostgresAuthStore {
     return { revoked: true, token_id: tokenId };
   }
 
-  async registerLocalAgent(userId, input = {}) {
+  async registerLocalAgent(userId, input = {}, tokenId = null) {
     this.ensureReady();
-    const connectionId = String(input.connection_id || randomUUID());
+    let connectionId = String(input.connection_id || randomUUID());
     const deviceName = String(input.device_name || "MundusX agent").trim();
     if (!UUID_PATTERN.test(connectionId) || !deviceName || deviceName.length > 160) {
       throw Object.assign(new Error("Local agent identity is invalid"), { statusCode: 400 });
@@ -368,21 +392,50 @@ export class PostgresAuthStore {
     const capabilities = input.capabilities && typeof input.capabilities === "object"
       ? input.capabilities
       : {};
-    const result = await this.pool.query(`insert into public.local_agent_connections
-      (connection_id, user_id, device_name, capabilities, last_seen_at)
-      values ($1::uuid, $2::uuid, $3, $4::jsonb, now())
-      on conflict (connection_id) do update set
-        device_name = excluded.device_name,
-        capabilities = excluded.capabilities,
-        last_seen_at = now(),
-        revoked_at = null
-      where public.local_agent_connections.user_id = excluded.user_id
-      returning connection_id, device_name, capabilities, last_seen_at`,
-    [connectionId, userId, deviceName, JSON.stringify(capabilities)]);
-    if (result.rowCount !== 1) {
-      throw Object.assign(new Error("Local agent connection belongs to another user"), { statusCode: 403 });
-    }
-    return result.rows[0];
+    const client = await this.pool.connect();
+    try {
+      await client.query("begin");
+      await client.query("select id from public.users where id = $1 for update", [userId]);
+      const credential = await client.query(`select t.device_id, b.session_id from public.mcp_personal_access_tokens t
+        left join public.local_agent_bootstrap_sessions b on b.connector_hash = t.token_hash and b.user_id = t.user_id
+        where t.user_id = $1 and t.token_id = $2::uuid and t.revoked_at is null and t.expires_at > now() for update of t`, [userId, tokenId]);
+      const tokenRecord = credential.rows[0];
+      if (!tokenRecord) throw Object.assign(new Error("Connection credential was revoked or expired"), { statusCode: 401 });
+      let deviceId = tokenRecord.device_id || null;
+      // Only a browser-paired agent may bind its existing credential on upgrade.
+      if (input.device_id && !UUID_PATTERN.test(String(input.device_id))) throw Object.assign(new Error("Device id is invalid"), { statusCode: 400 });
+      if (deviceId && input.device_id && deviceId !== input.device_id) throw Object.assign(new Error("Device identity does not match this credential"), { statusCode: 403 });
+      if (!deviceId && input.device_id && tokenRecord.session_id) {
+        const current = await client.query(`select token_id from public.mcp_personal_access_tokens
+          where user_id = $1 and device_id = $2::uuid and revoked_at is null`, [userId, input.device_id]);
+        if (current.rows[0]) throw Object.assign(new Error("This device already has a newer credential. Reconnect using it."), { statusCode: 409 });
+        deviceId = input.device_id;
+        await client.query(`update public.mcp_personal_access_tokens set device_id = $3::uuid
+          where user_id = $1 and token_id = $2::uuid`, [userId, tokenId, deviceId]);
+        await client.query(`update public.local_agent_bootstrap_sessions set device_id = $3::uuid
+          where user_id = $1 and session_id = $2::uuid`, [userId, tokenRecord.session_id, deviceId]);
+      }
+      if (deviceId) {
+        const existing = await client.query(`select connection_id from public.local_agent_connections
+          where user_id = $1 and device_id = $2::uuid`, [userId, deviceId]);
+        connectionId = existing.rows[0]?.connection_id || connectionId;
+      }
+      const result = await client.query(`insert into public.local_agent_connections
+        (connection_id, user_id, device_name, capabilities, last_seen_at, device_id)
+        values ($1::uuid, $2::uuid, $3, $4::jsonb, now(), $5::uuid)
+        on conflict (connection_id) do update set
+          device_name = excluded.device_name, capabilities = excluded.capabilities,
+          last_seen_at = now(), revoked_at = null,
+          device_id = coalesce(public.local_agent_connections.device_id, excluded.device_id)
+        where public.local_agent_connections.user_id = excluded.user_id
+          and (public.local_agent_connections.device_id is null or public.local_agent_connections.device_id = excluded.device_id)
+        returning connection_id, device_name, capabilities, last_seen_at`,
+      [connectionId, userId, deviceName, JSON.stringify(capabilities), deviceId]);
+      if (result.rowCount !== 1) throw Object.assign(new Error("Local agent connection belongs to another identity"), { statusCode: 403 });
+      await client.query("commit");
+      return result.rows[0];
+    } catch (error) { await client.query("rollback").catch(() => {}); throw error; }
+    finally { client.release(); }
   }
 
   async localAgentStatus(userId) {

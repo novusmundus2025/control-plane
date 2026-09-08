@@ -319,7 +319,7 @@ export function page(config = configFromEnv()) {
         <strong>Copy this token now</strong><p>It is shown once. MundusX stores only its digest.</p>
         <div class="command-row"><code id="mcp-token-value"></code><button class="copy-command" type="button" data-copy-target="mcp-token-value">Copy</button></div>
       </section>
-      <section class="mcp-token-list-section"><h3>Active connections</h3><div id="mcp-token-list" class="mcp-token-list"><p class="project-context-empty">Loading…</p></div></section>
+      <section class="mcp-token-list-section"><h3>Devices and access tokens</h3><div id="mcp-token-list" class="mcp-token-list"><p class="project-context-empty">Loading…</p></div></section>
       <p class="mcp-safety">MCP can submit bounded UAT Harness work, inspect evidence, and cancel your tasks. Apply, merge, and deployment still require separate approval.</p>
     </section>
   </div>` : "";
@@ -2655,19 +2655,34 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       if (!tokens.length) {
         const empty = document.createElement("p");
         empty.className = "project-context-empty";
-        empty.textContent = "No active MCP connections.";
+        empty.textContent = "No devices or active access tokens.";
         mcpTokenListEl.append(empty);
         return;
       }
-      for (const token of tokens) {
+      const orderedTokens = [];
+      for (const [kind, title] of [["device", "Connected devices"], ["manual", "MCP access tokens"], ["legacy_device", "Older pairings"]]) {
+        const items = tokens.filter(token => (token.connection_kind || "manual") === kind);
+        if (!items.length) continue;
+        orderedTokens.push({ heading: title }, ...items);
+      }
+      for (const token of orderedTokens) {
+        if (token.heading) {
+          const heading = document.createElement("h4"); heading.textContent = token.heading; mcpTokenListEl.append(heading); continue;
+        }
         const row = document.createElement("div");
         row.className = "mcp-token-row";
         const details = document.createElement("span");
         const name = document.createElement("strong");
-        name.textContent = token.name;
+        name.textContent = token.device_name || token.name;
         const meta = document.createElement("span");
         meta.className = "mcp-token-meta";
         meta.textContent = "Expires " + new Date(token.expires_at).toLocaleDateString() + (token.last_used_at ? " · Last used " + new Date(token.last_used_at).toLocaleDateString() : "");
+        if (token.connection_kind === "device") {
+          const states = { online: "Online", offline: "Offline", reconnect_needed: "Reconnect needed" };
+          meta.textContent = (states[token.device_status] || "Offline") + " · " + meta.textContent;
+        } else if (token.connection_kind === "legacy_device") {
+          meta.textContent = "Device identity not recorded · " + meta.textContent;
+        }
         details.append(name, meta);
         const revoke = document.createElement("button");
         revoke.type = "button";
