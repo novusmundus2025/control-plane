@@ -3722,10 +3722,7 @@ button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ fon
             <div style="display:flex;align-items:center;gap:12px;"><span class="status-dot"></span><span>Control Plane Status</span></div>
             <div style="color:#39d98a;margin-top:10px;">⌄ &nbsp;Healthy</div>
           </div>
-          <div class="side-card operator">
-            <div class="avatar">NX</div>
-            <div><strong>Operator</strong><div class="meta">operator@ehda.local</div><div class="meta">Control Plane Local</div></div>
-          </div>
+          <div id="admin-account"></div>
           <div class="foot" style="display:flex;justify-content:space-between;border-top:1px solid rgba(116,139,164,.14);padding-top:18px;"><span>© 2026 EHDA</span><span>v1.0.0</span></div>
         </div>
       </aside>
@@ -4853,10 +4850,7 @@ button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ fon
             <div style="display:flex;align-items:center;gap:12px;"><span class="status-dot"></span><span>Control Plane Status</span></div>
             <div style="color:#54b9ff;margin-top:10px;">Healthy</div>
           </div>
-          <div class="side-card operator">
-            <div class="avatar">NX</div>
-            <div><strong>Operator</strong><div class="meta">operator@control-plane.local</div></div>
-          </div>
+          <div id="admin-account"></div>
           <div class="foot">Control Plane<br/>v1.0.0</div>
         </div>
       </aside>
@@ -9434,7 +9428,7 @@ fn handle_connection_with_streams(
     let response = if admin_login::enabled() && admin_login::browser_page(&request.method, clean_path) {
         if let Some((head, body)) = response.split_once("\r\n\r\n") {
             let status = head.lines().next().unwrap_or("HTTP/1.1 200 OK").trim_start_matches("HTTP/1.1 ");
-            html_response(status, &admin_login::decorate(body.to_string(), admin_login::session_authorized("GET", &request.headers)))
+            html_response(status, &admin_login::decorate(body.to_string(), admin_login::session_email(&request.headers).as_deref()))
         } else { response }
     } else { response };
     let _ = stream.write_all(response.as_bytes());
