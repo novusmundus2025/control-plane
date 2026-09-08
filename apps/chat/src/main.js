@@ -2003,8 +2003,48 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     .brand-name { font-family: "Space Grotesk", system-ui, sans-serif; font-size:17px; font-weight:500; letter-spacing:-.015em; }
     .brand-ehda { margin-top:1px; color:var(--muted); font-size:12px; font-weight:550; letter-spacing:.08em; }
     .brand-kicker { margin-top:4px; font-size:7px; font-weight:700; letter-spacing:.075em; line-height:1.5; white-space:normal; overflow-wrap:break-word; }
-    .new-chat { min-height:46px; border-radius:9px; box-shadow:0 11px 24px rgba(26,34,43,.20); }
-    .new-chat:hover,.new-chat:focus-visible { filter:brightness(1.08); }
+    .new-chat {
+      position:relative; isolation:isolate; overflow:hidden; min-height:58px; padding:7px 11px 7px 16px; gap:12px;
+      border:1px solid #495360; border-radius:999px; color:#f5f8fc;
+      background:linear-gradient(155deg,#252c35 0%,#10151c 43%,#090e15 75%,#1b2531 100%);
+      box-shadow:inset 0 1px 0 rgba(255,255,255,.12),0 5px 14px rgba(8,15,25,.18);
+      transition:border-color .22s ease,box-shadow .22s ease,transform .18s ease; touch-action:manipulation;
+    }
+    .new-chat::before {
+      content:""; position:absolute; inset:0; z-index:-1; opacity:0; pointer-events:none;
+      background:radial-gradient(ellipse at 92% 50%,rgba(0,117,255,.48),transparent 62%);
+      transition:opacity .25s ease;
+    }
+    .new-chat .new-chat-plus { flex:0 0 27px; padding-right:12px; border-right:1px solid #45505e; font-size:25px; font-weight:400; line-height:30px; }
+    .new-chat .new-chat-label { flex:1; text-align:left; white-space:nowrap; font-size:15px; font-weight:600; letter-spacing:-.02em; }
+    .new-chat .new-chat-keyboard {
+      flex:0 0 39px; height:39px; display:grid; place-items:center; border:1px solid #343f4d; border-radius:14px;
+      background:linear-gradient(145deg,rgba(27,37,49,.9),rgba(6,12,20,.85)); color:#b9cce5;
+      box-shadow:inset 0 1px 2px rgba(255,255,255,.06); transition:border-color .22s ease,color .22s ease,box-shadow .22s ease;
+    }
+    .new-chat-keyboard svg { width:25px; height:25px; }
+    .new-chat .new-chat-wave { position:absolute; inset:0; width:100%; height:100%; z-index:-1; opacity:0; pointer-events:none; color:#389cff; transition:opacity .25s ease; }
+    .new-chat-wave path { fill:none; stroke:currentColor; stroke-width:1.2; filter:drop-shadow(0 0 3px #1688ff); stroke-dasharray:95 180; }
+    .new-chat-wave path + path { opacity:.45; stroke-width:.7; }
+    .new-chat:hover,.new-chat:focus-visible { background:linear-gradient(155deg,#252c35,#090e15 70%,#142e4c); transform:none; filter:none; }
+    .new-chat:focus-visible { outline:2px solid #80caff; outline-offset:3px; border-color:#72c2ff; box-shadow:0 0 16px rgba(20,131,255,.35); }
+    .new-chat:focus-visible::before,.new-chat:focus-visible .new-chat-wave { opacity:1; }
+    .new-chat:focus-visible .new-chat-keyboard { color:white; border-color:#409fff; box-shadow:0 0 12px rgba(0,119,255,.5),inset 0 0 10px rgba(0,119,255,.2); }
+    @media (hover:hover) {
+      .new-chat:hover { border-color:#72c2ff; transform:translateY(-1px); box-shadow:inset 0 1px 0 rgba(255,255,255,.18),0 0 16px rgba(20,131,255,.3); }
+      .new-chat:hover::before,.new-chat:hover .new-chat-wave { opacity:1; }
+      .new-chat:hover .new-chat-keyboard { color:white; border-color:#409fff; box-shadow:0 0 12px rgba(0,119,255,.5),inset 0 0 10px rgba(0,119,255,.2); }
+    }
+    @media (prefers-reduced-motion:no-preference) {
+      .new-chat:focus-visible .new-chat-wave path { animation:new-chat-flow 2.8s linear infinite; }
+    }
+    @media (hover:hover) and (prefers-reduced-motion:no-preference) {
+      .new-chat:hover .new-chat-wave path { animation:new-chat-flow 2.8s linear infinite; }
+    }
+    .new-chat:active { transform:scale(.98); border-color:#9bddff; box-shadow:inset 0 0 18px rgba(0,117,255,.35),0 0 20px rgba(0,117,255,.4); }
+    .new-chat:active::before { opacity:1; }
+    @keyframes new-chat-flow { to { stroke-dashoffset:-275; } }
+    @media (prefers-reduced-motion:reduce) { .new-chat:hover,.new-chat:active { transform:none; } }
     .rail-destination-icon { color:var(--text); background:color-mix(in srgb,var(--text) 6%,transparent); }
     .rail-destination.is-active { box-shadow:0 7px 20px rgba(35,43,52,.06); }
     .theme-option[aria-pressed="true"] { background:var(--gradient); box-shadow:0 5px 14px rgba(30,39,50,.28); }
@@ -2051,7 +2091,11 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         </div>
       </div>
       <div class="rail-primary">
-        <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
+        <button class="new-chat" id="new-chat" type="button" title="Start a new conversation">
+          <svg class="new-chat-wave" viewBox="0 0 260 58" preserveAspectRatio="none" aria-hidden="true"><path d="M75 64C155 64 162 0 204 8S226 60 270 16"/><path d="M60 60C139 42 177 64 198 21S244 8 268 32"/></svg>
+          <span class="new-chat-plus" aria-hidden="true">+</span><span class="new-chat-label">New Chat</span>
+          <span class="new-chat-keyboard" aria-hidden="true"><svg viewBox="0 0 28 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="4" width="24" height="16" rx="3"/><path d="M7 8h.5m4 0h.5m4 0h.5m4 0h.5M7 12h.5m4 0h.5m4 0h.5m4 0h.5M8 16h12"/></svg></span>
+        </button>
         <nav class="workspace-nav" aria-label="Workspace">
           <span class="workspace-label">Workspace</span>
           <button class="rail-destination is-active" id="chats-open" type="button" aria-current="page"><span class="rail-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 3v-13a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span>Chats</span></button>
