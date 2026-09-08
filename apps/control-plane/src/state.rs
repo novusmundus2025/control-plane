@@ -1509,6 +1509,17 @@ impl ControlPlaneState {
         job: &JobRecord,
         active_graph_node_id: Option<&str>,
     ) -> Vec<CapabilityRequirement> {
+        // Hermes owns planning and tool execution for native OpenAI turns. The
+        // control plane is only an inference relay, so do not add task, graph,
+        // or model-quality requirements that can strand the turn in the queue.
+        if is_native_openai_tool_turn(&job.prompt) {
+            return vec![CapabilityRequirement {
+                capability: "native_tool_calls_v1".to_string(),
+                weight: 100,
+                minimum_score: 60,
+                required: true,
+            }];
+        }
         let step_requirements = Self::graph_workload(job, active_graph_node_id)
             .map(|workload| workload.capability_requirements.clone())
             .filter(|values| !values.is_empty());
@@ -1689,6 +1700,21 @@ impl ControlPlaneState {
             .iter()
             .filter(|value| value.required)
         {
+            if requirement.capability == "native_tool_calls_v1" {
+                let node_supports_native_tools =
+                    node.worker_health.as_ref().is_some_and(|health| {
+                        health.capabilities.supports_tools
+                            && health
+                                .capabilities
+                                .supported_tools
+                                .iter()
+                                .any(|tool| tool == "native_tool_calls_v1")
+                    });
+                if !node_supports_native_tools {
+                    return false;
+                }
+                continue;
+            }
             let score = Self::model_capability_score(model, &requirement.capability, primary);
             if score < requirement.minimum_score.min(100) {
                 return false;
@@ -4546,6 +4572,9 @@ fn compact_code_output_failure_reason(output: &str, effective_max_tokens: u32) -
 }
 
 fn code_quality_gate_applies(job: &JobRecord) -> bool {
+    if job.prompt.starts_with("__MUNDUSX_OPENAI_TOOL_TURN_V1__") {
+        return false;
+    }
     if job.classification.task_type != RequestTaskType::Coding
         || job.classification.output_format != ExpectedOutputFormat::Code
     {
@@ -5904,6 +5933,31 @@ fn tool_reward_work_type(tool: &str) -> &'static str {
 }
 
 pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
+    if is_native_openai_tool_turn(&request.prompt) {
+        let prompt_chars = request.prompt.chars().count();
+        return RequestClassification {
+            task_type: RequestTaskType::Inference,
+            complexity: RequestComplexity::Low,
+            privacy_level: PrivacyLevel::Internal,
+            output_format: ExpectedOutputFormat::Text,
+            context_size: if prompt_chars > 16_000 {
+                ContextSize::Large
+            } else if prompt_chars > 8_000 {
+                ContextSize::Medium
+            } else {
+                ContextSize::Small
+            },
+            execution_constraints: vec!["native_openai_thin_relay".to_string()],
+            capability_requirements: vec![CapabilityRequirement {
+                capability: "native_tool_calls_v1".to_string(),
+                weight: 100,
+                minimum_score: 60,
+                required: true,
+            }],
+            classification_confidence: 100,
+            reason: "Hermes native OpenAI turn bypasses general orchestration".to_string(),
+        };
+    }
     let lower = request.prompt.to_ascii_lowercase();
     let prompt_chars = request.prompt.chars().count();
     let complete_code_prompt = looks_like_complete_code_prompt(&lower);
@@ -6067,6 +6121,13 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
         execution_constraints.push("complete_code_output".to_string());
     }
 
+    let capability_requirements = capability_requirements_for_request(
+        &lower,
+        task_type,
+        complexity,
+        context_size,
+        detailed_research_prompt,
+    );
     RequestClassification {
         task_type,
         complexity,
@@ -6074,13 +6135,7 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
         output_format,
         context_size,
         execution_constraints,
-        capability_requirements: capability_requirements_for_request(
-            &lower,
-            task_type,
-            complexity,
-            context_size,
-            detailed_research_prompt,
-        ),
+        capability_requirements,
         classification_confidence: 85,
         reason: format!(
             "deterministic classifier matched {} task with {:?} complexity and {:?} context",
@@ -6089,6 +6144,10 @@ pub fn classify_job_request(request: &JobRequest) -> RequestClassification {
             context_size
         ),
     }
+}
+
+fn is_native_openai_tool_turn(prompt: &str) -> bool {
+    prompt.starts_with("__MUNDUSX_OPENAI_TOOL_TURN_V1__")
 }
 
 fn capability_requirements_for_request(
@@ -9076,6 +9135,65 @@ mod tests {
         assert_eq!(classification.task_type, RequestTaskType::Coding);
         assert_eq!(classification.complexity, RequestComplexity::Medium);
         assert_eq!(classification.output_format, ExpectedOutputFormat::Code);
+    }
+
+    #[test]
+    fn native_openai_tool_turn_requires_a_tool_capable_model() {
+        let request = classification_request(concat!(
+            "__MUNDUSX_OPENAI_TOOL_TURN_V1__",
+            r#"{"messages":[{"role":"user","content":"inspect files"}],"tools":[{"type":"function","function":{"name":"search_files"}}]}"#
+        ));
+        let classification = classify_job_request(&request);
+        assert_eq!(classification.task_type, RequestTaskType::Inference);
+        assert_eq!(classification.complexity, RequestComplexity::Low);
+        assert_eq!(classification.output_format, ExpectedOutputFormat::Text);
+        assert_eq!(classification.capability_requirements.len(), 1);
+        assert_eq!(
+            classification.execution_constraints,
+            vec!["native_openai_thin_relay".to_string()]
+        );
+        let requirement = classification
+            .capability_requirements
+            .iter()
+            .find(|requirement| requirement.capability == "native_tool_calls_v1")
+            .expect("tool-use requirement");
+        assert!(requirement.required);
+        assert_eq!(requirement.minimum_score, 60);
+    }
+
+    #[test]
+    fn native_openai_turn_uses_node_verified_tools_even_when_model_metadata_is_stale() {
+        let mut state = ControlPlaneState::default();
+        state.register(vllm_registration("node-vllm"));
+        let mut heartbeat = ready_vllm_heartbeat("node-vllm", "1");
+        heartbeat.worker_health.capabilities.supports_tools = true;
+        heartbeat
+            .worker_health
+            .capabilities
+            .supported_tools
+            .push("native_tool_calls_v1".to_string());
+        for model in &mut heartbeat.worker_health.capabilities.models {
+            model.supports_tools = false;
+            model.task_capabilities.clear();
+            model.capability_scores.clear();
+        }
+        state.heartbeat(heartbeat, "1".to_string());
+        let mut request = classification_request(concat!(
+            "__MUNDUSX_OPENAI_TOOL_TURN_V1__",
+            r#"{"messages":[{"role":"user","content":"inspect files"}],"tools":[{"type":"function","function":{"name":"search_files"}}]}"#
+        ));
+        request.execution_mode = JobExecutionMode::Single;
+        request.model = None;
+        let submitted = state.submit_job(request, "2".to_string());
+        let decision = state.best_scheduler_decision_for_job(&submitted);
+
+        let claimed = state.claim_job("node-vllm", "3".to_string()).job;
+
+        assert!(
+            claimed.is_some(),
+            "verified node-level native tools must be authoritative: {:?}",
+            decision.reasons
+        );
     }
 
     #[test]

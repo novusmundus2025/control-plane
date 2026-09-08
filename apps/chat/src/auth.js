@@ -41,6 +41,40 @@ function token(bytes = 32) {
   return randomBytes(bytes).toString("base64url");
 }
 
+function googleIdTokenClaims(idToken, clientId, profile) {
+  try {
+    const parts = String(idToken || "").split(".");
+    if (parts.length !== 3) return null;
+    const claims = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8"));
+    const issuer = String(claims?.iss || "");
+    const audience = Array.isArray(claims?.aud) ? claims.aud : [claims?.aud];
+    const expiresAt = Number(claims?.exp || 0);
+    if (!["accounts.google.com", "https://accounts.google.com"].includes(issuer) ||
+        !audience.includes(clientId) || expiresAt <= Math.floor(Date.now() / 1000) ||
+        String(claims?.sub || "") !== String(profile?.sub || "") ||
+        normalizeEmail(claims?.email) !== normalizeEmail(profile?.email)) {
+      return null;
+    }
+    return claims;
+  } catch {
+    return null;
+  }
+}
+
+function verifiedGoogleEmailClaim(value) {
+  return value === true || value === "true" || value === 1 || value === "1";
+}
+
+function matchingGoogleIdentity(claims, clientId, profile) {
+  const issuer = String(claims?.iss || "");
+  const audience = Array.isArray(claims?.aud) ? claims.aud : [claims?.aud];
+  return ["accounts.google.com", "https://accounts.google.com"].includes(issuer)
+    && audience.includes(clientId)
+    && Number(claims?.exp || 0) > Math.floor(Date.now() / 1000)
+    && String(claims?.sub || "") === String(profile?.sub || "")
+    && normalizeEmail(claims?.email) === normalizeEmail(profile?.email);
+}
+
 function parseCookies(header = "") {
   return Object.fromEntries(header.split(";").map((part) => part.trim()).filter(Boolean).map((part) => {
     const at = part.indexOf("=");
@@ -368,7 +402,19 @@ export class PostgresAuthStore {
       throw Object.assign(new Error("workspace_relative must be a project slug"), { statusCode: 400 });
     }
     const taskId = randomUUID();
-    const result = await this.pool.query(`insert into public.local_agent_tasks
+    const result = await this.pool.query(`with superseded as (
+      update public.local_agent_tasks set
+        state = 'cancelled',
+        error = 'Superseded by a newer request for this project.',
+        completed_at = now(),
+        lease_expires_at = null
+      where user_id = $2::uuid
+        and state = 'queued'
+        and $8::text is not null
+        and workspace_relative = $8
+      returning task_id
+    )
+    insert into public.local_agent_tasks
       (task_id, user_id, conversation_id, session_id, prompt, allow_mutations, runtime_requested, workspace_relative)
       values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8)
       returning task_id, conversation_id, session_id, runtime_requested, workspace_relative, state, created_at`,
@@ -395,7 +441,7 @@ export class PostgresAuthStore {
           where runtime_connection.connection_id = $2::uuid
             and runtime_connection.capabilities->'agent_runtimes' ? 'hermes'
         ))
-      order by created_at for update skip locked limit 1
+      order by created_at desc for update skip locked limit 1
     )
     update public.local_agent_tasks task set
       state = 'running', connection_id = $2::uuid,
@@ -1071,10 +1117,24 @@ export class PostgresAuthStore {
     });
     const profile = await profileResponse.json().catch(() => ({}));
     const email = normalizeEmail(profile.email);
-    const emailVerified = profile.email_verified === true
-      || profile.email_verified === "true"
-      || profile.verified_email === true
-      || profile.verified_email === "true";
+    let idTokenClaims = googleIdTokenClaims(exchanged.id_token, this.config.googleClientId, profile);
+    let emailVerified = verifiedGoogleEmailClaim(profile.email_verified)
+      || verifiedGoogleEmailClaim(profile.verified_email)
+      || verifiedGoogleEmailClaim(idTokenClaims?.email_verified);
+    // Google Workspace and compatibility profiles do not always expose
+    // email_verified through userinfo. Ask Google's verification endpoint to
+    // validate the issued ID token before rejecting an otherwise matching user.
+    if (!emailVerified && exchanged.id_token) {
+      const tokenInfoResponse = await this.fetch(
+        `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(exchanged.id_token)}`,
+        { headers: { Accept: "application/json" } },
+      );
+      const tokenInfo = await tokenInfoResponse.json().catch(() => ({}));
+      if (tokenInfoResponse.ok && matchingGoogleIdentity(tokenInfo, this.config.googleClientId, profile)) {
+        idTokenClaims = tokenInfo;
+        emailVerified = verifiedGoogleEmailClaim(tokenInfo.email_verified);
+      }
+    }
     if (!profileResponse.ok || !profile.sub || !emailVerified || !email) {
       throw Object.assign(new Error("Google account needs a verified email"), { statusCode: 403 });
     }

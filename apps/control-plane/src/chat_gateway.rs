@@ -494,6 +494,28 @@ pub fn completion_response(
             mundusx.insert("expires_at_epoch".to_string(), json!(expires_at));
         }
     }
+    let native_message = content
+        .strip_prefix("__MUNDUSX_OPENAI_TOOL_RESULT_V1__")
+        .and_then(|value| serde_json::from_str::<Value>(value).ok());
+    let message = native_message
+        .as_ref()
+        .and_then(|value| value.get("message"))
+        .cloned()
+        .unwrap_or_else(|| json!({"role": "assistant", "content": content}));
+    let native_finish_reason = native_message
+        .as_ref()
+        .and_then(|value| value.get("finish_reason"))
+        .and_then(Value::as_str)
+        .unwrap_or(finish_reason);
+    let finish_reason = if message
+        .get("tool_calls")
+        .and_then(Value::as_array)
+        .is_some_and(|tool_calls| !tool_calls.is_empty())
+    {
+        "tool_calls"
+    } else {
+        native_finish_reason
+    };
     json!({
         "id": id,
         "object": "chat.completion",
@@ -501,7 +523,7 @@ pub fn completion_response(
         "model": model,
         "choices": [{
             "index": 0,
-            "message": {"role": "assistant", "content": content},
+            "message": message,
             "finish_reason": finish_reason
         }],
         "mundusx": mundusx
@@ -554,17 +576,47 @@ pub fn sse_finish(completion: &Value) -> String {
     let id = completion["id"].as_str().unwrap_or("chatcmpl-mundusx");
     let created = completion["created"].as_u64().unwrap_or_default();
     let model = completion["model"].as_str().unwrap_or("mundusx-agnostic");
-    let content = completion["choices"][0]["message"]["content"]
-        .as_str()
-        .unwrap_or_default();
+    let message = &completion["choices"][0]["message"];
+    let content = message["content"].as_str().unwrap_or_default();
     let finish_reason = completion["choices"][0]["finish_reason"]
         .as_str()
         .unwrap_or("stop");
-    format!(
-        "{}{}",
-        sse_delta(id, created, model, content),
-        sse_end(id, created, model, finish_reason)
-    )
+    if let Some(tool_calls) = message.get("tool_calls").filter(|value| value.is_array()) {
+        // OpenAI streaming clients assemble tool-call fragments by index. The
+        // completed assistant message does not include that streaming-only
+        // field, so add it while converting the buffered message to an SSE
+        // delta.
+        let indexed_tool_calls = tool_calls
+            .as_array()
+            .expect("tool_calls was checked as an array")
+            .iter()
+            .enumerate()
+            .map(|(index, call)| {
+                let mut call = call.clone();
+                if let Some(fields) = call.as_object_mut() {
+                    fields.insert("index".to_string(), json!(index));
+                }
+                call
+            })
+            .collect::<Vec<_>>();
+        let chunk = json!({
+            "id": id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{"index": 0, "delta": {"role": "assistant", "content": Value::Null, "tool_calls": indexed_tool_calls}, "finish_reason": Value::Null}]
+        });
+        format!(
+            "data: {chunk}\n\n{}",
+            sse_end(id, created, model, finish_reason)
+        )
+    } else {
+        format!(
+            "{}{}",
+            sse_delta(id, created, model, content),
+            sse_end(id, created, model, finish_reason)
+        )
+    }
 }
 
 pub fn sse_keep_alive() -> &'static str {
@@ -923,6 +975,58 @@ mod tests {
         assert!(finish.contains("\"role\":\"assistant\""));
         assert!(finish.contains("\"delta\":{\"content\":\"Done.\",\"role\":\"assistant\"}"));
         assert!(finish.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn preserves_native_tool_calls_in_completion_and_sse() {
+        let native = concat!(
+            "__MUNDUSX_OPENAI_TOOL_RESULT_V1__",
+            r#"{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"search_files","arguments":"{\"pattern\":\"*.java\"}"}}]},"finish_reason":"tool_calls"}"#
+        );
+        let completion = completion_response(
+            "chatcmpl-tools",
+            1,
+            "mundusx-agnostic",
+            native,
+            "stop",
+            None,
+            None,
+        );
+        assert_eq!(completion["choices"][0]["finish_reason"], "tool_calls");
+        assert_eq!(
+            completion["choices"][0]["message"]["tool_calls"][0]["function"]["name"],
+            "search_files"
+        );
+        let stream = sse_finish(&completion);
+        assert!(stream.contains("\"tool_calls\""));
+        assert!(stream.contains("\"index\":0"));
+        assert!(stream.contains("\"finish_reason\":\"tool_calls\""));
+        assert!(stream.ends_with("data: [DONE]\n\n"));
+    }
+
+    #[test]
+    fn normalizes_native_tool_call_finish_reason() {
+        let native = concat!(
+            "__MUNDUSX_OPENAI_TOOL_RESULT_V1__",
+            r#"{"message":{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"terminal","arguments":"{\"command\":\"pwd\"}"}}]},"finish_reason":"stop"}"#
+        );
+        let completion = completion_response(
+            "chatcmpl-tools",
+            1,
+            "mundusx-agnostic",
+            native,
+            "stop",
+            None,
+            None,
+        );
+
+        assert_eq!(completion["choices"][0]["finish_reason"], "tool_calls");
+        let stream = sse_finish(&completion);
+        assert!(
+            stream.contains("\"delta\":{\"content\":null,\"role\":\"assistant\",\"tool_calls\"")
+        );
+        assert!(stream.contains("\"index\":0"));
+        assert!(!stream.contains("__MUNDUSX_OPENAI_TOOL_RESULT_V1__"));
     }
 
     #[test]

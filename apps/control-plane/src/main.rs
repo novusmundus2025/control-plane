@@ -705,11 +705,16 @@ fn activate_held_chat_job(
 
 fn should_enable_live_stream(
     wants_stream: bool,
+    native_tool_turn: bool,
     mode: Option<&str>,
     record: &JobRecord,
     streaming_node_available: bool,
 ) -> bool {
-    wants_stream && mode.is_none() && !record.graph_execution_enabled && streaming_node_available
+    wants_stream
+        && !native_tool_turn
+        && mode.is_none()
+        && !record.graph_execution_enabled
+        && streaming_node_available
 }
 
 fn job_artifacts_path(job_id: &str) -> String {
@@ -4970,7 +4975,22 @@ struct RequestParts {
 }
 
 const MAX_HEADER_BYTES: usize = 32 * 1024;
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+// Transport budget includes JSON/tool schemas and escaped native model turns.
+// The model runtime separately enforces its token context (131,072 on EHDA).
+const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+fn is_model_context_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("maximum context length")
+        || error.contains("context_length_exceeded")
+        || error.contains("exceeds the model's context")
+}
+
+fn model_context_error_event(error: &str) -> String {
+    format!("data: {}\n\ndata: [DONE]\n\n", serde_json::json!({"error": {
+        "message": error, "type": "invalid_request_error", "code": "context_length_exceeded"
+    }}))
+}
 
 #[derive(Debug, Eq, PartialEq)]
 struct HttpRequestReadError {
@@ -8798,7 +8818,27 @@ fn handle_connection_with_streams(
                     let completion_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
                     let created = now_unix_seconds_u64();
                     let wants_stream = request_body.stream.unwrap_or(false);
-                    let (system_prompt, prompt) = chat_messages_to_prompt(&request_body.messages);
+                    let native_tool_turn = request_body
+                        .tools
+                        .as_ref()
+                        .and_then(serde_json::Value::as_array)
+                        .is_some_and(|tools| !tools.is_empty());
+                    let (system_prompt, prompt) = if native_tool_turn {
+                        let mut native_request = request_body.clone();
+                        // The worker returns a complete native assistant message;
+                        // the control plane wraps it as SSE after validation.
+                        native_request.stream = Some(false);
+                        (
+                            None,
+                            format!(
+                                "__MUNDUSX_OPENAI_TOOL_TURN_V1__{}",
+                                serde_json::to_string(&native_request)
+                                    .expect("validated OpenAI request serializes")
+                            ),
+                        )
+                    } else {
+                        chat_messages_to_prompt(&request_body.messages)
+                    };
                     let metadata_request = chat_gateway::is_openwebui_metadata_request(&prompt);
                     let sensitive_history = system_prompt
                         .as_deref()
@@ -8813,7 +8853,7 @@ fn handle_connection_with_streams(
                             return write_chat_error(&mut stream, "400 Bad Request", &error);
                         }
                     };
-                    match if mode.is_none() {
+                    match if mode.is_none() && !native_tool_turn {
                         tools::execute(&request_body.messages)
                     } else {
                         Ok(None)
@@ -8891,7 +8931,11 @@ fn handle_connection_with_streams(
                         execution_mode: if mode.is_some() || metadata_request || sensitive_history {
                             JobExecutionMode::Single
                         } else {
-                            JobExecutionMode::Auto
+                            if native_tool_turn {
+                                JobExecutionMode::Single
+                            } else {
+                                JobExecutionMode::Auto
+                            }
                         },
                         // Plan without forcing single execution; eligible direct jobs are
                         // upgraded to live streaming after the graph decision is known.
@@ -8925,8 +8969,13 @@ fn handle_connection_with_streams(
                     });
                     // Plan first with buffered delivery so the graph remains authoritative.
                     // Only direct jobs are upgraded to live worker deltas.
+                    // Native Hermes turns must be buffered until the worker's
+                    // internal result envelope is decoded. Streaming that raw
+                    // envelope would expose it as assistant text instead of an
+                    // OpenAI `delta.tool_calls` event.
                     let live_stream_job = should_enable_live_stream(
                         wants_stream,
+                        native_tool_turn,
                         mode.as_deref(),
                         &submitted,
                         streaming_node_available,
@@ -9120,6 +9169,13 @@ fn handle_connection_with_streams(
                                     .lock()
                                     .expect("live stream registry lock")
                                     .remove(&record.job_id);
+                            }
+                            if is_model_context_error(&error) {
+                                if wants_stream {
+                                    let _ = stream.write_all(model_context_error_event(&error).as_bytes());
+                                    return;
+                                }
+                                return write_chat_error(&mut stream, "400 Bad Request", &error);
                             }
                             if wants_stream {
                                 let completion = chat_gateway::completion_response(
@@ -9650,10 +9706,14 @@ mod tests {
             },
             "1".to_string(),
         );
-        assert!(should_enable_live_stream(true, None, &direct, true));
-        assert!(!should_enable_live_stream(true, None, &direct, false));
+        assert!(should_enable_live_stream(true, false, None, &direct, true));
+        assert!(!should_enable_live_stream(
+            true, false, None, &direct, false
+        ));
+        assert!(!should_enable_live_stream(true, true, None, &direct, true));
         assert!(!should_enable_live_stream(
             true,
+            false,
             Some("speakai"),
             &direct,
             true
@@ -9661,13 +9721,16 @@ mod tests {
 
         let mut graph = direct;
         graph.graph_execution_enabled = true;
-        assert!(!should_enable_live_stream(true, None, &graph, true));
+        assert!(!should_enable_live_stream(true, false, None, &graph, true));
     }
 
     fn chat_message(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
             role: role.to_string(),
             content: serde_json::Value::String(content.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }
     }
 
@@ -12433,6 +12496,37 @@ mod tests {
         let error = read_http_request(&mut reader).expect_err("oversized");
 
         assert_eq!(error.status, "413 Payload Too Large");
+    }
+
+    #[test]
+    fn request_reader_preserves_large_model_context_and_tool_json() {
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "context with code and Unicode 界\\\"\n".repeat(131_072)}],
+            "tools": [{"type": "function", "function": {"name": "inspect", "description": "x".repeat(100_000)}}],
+            "max_tokens": 1024
+        }).to_string();
+        assert!(body.len() > 1024 * 1024);
+        let wire = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let mut reader = std::io::Cursor::new(wire.as_bytes());
+        let parsed = read_http_request(&mut reader).expect("large model request");
+        assert_eq!(parsed, wire);
+    }
+
+    #[test]
+    fn model_context_failure_is_a_client_error_not_assistant_output() {
+        let error = "This model's maximum context length is 131072 tokens";
+        assert!(super::is_model_context_error(error));
+        assert!(!super::is_model_context_error("connection timed out"));
+        let event = super::model_context_error_event(error);
+        let json = event.strip_prefix("data: ").unwrap().split("\n\n").next().unwrap();
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(value["error"]["code"], "context_length_exceeded");
+        assert_eq!(value["error"]["message"], error);
+        assert!(value.get("choices").is_none());
     }
 
     #[test]

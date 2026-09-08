@@ -30,7 +30,7 @@ import {
 
 export { localProjectAuthority };
 
-const DEFAULT_CONTROL_PLANE_URL = "https://uat.mundusx.ai";
+const DEFAULT_CONTROL_PLANE_URL = "https://mundusx.ai";
 const DEFAULT_TIMEOUT_SECONDS = 90;
 const DEFAULT_TOOL_PLANNER_TIMEOUT_SECONDS = 12;
 const DEFAULT_WEATHER_TTL_SECONDS = 7200;
@@ -49,11 +49,15 @@ const PUBLIC_MODEL_ID = "mundusx-agnostic";
 const CHAT_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const MARKED_BROWSER_PATH = resolve(CHAT_ROOT, "node_modules/marked/lib/marked.umd.js");
 const DOMPURIFY_BROWSER_PATH = resolve(CHAT_ROOT, "node_modules/dompurify/dist/purify.min.js");
+const KATEX_BROWSER_PATH = resolve(CHAT_ROOT, "node_modules/katex/dist/katex.min.js");
+const KATEX_CSS_PATH = resolve(CHAT_ROOT, "node_modules/katex/dist/katex.min.css");
+const KATEX_FONTS_PATH = resolve(CHAT_ROOT, "node_modules/katex/dist/fonts");
 // Vendor responses are immutable, so the HTML URL must change whenever the
 // bundled version changes. Reusing an unversioned URL can leave browsers with
 // a stale pre-bundle response and silently force the legacy renderer.
 const MARKED_BROWSER_VERSION = "18.0.11";
 const DOMPURIFY_BROWSER_VERSION = "3.4.14";
+const KATEX_BROWSER_VERSION = "0.16.22";
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
 // Temporarily disabled by product decision. Keep the implementation available so it can
@@ -123,6 +127,24 @@ const WELCOME_INNER_HTML = `<div class="welcome-inner">
               </div>
             </div>`;
 
+export function parseAgentModelProviders(env = process.env) {
+  const urls = String(env.MUNDUSX_AGENT_MODEL_BASE_URLS ?? "")
+    .split(",")
+    .map((value) => normalizeOrigin(value.trim()))
+    .filter(Boolean);
+  const keys = String(env.MUNDUSX_AGENT_MODEL_API_KEYS ?? "")
+    .split(",")
+    .map((value) => value.trim());
+  const models = String(env.MUNDUSX_AGENT_MODEL_IDS ?? "")
+    .split(",")
+    .map((value) => value.trim());
+  return urls.map((baseUrl, index) => ({
+    baseUrl,
+    apiKey: keys[index] || keys[0] || "",
+    model: models[index] || models[0] || "",
+  }));
+}
+
 export function configFromEnv(env = process.env) {
   const harnessUiEnabled = ["1", "true", "yes"].includes(
     String(env.MUNDUSX_HARNESS_UI_ENABLED ?? "").trim().toLowerCase(),
@@ -146,6 +168,7 @@ export function configFromEnv(env = process.env) {
       || "https://github.com/mundusx/releases/releases/download/cli-windows-v0.1.57/MundusX-Setup.exe",
     latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "0.1.57",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
+    agentModelProviders: parseAgentModelProviders(env),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
       env.VALKEY_URL ??
@@ -217,6 +240,17 @@ export function normalizeAssistantDisplayText(text) {
     .replace(/(?<=[^\s*])[^\S\n]+([-*+])[^\S\n]+(?=\*\*|[A-Z0-9])/g, "\n$1 ")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
+}
+
+export function protectMathSegments(text, segments = []) {
+  return String(text || "").replace(/\$\$([\s\S]+?)\$\$|\\\[([\s\S]+?)\\\]|\$([^$\n]+?)\$|\\\(([^\n]+?)\\\)/g,
+    (match, blockDollar, blockBracket, inlineDollar, inlineBracket) => {
+      const displayMode = blockDollar != null || blockBracket != null;
+      const expression = blockDollar ?? blockBracket ?? inlineDollar ?? inlineBracket ?? "";
+      const token = "MUNDUSXMATH" + segments.length + "TOKEN";
+      segments.push({ token, expression: expression.trim(), displayMode });
+      return displayMode ? "\n\n" + token + "\n\n" : token;
+    });
 }
 
 export function page(config = configFromEnv()) {
@@ -792,6 +826,7 @@ export function page(config = configFromEnv()) {
       text-transform: uppercase;
       background: #fff;
     }
+    .runtime-status-sentinel[hidden] { display: none; }
     .status-dot {
       width: 7px;
       height: 7px;
@@ -987,14 +1022,68 @@ export function page(config = configFromEnv()) {
     }
     .agent-progress-timeline {
       display: grid;
-      gap: 6px;
-      margin-top: 10px;
+      gap: 8px;
+      margin-top: 12px;
       color: var(--muted);
       font-size: 13px;
     }
-    .agent-progress-step.is-active {
-      color: var(--purple);
-      font-weight: 700;
+    .agent-progress-heading { display:flex; align-items:center; gap:9px; }
+    .agent-progress-orb {
+      width: 20px;
+      height: 20px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 7px;
+      color: white;
+      background: linear-gradient(135deg, var(--blue), var(--purple));
+      box-shadow: 0 5px 18px color-mix(in srgb, var(--purple) 28%, transparent);
+      animation: hermes-float 2.4s ease-in-out infinite;
+    }
+    .agent-progress-orb::before { content:"✦"; font-size:11px; }
+    .agent-progress-current {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: fit-content;
+      max-width: 100%;
+      min-height: 34px;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--purple) 18%, var(--line));
+      border-radius: 12px;
+      padding: 7px 12px;
+      color: var(--text);
+      background: color-mix(in srgb, var(--purple) 5%, var(--panel));
+      font-weight: 650;
+    }
+    .agent-progress-current::after {
+      content:"";
+      position:absolute;
+      inset:0;
+      transform:translateX(-120%);
+      background:linear-gradient(100deg,transparent,color-mix(in srgb,var(--purple) 10%,transparent),transparent);
+      animation:hermes-shimmer 2.2s ease-in-out infinite;
+      pointer-events:none;
+    }
+    .agent-progress-dot {
+      width: 7px;
+      height: 7px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: var(--purple);
+      box-shadow: 0 0 0 0 color-mix(in srgb,var(--purple) 38%,transparent);
+      animation: hermes-pulse 1.6s ease-out infinite;
+    }
+    .agent-progress-history { display:grid; gap:5px; padding-left:3px; color:var(--muted-2); font-size:12px; }
+    .agent-progress-step { display:flex; align-items:center; gap:7px; }
+    .agent-progress-check { color:var(--green); font-weight:800; }
+    .agent-progress-meta { display:flex; flex-wrap:wrap; gap:5px 12px; color:var(--muted-2); font-size:11px; font-variant-numeric:tabular-nums; }
+    .agent-progress-meta span { white-space:nowrap; }
+    @keyframes hermes-pulse { 70% { box-shadow:0 0 0 7px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
+    @keyframes hermes-shimmer { 55%,100% { transform:translateX(120%); } }
+    @keyframes hermes-float { 0%,100% { transform:translateY(0) rotate(0); } 50% { transform:translateY(-2px) rotate(8deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .agent-progress-orb,.agent-progress-dot,.agent-progress-current::after { animation:none; }
     }
     .message-error-actions {
       display: flex;
@@ -1500,7 +1589,9 @@ export function page(config = configFromEnv()) {
     .runtime-picker select { max-width:150px; border:0; border-radius:9px; padding:7px 24px 7px 7px; color:var(--text); background:var(--panel-2); font:inherit; font-size:12px; cursor:pointer; }
     .runtime-picker select:focus-visible { outline:2px solid color-mix(in srgb,var(--blue) 45%,transparent); outline-offset:1px; }
     .mutation-toggle[hidden] { display:none; }
-    .mutation-toggle[aria-pressed="true"] { color:#b45309; font-weight:750; }
+    .mutation-toggle { max-width:150px; border:0; border-radius:9px; padding:7px 24px 7px 8px; color:var(--muted); background:var(--panel-2); font:inherit; font-size:12px; cursor:pointer; }
+    .mutation-toggle[data-mode="full"] { color:#b45309; font-weight:750; }
+    .mutation-toggle:focus-visible { outline:2px solid color-mix(in srgb,var(--purple) 42%,transparent); outline-offset:1px; }
     .runtime-detail { width:min(880px,100%); margin:6px auto 0; padding:0 20px; color:var(--muted-2); font-size:11px; text-align:left; }
     .active-project-context { min-width:0; display:flex; align-items:center; color:var(--muted-2); }
     .active-project-context[hidden] { display: none; }
@@ -1963,7 +2054,7 @@ export function page(config = configFromEnv()) {
           <div class="composer-actions">
             <span class="composer-left-actions">
               ${config.harnessUiEnabled ? `<span class="active-project-context" id="active-project-context"><button class="tool-toggle project-context-open" id="active-project-open" type="button" aria-pressed="false" title="Choose a project"><span class="kbd" aria-hidden="true">⌁</span><strong id="active-project-name">Project</strong></button><button class="project-context-clear" id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project" hidden>&times;</button></span>` : ""}
-              <button class="tool-toggle mutation-toggle" id="mutation-toggle" type="button" aria-pressed="false" hidden>Allow edits once</button>
+              <select class="mutation-toggle" id="mutation-toggle" aria-label="Project access" title="Access is saved for this project" hidden><option value="ask">Ask before edits</option><option value="full">Full access</option></select>
             </span>
             <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
             <span class="voice-controls" id="voice-controls">
@@ -1978,8 +2069,10 @@ export function page(config = configFromEnv()) {
       </form>
     </main>
   </div>
+  <link rel="stylesheet" href="/assets/vendor/katex.min.css?v=${KATEX_BROWSER_VERSION}">
   <script src="/assets/vendor/marked.umd.js?v=${MARKED_BROWSER_VERSION}"></script>
   <script src="/assets/vendor/purify.min.js?v=${DOMPURIFY_BROWSER_VERSION}"></script>
+  <script src="/assets/vendor/katex.min.js?v=${KATEX_BROWSER_VERSION}"></script>
   <script>
     const form = document.getElementById("chat-form");
     const mainEl = document.getElementById("chat-main");
@@ -2058,6 +2151,8 @@ export function page(config = configFromEnv()) {
     let activeProjectKey = "mundusx.chat.activeProject.v1:anonymous";
     let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
     let removedProjectsKey = "mundusx.chat.removedProjects.v1:anonymous";
+    let projectPermissionsKey = "mundusx.chat.projectPermissions.v1:anonymous";
+    let activeAgentTaskKey = "mundusx.chat.activeAgentTask.v1:anonymous";
     const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
     let activeProject = null;
     let availableProjectSlugs = [];
@@ -2074,13 +2169,15 @@ export function page(config = configFromEnv()) {
     let pendingRunnerAction = null;
     let pendingRunnerResumeInProgress = false;
     let runtimePreference = "auto";
-    let mutationAllowed = false;
+    let projectPermissions = {};
     let lastLocalAgentStatus = null;
     let appToastTimer = null;
     function loadStoredProjectContext(namespace) {
       activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
       recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
       removedProjectsKey = "mundusx.chat.removedProjects.v1:" + namespace;
+      projectPermissionsKey = "mundusx.chat.projectPermissions.v1:" + namespace;
+      activeAgentTaskKey = "mundusx.chat.activeAgentTask.v1:" + namespace;
       runtimePreference = "auto";
       try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
       try {
@@ -2094,6 +2191,10 @@ export function page(config = configFromEnv()) {
           .filter((slug) => !removedProjectSlugs.includes(slug))
           .slice(0, 100);
       } catch { availableProjectSlugs = []; }
+      try {
+        const storedPermissions = JSON.parse(localStorage.getItem(projectPermissionsKey) || "{}");
+        projectPermissions = storedPermissions && typeof storedPermissions === "object" ? storedPermissions : {};
+      } catch { projectPermissions = {}; }
       if (activeProject?.slug && removedProjectSlugs.includes(activeProject.slug)) {
         activeProject = null;
         localStorage.removeItem(activeProjectKey);
@@ -2310,6 +2411,9 @@ export function page(config = configFromEnv()) {
         }
         renderHistory();
         authGateEl.hidden = true;
+        resumePersistedLocalAgentTask().catch((error) => {
+          console.warn("Unable to resume the active Hermes task", error);
+        });
       } catch {
         currentUser = null;
         accountWidgetEl.hidden = true;
@@ -2857,6 +2961,9 @@ export function page(config = configFromEnv()) {
         : "Ask everyone...";
       renderProjectMenu();
       renderRuntimeControls();
+      // Project execution already has a detailed inline Hermes timeline. The
+      // global status pill duplicates raw tool events and distracts from it.
+      if (statusEl) statusEl.hidden = Boolean(activeProject);
     }
 
     function onlineRuntimeAvailable(runtime) {
@@ -2884,12 +2991,23 @@ export function page(config = configFromEnv()) {
 
     function renderRuntimeControls() {
       mutationToggleEl.hidden = !(activeProject && preferredProjectRuntime());
-      mutationToggleEl.setAttribute("aria-pressed", String(mutationAllowed));
-      mutationToggleEl.textContent = mutationAllowed ? "Edits allowed · once" : "Allow edits once";
+      const mode = projectPermissionMode(activeProject?.slug);
+      mutationToggleEl.value = mode;
+      mutationToggleEl.dataset.mode = mode;
     }
 
-    mutationToggleEl?.addEventListener("click", () => {
-      mutationAllowed = !mutationAllowed;
+    function projectPermissionMode(slug) {
+      return slug && projectPermissions[slug] === "full" ? "full" : "ask";
+    }
+
+    function saveProjectPermission(slug, mode) {
+      if (!slug) return;
+      projectPermissions = { ...projectPermissions, [slug]: mode === "full" ? "full" : "ask" };
+      localStorage.setItem(projectPermissionsKey, JSON.stringify(projectPermissions));
+    }
+
+    mutationToggleEl?.addEventListener("change", () => {
+      saveProjectPermission(activeProject?.slug, mutationToggleEl.value);
       renderRuntimeControls();
       promptEl?.focus();
     });
@@ -3114,6 +3232,7 @@ export function page(config = configFromEnv()) {
     function setStatus(state, label) {
       statusEl.dataset.state = state;
       statusTextEl.textContent = label;
+      statusEl.hidden = Boolean(activeProject);
     }
 
     function isIdleRuntimeStatus() {
@@ -3370,6 +3489,9 @@ export function page(config = configFromEnv()) {
 
     newChatEl?.addEventListener("click", () => {
       setWorkspaceDestination("chats");
+      setActiveProject(null);
+      pendingRunnerAction = null;
+      renderRuntimeControls();
       activeHistoryLoadToken += 1;
       loadingHistoryConversationId = null;
       followLatestMessage = true;
@@ -3381,6 +3503,7 @@ export function page(config = configFromEnv()) {
       }
       setEmptyChatMode(true);
       promptEl.value = "";
+      syncNetworkRuntimeStatus(true);
       promptEl.focus();
     });
 
@@ -3393,6 +3516,12 @@ export function page(config = configFromEnv()) {
         openAuthentication();
         return;
       }
+      const mutatingProjectRequest = Boolean(activeProject && requiresLocalProjectAction(message));
+      const allowProjectMutation = mutatingProjectRequest && (
+        projectPermissionMode(activeProject.slug) === "full"
+        || window.confirm('Allow Hermes to edit files and run commands in project "' + activeProject.slug + '" for this task?')
+      );
+      if (mutatingProjectRequest && !allowProjectMutation) return;
 
       activeHistoryLoadToken += 1;
       followLatestMessage = true;
@@ -3410,15 +3539,10 @@ export function page(config = configFromEnv()) {
           await loadHarnessRunners().catch(() => []);
           const projectRuntime = preferredProjectRuntime();
           if (projectRuntime) {
-            if (!mutationAllowed) {
-              throw new Error("This project request can change files. Turn on ‘Allow edits once’, then send it again.");
-            }
-            mutationAllowed = false;
-            renderRuntimeControls();
             const handledBySelectedRuntime = await tryLocalAgentTurn(pending, message, conversationId, {
               runtime: projectRuntime,
               workspaceRelative: activeProject.slug,
-              allowMutations: true,
+              allowMutations: allowProjectMutation,
             });
             if (!handledBySelectedRuntime) throw new Error("The selected local runtime is not connected.");
             syncNetworkRuntimeStatus(true);
@@ -3493,6 +3617,8 @@ export function page(config = configFromEnv()) {
     function requiresLocalProjectAction(message) {
       const value = String(message || "").trim();
       if (/^(what|why|how|should|do i|does|is|are|explain|compare|recommend)\\b/i.test(value)) return false;
+      if (/^(can|could|may) i (?:ask|know|understand)\\b/i.test(value)) return false;
+      if (/\\b(?:what|which) (?:changes?|files?|steps?|requirements?) (?:would|will|do|are|is)\\b/i.test(value)) return false;
       return /\\b(create|make|add|write|edit|modify|update|delete|remove|rename|move|generate|scaffold|implement|fix|refactor|format|install|run|test|build|compile|lint|commit|checkout|merge|push|pull)\\b/i.test(value);
     }
 
@@ -3579,18 +3705,46 @@ export function page(config = configFromEnv()) {
       const submitted = await readApiPayload(created, "local agent request failed");
       if (!created.ok) throw new Error(submitted.error || "local agent request failed");
 
+      localStorage.setItem(activeAgentTaskKey, JSON.stringify({
+        taskId: submitted.task_id,
+        conversationId,
+        message,
+        runtime: options.runtime || "auto",
+        runtimeLabel: options.runtime === "hermes" ? "Hermes" : options.runtime === "native" ? "MundusX Local" : "local agent",
+        projectSlug: options.workspaceRelative || null,
+        startedAt: Date.now(),
+      }));
+
       const body = pending.querySelector(".message-body");
       const runtimeLabel = options.runtime === "hermes" ? "Hermes" : options.runtime === "native" ? "MundusX Local" : "local agent";
       if (body) body.textContent = "Connected to " + runtimeLabel + " on your device…";
-      setStatus("working", runtimeLabel);
+      if (activeHistoryId === conversationId) setStatus("working", runtimeLabel);
       let payload = submitted;
-      const deadline = Date.now() + 10 * 60 * 1000;
+      const progressStartedAt = Date.now();
+      let progressLastActivityAt = progressStartedAt;
+      let progressMarker = "";
       let pollRecoveryDeadline = 0;
       let cancellationRequested = false;
+      const renderProgress = (extra = {}) => {
+        const events = Array.isArray(payload?.events) ? payload.events : [];
+        const latestEvent = events.at(-1);
+        const marker = [payload?.state, events.length, latestEvent?.sequence, latestEvent?.event?.type, latestEvent?.event?.summary].join(":");
+        if (marker !== progressMarker) {
+          progressMarker = marker;
+          progressLastActivityAt = Date.now();
+        }
+        renderLocalAgentProgress(pending, payload, runtimeLabel, {
+          onCancel: cancelTask,
+          conversationId,
+          startedAt: progressStartedAt,
+          lastActivityAt: progressLastActivityAt,
+          ...extra,
+        });
+      };
       const cancelTask = async () => {
         if (cancellationRequested) return;
         cancellationRequested = true;
-        renderLocalAgentProgress(pending, payload, runtimeLabel, { cancelling: true });
+        renderProgress({ cancelling: true });
         const cancelled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id) + "/cancel", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -3603,9 +3757,8 @@ export function page(config = configFromEnv()) {
         }
         payload = cancelPayload;
       };
-      renderLocalAgentProgress(pending, payload, runtimeLabel, { onCancel: cancelTask });
+      renderProgress();
       while (!["completed", "failed", "cancelled"].includes(payload.state)) {
-        if (Date.now() >= deadline) throw new Error("Local agent task timed out");
         await sleep(1000);
         try {
           const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
@@ -3621,12 +3774,13 @@ export function page(config = configFromEnv()) {
           const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
           pollRecoveryDeadline ||= Date.now() + 120000;
           if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
-          renderLocalAgentProgress(pending, payload, runtimeLabel, { reconnecting: true, onCancel: cancelTask });
+          renderProgress({ reconnecting: true });
           continue;
         }
-        renderLocalAgentProgress(pending, payload, runtimeLabel, { onCancel: cancelTask, cancelling: cancellationRequested });
+        renderProgress({ cancelling: cancellationRequested });
       }
       if (payload.state !== "completed") {
+        clearActiveAgentTask(submitted.task_id);
         const changedFiles = Array.isArray(payload.result?.changed_files)
           ? payload.result.changed_files.filter(Boolean).slice(0, 20)
           : [];
@@ -3647,8 +3801,125 @@ export function page(config = configFromEnv()) {
         routing: "local-agent",
         model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
       }, conversationId);
-      setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
+      clearActiveAgentTask(submitted.task_id);
+      if (activeHistoryId === conversationId) {
+        setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
+      }
       return true;
+    }
+
+    function clearActiveAgentTask(taskId) {
+      try {
+        const active = JSON.parse(localStorage.getItem(activeAgentTaskKey) || "null");
+        if (!taskId || active?.taskId === taskId) localStorage.removeItem(activeAgentTaskKey);
+      } catch {
+        localStorage.removeItem(activeAgentTaskKey);
+      }
+    }
+
+    async function resumePersistedLocalAgentTask() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(activeAgentTaskKey) || "null"); } catch { saved = null; }
+      if (!saved?.taskId || !saved?.conversationId) return false;
+
+      const response = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId));
+      const payload = await readApiPayload(response, "active local agent task unavailable");
+      if (!response.ok) {
+        if ([404, 410].includes(response.status)) clearActiveAgentTask(saved.taskId);
+        return false;
+      }
+
+      const historyItem = readHistory().find((item) => (item.conversationId || item.id) === saved.conversationId);
+      if (historyItem) await loadHistoryItem(historyItem);
+      else {
+        activeHistoryId = saved.conversationId;
+        localStorage.setItem(conversationIdKey, saved.conversationId);
+        clearConversation();
+        if (saved.message) addMessage(saved.message, "user");
+      }
+
+      if (["completed", "failed", "cancelled"].includes(payload.state)) {
+        clearActiveAgentTask(saved.taskId);
+        if (payload.state === "completed") {
+          renderCompletedJob(addMessage("", "assistant"), {
+            status: "completed",
+            output: payload.result?.content || payload.result?.choices?.[0]?.message?.content || "(empty response)",
+            job_id: payload.task_id,
+            routing: "local-agent",
+            model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
+          }, saved.conversationId);
+        }
+        return true;
+      }
+
+      const pending = addMessage("Reconnecting to the active " + (saved.runtimeLabel || "local agent") + " task…", "assistant", "Working");
+      setStatus("working", saved.runtimeLabel || "Hermes");
+      await resumeLocalAgentPolling(pending, payload, saved);
+      return true;
+    }
+
+    async function resumeLocalAgentPolling(pending, initialPayload, saved) {
+      let payload = initialPayload;
+      let lastActivityAt = Date.now();
+      let marker = "";
+      let pollRecoveryDeadline = 0;
+      let cancellationRequested = false;
+      const startedAt = Number(saved.startedAt || Date.now());
+      const renderProgress = (extra = {}) => {
+        const events = Array.isArray(payload?.events) ? payload.events : [];
+        const latestEvent = events.at(-1);
+        const nextMarker = [payload?.state, events.length, latestEvent?.sequence, latestEvent?.event?.type, latestEvent?.event?.summary].join(":");
+        if (nextMarker !== marker) {
+          marker = nextMarker;
+          lastActivityAt = Date.now();
+        }
+        renderLocalAgentProgress(pending, payload, saved.runtimeLabel || "Hermes", {
+          conversationId: saved.conversationId,
+          startedAt,
+          lastActivityAt,
+          onCancel: async () => {
+            if (cancellationRequested) return;
+            cancellationRequested = true;
+            const cancelled = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId) + "/cancel", {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+            });
+            payload = await readApiPayload(cancelled, "local agent cancellation failed");
+          },
+          ...extra,
+        });
+      };
+      renderProgress();
+      while (!["completed", "failed", "cancelled"].includes(payload.state)) {
+        await sleep(1000);
+        try {
+          const response = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId));
+          payload = await readApiPayload(response, "local agent poll failed");
+          if (!response.ok) {
+            const error = new Error(payload.error || "local agent poll failed");
+            error.status = response.status;
+            throw error;
+          }
+          pollRecoveryDeadline = 0;
+        } catch (pollError) {
+          const status = Number(pollError?.status);
+          const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
+          pollRecoveryDeadline ||= Date.now() + 120000;
+          if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
+          renderProgress({ reconnecting: true, cancelling: cancellationRequested });
+          continue;
+        }
+        renderProgress({ cancelling: cancellationRequested });
+      }
+      clearActiveAgentTask(saved.taskId);
+      if (payload.state !== "completed") throw new Error(payload.error || "Local agent task " + payload.state);
+      renderCompletedJob(pending, {
+        status: "completed",
+        output: payload.result?.content || payload.result?.choices?.[0]?.message?.content || "(empty response)",
+        job_id: payload.task_id,
+        routing: "local-agent",
+        model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
+      }, saved.conversationId);
+      setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
     }
 
     function renderLocalAgentProgress(pending, payload, runtimeLabel, options = {}) {
@@ -3656,41 +3927,125 @@ export function page(config = configFromEnv()) {
       if (!body) return;
       const events = Array.isArray(payload?.events) ? payload.events : [];
       const latest = events.at(-1)?.event || null;
-      const labels = {
-        harness_started: "Starting agent harness",
-        model_turn_queued: "Planning the next step",
-        model_turn_completed: "Plan received",
-        skills_selected: "Loading project skills",
-        skills_unavailable: "Continuing without optional skills",
-        tool_started: "Running a project tool",
-        tool_completed: "Project tool completed",
-        file_changed: "Updating project files",
-        verification_started: "Running verification",
-        verification_completed: "Verification completed",
+      const friendlyEvent = (event, active = false) => {
+        const type = event?.type || "";
+        const tool = String(event?.metadata?.tool || "").toLowerCase();
+        if (type === "tool_started") {
+          if (tool === "terminal") return "Running a command";
+          if (["write_file", "patch", "apply_patch"].includes(tool)) return "Writing project files";
+          if (["search_files", "read_file"].includes(tool)) return "Exploring the codebase";
+          return "Using " + (tool || "a project tool").replaceAll("_", " ");
+        }
+        if (type === "tool_completed") {
+          if (active) return "Reviewing the tool result";
+          if (tool === "terminal") return "Command finished";
+          if (["write_file", "patch", "apply_patch"].includes(tool)) return "Project files updated";
+          return (tool ? tool.replaceAll("_", " ") : "Tool") + " completed";
+        }
+        if (type === "skills_selected") {
+          const skills = Array.isArray(event?.metadata?.skills) ? event.metadata.skills : [];
+          return skills.length ? "Using " + skills.map((skill) => String(skill).replaceAll("-", " ")).join(", ") : "Loading project skills";
+        }
+        const labels = {
+          harness_started: "Starting in your project",
+          model_turn_queued: "Planning the next step",
+          model_requested: "Thinking through the next step",
+          model_turn_completed: active ? "Preparing the next action" : "Model step completed",
+          skills_unavailable: "Continuing with built-in tools",
+          file_changed: "Updating project files",
+          verification_started: "Checking the work",
+          verification_completed: "Checks completed",
+          agent_progress: "Working through the task",
+        };
+        return labels[type] || String(event?.summary || "Working through the task");
       };
       const summary = options.cancelling
-        ? "Stopping project work"
+        ? "Stopping safely"
         : options.reconnecting
-          ? "Connection interrupted; reconnecting"
-          : String(latest?.summary || labels[latest?.type] || "Working in the project");
-      const steps = events
-        .map((item) => String(item?.event?.summary || labels[item?.event?.type] || "").trim())
-        .filter(Boolean)
-        .filter((value, index, values) => index === 0 || value !== values[index - 1])
-        .slice(-4);
+          ? "Reconnecting without losing progress"
+          : friendlyEvent(latest, true);
+      const steps = [...new Set(events.slice(0, -1)
+        .map((item) => friendlyEvent(item?.event, false).trim())
+        .filter(Boolean))]
+        .slice(-3);
       body.replaceChildren();
+      const headingRow = document.createElement("div");
+      headingRow.className = "agent-progress-heading";
+      const orb = document.createElement("span");
+      orb.className = "agent-progress-orb";
+      orb.setAttribute("aria-hidden", "true");
       const heading = document.createElement("strong");
       heading.textContent = runtimeLabel + " is working";
-      body.appendChild(heading);
+      headingRow.append(orb, heading);
+      body.appendChild(headingRow);
       const timeline = document.createElement("div");
       timeline.className = "agent-progress-timeline";
-      for (const [index, step] of steps.entries()) {
-        const row = document.createElement("div");
-        row.className = "agent-progress-step" + (index === steps.length - 1 ? " is-active" : "");
-        row.textContent = (index === steps.length - 1 ? "● " : "✓ ") + step;
-        timeline.appendChild(row);
+      if (steps.length) {
+        const history = document.createElement("div");
+        history.className = "agent-progress-history";
+        for (const step of steps) {
+          const row = document.createElement("div");
+          row.className = "agent-progress-step";
+          const check = document.createElement("span");
+          check.className = "agent-progress-check";
+          check.textContent = "✓";
+          const text = document.createElement("span");
+          text.textContent = step;
+          row.append(check, text);
+          history.appendChild(row);
+        }
+        timeline.appendChild(history);
       }
-      if (!steps.length) timeline.textContent = "● " + summary;
+      const current = document.createElement("div");
+      current.className = "agent-progress-current";
+      const dot = document.createElement("span");
+      dot.className = "agent-progress-dot";
+      dot.setAttribute("aria-hidden", "true");
+      const currentText = document.createElement("span");
+      currentText.textContent = summary;
+      current.append(dot, currentText);
+      timeline.appendChild(current);
+      const formatDuration = (milliseconds) => {
+        const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+        if (seconds < 60) return seconds + "s";
+        const minutes = Math.floor(seconds / 60);
+        return minutes + "m " + String(seconds % 60).padStart(2, "0") + "s";
+      };
+      const formatTokens = (value) => {
+        const number = Number(value || 0);
+        if (number < 1000) return String(number);
+        return (number / 1000).toFixed(number >= 10000 ? 0 : 1) + "k";
+      };
+      // A provider may advertise its context window without returning token
+      // usage. In that case context_used is zero/unknown, not proof that the
+      // entire window remains. Only surface context telemetry once Hermes has
+      // received a real prompt-token count from the provider.
+      const telemetryEvent = [...events].reverse().find((item) => {
+        const candidate = item?.event?.metadata?.telemetry;
+        return Number(candidate?.context_length) > 0 && Number(candidate?.context_used) > 0;
+      });
+      const telemetry = telemetryEvent?.event?.metadata?.telemetry || {};
+      const now = Date.now();
+      const meta = document.createElement("div");
+      meta.className = "agent-progress-meta";
+      const facts = [
+        "Elapsed " + formatDuration(now - Number(options.startedAt || now)),
+        "Last activity " + formatDuration(now - Number(options.lastActivityAt || now)) + " ago",
+      ];
+      const contextLength = Number(telemetry.context_length || 0);
+      const contextRemaining = Number(telemetry.context_remaining || 0);
+      if (contextLength > 0 && contextRemaining >= 0) {
+        const remainingPercent = Math.max(0, Math.min(100, Math.round(contextRemaining / contextLength * 100)));
+        facts.push("Context left " + remainingPercent + "% · " + formatTokens(contextRemaining) + " tokens");
+      }
+      if (Number(telemetry.api_calls || 0) > 0) facts.push(telemetry.api_calls + " model turns");
+      if (Number(telemetry.compressions || 0) > 0) facts.push(telemetry.compressions + " context rebuilds");
+      for (const fact of facts) {
+        const item = document.createElement("span");
+        item.textContent = fact;
+        meta.appendChild(item);
+      }
+      timeline.appendChild(meta);
       body.appendChild(timeline);
       if (typeof options.onCancel === "function" && !["completed", "failed", "cancelled"].includes(payload?.state)) {
         const actions = document.createElement("div");
@@ -3706,7 +4061,7 @@ export function page(config = configFromEnv()) {
         actions.appendChild(cancel);
         body.appendChild(actions);
       }
-      setStatus("working", summary);
+      if (!options.conversationId || activeHistoryId === options.conversationId) setStatus("working", summary);
     }
 
     async function tryLiveChatTurn(pending, message, conversationId) {
@@ -4086,14 +4441,13 @@ export function page(config = configFromEnv()) {
       if (Array.isArray(payload.sources) && payload.sources.length) {
         body.appendChild(createCitationSources(payload.sources));
       }
-      const meta = document.createElement("div");
-      meta.className = "meta";
-      meta.textContent = formatJobMeta(payload);
       const badge = createToolBadge(payload);
       if (badge) {
+        const meta = document.createElement("div");
+        meta.className = "meta response-tools";
         meta.appendChild(badge);
+        body.appendChild(meta);
       }
-      body.appendChild(meta);
       scrollChatToLatest();
       if (conversationId && options.cache !== false) {
         appendCachedConversationTurn(conversationId, {
@@ -4453,10 +4807,13 @@ export function page(config = configFromEnv()) {
     }
 
     ${normalizeAssistantDisplayText.toString()}
+    ${protectMathSegments.toString()}
 
     function appendStandardMarkdown(container, text) {
       if (typeof window.marked?.parse !== "function" || !window.DOMPurify?.isSupported) return false;
-      const rendered = window.marked.parse(normalizeAssistantDisplayText(text), {
+      const mathSegments = [];
+      const protectedText = normalizeAssistantDisplayText(protectMathSegments(text, mathSegments));
+      const rendered = window.marked.parse(protectedText, {
         gfm: true,
         breaks: false,
         async: false,
@@ -4468,6 +4825,32 @@ export function page(config = configFromEnv()) {
       });
       const template = document.createElement("template");
       template.innerHTML = clean;
+      if (typeof window.katex?.renderToString === "function" && mathSegments.length) {
+        const walker = document.createTreeWalker(template.content, NodeFilter.SHOW_TEXT);
+        const textNodes = [];
+        while (walker.nextNode()) textNodes.push(walker.currentNode);
+        for (const textNode of textNodes) {
+          let value = textNode.nodeValue || "";
+          const matching = mathSegments.filter(({ token }) => value.includes(token));
+          if (!matching.length) continue;
+          const fragment = document.createDocumentFragment();
+          while (matching.length) {
+            const next = matching.reduce((best, item) => {
+              const index = value.indexOf(item.token);
+              return index >= 0 && (!best || index < best.index) ? { ...item, index } : best;
+            }, null);
+            if (!next) break;
+            if (next.index) fragment.appendChild(document.createTextNode(value.slice(0, next.index)));
+            const math = document.createElement(next.displayMode ? "div" : "span");
+            math.className = next.displayMode ? "math-display" : "math-inline";
+            math.innerHTML = window.katex.renderToString(next.expression, { displayMode: next.displayMode, throwOnError: false, strict: "ignore", trust: false });
+            fragment.appendChild(math);
+            value = value.slice(next.index + next.token.length);
+          }
+          if (value) fragment.appendChild(document.createTextNode(value));
+          textNode.replaceWith(fragment);
+        }
+      }
       for (const link of template.content.querySelectorAll("a[href]")) {
         link.target = "_blank";
         link.rel = "noopener noreferrer";
@@ -5628,6 +6011,17 @@ export function createServerApp(config = configFromEnv()) {
       if (request.method === "GET" && url.pathname === "/assets/vendor/purify.min.js") {
         return sendJavaScript(response, await readFile(DOMPURIFY_BROWSER_PATH));
       }
+      if (request.method === "GET" && url.pathname === "/assets/vendor/katex.min.js") {
+        return sendJavaScript(response, await readFile(KATEX_BROWSER_PATH));
+      }
+      if (request.method === "GET" && url.pathname === "/assets/vendor/katex.min.css") {
+        return sendAsset(response, await readFile(KATEX_CSS_PATH), "text/css; charset=utf-8");
+      }
+      if (request.method === "GET" && url.pathname.startsWith("/assets/vendor/fonts/")) {
+        const fontName = url.pathname.slice("/assets/vendor/fonts/".length);
+        if (!/^[A-Za-z0-9_-]+\.(?:woff2?|ttf)$/.test(fontName)) return sendJson(response, 404, { error: "Not found" });
+        return sendAsset(response, await readFile(resolve(KATEX_FONTS_PATH, fontName)), fontName.endsWith(".woff2") ? "font/woff2" : fontName.endsWith(".woff") ? "font/woff" : "font/ttf");
+      }
       if (request.method === "GET" && url.pathname === "/health") {
         return sendJson(response, 200, {
           status: "ok",
@@ -5685,11 +6079,11 @@ export function createServerApp(config = configFromEnv()) {
           const body = await readJsonBody(request);
           const routedBody = { ...body, model: PUBLIC_MODEL_ID };
           if (Array.isArray(routedBody.tools) && routedBody.tools.length) {
-            // Hermes' OpenAI adapter consumes agent turns as SSE even though it
-            // omits the optional `stream` request field. This is a private
-            // connected-agent route, so tool-bearing requests are always
-            // returned as a standards-compatible buffered stream.
-            return await streamHermesToolCompletion(response, routedBody, config);
+            // Preserve Hermes' native OpenAI messages and tool schema all the
+            // way to the selected model runtime. The control plane is the
+            // default provider; deployments may configure additional native
+            // providers for health-based failover.
+            return await relayNativeHermesToolStream(response, routedBody, config);
           }
           if (routedBody.stream === true) {
             return await streamOpenAiChatCompletion(response, routedBody, config);
@@ -6057,6 +6451,201 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
 export function isRetryableHermesModelFailure(value) {
   return /\b(?:408|425|429|500|502|503|504)\b|application failed to respond|timed?\s*out|temporar(?:y|ily)|connection (?:reset|closed|refused)/i
     .test(String(value || ""));
+}
+
+const agentProviderCircuits = new Map();
+const AGENT_PROVIDER_FAILURE_THRESHOLD = 2;
+const AGENT_PROVIDER_COOLDOWN_MS = 30_000;
+const AGENT_PROVIDER_FIRST_EVENT_TIMEOUT_MS = 60_000;
+
+export function resetAgentProviderCircuits() {
+  agentProviderCircuits.clear();
+}
+
+function agentProviderAvailable(provider, now = Date.now()) {
+  return (agentProviderCircuits.get(provider.baseUrl)?.openUntil || 0) <= now;
+}
+
+function noteAgentProviderSuccess(provider) {
+  agentProviderCircuits.delete(provider.baseUrl);
+}
+
+function noteAgentProviderFailure(provider, now = Date.now()) {
+  const previous = agentProviderCircuits.get(provider.baseUrl) || { failures: 0, openUntil: 0 };
+  const failures = previous.failures + 1;
+  agentProviderCircuits.set(provider.baseUrl, {
+    failures,
+    openUntil: failures >= AGENT_PROVIDER_FAILURE_THRESHOLD ? now + AGENT_PROVIDER_COOLDOWN_MS : 0,
+  });
+}
+
+function nativeChatCompletionUrl(baseUrl) {
+  const normalized = String(baseUrl || "").replace(/\/+$/, "");
+  return normalized.endsWith("/v1") ? `${normalized}/chat/completions` : `${normalized}/v1/chat/completions`;
+}
+
+function inspectNativeOpenAiEvents(text) {
+  for (const event of String(text || "").split(/\r?\n\r?\n/)) {
+    const data = event.split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const value = JSON.parse(data);
+      if (value?.error) return { error: String(value.error.message || value.error) };
+      if (Array.isArray(value?.choices)) return { valid: true };
+    } catch {
+      // Wait for a complete SSE event before deciding that the provider is bad.
+    }
+  }
+  return {};
+}
+
+async function requireNativeToolNode(provider, config, fetchImpl) {
+  const providerBase = String(provider?.baseUrl || "").replace(/\/+$/, "");
+  const controlPlaneBase = String(config?.controlPlaneUrl || "").replace(/\/+$/, "");
+  if (!providerBase || providerBase !== controlPlaneBase) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  timeout.unref?.();
+  try {
+    const upstream = await fetchImpl(`${controlPlaneBase}/v1/nodes?page=1&page_size=100`, {
+      headers: provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {},
+      signal: controller.signal,
+    });
+    if (!upstream.ok) return; // The completion endpoint remains authoritative.
+    const payload = await upstream.json();
+    const nodes = Array.isArray(payload) ? payload : payload?.items || payload?.nodes || [];
+    const capable = nodes.some((node) => {
+      if (!['ready', 'online'].includes(String(node?.state || node?.status || '').toLowerCase())) return false;
+      const tools = [
+        ...(node?.capabilities?.supported_tools || []),
+        ...(node?.worker_health?.capabilities?.supported_tools || []),
+      ];
+      return tools.includes('native_tool_calls_v1');
+    });
+    if (!capable) {
+      throw httpError(
+        503,
+        'Hermes native tools are unavailable because the shared model node needs an agent upgrade. The local project runner is healthy; ordinary users do not need to reinstall it.',
+      );
+    }
+  } catch (error) {
+    if (error?.statusCode === 503 || error?.status === 503) throw error;
+    // Discovery must not turn a transient status failure into a false outage.
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function relayNativeHermesToolStream(
+  response,
+  body,
+  config = configFromEnv(),
+  fetchImpl = fetch,
+) {
+  const configured = Array.isArray(config.agentModelProviders) && config.agentModelProviders.length
+    ? config.agentModelProviders
+    : [{
+        baseUrl: config.controlPlaneUrl,
+        apiKey: config.operatorToken || "",
+        model: config.modelOverride || PUBLIC_MODEL_ID,
+      }];
+  const available = configured.filter((provider) => agentProviderAvailable(provider));
+  const providers = available.length ? available : configured;
+  let lastError = "No native agent model provider is configured";
+
+  for (const provider of providers) {
+    const controller = new AbortController();
+    let timeout = setTimeout(() => controller.abort(), AGENT_PROVIDER_FIRST_EVENT_TIMEOUT_MS);
+    timeout.unref?.();
+    let reader;
+    try {
+      await requireNativeToolNode(provider, config, fetchImpl);
+      const upstreamBody = { ...body, stream: true };
+      delete upstreamBody.protocol;
+      delete upstreamBody.project_task_id;
+      delete upstreamBody.connection_id;
+      delete upstreamBody.request_id;
+      if (provider.model) upstreamBody.model = provider.model;
+      else if (config.modelOverride) upstreamBody.model = config.modelOverride;
+      const upstream = await fetchImpl(nativeChatCompletionUrl(provider.baseUrl), {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+          ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+        },
+        body: JSON.stringify(upstreamBody),
+        signal: controller.signal,
+      });
+      if (!upstream.ok) {
+        const detail = (await upstream.text()).trim().slice(0, 500);
+        lastError = `native agent provider returned ${upstream.status}: ${detail || upstream.statusText}`;
+        if (![408, 425, 429, 500, 502, 503, 504].includes(upstream.status)) throw httpError(upstream.status, lastError);
+        noteAgentProviderFailure(provider);
+        continue;
+      }
+      if (!upstream.body?.getReader) {
+        lastError = "native agent provider did not return a readable SSE stream";
+        noteAgentProviderFailure(provider);
+        continue;
+      }
+
+      reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      const buffered = [];
+      let inspected = "";
+      let accepted = false;
+      while (!accepted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => controller.abort(), AGENT_PROVIDER_FIRST_EVENT_TIMEOUT_MS);
+        timeout.unref?.();
+        buffered.push(value);
+        inspected += decoder.decode(value, { stream: true });
+        const verdict = inspectNativeOpenAiEvents(inspected);
+        if (verdict.error) {
+          lastError = verdict.error;
+          break;
+        }
+        if (verdict.valid) accepted = true;
+        if (inspected.length > 65_536) {
+          lastError = "native agent provider sent no valid OpenAI SSE event";
+          break;
+        }
+      }
+      if (!accepted) {
+        noteAgentProviderFailure(provider);
+        await reader.cancel().catch(() => {});
+        continue;
+      }
+
+      clearTimeout(timeout);
+      noteAgentProviderSuccess(provider);
+      startOpenAiStream(response, "native-agent-tools");
+      for (const chunk of buffered) response.write(chunk);
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        response.write(value);
+      }
+      return response.end();
+    } catch (error) {
+      lastError = error?.name === "AbortError"
+        ? "native agent provider timed out before its first OpenAI event"
+        : String(error?.message || error);
+      noteAgentProviderFailure(provider);
+      await reader?.cancel?.().catch(() => {});
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw httpError(502, `All native agent model providers failed: ${lastError}`);
 }
 
 export function parseFirstJsonObject(value) {
@@ -12138,6 +12727,15 @@ function sendPng(response, bytes) {
 function sendJavaScript(response, bytes) {
   response.writeHead(200, {
     "Content-Type": "text/javascript; charset=utf-8",
+    "Cache-Control": "public, max-age=86400, immutable",
+    "X-Content-Type-Options": "nosniff",
+  });
+  response.end(bytes);
+}
+
+function sendAsset(response, bytes, contentType) {
+  response.writeHead(200, {
+    "Content-Type": contentType,
     "Cache-Control": "public, max-age=86400, immutable",
     "X-Content-Type-Options": "nosniff",
   });

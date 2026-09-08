@@ -117,6 +117,91 @@ test("Google callback accepts the verified_email compatibility claim", async () 
   assert.equal(identity.email, "user@example.com");
 });
 
+test("Google callback accepts a matching verified-email ID token when userinfo omits the claim", async () => {
+  const client = { async query() { return { rows: [] }; }, release() {} };
+  const pool = {
+    async query() { return { rowCount: 1, rows: [{ code_verifier: "verifier", redirect_path: "/projects" }] }; },
+    async connect() { return client; },
+  };
+  const claims = Buffer.from(JSON.stringify({
+    iss: "https://accounts.google.com",
+    aud: "google-client",
+    exp: Math.floor(Date.now() / 1000) + 300,
+    sub: "google-subject",
+    email: "User@Example.com",
+    email_verified: true,
+  })).toString("base64url");
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client", googleClientSecret: "google-secret", publicOrigin: "https://chat.mundusx.ai",
+  }, {
+    pool,
+    fetchImpl: async (url) => String(url).includes("/token")
+      ? { ok: true, async json() { return { access_token: "access", id_token: `header.${claims}.signature` }; } }
+      : { ok: true, async json() { return { sub: "google-subject", email: "user@example.com", name: "Example User" }; } },
+  });
+  let identity;
+  store.upsertIdentity = async (_client, value) => { identity = value; return "user-id"; };
+  store.createSession = async () => {};
+  assert.equal(await store.finishGoogle(new URLSearchParams({ state: "state", code: "code" }), {}), "/projects");
+  assert.equal(identity.email, "user@example.com");
+});
+
+test("Google callback rejects a verified ID-token claim that does not match userinfo", async () => {
+  const pool = {
+    async query() { return { rowCount: 1, rows: [{ code_verifier: "verifier", redirect_path: "/" }] }; },
+    async connect() { throw new Error("must not create a session"); },
+  };
+  const claims = Buffer.from(JSON.stringify({
+    iss: "https://accounts.google.com",
+    aud: "different-client",
+    exp: Math.floor(Date.now() / 1000) + 300,
+    sub: "google-subject",
+    email: "user@example.com",
+    email_verified: true,
+  })).toString("base64url");
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client", googleClientSecret: "google-secret", publicOrigin: "https://chat.mundusx.ai",
+  }, {
+    pool,
+    fetchImpl: async (url) => String(url).includes("/token")
+      ? { ok: true, async json() { return { access_token: "access", id_token: `header.${claims}.signature` }; } }
+      : { ok: true, async json() { return { sub: "google-subject", email: "user@example.com" }; } },
+  });
+  await assert.rejects(
+    store.finishGoogle(new URLSearchParams({ state: "state", code: "code" }), {}),
+    (error) => error.statusCode === 403 && /verified email/.test(error.message),
+  );
+});
+
+test("Google callback verifies an omitted email claim through Google's tokeninfo endpoint", async () => {
+  const client = { async query() { return { rows: [] }; }, release() {} };
+  const pool = {
+    async query() { return { rowCount: 1, rows: [{ code_verifier: "verifier", redirect_path: "/projects" }] }; },
+    async connect() { return client; },
+  };
+  const requests = [];
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client", googleClientSecret: "google-secret", publicOrigin: "https://chat.mundusx.ai",
+  }, {
+    pool,
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      if (String(url).includes("/tokeninfo")) return { ok: true, async json() { return {
+        iss: "accounts.google.com", aud: "google-client", exp: String(Math.floor(Date.now() / 1000) + 300),
+        sub: "google-subject", email: "user@example.com", email_verified: "true",
+      }; } };
+      if (String(url).includes("/token")) return { ok: true, async json() { return { access_token: "access", id_token: "opaque-google-token" }; } };
+      return { ok: true, async json() { return { sub: "google-subject", email: "User@Example.com", name: "Example User" }; } };
+    },
+  });
+  let identity;
+  store.upsertIdentity = async (_client, value) => { identity = value; return "user-id"; };
+  store.createSession = async () => {};
+  assert.equal(await store.finishGoogle(new URLSearchParams({ state: "state", code: "code" }), {}), "/projects");
+  assert.equal(identity.email, "user@example.com");
+  assert.equal(requests.length, 3);
+});
+
 test("GitHub provider requires a valid 32-byte encryption key", () => {
   const config = authConfigFromEnv({
     MUNDUSX_GITHUB_CLIENT_ID: "client",
@@ -394,6 +479,9 @@ test("local agent tasks persist only supported runtime selections", async () => 
   assert.equal(insert.values[6], "hermes");
   assert.equal(created.workspace_relative, "my-project");
   assert.equal(insert.values[7], "my-project");
+  assert.match(insert.sql, /with superseded as/i);
+  assert.match(insert.sql, /state = 'queued'/);
+  assert.match(insert.sql, /workspace_relative = \$8/);
   await assert.rejects(
     store.createLocalAgentTask("22222222-2222-4222-8222-222222222222", {
       prompt: "inspect", session_id: sessionId, runtime: "deepagents",
@@ -425,6 +513,7 @@ test("local agent auto claims select Hermes only when advertised and preferred",
   assert.equal(task.runtime_selected, "hermes");
   assert.match(queries[0].sql, /capabilities->'agent_runtimes' \? 'hermes'/);
   assert.match(queries[0].sql, /capabilities->>'preferred_agent' = 'hermes'/);
+  assert.match(queries[0].sql, /order by created_at desc/);
 });
 
 test("project model jobs safely requeue retryable failures with the same idempotency key", async () => {
