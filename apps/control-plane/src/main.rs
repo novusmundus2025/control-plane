@@ -5237,7 +5237,22 @@ struct RequestParts {
 }
 
 const MAX_HEADER_BYTES: usize = 32 * 1024;
-const MAX_BODY_BYTES: usize = 1024 * 1024;
+// Transport budget includes JSON/tool schemas and escaped native model turns.
+// The model runtime separately enforces its token context (131,072 on EHDA).
+const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+fn is_model_context_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    error.contains("maximum context length")
+        || error.contains("context_length_exceeded")
+        || error.contains("exceeds the model's context")
+}
+
+fn model_context_error_event(error: &str) -> String {
+    format!("data: {}\n\ndata: [DONE]\n\n", serde_json::json!({"error": {
+        "message": error, "type": "invalid_request_error", "code": "context_length_exceeded"
+    }}))
+}
 
 #[derive(Debug, Eq, PartialEq)]
 struct HttpRequestReadError {
@@ -9393,6 +9408,13 @@ fn handle_connection_with_streams(
                                     .expect("live stream registry lock")
                                     .remove(&record.job_id);
                             }
+                            if is_model_context_error(&error) {
+                                if wants_stream {
+                                    let _ = stream.write_all(model_context_error_event(&error).as_bytes());
+                                    return;
+                                }
+                                return write_chat_error(&mut stream, "400 Bad Request", &error);
+                            }
                             if wants_stream {
                                 let completion = chat_gateway::completion_response(
                                     &completion_id,
@@ -12736,6 +12758,37 @@ mod tests {
         let error = read_http_request(&mut reader).expect_err("oversized");
 
         assert_eq!(error.status, "413 Payload Too Large");
+    }
+
+    #[test]
+    fn request_reader_preserves_large_model_context_and_tool_json() {
+        let body = serde_json::json!({
+            "messages": [{"role": "user", "content": "context with code and Unicode 界\\\"\n".repeat(131_072)}],
+            "tools": [{"type": "function", "function": {"name": "inspect", "description": "x".repeat(100_000)}}],
+            "max_tokens": 1024
+        }).to_string();
+        assert!(body.len() > 1024 * 1024);
+        let wire = format!(
+            "POST /v1/chat/completions HTTP/1.1\r\nContent-Length: {}\r\n\r\n{}",
+            body.len(),
+            body
+        );
+        let mut reader = std::io::Cursor::new(wire.as_bytes());
+        let parsed = read_http_request(&mut reader).expect("large model request");
+        assert_eq!(parsed, wire);
+    }
+
+    #[test]
+    fn model_context_failure_is_a_client_error_not_assistant_output() {
+        let error = "This model's maximum context length is 131072 tokens";
+        assert!(super::is_model_context_error(error));
+        assert!(!super::is_model_context_error("connection timed out"));
+        let event = super::model_context_error_event(error);
+        let json = event.strip_prefix("data: ").unwrap().split("\n\n").next().unwrap();
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        assert_eq!(value["error"]["code"], "context_length_exceeded");
+        assert_eq!(value["error"]["message"], error);
+        assert!(value.get("choices").is_none());
     }
 
     #[test]
