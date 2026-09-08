@@ -6,7 +6,7 @@ import { readJsonBody } from "../src/main.js";
 test("agent model bodies can exceed 64 KB; oversize bodies receive HTTP 413 instead of a dropped socket", async (t) => {
   const server = createServer(async (request, response) => {
     try {
-      const body = await readJsonBody(request, request.url === "/model" ? 1024 * 1024 : undefined);
+      const body = await readJsonBody(request, request.url === "/model" ? 32 * 1024 * 1024 : undefined);
       response.writeHead(200, { "Content-Type": "application/json" });
       response.end(JSON.stringify({ length: body.content?.length || 0 }));
     } catch (error) {
@@ -27,10 +27,21 @@ test("agent model bodies can exceed 64 KB; oversize bodies receive HTTP 413 inst
   const unicode = await post("/ordinary", "界".repeat(23000));
   assert.equal(unicode.status, 413, "limit counts UTF-8 bytes rather than characters");
   await unicode.text();
-  const oversizedModel = await post("/model", "x".repeat(1024 * 1024));
+  const largeContext = await post("/model", 'code with Unicode 界 and "quotes"\n'.repeat(131072));
+  assert.equal(largeContext.status, 200, "large model context survives JSON and Unicode overhead");
+  await largeContext.text();
+  const oversizedModel = await post("/model", "x".repeat(32 * 1024 * 1024));
   assert.equal(oversizedModel.status, 413);
   await oversizedModel.text();
   const healthy = await post("/ordinary", "still working");
   assert.equal(healthy.status, 200);
   await healthy.text();
 });
+
+test("model discovery reports the deployed 131072-token window", async () => {
+  const { openAiModelsResponse } = await import("../src/main.js");
+  const model = openAiModelsResponse().data[0];
+  assert.equal(model.context_length, 131072);
+  assert.equal(model.max_model_len, 131072);
+});
+

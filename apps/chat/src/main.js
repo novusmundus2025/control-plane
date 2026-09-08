@@ -60,7 +60,10 @@ const DOMPURIFY_BROWSER_VERSION = "3.4.14";
 const KATEX_BROWSER_VERSION = "0.16.22";
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
-const MAX_AGENT_MODEL_BODY_BYTES = 1024 * 1024;
+// HTTP bytes are not tokens: allow JSON, tool schemas and Unicode overhead.
+// Keep in sync with the control-plane model transport budget.
+const MAX_AGENT_MODEL_BODY_BYTES = 32 * 1024 * 1024;
+const MODEL_CONTEXT_TOKENS = 131_072;
 // Temporarily disabled by product decision. Keep the implementation available so it can
 // be restored without rebuilding the output-cleaning and redaction pipeline.
 const CHAT_VERIFIER_ENABLED = false;
@@ -5638,7 +5641,7 @@ export function createServerApp(config = configFromEnv()) {
         return sendOpenAiJson(response, 200, openAiModelsResponse());
       }
       if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
-        const body = await readJsonBody(request);
+        const body = await readJsonBody(request, MAX_AGENT_MODEL_BODY_BYTES);
         if (body?.stream === true) {
           return await streamOpenAiChatCompletion(response, body, config);
         }
@@ -6225,6 +6228,8 @@ export function openAiModelsResponse() {
       object: "model",
       created: 0,
       owned_by: "mundusx-router",
+      context_length: MODEL_CONTEXT_TOKENS,
+      max_model_len: MODEL_CONTEXT_TOKENS,
     }],
   };
 }
