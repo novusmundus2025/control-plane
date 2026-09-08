@@ -1,6 +1,5 @@
 mod freshness;
 mod office_holder;
-mod sports;
 mod weather;
 mod web_search;
 
@@ -75,9 +74,6 @@ impl ToolAnswer {
 
 pub fn execute(messages: &[ChatMessage]) -> Result<Option<ToolAnswer>, String> {
     if let Some(answer) = execute_safely("weather", || weather::execute(messages))? {
-        return Ok(Some(answer));
-    }
-    if let Some(answer) = execute_safely("sports", || sports::execute(messages))? {
         return Ok(Some(answer));
     }
     if let Some(answer) =

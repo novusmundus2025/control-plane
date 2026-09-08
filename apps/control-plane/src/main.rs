@@ -8818,11 +8818,7 @@ fn handle_connection_with_streams(
                     let completion_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
                     let created = now_unix_seconds_u64();
                     let wants_stream = request_body.stream.unwrap_or(false);
-                    let native_tool_turn = request_body
-                        .tools
-                        .as_ref()
-                        .and_then(serde_json::Value::as_array)
-                        .is_some_and(|tools| !tools.is_empty());
+                    let native_tool_turn = chat_gateway::is_native_tool_turn(&request_body);
                     let (system_prompt, prompt) = if native_tool_turn {
                         let mut native_request = request_body.clone();
                         // The worker returns a complete native assistant message;
