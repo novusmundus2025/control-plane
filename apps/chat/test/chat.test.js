@@ -80,7 +80,10 @@ test("renders a usable chat page", () => {
     }),
   );
 
-  assert.match(html, /MundusX Chat/);
+  assert.match(html, /<title>Ehda<\/title>/);
+  assert.match(html, /class="brand-ehda">Ehda<\/div>/);
+  assert.match(html, /Powered by Mercedes-Benz Tech Community/);
+  assert.match(html, /A BETTER TOMORROW/);
   assert.match(html, /id="auth-gate"[^>]*hidden/);
   assert.match(html, /id="auth-google"/);
   assert.match(html, /Continue your chat/);
@@ -237,7 +240,7 @@ test("renders a usable chat page", () => {
   assert.doesNotMatch(html, /raw\.includes\("\r?\n"\)/);
   assert.match(html, /aria-label", role === "user" \? "Your message" : "MundusX response"/);
   assert.doesNotMatch(html, /avatar\.textContent = role === "user" \? "You" : "M"/);
-  assert.match(html, /\/assets\/mundusx-logo\.png/);
+  assert.match(html, /aria-label="Mercedes-Benz three-pointed star"/);
   assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /\.header-actions \{\s*display: none;/);
   assert.match(html, /class="runtime-status-sentinel" id="runtime-status"/);

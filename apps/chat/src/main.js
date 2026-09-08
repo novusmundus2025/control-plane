@@ -322,7 +322,7 @@ export function page(config = configFromEnv()) {
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MundusX Chat</title>
+  <title>Ehda</title>
   <script>try{document.documentElement.dataset.theme=localStorage.getItem("mundusx.chat.theme")||((matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light")}catch(_){document.documentElement.dataset.theme="light"}</script>
   <style>
     :root {
@@ -1958,13 +1958,53 @@ export function page(config = configFromEnv()) {
     @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px}.active-project-context strong{max-width:90px}#web-search-label{display:none} }
     @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:10px;right:10px}.project-heading{padding:18px 52px 10px 16px}.projects-dialog .harness-form{padding:8px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%}.mcp-token-form{grid-template-columns:1fr}.mcp-token-form button{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
+
+    /* Ehda / Mercedes-Benz Tech Community visual edition.
+       Presentation only: behavior and application contracts remain shared. */
+    :root {
+      --bg:#f7f8fa; --rail:rgba(250,251,252,.96); --panel:rgba(255,255,255,.88); --panel-2:rgba(255,255,255,.72);
+      --line:rgba(47,56,68,.12); --line-strong:rgba(47,56,68,.22); --text:#171b22; --muted:#687181; --muted-2:#929aa7;
+      --purple:#3d4855; --blue:#4b5664; --cyan:#303b47; --gradient:linear-gradient(135deg,#1e2732 0%,#4d5865 100%);
+      --mesh-a:68,78,90; --mesh-b:126,136,148; --surface-shadow:0 18px 54px rgba(35,43,52,.10);
+      --focus-ring:0 0 0 3px rgba(47,56,68,.20);
+    }
+    html[data-theme="dark"] {
+      --bg:#0d1116; --rail:rgba(15,19,24,.96); --panel:rgba(25,30,36,.88); --panel-2:rgba(31,37,44,.72);
+      --line:rgba(224,229,235,.12); --line-strong:rgba(224,229,235,.22); --text:#f2f4f6; --muted:#b4bbc4; --muted-2:#858e9a;
+      --mesh-a:164,174,185; --mesh-b:94,105,117; --surface-shadow:0 22px 70px rgba(0,0,0,.40);
+    }
+    .shell { grid-template-columns:minmax(0,268px) minmax(0,1fr); }
+    aside { padding:20px 13px 16px; }
+    .brand-block { gap:10px; padding:0 2px 2px; align-items:flex-start; }
+    .brand-mark { width:48px; height:48px; flex:0 0 48px; color:var(--text); filter:drop-shadow(0 2px 4px rgba(0,0,0,.08)); }
+    .brand-copy { min-width:0; padding-top:1px; }
+    .brand-name { font-family:Georgia,"Times New Roman",serif; font-size:17px; font-weight:500; letter-spacing:-.015em; }
+    .brand-ehda { margin-top:1px; color:var(--muted); font-size:12px; font-weight:550; letter-spacing:.08em; }
+    .brand-kicker { margin-top:3px; font-size:7px; font-weight:700; letter-spacing:.075em; line-height:1.25; white-space:nowrap; }
+    .new-chat { min-height:46px; border-radius:9px; box-shadow:0 11px 24px rgba(26,34,43,.20); }
+    .new-chat:hover,.new-chat:focus-visible { filter:brightness(1.08); }
+    .rail-destination-icon { color:var(--text); background:color-mix(in srgb,var(--text) 6%,transparent); }
+    .rail-destination.is-active { box-shadow:0 7px 20px rgba(35,43,52,.06); }
+    .theme-option[aria-pressed="true"] { background:var(--gradient); box-shadow:0 5px 14px rgba(30,39,50,.28); }
+    .atlas-word { color:#394656; }
+    html[data-theme="dark"] .atlas-word { color:#d8dde3; }
+    .atlas-sparkle { color:#808b98; }
+    .capability-icon { border-color:rgba(61,72,85,.30); color:#3d4855; }
+    html[data-theme="dark"] .capability-icon { color:#c3cad2; }
+    .capability-card:hover,.capability-card:focus-visible { border-color:rgba(61,72,85,.42); }
+    .composer { border-color:rgba(61,72,85,.20); }
+    .send { background:var(--gradient); }
+    .brand-motto { margin-right:auto; display:flex; align-items:center; gap:12px; color:var(--muted-2); font-family:Georgia,"Times New Roman",serif; font-size:12px; }
+    .brand-motto::after { content:"A BETTER TOMORROW"; font-family:Inter,"Segoe UI",sans-serif; font-size:10px; font-weight:650; letter-spacing:.14em; }
+    .brand-motto-separator { width:1px; height:13px; background:var(--line-strong); }
+    @media (max-width:860px) { .shell{grid-template-columns:1fr}.brand-motto{display:none} }
   </style>
 </head>
 <body data-auth-required="${config.auth?.required ? "true" : "false"}">
   <div class="auth-gate" id="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
     <div class="auth-card">
       <button class="auth-close" id="auth-close" type="button" aria-label="Close sign-in">&times;</button>
-      <div class="auth-brand"><img src="/assets/mundusx-logo.png" alt=""><span>MundusX</span></div>
+      <div class="auth-brand"><span>Ehda</span></div>
       <div><h1 id="auth-title">Continue your chat</h1><p>Sign in to send your message and keep your conversations synced.</p></div>
       <a class="auth-google" id="auth-google" href="/api/auth/google/start?return_to=/"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.07H12v3.92h5.38a4.6 4.6 0 0 1-2 3.02v2.54h3.24c1.9-1.75 2.98-4.33 2.98-7.41Z"/><path fill="#34A853" d="M12 22c2.7 0 4.97-.9 6.62-2.36l-3.24-2.54c-.9.6-2.05.96-3.38.96-2.6 0-4.81-1.76-5.6-4.13H3.06v2.62A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.4 13.93A6 6 0 0 1 6.09 12c0-.67.11-1.32.31-1.93V7.45H3.06A10 10 0 0 0 2 12c0 1.61.39 3.14 1.06 4.55l3.34-2.62Z"/><path fill="#EA4335" d="M12 5.94c1.47 0 2.79.51 3.83 1.5l2.87-2.88A9.62 9.62 0 0 0 12 2a10 10 0 0 0-8.94 5.45l3.34 2.62c.79-2.37 3-4.13 5.6-4.13Z"/></svg><span>Continue with Google</span></a>
       <p class="auth-privacy">Google verifies your identity. Your Google password is never shared with MundusX.</p>
@@ -1974,10 +2014,11 @@ export function page(config = configFromEnv()) {
   <div class="shell" data-control-plane="${escapeHtml(config.controlPlaneUrl)}">
     <aside>
       <div class="brand-block">
-        <img class="brand-logo" src="/assets/mundusx-logo.png" alt="" />
-        <div>
-          <div class="brand-name">MundusX</div>
-          <div class="brand-kicker">Decentralized AI Network</div>
+        <svg class="brand-mark" viewBox="0 0 64 64" role="img" aria-label="Mercedes-Benz three-pointed star"><circle cx="32" cy="32" r="27" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="32" cy="32" r="24" fill="none" stroke="currentColor" stroke-width=".8" opacity=".62"/><path d="M32 8.5 35 29l18.9 12.8-20.2-8.1L32 56l-1.7-22.3-20.2 8.1L29 29 32 8.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <div class="brand-copy">
+          <div class="brand-name">Mercedes-Benz</div>
+          <div class="brand-ehda">Ehda</div>
+          <div class="brand-kicker">Powered by Mercedes-Benz Tech Community</div>
         </div>
       </div>
       <div class="rail-primary">
@@ -2036,6 +2077,7 @@ export function page(config = configFromEnv()) {
     <main id="chat-main" class="is-empty-chat">
       <canvas class="mesh-canvas" id="mesh-canvas" aria-hidden="true"></canvas>
       <header>
+        <div class="brand-motto"><span>Mercedes-Benz</span><span class="brand-motto-separator" aria-hidden="true"></span></div>
         <div class="theme-switch" role="group" aria-label="Color theme"><button class="theme-option" id="theme-light" type="button" aria-label="Use light theme" aria-pressed="true">☀</button><button class="theme-option" id="theme-dark" type="button" aria-label="Use dark theme" aria-pressed="false">☾</button></div>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
         ${repositoryMobileLauncher}
