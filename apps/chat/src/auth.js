@@ -1267,6 +1267,16 @@ export class PostgresAuthStore {
     return result.rows;
   }
 
+  async saveControlPlaneGlobalSkill(email, skillId, input) {
+    this.ensureReady();
+    const result = await this.pool.query(`select u.id from public.users u
+      join public.user_identities i on i.user_id = u.id
+      where u.status = 'active' and i.provider = 'google' and i.email_verified = true
+        and lower(i.email) = $1 limit 1`, [String(email || "").trim().toLowerCase()]);
+    if (!result.rows[0]) throw Object.assign(new Error("Verified administrator account not found"), { statusCode: 403 });
+    return this.saveGlobalSkill({ id: result.rows[0].id, role: "platform_admin" }, skillId, input);
+  }
+
   async saveGlobalSkill(session, skillId, input = {}) {
     this.ensureReady();
     if (!isSkillAdministrator(session?.role)) throw Object.assign(new Error("Platform administrator access is required"), { statusCode: 403 });

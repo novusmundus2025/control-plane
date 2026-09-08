@@ -35,9 +35,9 @@ test("skill draft validation bounds prompt lines and rejects secrets", () => {
   assert.match(unsafe.errors.join(" "), /credentials or private keys/);
 });
 
-test("authenticated Skills page separates global and personal ownership", () => {
+test("authenticated Chat Skills page contains personal skills only", () => {
   const html = renderSkillsPage({ user: { email: "person@example.com" }, csrfToken: "csrf" });
-  assert.match(html, /Global skills/);
+  assert.doesNotMatch(html, /Global skills|edit_global|api\/skills\/global/);
   assert.match(html, /Personal skills apply only to your account/);
   assert.match(html, /\/api\/skills\/personal/);
   assert.match(html, /X-MundusX-CSRF/);
@@ -61,8 +61,8 @@ test("skills API keeps personal writes owner scoped and global writes admin scop
     sendJson(_response, status, body) { output.push({ status, body }); },
   });
   await handle({ request: { method: "GET", headers: {} }, response: {}, url: new URL("https://chat.mundusx.ai/api/skills") });
-  assert.equal(output[0].body.permissions.edit_global, false);
-  assert.equal(Object.hasOwn(output[0].body.system[0], "content"), false);
+  assert.equal(Object.hasOwn(output[0].body, "system"), false);
+  assert.equal(output[0].body.permissions.edit_personal, true);
   await handle({ request: { method: "POST", headers: {} }, response: {}, url: new URL("https://chat.mundusx.ai/api/skills/personal") });
   assert.equal(output[1].status, 201);
   assert.equal(calls[1][0], "user-1");

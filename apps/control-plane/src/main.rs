@@ -1,3 +1,4 @@
+mod global_skills;
 mod chat_gateway;
 mod admin_login;
 mod contracts;
@@ -3035,6 +3036,7 @@ fn render_pagination_controls(path: &str, query: Option<&str>, pagination: &Pagi
 
 #[derive(Clone, Copy)]
 enum OperatorPage {
+    Skills,
     Nodes,
     Jobs,
     Credits,
@@ -3045,6 +3047,7 @@ enum OperatorPage {
 impl OperatorPage {
     fn from_path(path: &str) -> Option<Self> {
         match path {
+            "/skills" => Some(Self::Skills),
             "/nodes" => Some(Self::Nodes),
             "/jobs" => Some(Self::Jobs),
             "/credits" => Some(Self::Credits),
@@ -3056,6 +3059,7 @@ impl OperatorPage {
 
     fn title(self) -> &'static str {
         match self {
+            Self::Skills => "Global Skills",
             Self::Nodes => "Nodes",
             Self::Jobs => "Jobs",
             Self::Credits => "Credits",
@@ -3066,6 +3070,7 @@ impl OperatorPage {
 
     fn path(self) -> &'static str {
         match self {
+            Self::Skills => "/skills",
             Self::Nodes => "/nodes",
             Self::Jobs => "/jobs",
             Self::Credits => "/credits",
@@ -3076,6 +3081,7 @@ impl OperatorPage {
 
     fn nav_label(self) -> &'static str {
         match self {
+            Self::Skills => "Global Skills",
             Self::Nodes => "Nodes",
             Self::Jobs => "Jobs",
             Self::Credits => "Credits",
@@ -3086,6 +3092,7 @@ impl OperatorPage {
 
     fn nav_icon(self) -> &'static str {
         match self {
+            Self::Skills => r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m12 3 9 5-9 5-9-5 9-5Zm-9 9 9 5 9-5M3 16l9 5 9-5"/></svg>"#,
             Self::Nodes => {
                 r#"<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><rect x="3" y="3" width="6" height="6"/><rect x="15" y="3" width="6" height="6"/><rect x="3" y="15" width="6" height="6"/><rect x="15" y="15" width="6" height="6"/></svg>"#
             }
@@ -3451,6 +3458,7 @@ fn control_plane_operator_page(
         .map(|node_id| render_node_profile_panel(state, node_id))
         .unwrap_or_default();
     let body = match page {
+        OperatorPage::Skills => global_skills::page(),
         OperatorPage::Nodes => format!(
             r#"{filters}
             <section class="grid four">
@@ -3546,6 +3554,7 @@ fn control_plane_operator_page(
         OperatorPage::Jobs,
         OperatorPage::Credits,
         OperatorPage::Registry,
+        OperatorPage::Skills,
         OperatorPage::Settings,
     ]
     .into_iter()
@@ -4868,6 +4877,7 @@ button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ fon
           <a class="nav-item motion-lift" href="/jobs"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16"/><path d="M4 17h16"/><circle cx="7" cy="7" r="2"/><circle cx="17" cy="17" r="2"/></svg>Jobs</a>
           <a class="nav-item motion-lift" href="/credits"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><ellipse cx="12" cy="5" rx="7" ry="3"/><path d="M5 5v6c0 1.7 3.1 3 7 3s7-1.3 7-3V5"/><path d="M5 11v6c0 1.7 3.1 3 7 3s7-1.3 7-3v-6"/></svg>Credits</a>
           <a class="nav-item motion-lift" href="/registry"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/><path d="m9 12 2 2 4-5"/></svg>Registry</a>
+          <a class="nav-item motion-lift" href="/skills">Global Skills</a>
           <a class="nav-item motion-lift" href="/settings"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M14 2H6a2 2 0 0 0-2 2v16c0 1.1.9 2 2 2h12a2 2 0 0 0 2-2V8Z"/><path d="M14 2v6h6"/><path d="M8 13h8"/><path d="M8 17h5"/></svg>Settings</a>
         </nav>
         <div class="sidebar-bottom">
@@ -5421,6 +5431,7 @@ fn control_filter_form(page: OperatorPage, query: Option<&str>, api_path: &str) 
     let api_href = escape_html(api_path);
 
     match page {
+        OperatorPage::Skills => String::new(),
         OperatorPage::Nodes | OperatorPage::Registry => format!(
             r#"<form class="toolbar" method="get" action="{action}">
               <input name="search" aria-label="Search" placeholder="Search node id, host, model, backend" value="{search}" />
@@ -6950,6 +6961,7 @@ fn handle_connection_with_streams(
     }
 
     let response = match (request.method.as_str(), clean_path) {
+        ("GET" | "PUT", "/v1/skills") => global_skills::response(&request.method, &request.body, &request.headers),
         ("POST", "/internal/harness/runners/register") => {
             match serde_json::from_str::<harness::RegisterHarnessRunnerRequest>(&request.body) {
                 Ok(mut registration) => {
