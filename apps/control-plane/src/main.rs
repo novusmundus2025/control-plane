@@ -590,7 +590,6 @@ fn text_response(status: &str, body: &str) -> String {
 }
 
 fn html_response(status: &str, body: &str) -> String {
-    let body = admin_login::decorate(body.to_string());
     format!(
         "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
@@ -6203,7 +6202,10 @@ fn authorize_operator_request(
     route_path: &str,
     headers: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    if !requires_operator_auth(method, route_path) && !(admin_login::enabled() && admin_login::browser_page(method, route_path)) {
+    if admin_login::enabled() && admin_login::public_request(method, route_path) {
+        return Ok(());
+    }
+    if !requires_operator_auth(method, route_path) && !admin_login::admin_mutation(method, route_path) {
         return Ok(());
     }
 
@@ -6828,10 +6830,6 @@ fn handle_connection_with_streams(
     }
 
     if let Err(error) = authorize_operator_request(&request.method, clean_path, &request.headers) {
-        if admin_login::enabled() && admin_login::browser_page(&request.method, clean_path) {
-            let _ = stream.write_all(admin_login::login_redirect().as_bytes());
-            return;
-        }
         let _ = stream.write_all(
             json_response("401 Unauthorized", serde_json::json!({ "error": error })).as_bytes(),
         );
@@ -9433,6 +9431,12 @@ fn handle_connection_with_streams(
         _ => text_response("404 Not Found", "not found"),
     };
 
+    let response = if admin_login::enabled() && admin_login::browser_page(&request.method, clean_path) {
+        if let Some((head, body)) = response.split_once("\r\n\r\n") {
+            let status = head.lines().next().unwrap_or("HTTP/1.1 200 OK").trim_start_matches("HTTP/1.1 ");
+            html_response(status, &admin_login::decorate(body.to_string(), admin_login::session_authorized("GET", &request.headers)))
+        } else { response }
+    } else { response };
     let _ = stream.write_all(response.as_bytes());
 }
 

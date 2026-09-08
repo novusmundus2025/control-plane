@@ -152,6 +152,32 @@ pub fn browser_page(method: &str, path: &str) -> bool {
             || path.starts_with("/jobs/"))
 }
 
+pub fn admin_mutation(method: &str, path: &str) -> bool {
+    matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
+        && (path.starts_with("/actions/")
+            || path.starts_with("/v1/nodes/")
+            || matches!(path, "/v1/admission-policy" | "/v1/tool-rewards"))
+}
+
+pub fn public_request(method: &str, path: &str) -> bool {
+    // Viewing operations and submitting inference are public. Conversation
+    // storage and internal harness APIs retain their existing service auth.
+    browser_page(method, path)
+        || (method == "GET"
+            && matches!(
+                path,
+                "/v1/status"
+                    | "/v1/planner/status"
+                    | "/v1/nodes"
+                    | "/v1/admission-policy"
+                    | "/v1/jobs"
+                    | "/v1/job-events"
+                    | "/v1/credits"
+            ))
+        || (method == "GET" && path.starts_with("/v1/jobs/"))
+        || (method == "POST" && path == "/v1/jobs")
+}
+
 pub fn handle(
     method: &str,
     path: &str,
@@ -250,14 +276,22 @@ pub fn handle(
     }
 }
 
-pub fn login_redirect() -> String {
-    redirect("/auth/login", "")
-}
-
-pub fn decorate(mut html: String) -> String {
-    if enabled() {
-        html = html.replace("</body>", r#"<form method="post" action="/auth/logout" style="position:fixed;right:18px;bottom:18px;z-index:1000;margin:0"><button type="submit" style="font:inherit;padding:9px 14px;border:1px solid #26303b;border-radius:8px;background:#0b1420;color:#f6fbff;cursor:pointer">Log out</button></form></body>"#);
+pub fn decorate(mut html: String, is_admin: bool) -> String {
+    if !is_admin {
+        let forms = regex::Regex::new(
+            r#"(?is)(<form\b[^>]*\bmethod\s*=\s*["']post["'][^>]*>)(.*?)</form>"#,
+        )
+        .expect("admin forms regex");
+        html = forms.replace_all(&html, |captures: &regex::Captures| {
+            format!("{}<fieldset disabled style=\"border:0;margin:0;padding:0;min-width:0\">{}</fieldset><p>Admin sign-in is required to make changes.</p></form>", &captures[1], &captures[2])
+        }).into_owned();
     }
+    let control = if is_admin {
+        r#"<form method="post" action="/auth/logout" style="margin:0"><button type="submit" style="font:inherit;padding:9px 14px;border:1px solid #26303b;border-radius:8px;background:#0b1420;color:#f6fbff;cursor:pointer">Log out</button></form>"#
+    } else {
+        r#"<a href="/auth/login" style="display:block;font:inherit;padding:9px 14px;border:1px solid #26303b;border-radius:8px;background:#0b1420;color:#f6fbff;text-decoration:none">Admin sign-in</a>"#
+    };
+    html = html.replace("</body>", &format!(r#"<div style="position:fixed;right:18px;bottom:18px;z-index:1000">{control}</div></body>"#));
     html
 }
 
@@ -314,6 +348,21 @@ mod tests {
         ));
         assert!(!email_allowed("", ""));
     }
+
+    #[test]
+    fn public_views_disable_only_mutation_forms() {
+        let page = r#"<body><form method="get"><input name="filter"></form><form method="post" action="/actions/admission-policy"><input name="policy"><button>Apply</button></form></body>"#;
+        let public = decorate(page.into(), false);
+        assert!(public.contains("<form method=\"get\"><input name=\"filter\">"));
+        assert!(public.contains("<fieldset disabled"));
+        assert!(public.contains("Admin sign-in"));
+        assert!(!public.contains("action=\"/auth/logout\""));
+        let admin = decorate(page.into(), true);
+        assert!(!admin.contains("<fieldset disabled"));
+        assert!(admin.contains("action=\"/auth/logout\""));
+        assert!(!public_request("POST", "/v1/nodes/policy-override"));
+        assert!(!public_request("GET", "/v1/conversations/private/messages"));
+    }
     #[test]
     fn protects_nested_operator_pages_without_intercepting_workers() {
         for path in ["/", "/nodes", "/nodes/node1", "/jobs/job1", "/settings"] {
@@ -358,10 +407,52 @@ mod tests {
             return;
         }
         let mut headers = BTreeMap::new();
-        assert!(super::super::authorize_operator_request("GET", "/nodes/node1", &headers).is_err());
-        assert!(super::super::authorize_operator_request("GET", "/v1/status", &headers).is_err());
+        for path in [
+            "/",
+            "/settings",
+            "/nodes/node1",
+            "/v1/status",
+            "/v1/jobs",
+            "/v1/jobs/job1",
+        ] {
+            assert!(super::super::authorize_operator_request("GET", path, &headers).is_ok());
+        }
+        for path in [
+            "/v1/jobs",
+            "/v1/chat/completions",
+            "/v1/jobs/complete",
+            "/v1/jobs/delta",
+        ] {
+            assert!(super::super::authorize_operator_request("POST", path, &headers).is_ok());
+        }
+        for path in [
+            "/v1/nodes/policy-override",
+            "/v1/nodes/contribution-cap",
+            "/v1/admission-policy",
+            "/v1/tool-rewards",
+            "/actions/admission-policy",
+        ] {
+            assert!(super::super::authorize_operator_request("POST", path, &headers).is_err());
+        }
+        assert!(super::super::requires_device_signature(
+            "GET",
+            "/v1/jobs/next"
+        ));
+        assert!(super::super::requires_device_signature(
+            "POST",
+            "/v1/jobs/complete"
+        ));
+        assert!(super::super::requires_device_signature(
+            "POST",
+            "/v1/jobs/delta"
+        ));
         headers.insert("authorization".into(), "Bearer machine-test-token".into());
-        assert!(super::super::authorize_operator_request("GET", "/v1/status", &headers).is_ok());
+        assert!(super::super::authorize_operator_request(
+            "POST",
+            "/v1/nodes/policy-override",
+            &headers
+        )
+        .is_ok());
         headers.clear();
         let start = handle("GET", "/auth/start", None, &headers).unwrap();
         let state_header = start
