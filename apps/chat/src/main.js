@@ -3873,9 +3873,12 @@ export function page(config = configFromEnv()) {
       let saved = null;
       try { saved = JSON.parse(localStorage.getItem(activeAgentTaskKey) || "null"); } catch { saved = null; }
       if (!saved?.taskId || !saved?.conversationId) return false;
+      // Recover work only in the chat the user selected, including after New Chat.
+      if (activeHistoryId !== saved.conversationId) return false;
 
       const response = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId));
       const payload = await readApiPayload(response, "active local agent task unavailable");
+      if (activeHistoryId !== saved.conversationId) return false;
       if (!response.ok) {
         if ([404, 410].includes(response.status)) clearActiveAgentTask(saved.taskId);
         return false;
@@ -3889,6 +3892,8 @@ export function page(config = configFromEnv()) {
         clearConversation();
         if (saved.message) addMessage(saved.message, "user");
       }
+
+      if (activeHistoryId !== saved.conversationId) return false;
 
       if (["completed", "failed", "cancelled"].includes(payload.state)) {
         clearActiveAgentTask(saved.taskId);
