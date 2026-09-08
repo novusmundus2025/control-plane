@@ -1183,6 +1183,11 @@ export class PostgresAuthStore {
         (user_id, provider, provider_subject, provider_login, email, email_verified, profile_json)
         values ($1, $2, $3, $4, $5, true, $6)`, [userId, identity.provider, identity.subject, identity.login || null, identity.email, identity.profile || {}]);
     } else {
+      if (identity.provider === "google") {
+        // Refresh the verified Google identity used by the admin-login bridge;
+        // a renamed Google account must not retain an old allowlisted email.
+        await client.query("update public.user_identities set email = $1, email_verified = true, profile_json = $2 where provider = 'google' and provider_subject = $3", [identity.email, identity.profile || {}, identity.subject]);
+      }
       await client.query("update public.users set last_login_at = now(), updated_at = now() where id = $1", [userId]);
     }
     return userId;

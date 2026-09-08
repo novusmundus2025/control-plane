@@ -212,8 +212,13 @@ pub fn handle(
                 ));
             }
             state.challenges.insert(nonce.clone(), now() + 600);
+            let return_to =
+                super::escape_query_value(&format!("/api/auth/control-plane?state={nonce}"));
             Some(redirect(
-                &format!("{}/api/auth/control-plane?state={nonce}", chat_origin()),
+                &format!(
+                    "{}/api/auth/google/start?return_to={return_to}",
+                    chat_origin()
+                ),
                 &set_cookie(STATE_COOKIE, &nonce, 600),
             ))
         }
