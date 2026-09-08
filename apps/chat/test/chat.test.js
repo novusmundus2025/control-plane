@@ -4290,6 +4290,8 @@ test("Hermes model discovery intentionally hides heterogeneous implementation de
     object: "model",
     created: 0,
     owned_by: "mundusx-router",
+    context_length: 131072,
+    max_model_len: 131072,
   }]);
 });
 
