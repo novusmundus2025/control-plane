@@ -297,6 +297,7 @@ pub fn session_email(headers: &BTreeMap<String, String>) -> Option<String> {
 pub fn decorate(mut html: String, email: Option<&str>) -> String {
     let is_admin = email.is_some();
     if !is_admin {
+        html = html.replace("</head>", r#"<style>fieldset:disabled button,fieldset:disabled input,fieldset:disabled select,fieldset:disabled textarea{opacity:.45;cursor:not-allowed;box-shadow:none}fieldset:disabled button{pointer-events:none}[data-admin-action]{display:none!important}</style></head>"#);
         let forms = regex::Regex::new(
             r#"(?is)(<form\b[^>]*\bmethod\s*=\s*["']post["'][^>]*>)(.*?)</form>"#,
         )
@@ -377,10 +378,11 @@ mod tests {
 
     #[test]
     fn public_views_disable_only_mutation_forms() {
-        let page = r#"<body><div id="admin-account"></div><form method="get"><input name="filter"></form><form method="post" action="/actions/admission-policy"><input name="policy"><button>Apply</button></form></body>"#;
+        let page = r#"<head></head><body><div id="admin-account"></div><form method="get"><input name="filter"></form><form method="post" action="/actions/admission-policy"><input name="policy"><button>Apply</button></form></body>"#;
         let public = decorate(page.into(), None);
         assert!(public.contains("<form method=\"get\"><input name=\"filter\">"));
         assert!(public.contains("<fieldset disabled"));
+        assert!(public.contains("fieldset:disabled button{pointer-events:none}"));
         assert!(public.contains("Admin sign-in"));
         assert!(!public.contains("action=\"/auth/logout\""));
         assert!(public.contains("Public access"));
