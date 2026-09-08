@@ -320,11 +320,13 @@ export function page(config = configFromEnv()) {
   return `<!doctype html>
 <html lang="en">
 <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>MundusX Chat</title>
   <script>try{document.documentElement.dataset.theme=localStorage.getItem("mundusx.chat.theme")||((matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light")}catch(_){document.documentElement.dataset.theme="light"}</script>
   <style>
+button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-family:"JetBrains Mono",ui-monospace,monospace; }
     :root {
       color-scheme: light;
       --bg: #f6f7fb;
@@ -358,7 +360,7 @@ export function page(config = configFromEnv()) {
       overflow: hidden;
       background: var(--bg);
       color: var(--text);
-      font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+      font-family: "Space Grotesk", system-ui, sans-serif;
     }
     a { color: inherit; text-decoration: none; }
     button { font: inherit; cursor: pointer; }
@@ -415,7 +417,7 @@ export function page(config = configFromEnv()) {
       transform: scale(1.04);
     }
     .brand-name {
-      font-family: Inter, "Segoe UI", sans-serif;
+      font-family: "Space Grotesk", system-ui, sans-serif;
       font-weight: 800;
       font-size: 19px;
       line-height: 1.15;
@@ -651,7 +653,7 @@ export function page(config = configFromEnv()) {
     .guest-widget { margin-top:auto; padding:12px; border:1px solid var(--border); border-radius:16px; background:var(--panel); box-shadow:0 10px 28px rgba(29,35,68,.08); }
     .guest-widget strong { display:block; color:var(--text); font-size:14px; margin-bottom:4px; }
     .guest-widget p { color:var(--muted); font-size:12px; line-height:1.45; margin:0 0 12px; }
-    .guest-login { width:100%; min-height:42px; border:0; border-radius:11px; background:linear-gradient(135deg,#477dff,#7657ed); color:#fff; font:700 14px Inter,Segoe UI,sans-serif; cursor:pointer; box-shadow:0 8px 20px rgba(91,92,235,.2); }
+    .guest-login { width:100%; min-height:42px; border:0; border-radius:11px; background:linear-gradient(135deg,#477dff,#7657ed); color:#fff; font:700 14px "Space Grotesk", system-ui, sans-serif; cursor:pointer; box-shadow:0 8px 20px rgba(91,92,235,.2); }
     .guest-login:hover,.guest-login:focus-visible { filter:brightness(1.05); transform:translateY(-1px); }
     .account-bar {
       width: 100%;
@@ -1352,7 +1354,7 @@ export function page(config = configFromEnv()) {
       max-width: 100%;
       overflow: auto;
       white-space: pre;
-      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 13.5px;
       line-height: 1.65;
       tab-size: 2;
@@ -1864,7 +1866,7 @@ export function page(config = configFromEnv()) {
       border-radius: 6px;
       background: #f4f5f9;
       color: var(--muted);
-      font-family: "SF Mono", Menlo, Consolas, monospace;
+      font-family: "JetBrains Mono", ui-monospace, monospace;
       font-size: 11px;
     }
     .send {
@@ -1959,7 +1961,7 @@ export function page(config = configFromEnv()) {
     .capability-card>span:last-child { display:grid; gap:3px; min-width:0; }
     .capability-card strong { font-size:13px; }
     .capability-card small { color:var(--muted); font-size:10px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-    .capability-icon { width:32px; height:32px; display:grid; place-items:center; border:1px solid rgba(119,78,255,.35); border-radius:8px; color:#7757ff; font:700 12px/1 ui-monospace,monospace; }
+    .capability-icon { width:32px; height:32px; display:grid; place-items:center; border:1px solid rgba(119,78,255,.35); border-radius:8px; color:#7757ff; font:700 12px/1 "JetBrains Mono",ui-monospace,monospace; }
     .composer { border-color:rgba(116,91,255,.24); background:var(--panel); backdrop-filter:blur(18px); box-shadow:var(--surface-shadow); }
     .account-bar,.account-menu,.account-upgrade { background:var(--panel); }
     .account-bar:hover,.account-menu-header:hover,.account-menu-item:hover { background:var(--panel-2); }
@@ -2349,7 +2351,7 @@ export function page(config = configFromEnv()) {
           context.fillStyle = "rgba(" + (emphasized ? primary : neutral) + "," + (emphasized ? .72 : .28) + ")";
           context.fill();
           if (node.label) {
-            context.font = "10px Inter, Segoe UI, sans-serif";
+            context.font = '10px "Space Grotesk", system-ui, sans-serif';
             context.fillStyle = "rgba(" + neutral + ",.58)";
             context.fillText(node.label, point.x + 8, point.y + 3);
           }
@@ -5871,13 +5873,15 @@ function runnerConnectPage(url, kind = "runner") {
   return `<!doctype html>
 <html lang="en">
 <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="referrer" content="no-referrer">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'self'; style-src 'unsafe-inline'; script-src 'unsafe-inline'; base-uri 'none'; form-action 'self'">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; connect-src 'self'; style-src 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; script-src 'unsafe-inline'; base-uri 'none'; form-action 'self'">
   <title>Connect this computer · MundusX</title>
   <style>
-    :root { color-scheme: light dark; font-family: Inter, ui-sans-serif, system-ui, sans-serif; }
+button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-family:"JetBrains Mono",ui-monospace,monospace; }
+    :root { color-scheme: light dark; font-family: "Space Grotesk", system-ui, sans-serif; }
     body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: #f5f6fb; color: #171927; }
     main { width: min(430px, calc(100vw - 40px)); padding: 28px; border: 1px solid #dfe2ec; border-radius: 20px; background: #fff; box-shadow: 0 20px 60px #24294722; }
     h1 { margin: 0 0 10px; font-size: 24px; } p { color: #626a80; line-height: 1.5; }

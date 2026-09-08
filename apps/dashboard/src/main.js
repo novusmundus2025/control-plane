@@ -892,10 +892,12 @@ function renderContributorJobHistoryPage(requestUrl, basePath = "/portal") {
   return `<!doctype html>
 <html lang="en">
   <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MundusX Contributor Job History</title>
     <style>
+button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-family:"JetBrains Mono",ui-monospace,monospace; }
       :root {
         color-scheme: light;
         --bg: #ffffff;
@@ -917,7 +919,7 @@ function renderContributorJobHistoryPage(requestUrl, basePath = "/portal") {
           radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 28%),
           linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
         color: var(--text);
-        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+        font-family: "Space Grotesk", system-ui, sans-serif;
       }
       .wrap {
         max-width: 1240px;
@@ -1307,10 +1309,12 @@ function renderContributorPortal() {
   return `<!doctype html>
 <html lang="en">
   <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MundusX Contributor Portal</title>
     <style>
+button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-family:"JetBrains Mono",ui-monospace,monospace; }
       :root {
         color-scheme: light;
         --bg: #ffffff;
@@ -1335,7 +1339,7 @@ function renderContributorPortal() {
           radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 28%),
           linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
         color: var(--text);
-        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+        font-family: "Space Grotesk", system-ui, sans-serif;
       }
       .wrap {
         max-width: 1380px;
@@ -1905,10 +1909,12 @@ function renderInstallPage(installPath = "/install") {
   return `<!doctype html>
 <html lang="en">
   <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>MundusX Install</title>
     <style>
+button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-family:"JetBrains Mono",ui-monospace,monospace; }
       :root {
         color-scheme: light;
         --bg: #ffffff;
@@ -1926,7 +1932,7 @@ function renderInstallPage(installPath = "/install") {
         margin: 0;
         min-height: 100vh;
         color: var(--text);
-        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+        font-family: "Space Grotesk", system-ui, sans-serif;
         background:
           radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 28%),
           linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
@@ -2064,7 +2070,7 @@ function renderInstallPage(installPath = "/install") {
         align-items: center;
       }
       code {
-        font-family: "SFMono-Regular", Menlo, Monaco, Consolas, monospace;
+        font-family: "JetBrains Mono", ui-monospace, monospace;
         font-size: 14px;
         white-space: nowrap;
       }
@@ -2419,11 +2425,13 @@ function legacyPage({ health, status, events, credits, planner, error }) {
   return `<!doctype html>
 <html lang="en">
   <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta http-equiv="refresh" content="15" />
     <title>${title}</title>
     <style>
+button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-family:"JetBrains Mono",ui-monospace,monospace; }
       :root {
         color-scheme: dark;
         --bg: #080a0f;
@@ -2482,7 +2490,7 @@ function legacyPage({ health, status, events, credits, planner, error }) {
           linear-gradient(135deg, #06080d 0%, #111827 52%, #0a0c12 100%);
         background-size: 44px 44px, 44px 44px, auto, auto, auto;
         color: var(--text);
-        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+        font-family: "Space Grotesk", system-ui, sans-serif;
       }
       .wrap {
         max-width: 1380px;
@@ -3116,12 +3124,14 @@ export function page({ health, status, events = [], credits, planner, error }) {
   const plannerLabel = plannerStatusLabel(plannerService);
   const plannerProvider = String(plannerService.provider ?? (plannerService.enabled ? "unknown" : "rust"));
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<html lang="en"><head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap"><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
 <meta http-equiv="refresh" content="15"/><title>EHDA Control Plane</title>
 <style>
+button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-family:"JetBrains Mono",ui-monospace,monospace; }
 :root{color-scheme:dark;--bg:#070d14;--panel:#0e151d;--panel2:#111923;--line:#202b37;--text:#f2f6fb;--muted:#a5b0c0;--blue:#4094ff;--green:#3cd17d;--violet:#704cff}
 .ehda-mark{position:relative;display:inline-block;width:42px;height:34px;flex:0 0 auto;filter:drop-shadow(0 0 10px rgba(74,89,255,.28))}.ehda-mark:before,.ehda-mark:after,.ehda-mark i,.ehda-mark b{content:"";position:absolute;width:9px;height:27px;border-radius:2px;background:linear-gradient(180deg,#418cff,#6842f5)}.ehda-mark:before{left:6px;top:0;transform:rotate(-43deg)}.ehda-mark:after{left:19px;top:0;transform:rotate(43deg)}.ehda-mark i{right:6px;top:0;transform:rotate(43deg)}.ehda-mark b{left:14px;top:10px;transform:rotate(-43deg);background:linear-gradient(180deg,#458dff,#8b3cff)}.ehda-mark-large{transform:scale(1.65)}.status-chip.degraded{color:#ffb35c!important;border-color:#65401d!important;background:rgba(101,64,29,.18)!important}.status-chip.degraded .dot{background:#ff9d42}.error{margin:-9px 0 14px;color:#ff9d78;font-size:12px}
-*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 72% 0,rgba(31,89,142,.08),transparent 31%),linear-gradient(135deg,#071019,#070c12 60%,#050a10);color:var(--text);font:14px/1.45 Inter,"Segoe UI",sans-serif}.shell{min-height:100vh}.sidebar{position:fixed;inset:0 auto 0 0;width:212px;border-right:1px solid #26303b;background:linear-gradient(180deg,rgba(10,17,25,.98),rgba(9,16,24,.93));padding:28px 18px 18px;display:flex;flex-direction:column;z-index:5}.brand{display:flex;align-items:center;gap:14px;padding:0 7px 31px;font-size:26px;font-weight:750}.brand img{width:38px;height:38px;object-fit:contain}.nav{display:grid;gap:8px}.nav a{display:flex;align-items:center;gap:16px;color:#bcc6d4;text-decoration:none;padding:13px 12px;border:1px solid transparent;border-radius:7px}.nav a:hover,.nav a.active{color:#55a0ff;border-color:#2f77bd;background:linear-gradient(90deg,rgba(35,108,190,.28),rgba(27,56,91,.35))}.side-bottom{margin-top:auto}.status-box,.operator{border:1px solid var(--line);border-radius:7px;padding:13px;margin-top:16px;background:rgba(10,17,25,.64)}.status-box div{display:flex;align-items:center;gap:8px}.status-box small{display:block;color:var(--green);margin:7px 0 0 17px}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 10px rgba(60,209,125,.35)}.operator{display:flex;gap:10px;align-items:center}.avatar{display:grid;place-items:center;width:40px;height:40px;border-radius:50%;background:#2459df;font-weight:700}.operator small{display:block;color:var(--muted)}.side-footer{display:flex;justify-content:space-between;color:#6f7b8b;font-size:11px;border-top:1px solid #18222c;padding-top:18px;margin-top:40px}.main{margin-left:212px;padding:27px 28px 56px;max-width:1700px}.header{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}.header h1{font-size:31px;line-height:1;margin:5px 0 10px;letter-spacing:-.03em}.title-row{display:flex;align-items:center;gap:10px}.title-row .shield{color:var(--blue)}.subtitle{color:#bdc5d1}.header-actions{display:flex;align-items:center;gap:18px;color:#bdc5d1}.btn{display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid #2b3744;border-radius:7px;color:var(--text);background:#0a1118;text-decoration:none}.refresh{padding:10px;border:1px solid #2b3744;border-radius:7px;font-size:21px}.live-dot{color:var(--blue)}.status-row{display:flex;gap:14px;flex-wrap:wrap;margin:24px 0 20px}.status-chip{border:1px solid #202b36;border-radius:9px;padding:10px 14px;background:#0b121a;color:#c8d0dc}.status-chip.healthy{color:var(--green);border-color:#163d2b;background:rgba(20,77,50,.2)}.status-chip .dot{display:inline-block;margin-right:8px}.status-chip.planner{color:var(--blue)}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.metric{min-height:116px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(145deg,rgba(19,28,38,.96),rgba(12,19,27,.95));padding:18px 18px;display:flex;align-items:center;gap:16px}.metric-icon{width:52px;height:52px;border-radius:50%;display:grid;place-items:center;background:#172231;color:var(--blue);flex:0 0 auto}.metric-copy{min-width:104px}.metric-copy small{display:block;color:#c6ced9}.metric-value{font-size:27px;margin:5px 0}.metric-copy a{font-size:12px;color:#aab4c2;text-decoration:none}.sparkline{margin-left:auto;width:105px;height:42px;overflow:visible}.sparkline path{fill:none;stroke:var(--blue);stroke-width:1.6}.metrics-small{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:13px;margin-top:14px}.metric-small{min-height:104px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(145deg,#101821,#0c131b);padding:18px;display:flex;gap:13px;align-items:center}.metric-small svg{color:var(--blue)}.metric-small small{display:block;color:#c6ced9;white-space:nowrap}.metric-small strong{display:block;font-size:25px;font-weight:400;margin-top:4px}.planner-card{border-color:#1d6545;background:linear-gradient(145deg,rgba(15,39,34,.82),#0d171a)}.planner-card strong{font-size:20px}.planner-card span{display:block;font-size:11px;color:#bdc5d0}.dashboard-grid{display:grid;grid-template-columns:minmax(0,1.9fr) minmax(340px,1fr);gap:16px;margin-top:16px}.panel{border:1px solid var(--line);border-radius:8px;background:linear-gradient(145deg,rgba(15,23,32,.96),rgba(10,17,24,.96));padding:18px}.panel-head{display:flex;justify-content:space-between;align-items:flex-start}.panel-title{display:flex;gap:12px}.panel-title svg{color:var(--blue)}.panel-title h2{font-size:17px;margin:1px 0}.panel-title p{font-size:12px;color:var(--muted);margin:3px 0}.legend{display:flex;gap:18px;color:#aeb8c5;font-size:11px}.legend span:before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--blue);margin-right:6px}.legend span:nth-child(2):before{background:#8ab9ff}.legend span:nth-child(3):before{background:#905cff}.legend span:nth-child(4):before{background:#788495}.topology-stage{height:350px;position:relative;overflow:hidden}.orbit{position:absolute;left:50%;top:53%;transform:translate(-50%,-50%);border:1px dashed rgba(64,148,255,.42);border-radius:50%}.orbit-a{width:84%;height:62%}.orbit-b{width:66%;height:42%;border-style:solid;border-color:rgba(76,126,180,.18)}.spoke{position:absolute;left:50%;top:53%;height:1px;width:65%;background:rgba(64,148,255,.32);transform-origin:left}.s1{transform:rotate(0)}.s2{transform:rotate(45deg)}.s3{transform:rotate(135deg)}.s4{transform:rotate(180deg)}.topology-core{position:absolute;left:50%;top:53%;transform:translate(-50%,-50%);width:108px;height:108px;display:grid;place-items:center;clip-path:polygon(50% 0,93% 25%,93% 75%,50% 100%,7% 75%,7% 25%);background:linear-gradient(145deg,#142b48,#0c1623);border:1px solid var(--blue);filter:drop-shadow(0 0 20px rgba(47,116,206,.25))}.topology-core img{width:73px;height:73px;object-fit:contain}.topology-node{position:absolute;transform:translate(-50%,-50%);display:grid;justify-items:center;z-index:2;color:#dbe2eb}.node-icon{width:45px;height:39px;border:1px solid #263341;border-radius:8px;display:grid;place-items:center;background:#101923;color:#a8b5c5}.topology-node.is-live .node-icon{border-color:#2e79be;color:var(--blue)}.topology-node strong{font-size:12px;margin-top:5px;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.topology-node small{font-size:11px;color:#b2bdca}.panel-footer{text-align:center;border:1px solid #1f2a35;border-radius:7px;padding:12px}.credit-total{margin-top:30px}.credit-total small{color:#b6c0cc}.credit-total strong{display:block;color:var(--blue);font-size:34px;font-weight:400;margin-top:5px}.credit-chart{position:absolute;right:20px;top:67px;width:170px}.credit-copy{color:#c0c9d5;line-height:2;margin:18px 0}.notice{border:1px solid #25313c;border-radius:7px;padding:16px;display:flex;gap:12px;color:#c4ccd7;line-height:1.8;background:rgba(17,25,34,.6)}.notice svg{color:var(--blue);flex:0 0 auto;margin-top:3px}.notice code{color:#72adf8;background:#13243a;border-radius:10px;padding:3px 9px}.dev-links{margin-top:24px;border:1px solid #202b36;border-radius:7px;padding:18px;display:flex;gap:18px;flex-wrap:wrap}.dev-links a{color:#4b9dff;text-decoration:none}.lower{margin-top:18px}.lower details{border:1px solid var(--line);border-radius:8px;background:#0c141d;margin-top:10px}.lower summary{cursor:pointer;padding:16px 18px;font-weight:600}.lower-content{padding:0 18px 18px;overflow:auto}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:radial-gradient(circle at 72% 0,rgba(31,89,142,.08),transparent 31%),linear-gradient(135deg,#071019,#070c12 60%,#050a10);color:var(--text);font:14px/1.45 "Space Grotesk", system-ui, sans-serif}.shell{min-height:100vh}.sidebar{position:fixed;inset:0 auto 0 0;width:212px;border-right:1px solid #26303b;background:linear-gradient(180deg,rgba(10,17,25,.98),rgba(9,16,24,.93));padding:28px 18px 18px;display:flex;flex-direction:column;z-index:5}.brand{display:flex;align-items:center;gap:14px;padding:0 7px 31px;font-size:26px;font-weight:750}.brand img{width:38px;height:38px;object-fit:contain}.nav{display:grid;gap:8px}.nav a{display:flex;align-items:center;gap:16px;color:#bcc6d4;text-decoration:none;padding:13px 12px;border:1px solid transparent;border-radius:7px}.nav a:hover,.nav a.active{color:#55a0ff;border-color:#2f77bd;background:linear-gradient(90deg,rgba(35,108,190,.28),rgba(27,56,91,.35))}.side-bottom{margin-top:auto}.status-box,.operator{border:1px solid var(--line);border-radius:7px;padding:13px;margin-top:16px;background:rgba(10,17,25,.64)}.status-box div{display:flex;align-items:center;gap:8px}.status-box small{display:block;color:var(--green);margin:7px 0 0 17px}.dot{width:9px;height:9px;border-radius:50%;background:var(--green);box-shadow:0 0 10px rgba(60,209,125,.35)}.operator{display:flex;gap:10px;align-items:center}.avatar{display:grid;place-items:center;width:40px;height:40px;border-radius:50%;background:#2459df;font-weight:700}.operator small{display:block;color:var(--muted)}.side-footer{display:flex;justify-content:space-between;color:#6f7b8b;font-size:11px;border-top:1px solid #18222c;padding-top:18px;margin-top:40px}.main{margin-left:212px;padding:27px 28px 56px;max-width:1700px}.header{display:flex;justify-content:space-between;gap:20px;align-items:flex-start}.header h1{font-size:31px;line-height:1;margin:5px 0 10px;letter-spacing:-.03em}.title-row{display:flex;align-items:center;gap:10px}.title-row .shield{color:var(--blue)}.subtitle{color:#bdc5d1}.header-actions{display:flex;align-items:center;gap:18px;color:#bdc5d1}.btn{display:flex;gap:10px;align-items:center;padding:10px 14px;border:1px solid #2b3744;border-radius:7px;color:var(--text);background:#0a1118;text-decoration:none}.refresh{padding:10px;border:1px solid #2b3744;border-radius:7px;font-size:21px}.live-dot{color:var(--blue)}.status-row{display:flex;gap:14px;flex-wrap:wrap;margin:24px 0 20px}.status-chip{border:1px solid #202b36;border-radius:9px;padding:10px 14px;background:#0b121a;color:#c8d0dc}.status-chip.healthy{color:var(--green);border-color:#163d2b;background:rgba(20,77,50,.2)}.status-chip .dot{display:inline-block;margin-right:8px}.status-chip.planner{color:var(--blue)}.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px}.metric{min-height:116px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(145deg,rgba(19,28,38,.96),rgba(12,19,27,.95));padding:18px 18px;display:flex;align-items:center;gap:16px}.metric-icon{width:52px;height:52px;border-radius:50%;display:grid;place-items:center;background:#172231;color:var(--blue);flex:0 0 auto}.metric-copy{min-width:104px}.metric-copy small{display:block;color:#c6ced9}.metric-value{font-size:27px;margin:5px 0}.metric-copy a{font-size:12px;color:#aab4c2;text-decoration:none}.sparkline{margin-left:auto;width:105px;height:42px;overflow:visible}.sparkline path{fill:none;stroke:var(--blue);stroke-width:1.6}.metrics-small{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:13px;margin-top:14px}.metric-small{min-height:104px;border:1px solid var(--line);border-radius:8px;background:linear-gradient(145deg,#101821,#0c131b);padding:18px;display:flex;gap:13px;align-items:center}.metric-small svg{color:var(--blue)}.metric-small small{display:block;color:#c6ced9;white-space:nowrap}.metric-small strong{display:block;font-size:25px;font-weight:400;margin-top:4px}.planner-card{border-color:#1d6545;background:linear-gradient(145deg,rgba(15,39,34,.82),#0d171a)}.planner-card strong{font-size:20px}.planner-card span{display:block;font-size:11px;color:#bdc5d0}.dashboard-grid{display:grid;grid-template-columns:minmax(0,1.9fr) minmax(340px,1fr);gap:16px;margin-top:16px}.panel{border:1px solid var(--line);border-radius:8px;background:linear-gradient(145deg,rgba(15,23,32,.96),rgba(10,17,24,.96));padding:18px}.panel-head{display:flex;justify-content:space-between;align-items:flex-start}.panel-title{display:flex;gap:12px}.panel-title svg{color:var(--blue)}.panel-title h2{font-size:17px;margin:1px 0}.panel-title p{font-size:12px;color:var(--muted);margin:3px 0}.legend{display:flex;gap:18px;color:#aeb8c5;font-size:11px}.legend span:before{content:"";display:inline-block;width:8px;height:8px;border-radius:50%;background:var(--blue);margin-right:6px}.legend span:nth-child(2):before{background:#8ab9ff}.legend span:nth-child(3):before{background:#905cff}.legend span:nth-child(4):before{background:#788495}.topology-stage{height:350px;position:relative;overflow:hidden}.orbit{position:absolute;left:50%;top:53%;transform:translate(-50%,-50%);border:1px dashed rgba(64,148,255,.42);border-radius:50%}.orbit-a{width:84%;height:62%}.orbit-b{width:66%;height:42%;border-style:solid;border-color:rgba(76,126,180,.18)}.spoke{position:absolute;left:50%;top:53%;height:1px;width:65%;background:rgba(64,148,255,.32);transform-origin:left}.s1{transform:rotate(0)}.s2{transform:rotate(45deg)}.s3{transform:rotate(135deg)}.s4{transform:rotate(180deg)}.topology-core{position:absolute;left:50%;top:53%;transform:translate(-50%,-50%);width:108px;height:108px;display:grid;place-items:center;clip-path:polygon(50% 0,93% 25%,93% 75%,50% 100%,7% 75%,7% 25%);background:linear-gradient(145deg,#142b48,#0c1623);border:1px solid var(--blue);filter:drop-shadow(0 0 20px rgba(47,116,206,.25))}.topology-core img{width:73px;height:73px;object-fit:contain}.topology-node{position:absolute;transform:translate(-50%,-50%);display:grid;justify-items:center;z-index:2;color:#dbe2eb}.node-icon{width:45px;height:39px;border:1px solid #263341;border-radius:8px;display:grid;place-items:center;background:#101923;color:#a8b5c5}.topology-node.is-live .node-icon{border-color:#2e79be;color:var(--blue)}.topology-node strong{font-size:12px;margin-top:5px;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.topology-node small{font-size:11px;color:#b2bdca}.panel-footer{text-align:center;border:1px solid #1f2a35;border-radius:7px;padding:12px}.credit-total{margin-top:30px}.credit-total small{color:#b6c0cc}.credit-total strong{display:block;color:var(--blue);font-size:34px;font-weight:400;margin-top:5px}.credit-chart{position:absolute;right:20px;top:67px;width:170px}.credit-copy{color:#c0c9d5;line-height:2;margin:18px 0}.notice{border:1px solid #25313c;border-radius:7px;padding:16px;display:flex;gap:12px;color:#c4ccd7;line-height:1.8;background:rgba(17,25,34,.6)}.notice svg{color:var(--blue);flex:0 0 auto;margin-top:3px}.notice code{color:#72adf8;background:#13243a;border-radius:10px;padding:3px 9px}.dev-links{margin-top:24px;border:1px solid #202b36;border-radius:7px;padding:18px;display:flex;gap:18px;flex-wrap:wrap}.dev-links a{color:#4b9dff;text-decoration:none}.lower{margin-top:18px}.lower details{border:1px solid var(--line);border-radius:8px;background:#0c141d;margin-top:10px}.lower summary{cursor:pointer;padding:16px 18px;font-weight:600}.lower-content{padding:0 18px 18px;overflow:auto}.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 @media(max-width:1200px){.metrics{grid-template-columns:repeat(2,1fr)}.metrics-small{grid-template-columns:repeat(4,1fr)}.dashboard-grid{grid-template-columns:1fr}}@media(max-width:760px){.sidebar{position:static;width:auto}.side-bottom{display:none}.main{margin:0;padding:20px}.header{display:block}.header-actions{margin-top:18px;flex-wrap:wrap}.metrics,.metrics-small{grid-template-columns:1fr}.dashboard-grid{grid-template-columns:1fr}.legend{display:none}.metric{min-height:100px}.topology-stage{height:300px}}
 @media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}
 </style></head><body><div class="shell">
@@ -3158,10 +3168,12 @@ function docsShell({ title, subtitle, active, body, basePath = "/docs" }) {
   return `<!doctype html>
 <html lang="en">
   <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>${escapeHtml(title)}</title>
     <style>
+button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-family:"JetBrains Mono",ui-monospace,monospace; }
       :root {
         color-scheme: light;
         --bg: #ffffff;
@@ -3183,7 +3195,7 @@ function docsShell({ title, subtitle, active, body, basePath = "/docs" }) {
           radial-gradient(circle at top left, rgba(52, 82, 255, 0.06), transparent 28%),
           linear-gradient(180deg, var(--bg) 0%, var(--surface) 100%);
         color: var(--text);
-        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+        font-family: "Space Grotesk", system-ui, sans-serif;
       }
       .wrap {
         max-width: 1240px;
