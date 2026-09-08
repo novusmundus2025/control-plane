@@ -1,4 +1,5 @@
 import { createServer } from "node:http";
+import { handleAdminLogin } from "./features/admin-login.js";
 import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { createConnection } from "node:net";
@@ -5636,6 +5637,7 @@ export function createServerApp(config = configFromEnv()) {
         if (!/^[A-Za-z0-9_-]+\.(?:woff2?|ttf)$/.test(fontName)) return sendJson(response, 404, { error: "Not found" });
         return sendAsset(response, await readFile(resolve(KATEX_FONTS_PATH, fontName)), fontName.endsWith(".woff2") ? "font/woff2" : fontName.endsWith(".woff") ? "font/woff" : "font/ttf");
       }
+      if (await handleAdminLogin({ request, response, url, authStore, origin: config.controlPlaneUrl, secret: process.env.MUNDUSX_ADMIN_SSO_SECRET })) return;
       if (request.method === "GET" && url.pathname === "/health") {
         return sendJson(response, 200, {
           status: "ok",
