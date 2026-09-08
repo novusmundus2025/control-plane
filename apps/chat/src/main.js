@@ -2003,8 +2003,16 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     .brand-name { font-family: "Space Grotesk", system-ui, sans-serif; font-size:17px; font-weight:500; letter-spacing:-.015em; }
     .brand-ehda { margin-top:1px; color:var(--muted); font-size:12px; font-weight:550; letter-spacing:.08em; }
     .brand-kicker { margin-top:4px; font-size:7px; font-weight:700; letter-spacing:.075em; line-height:1.5; white-space:normal; overflow-wrap:break-word; }
-    .new-chat { min-height:46px; border-radius:9px; box-shadow:0 11px 24px rgba(26,34,43,.20); }
-    .new-chat:hover,.new-chat:focus-visible { filter:brightness(1.08); }
+    .new-chat { min-height:46px; border-radius:9px; box-shadow:0 11px 24px rgba(26,34,43,.20); transition:transform .16s ease,filter .18s ease,box-shadow .18s ease; touch-action:manipulation; }
+    .new-chat:hover,.new-chat:focus-visible { transform:none; }
+    .new-chat .kbd-hint { display:grid; place-items:center; width:38px; height:28px; padding:3px 7px; }
+    .new-chat .kbd-hint svg { display:block; width:22px; height:18px; }
+    @media (hover:hover) {
+      .new-chat:hover { transform:translateY(-1px); filter:brightness(1.08); box-shadow:0 13px 26px rgba(26,34,43,.24),inset 0 1px 0 rgba(255,255,255,.14); }
+    }
+    .new-chat:focus-visible { outline:2px solid var(--text); outline-offset:3px; filter:brightness(1.08); }
+    .new-chat:active { transform:translateY(1px) scale(.985); filter:brightness(.96); box-shadow:0 3px 8px rgba(26,34,43,.18),inset 0 1px 3px rgba(0,0,0,.16); transition-duration:.08s; }
+    @media (prefers-reduced-motion:reduce) { .new-chat:hover,.new-chat:active { transform:none; } }
     .rail-destination-icon { color:var(--text); background:color-mix(in srgb,var(--text) 6%,transparent); }
     .rail-destination.is-active { box-shadow:0 7px 20px rgba(35,43,52,.06); }
     .theme-option[aria-pressed="true"] { background:var(--gradient); box-shadow:0 5px 14px rgba(30,39,50,.28); }
@@ -2051,7 +2059,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         </div>
       </div>
       <div class="rail-primary">
-        <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint">&#8984; K</span></button>
+        <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint" aria-hidden="true"><svg viewBox="0 0 28 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="4" width="24" height="16" rx="3"/><path d="M7 8h.5m4 0h.5m4 0h.5m4 0h.5M7 12h.5m4 0h.5m4 0h.5m4 0h.5M8 16h12"/></svg></span></button>
         <nav class="workspace-nav" aria-label="Workspace">
           <span class="workspace-label">Workspace</span>
           <button class="rail-destination is-active" id="chats-open" type="button" aria-current="page"><span class="rail-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 3v-13a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span>Chats</span></button>
