@@ -156,7 +156,7 @@ pub fn admin_mutation(method: &str, path: &str) -> bool {
     matches!(method, "POST" | "PUT" | "PATCH" | "DELETE")
         && (path.starts_with("/actions/")
             || path.starts_with("/v1/nodes/")
-            || matches!(path, "/v1/admission-policy" | "/v1/tool-rewards"))
+            || matches!(path, "/v1/admission-policy" | "/v1/tool-rewards" | "/v1/skills"))
 }
 
 pub fn public_request(method: &str, path: &str) -> bool {
@@ -167,6 +167,7 @@ pub fn public_request(method: &str, path: &str) -> bool {
             && matches!(
                 path,
                 "/v1/status"
+                    | "/v1/skills"
                     | "/v1/planner/status"
                     | "/v1/nodes"
                     | "/v1/admission-policy"
