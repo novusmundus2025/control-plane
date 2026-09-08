@@ -2,7 +2,7 @@
   <h2>Global skills</h2>
   <p class="meta">Built-in MundusX instructions used by the chat response pipeline. These are separate from skills installed in the Hermes agent runtime.</p>
   <p id="skill-status" role="status">Loading global skills…</p>
-  <button type="button" id="skill-retry" hidden>Retry</button>
+  <button class="button" type="button" id="skill-retry" hidden>Retry</button>
   <div class="skill-layout">
     <div id="skill-list" aria-label="Global skills"></div>
     <section id="skill-detail" hidden>
@@ -12,7 +12,7 @@
         <label>Skill Markdown<textarea id="skill-content" required maxlength="12000" rows="16"></textarea></label>
         <p class="meta">The first 12 meaningful instruction lines are used in the chat prompt. Keep instructions concise.</p>
         <label><input id="skill-enabled" type="checkbox" style="width:auto;min-height:auto"> Enabled</label>
-        <button type="submit" id="skill-save">Save changes</button>
+        <button class="button" type="submit" id="skill-save">Save changes</button>
       </form>
     </section>
   </div>
@@ -22,6 +22,12 @@
 #skill-list{display:grid;gap:8px}#skill-list button{text-align:left;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font:inherit}
 #skill-list button[aria-pressed="true"]{border-color:var(--blue)}#skill-editor label{display:block;margin:12px 0}#skill-content{margin-top:8px;font-family:"JetBrains Mono",monospace}#skill-detail[hidden],#skill-editor[hidden],#skill-restricted[hidden],#skill-retry[hidden]{display:none}
 @media(max-width:760px){.skill-layout{grid-template-columns:1fr}}
+#skill-content{display:block;width:100%;box-sizing:border-box;background:#101722;color:#edf2f7;caret-color:#edf2f7;border:1px solid #596779;padding:14px 16px;font-size:14px;line-height:1.65;resize:vertical;min-height:320px;color-scheme:dark}
+#skill-content::selection{background:#2859a3;color:#fff}
+#skill-content:focus-visible{outline:2px solid var(--blue);outline-offset:2px}
+html[data-theme="light"] #skill-content{background:#f8fafc;color:#172033;caret-color:#172033;border-color:#94a3b8;color-scheme:light}
+html[data-theme="light"] #skill-content::selection{background:#c7ddff;color:#102346}
+#skill-save,#skill-retry{font:600 14px "Space Grotesk",system-ui,sans-serif;cursor:pointer}
 </style>
 <script>
 (()=>{
