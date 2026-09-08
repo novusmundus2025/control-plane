@@ -1467,13 +1467,18 @@ fn render_registry_records(nodes: Vec<NodeRecord>) -> String {
             .filter(|reason| !reason.trim().is_empty())
             .unwrap_or("No policy restriction reported");
 
+        let operator_blocked = node.operator_policy_override.as_ref()
+            .is_some_and(|policy| policy.target.as_str() == "blocked");
+        let policy_action = if operator_blocked { "Unblock" } else { "Block" };
+        let policy_target = if operator_blocked { "" } else { "blocked" };
+
         html.push_str(&format!(
             r#"<div class="row">
               <div><a class="inline-link" href="/nodes/{path_id}"><strong>{node_id}</strong></a><div class="meta">{hostname}</div></div>
               <div><code>{fingerprint}</code><div class="meta">signed device identity</div></div>
               <div><span class="pill" style="background:{trust_bg};color:{trust_fg};">{trust_label}</span><div class="meta">{trust_path}</div></div>
               <div><span class="pill" style="background:{grade_bg};color:{grade_fg};">grade {grade} &middot; {score}/100</span><div class="meta">{grade_label} &middot; accepted {accepted} &middot; rejected {rejected}</div></div>
-              <div><span class="pill" style="background:{policy_bg};color:{policy_fg};">{policy_label}</span><div class="meta">{policy_reason}</div></div>
+              <div><span class="pill" style="background:{policy_bg};color:{policy_fg};">{policy_label}</span><div class="meta">{policy_reason}</div><form method="post" action="/v1/nodes/policy-override" data-admin-action data-node-policy style="margin-top:8px"><input type="hidden" name="node_id" value="{node_id}"><input type="hidden" name="target" value="{policy_target}"><button class="button" type="submit">{policy_action}</button><div class="meta" role="status" data-policy-status></div></form></div>
               <div>{updated_at}<div class="meta">reported state {reported_state}</div></div>
             </div>"#,
             path_id = escape_path_segment(&node.node_id),
@@ -1493,7 +1498,27 @@ fn render_registry_records(nodes: Vec<NodeRecord>) -> String {
         ));
     }
 
-    html.push_str("</div>");
+    html.push_str(r#"</div><script>
+document.querySelectorAll('form[data-node-policy]').forEach(form => form.addEventListener('submit', async event => {
+  event.preventDefault();
+  const button = form.querySelector('button');
+  if (button.disabled || button.matches(':disabled')) return;
+  const data = new FormData(form);
+  const target = data.get('target') || null;
+  const reason = target ? window.prompt('Reason for blocking this node:') : null;
+  if (target && !reason?.trim()) return;
+  if (!target && !window.confirm('Remove the admin block? Normal admission rules will still apply.')) return;
+  const status = form.querySelector('[data-policy-status]');
+  button.disabled = true;
+  status.textContent = 'Saving...';
+  try {
+    const response = await fetch(form.action, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({node_id:data.get('node_id'), target, reason:reason?.trim() || null})});
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || 'Could not update node policy.');
+    window.location.reload();
+  } catch (error) { status.textContent = error.message; button.disabled = false; }
+}));
+</script>"#);
     html
 }
 
@@ -8413,13 +8438,13 @@ fn handle_connection_with_streams(
         ("POST", "/v1/nodes/policy-override") => {
             match serde_json::from_str::<OperatorNodePolicyOverrideUpdate>(&request.body) {
                 Ok(update) => {
-                    let actor = update
+                    let actor = admin_login::session_email(&request.headers).unwrap_or_else(|| update
                         .actor
                         .as_deref()
                         .map(str::trim)
                         .filter(|value| !value.is_empty())
                         .unwrap_or("operator")
-                        .to_string();
+                        .to_string());
                     let reason = update
                         .reason
                         .as_deref()
@@ -11301,6 +11326,16 @@ mod tests {
         assert!(html.contains("Last activity"));
         assert!(html.contains("signed device identity"));
         assert!(!html.contains("Power</div>"));
+        assert!(html.contains("data-admin-action data-node-policy"));
+        assert!(html.contains(">Block</button>"));
+        state.set_node_policy_override("node-registry", Some(crate::contracts::NodePolicyOverrideInput {
+            target: crate::contracts::NodePolicyOverrideTarget::Blocked,
+            reason: "Admin test".into(), actor: "admin@example.com".into(), updated_at: "43".into(),
+        })).unwrap();
+        let blocked = super::render_registry_records(state.nodes.values().cloned().collect());
+        assert!(blocked.contains(">Unblock</button>"));
+        assert!(blocked.contains("name=\"target\" value=\"\""));
+        assert!(!state.nodes["node-registry"].policy_allowed);
     }
 
     #[test]
