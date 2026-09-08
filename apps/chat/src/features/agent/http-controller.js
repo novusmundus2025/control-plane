@@ -35,7 +35,7 @@ export function createLocalAgentHttpController({ authStore, readJsonBody, sendJs
 
     if (request.method === "POST" && url.pathname === "/api/agent/connector/register") {
       const connector = await requireConnector(request, authStore);
-      sendJson(response, 200, await authStore.registerLocalAgent(connector.id, await readJsonBody(request)));
+      sendJson(response, 200, await authStore.registerLocalAgent(connector.id, await readJsonBody(request), connector.token_id));
       return true;
     }
     if (request.method === "POST" && url.pathname === "/api/agent/connector/tasks/next") {
