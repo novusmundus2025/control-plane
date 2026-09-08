@@ -60,6 +60,7 @@ const DOMPURIFY_BROWSER_VERSION = "3.4.14";
 const KATEX_BROWSER_VERSION = "0.16.22";
 const POLL_INTERVAL_MS = 1500;
 const MAX_BODY_BYTES = 64 * 1024;
+const MAX_AGENT_MODEL_BODY_BYTES = 1024 * 1024;
 // Temporarily disabled by product decision. Keep the implementation available so it can
 // be restored without rebuilding the output-cleaning and redaction pipeline.
 const CHAT_VERIFIER_ENABLED = false;
@@ -5617,7 +5618,7 @@ export function createServerApp(config = configFromEnv()) {
           return sendOpenAiJson(response, 200, openAiModelsResponse());
         }
         if (request.method === "POST" && url.pathname === "/api/agent/model/v1/chat/completions") {
-          const body = await readJsonBody(request);
+          const body = await readJsonBody(request, MAX_AGENT_MODEL_BODY_BYTES);
           const routedBody = { ...body, model: PUBLIC_MODEL_ID };
           if (Array.isArray(routedBody.tools) && routedBody.tools.length) {
             return sendOpenAiJson(response, 200, await submitHermesToolCompletion(routedBody, config));
@@ -11900,18 +11901,27 @@ function numberField(value) {
   return Number.isFinite(parsed) ? parsed : 0;
 }
 
-function readJsonBody(request) {
+export function readJsonBody(request, maxBytes = MAX_BODY_BYTES) {
   return new Promise((resolve, reject) => {
     let body = "";
+    let bytes = 0;
+    let exceeded = false;
     request.setEncoding("utf8");
     request.on("data", (chunk) => {
-      body += chunk;
-      if (body.length > MAX_BODY_BYTES) {
+      if (exceeded) return;
+      bytes += Buffer.byteLength(chunk, "utf8");
+      if (bytes > maxBytes) {
+        exceeded = true;
+        body = "";
         reject(httpError(413, "request body too large"));
-        request.destroy();
+        // Keep draining without buffering so the HTTP handler can send 413.
+        // Destroying the socket here turns a useful client error into a 502.
+        return;
       }
+      body += chunk;
     });
     request.on("end", () => {
+      if (exceeded) return;
       try {
         resolve(body ? JSON.parse(body) : {});
       } catch {
