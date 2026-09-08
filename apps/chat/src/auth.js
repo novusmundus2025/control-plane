@@ -191,6 +191,21 @@ export class PostgresAuthStore {
     return result.rows[0] ?? null;
   }
 
+  async googleAdminIdentity(request) {
+    this.ensureReady();
+    const raw = parseCookies(request.headers.cookie)[SESSION_COOKIE];
+    if (!raw) return null;
+    const result = await this.pool.query(`
+      select i.email, i.provider
+      from public.user_sessions s
+      join public.users u on u.id = s.user_id
+      join public.user_identities i on i.user_id = u.id and i.provider = 'google'
+      where s.session_hash = $1 and s.provider = 'google'
+        and s.revoked_at is null and s.expires_at > now() and u.status = 'active'
+        and i.email_verified = true limit 1`, [digest(raw)]);
+    return result.rows[0] ?? null;
+  }
+
   requireCsrf(request, session) {
     const cookies = parseCookies(request.headers.cookie);
     const supplied = String(request.headers["x-mundusx-csrf"] || "");
