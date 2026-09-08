@@ -256,10 +256,10 @@ export function protectMathSegments(text, segments = []) {
 }
 
 export function page(config = configFromEnv()) {
-  const repositoryLauncher = `<button class="rail-destination" id="repository-open" type="button"${config.harnessUiEnabled ? "" : " hidden"}>
+  const repositoryLauncher = `<div class="sidebar-projects"${config.harnessUiEnabled ? "" : " hidden"}><div class="sidebar-projects-heading"><button class="rail-destination" id="repository-open" type="button" aria-expanded="false" aria-controls="sidebar-project-list"${config.harnessUiEnabled ? "" : " hidden"}>
       <span class="rail-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span>
       <span>Projects</span><span class="rail-destination-chevron" aria-hidden="true">›</span>
-    </button>`;
+    </button><button class="sidebar-project-add" id="sidebar-project-add" type="button" aria-label="New project" title="New project">+</button></div><div id="sidebar-project-list" class="sidebar-project-list" hidden></div></div>`;
   const repositoryMobileLauncher = `<button class="header-projects" id="repository-open-mobile" type="button" aria-label="Open Projects"${config.harnessUiEnabled ? "" : " hidden"}>
       <svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M3.5 6.5a2 2 0 0 1 2-2h4l2 2h7a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2h-13a2 2 0 0 1-2-2v-11Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg><span>Projects</span>
     </button>`;
@@ -1611,6 +1611,19 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     .mutation-toggle[data-mode="full"] { color:#b45309; font-weight:750; }
     .mutation-toggle:focus-visible { outline:2px solid color-mix(in srgb,var(--purple) 42%,transparent); outline-offset:1px; }
     .runtime-detail { width:min(880px,100%); margin:6px auto 0; padding:0 20px; color:var(--muted-2); font-size:11px; text-align:left; }
+    .sidebar-projects-heading { display:flex; align-items:center; gap:4px; }
+    .sidebar-projects-heading .rail-destination { flex:1; min-width:0; }
+    .sidebar-project-add { flex:0 0 30px; height:30px; border:1px solid var(--line); border-radius:7px; background:transparent; color:var(--text); font:inherit; font-size:22px; line-height:1; cursor:pointer; }
+    .sidebar-project-add:hover { background:var(--panel-2); }
+    .sidebar-project-list { display:grid; gap:3px; padding:4px 0 6px 18px; max-height:240px; overflow-y:auto; }
+    .sidebar-project-list[hidden],.sidebar-projects[hidden] { display:none; }
+    .sidebar-project-choice { display:flex; align-items:center; gap:9px; width:100%; min-width:0; padding:9px 10px; border:0; border-radius:7px; background:transparent; color:var(--muted); font:inherit; text-align:left; cursor:pointer; }
+    .sidebar-project-choice span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .sidebar-project-choice svg { width:17px; height:17px; flex-shrink:0; }
+    .sidebar-project-choice:hover,.sidebar-project-choice[aria-current="true"] { color:var(--text); background:var(--panel-2); }
+    .sidebar-project-choice:focus-visible,.sidebar-project-add:focus-visible { outline:2px solid var(--blue); outline-offset:1px; }
+    #repository-open[aria-expanded="true"] .rail-destination-chevron { transform:rotate(90deg); }
+    @media(max-width:860px) { .sidebar-projects { display:none!important; } }
     .active-project-context { min-width:0; display:flex; align-items:center; color:var(--muted-2); }
     .active-project-context[hidden] { display: none; }
     .active-project-context .project-context-open { min-width:0; }
@@ -2143,6 +2156,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     const mcpTokenListEl = document.getElementById("mcp-token-list");
     const chatsOpenEl = document.getElementById("chats-open");
     const repositoryOpenEl = document.getElementById("repository-open");
+    const sidebarProjectListEl = document.getElementById("sidebar-project-list");
+    const sidebarProjectAddEl = document.getElementById("sidebar-project-add");
     const repositoryOpenMobileEl = document.getElementById("repository-open-mobile");
     const repositoryDialogEl = document.getElementById("repository-dialog");
     const repositoryDialogCloseEl = document.getElementById("repository-dialog-close");
@@ -2670,7 +2685,23 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       }
     });
 
-    repositoryOpenEl?.addEventListener("click", () => openProjects());
+    repositoryOpenEl?.addEventListener("click", () => {
+      if (!projectsAvailableOnDevice() || !sidebarProjectListEl) return;
+      sidebarProjectListEl.hidden = !sidebarProjectListEl.hidden;
+      repositoryOpenEl.setAttribute("aria-expanded", String(!sidebarProjectListEl.hidden));
+      if (!sidebarProjectListEl.hidden) {
+        renderSidebarProjects();
+        void loadHarnessRunners().catch(() => showToast("Could not refresh projects. Showing saved projects."));
+      }
+    });
+    sidebarProjectAddEl?.addEventListener("click", () => openProjects());
+    sidebarProjectListEl?.addEventListener("click", (event) => {
+      const button = event.target.closest("button[data-project-slug]");
+      if (!button) return;
+      setActiveProject({ slug: button.dataset.projectSlug });
+      setWorkspaceDestination("chats");
+      promptEl?.focus();
+    });
     repositoryOpenMobileEl?.addEventListener("click", () => openProjects());
     repositoryDialogCloseEl?.addEventListener("click", closeProjects);
     document.addEventListener("keydown", (event) => {
@@ -3047,7 +3078,23 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       promptEl?.focus();
     });
 
+    function renderSidebarProjects() {
+      if (!sidebarProjectListEl) return;
+      sidebarProjectListEl.replaceChildren();
+      if (!availableProjectSlugs.length) {
+        const empty = document.createElement("p"); empty.className = "project-context-empty";
+        empty.textContent = "No projects yet. Use + to create one."; sidebarProjectListEl.append(empty);
+      }
+      for (const slug of availableProjectSlugs) {
+        const button = document.createElement("button"); button.type = "button"; button.className = "sidebar-project-choice";
+        button.dataset.projectSlug = slug; button.title = slug; button.setAttribute("aria-current", String(activeProject?.slug === slug));
+        button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/></svg>';
+        const label = document.createElement("span"); label.textContent = slug; button.append(label); sidebarProjectListEl.append(button);
+      }
+    }
+
     function renderProjectMenu() {
+      renderSidebarProjects();
       if (!projectContextListEl) return;
       projectContextListEl.replaceChildren();
       if (!availableProjectSlugs.length) {
