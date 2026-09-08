@@ -482,7 +482,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   const mainHeader = html.match(/<header>[\s\S]*?<\/header>/)?.[0] || "";
   assert.match(html, /id="repository-open"[^>]*>[\s\S]*?<span>Projects<\/span>/);
   assert.match(workspaceNav, /Chats[\s\S]*id="repository-open"[\s\S]*Projects/);
-  assert.match(html, /class="account-menu-item" href="\/skills"[\s\S]*>Skills<\/span>/);
+  assert.match(html, /class="account-menu-item" href="\/skills"[\s\S]*>My skills<\/span>/);
   assert.match(html, /id="guest-widget"[\s\S]*Explore Chat and Projects/);
   assert.match(html, /id="guest-login"[^>]*>Log in with Google<\/button>/);
   assert.match(html, /guestLoginEl\?\.addEventListener\("click", openAuthentication\)/);
