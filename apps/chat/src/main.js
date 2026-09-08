@@ -394,9 +394,11 @@ export function page(config = configFromEnv()) {
       padding: 22px 16px 18px;
       display: grid;
       grid-template-rows: auto auto minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr);
       gap: 16px;
     }
     .brand-block {
+      min-width: 0;
       display: flex;
       align-items: center;
       gap: 12px;
@@ -468,6 +470,7 @@ export function page(config = configFromEnv()) {
       padding-right: 2px;
     }
     .history-group {
+      min-width: 0;
       display: grid;
       gap: 6px;
       border-top: 1px solid var(--line);
@@ -680,6 +683,7 @@ export function page(config = configFromEnv()) {
       flex: 0 0 auto;
     }
     .account-info {
+      flex: 1 1 0;
       display: grid;
       gap: 1px;
       min-width: 0;
@@ -695,6 +699,9 @@ export function page(config = configFromEnv()) {
     .account-plan {
       color: var(--muted-2);
       font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .account-upgrade {
       margin-left: auto;
@@ -746,11 +753,13 @@ export function page(config = configFromEnv()) {
       min-width: 0;
     }
     .account-menu-name {
+      overflow-wrap: anywhere;
       color: var(--text);
       font-weight: 600;
       font-size: 14px;
     }
     .account-menu-plan {
+      overflow-wrap: anywhere;
       color: var(--muted-2);
       font-size: 12px;
     }
@@ -2011,7 +2020,6 @@ export function page(config = configFromEnv()) {
             <span class="chevron">${ICON_CHEVRON_RIGHT}</span>
           </button>
           <div class="account-menu-divider"></div>
-          <button class="account-menu-item" type="button">${ICON_UPGRADE}<span>Upgrade plan</span></button>
           <button class="account-menu-item" type="button">${ICON_PERSONALIZATION}<span>Personalization</span></button>
           <button class="account-menu-item" type="button">${ICON_PROFILE}<span>Profile</span></button>
           <button class="account-menu-item" type="button">${ICON_SETTINGS}<span>Settings</span></button>
@@ -2027,7 +2035,6 @@ export function page(config = configFromEnv()) {
             <span class="account-name" data-account-name>MundusX user</span>
             <span class="account-plan" data-account-email></span>
           </span>
-          <span class="account-upgrade">Upgrade</span>
         </button>
       </div>
     </aside>
