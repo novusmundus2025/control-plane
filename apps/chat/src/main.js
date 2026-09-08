@@ -2401,8 +2401,14 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     window.fetch = (input, init = {}) => {
       const method = String(init.method || "GET").toUpperCase();
       const url = typeof input === "string" ? input : input?.url || "";
-      if (authCsrfToken && url.startsWith("/api/") && ["POST", "PUT", "PATCH", "DELETE"].includes(method) && url !== "/api/auth/email/start") {
-        init = { ...init, headers: { ...(init.headers || {}), "X-MundusX-CSRF": authCsrfToken } };
+      if (url.startsWith("/api/") && ["POST", "PUT", "PATCH", "DELETE"].includes(method) && url !== "/api/auth/email/start") {
+        // A sign-in in another tab can rotate the session after this page loads.
+        const csrfCookie = document.cookie.split(";").map((value) => value.trim()).find((value) => value.startsWith("__Host-mx_csrf="));
+        const token = csrfCookie ? decodeURIComponent(csrfCookie.slice("__Host-mx_csrf=".length)) : "";
+        const headers = new Headers(init.headers);
+        headers.delete("X-MundusX-CSRF");
+        if (token) headers.set("X-MundusX-CSRF", token);
+        init = { ...init, headers };
       }
       return nativeFetch(input, init);
     };
@@ -4176,6 +4182,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       renderConversationStreamState(streamState);
       const historyMessages = readCachedConversation(conversationId)
         .slice(0, -1)
+        .filter((turn) => !turn.payload?.client_error)
         .map((turn) => ({ role: turn.role, content: turn.content }))
         .filter((turn) => turn.content);
       const response = await fetch("/api/chat/stream", {
@@ -4441,6 +4448,11 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       };
       state.status = "failed";
       state.error = error?.message || "MundusX stream failed";
+      appendCachedConversationTurn(conversationId, {
+        role: "assistant",
+        content: state.error,
+        payload: { client_error: true, retry_prompt: message },
+      });
       conversationStreamStates.set(conversationId, state);
       renderConversationStreamState(state);
     }
@@ -5706,7 +5718,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     function reattachConversationStream(conversationId, turns = []) {
       const state = conversationStreamStates.get(conversationId);
       if (!state) return;
-      const alreadyRendered = state.status === "completed" && turns.some((turn) => {
+      const alreadyRendered = (state.status === "failed" && turns.some((turn) => turn.payload?.client_error && turn.content === state.error)) || state.status === "completed" && turns.some((turn) => {
         if (turn.role !== "assistant") return false;
         const turnJobId = turn.job_id || turn.payload?.job_id;
         if (state.completionId && turnJobId === state.completionId) return true;
@@ -5740,7 +5752,11 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       const node = addMessage("", role);
       const body = node.querySelector(".message-body");
       body.textContent = "";
-      if (role === "assistant" && turn.payload?.response) {
+      if (role === "assistant" && turn.payload?.client_error) {
+        node.className = "message error";
+        body.textContent = turn.content || "The request failed. Please retry.";
+        appendRetryAction(body, turn.payload.retry_prompt);
+      } else if (role === "assistant" && turn.payload?.response) {
         body.appendChild(renderTypedResponse(turn.payload.response, turn.payload.output || turn.content || ""));
       } else {
         appendRichMessage(body, turn.content || "");
