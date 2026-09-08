@@ -1,4 +1,5 @@
 mod chat_gateway;
+mod admin_login;
 mod contracts;
 mod harness;
 mod migrations;
@@ -589,8 +590,9 @@ fn text_response(status: &str, body: &str) -> String {
 }
 
 fn html_response(status: &str, body: &str) -> String {
+    let body = admin_login::decorate(body.to_string());
     format!(
-        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {status}\r\nContent-Type: text/html; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         body.len(),
         body
     )
@@ -6201,16 +6203,24 @@ fn authorize_operator_request(
     route_path: &str,
     headers: &BTreeMap<String, String>,
 ) -> Result<(), String> {
-    if !requires_operator_auth(method, route_path) {
+    if !requires_operator_auth(method, route_path) && !(admin_login::enabled() && admin_login::browser_page(method, route_path)) {
         return Ok(());
     }
 
-    if !operator_auth_mode().enforced() {
+    if admin_login::session_authorized(method, headers) {
+        return Ok(());
+    }
+    if !operator_auth_mode().enforced() && !admin_login::enabled() {
+        return Ok(());
+    }
+    // Device signatures were already verified by the request handler. Preserve
+    // signed worker polling when enabling browser login in an existing UAT mesh.
+    if admin_login::enabled() && requires_device_signature(method, route_path) {
         return Ok(());
     }
 
     let expected_token =
-        operator_auth_token().expect("operator auth mode requires a non-empty token");
+        operator_auth_token().ok_or_else(|| "operator token is not configured".to_string())?;
 
     let authorization = header_value(headers, "authorization")
         .or_else(|| header_value(headers, "x-mundusx-operator-token"))
@@ -6793,6 +6803,11 @@ fn handle_connection_with_streams(
     let request = parse_request(&request_text);
     let (clean_path, query) = split_path_and_query(&request.path);
 
+    if let Some(response) = admin_login::handle(&request.method, clean_path, query, &request.headers) {
+        let _ = stream.write_all(response.as_bytes());
+        return;
+    }
+
     if request.method == "GET" && clean_path == CONTROL_PLANE_LOGO_PATH {
         let _ = stream.write_all(&png_response("200 OK", CONTROL_PLANE_LOGO_PNG));
         return;
@@ -6813,6 +6828,10 @@ fn handle_connection_with_streams(
     }
 
     if let Err(error) = authorize_operator_request(&request.method, clean_path, &request.headers) {
+        if admin_login::enabled() && admin_login::browser_page(&request.method, clean_path) {
+            let _ = stream.write_all(admin_login::login_redirect().as_bytes());
+            return;
+        }
         let _ = stream.write_all(
             json_response("401 Unauthorized", serde_json::json!({ "error": error })).as_bytes(),
         );

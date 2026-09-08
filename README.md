@@ -28,6 +28,14 @@ Versioned execution contracts:
 
 ## Environment variables
 
+### Control-plane administrator login
+
+Set `MUNDUSX_ADMIN_LOGIN_ENABLED=true` on the control-plane service to require Google admin login for its web pages and operator APIs. Set `MUNDUSX_ADMIN_EMAILS` to a comma-separated list of approved Google email addresses. An empty list denies all browser administrators; removing an address revokes its existing sessions on their next request.
+
+Set the same random secret (at least 32 characters) as `MUNDUSX_ADMIN_SSO_SECRET` on both Chat and the control plane. The control plane uses `MUNDUSX_ADMIN_PUBLIC_ORIGIN` (default `https://mundusx.ai`) and `MUNDUSX_ADMIN_CHAT_ORIGIN` (default `https://chat.mundusx.ai`); Chat's `MUNDUSX_CONTROL_PLANE_URL` must match the public origin exactly. Origins must use HTTPS. Chat reuses its existing Google callback, so no new Google callback URL is needed.
+
+The browser receives an opaque Secure/HttpOnly cookie, never an operator token. Admin sessions expire after eight hours, are revoked on logout, and are held in process memory (a control-plane restart requires sign-in again; use one control-plane replica). Cookie-authenticated writes require a matching Origin. Existing operator bearer tokens and verified device polling remain supported. `MUNDUSX_AUTH_DISABLED` does not bypass the admin gate when admin login is enabled. Public health checks and model discovery remain available.
+
 | Variable | Required | Description |
 |---|---|---|
 | `PORT` | **Yes** | Port the server binds on (`0.0.0.0:PORT`). Must be set in production (Railway injects it but you must confirm it's present). Without it the server falls back to `127.0.0.1:8787` (loopback only). |
