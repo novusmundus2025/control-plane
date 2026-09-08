@@ -734,6 +734,11 @@ export function page(config = configFromEnv()) {
       z-index: 40;
     }
     .account-menu.is-open { display: block; }
+    .account-advanced { border-bottom:1px solid var(--line); margin-bottom:6px; padding-bottom:6px; }
+    .account-advanced summary { cursor:pointer; padding:10px 8px; color:var(--muted); font-size:12px; font-weight:600; border-radius:8px; }
+    .account-advanced summary:hover { background:var(--panel-2); }
+    .account-advanced summary:focus-visible { outline:2px solid var(--accent); outline-offset:-2px; }
+    @media (max-width:860px) { .account-advanced { display:none; } }
     .account-menu-header {
       width: 100%;
       display: flex;
@@ -2058,21 +2063,19 @@ export function page(config = configFromEnv()) {
       </div>
       <div class="account-widget" id="account-widget" hidden>
         <div class="account-menu" id="account-menu">
-          <button class="account-menu-header" type="button">
+          <div class="account-menu-header">
             <span class="account-avatar" data-account-avatar>MX</span>
             <span class="account-menu-header-text">
               <span class="account-menu-name" data-account-name>MundusX user</span>
               <span class="account-menu-plan" data-account-email></span>
             </span>
-            <span class="chevron">${ICON_CHEVRON_RIGHT}</span>
-          </button>
+          </div>
           <div class="account-menu-divider"></div>
-          <button class="account-menu-item" type="button">${ICON_PERSONALIZATION}<span>Personalization</span></button>
-          <button class="account-menu-item" type="button">${ICON_PROFILE}<span>Profile</span></button>
-          <button class="account-menu-item" type="button">${ICON_SETTINGS}<span>Settings</span></button>
-          <a class="account-menu-item" href="/skills">${ICON_LAYERS}<span>Skills</span></a>
-          ${config.mcpEnabled ? `<button class="account-menu-item" id="account-mcp" type="button">${ICON_LAYERS}<span>MCP connections</span></button>` : ""}
-          <div class="account-menu-divider"></div>
+          <details class="account-advanced">
+            <summary>Advanced</summary>
+            <a class="account-menu-item" href="/skills">${ICON_LAYERS}<span>Skills</span></a>
+            ${config.mcpEnabled ? `<button class="account-menu-item" id="account-mcp" type="button">${ICON_LAYERS}<span>MCP connections</span></button>` : ""}
+          </details>
           <button class="account-menu-item" type="button">${ICON_HELP_RING}<span>Help</span><span class="chevron">${ICON_CHEVRON_RIGHT}</span></button>
           <button class="account-menu-item" id="account-logout" type="button">${ICON_LOGOUT}<span>Log out</span></button>
         </div>
