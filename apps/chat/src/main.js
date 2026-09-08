@@ -3617,6 +3617,8 @@ export function page(config = configFromEnv()) {
     function requiresLocalProjectAction(message) {
       const value = String(message || "").trim();
       if (/^(what|why|how|should|do i|does|is|are|explain|compare|recommend)\\b/i.test(value)) return false;
+      if (/^(can|could|may) i (?:ask|know|understand)\\b/i.test(value)) return false;
+      if (/\\b(?:what|which) (?:changes?|files?|steps?|requirements?) (?:would|will|do|are|is)\\b/i.test(value)) return false;
       return /\\b(create|make|add|write|edit|modify|update|delete|remove|rename|move|generate|scaffold|implement|fix|refactor|format|install|run|test|build|compile|lint|commit|checkout|merge|push|pull)\\b/i.test(value);
     }
 
