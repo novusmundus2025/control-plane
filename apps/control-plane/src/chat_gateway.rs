@@ -10,6 +10,55 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 pub const GENERATION_LIMIT_MARKER: &str = "[truncated: hit the generation limit]";
+
+/// Keep harness tool results on the native path even during a final turn that
+/// omits tool definitions. Server lookups must not replace the harness's answer.
+pub fn is_native_tool_turn(request: &ChatCompletionRequest) -> bool {
+    request
+        .tools
+        .as_ref()
+        .and_then(Value::as_array)
+        .is_some_and(|tools| !tools.is_empty())
+        || request.messages.iter().any(|message| {
+            message.role.eq_ignore_ascii_case("tool")
+                || message.tool_call_id.is_some()
+                || message
+                    .tool_calls
+                    .as_ref()
+                    .and_then(Value::as_array)
+                    .is_some_and(|calls| !calls.is_empty())
+        })
+}
+
+#[cfg(test)]
+mod harness_routing_tests {
+    use super::*;
+
+    #[test]
+    fn harness_final_turn_preserves_tool_history_without_definitions() {
+        for tools in [Value::Null, json!([])] {
+            let request: ChatCompletionRequest = serde_json::from_value(json!({
+                "messages": [
+                    {"role": "user", "content": "Who won in soccer on 2025-04-25?"},
+                    {"role": "assistant", "content": null, "tool_calls": [{"id": "search1", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}]},
+                    {"role": "tool", "tool_call_id": "search1", "content": "Verified match results"}
+                ], "tools": tools
+            })).unwrap();
+            assert!(is_native_tool_turn(&request));
+        }
+    }
+
+    #[test]
+    fn initial_harness_turn_and_plain_chat_remain_distinct() {
+        let mut request: ChatCompletionRequest = serde_json::from_value(json!({
+            "messages": [{"role": "user", "content": "soccer results today"}]
+        }))
+        .unwrap();
+        assert!(!is_native_tool_turn(&request));
+        request.tools = Some(json!([{ "type": "function", "function": {"name": "web_search"}}]));
+        assert!(is_native_tool_turn(&request));
+    }
+}
 const MAX_STREAM_DELTA_BYTES: usize = 64 * 1024;
 const MAX_STREAM_BUFFER_BYTES: usize = 256 * 1024;
 const DEFAULT_MAX_ACTIVE_CHAT_WEIGHT: usize = 14;
