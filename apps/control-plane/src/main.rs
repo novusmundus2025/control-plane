@@ -3564,6 +3564,7 @@ fn control_plane_operator_page(
         r#"<!doctype html>
 <html lang="en">
   <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title} - EHDA</title>
@@ -3579,9 +3580,10 @@ fn control_plane_operator_page(
       }})();
     </script>
     <style>
+button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ font-family:"JetBrains Mono",ui-monospace,monospace; }}
       :root {{ color-scheme: dark; --bg:#050607; --surface:#0b0d10; --line:rgba(148,163,184,.2); --line-strong:rgba(96,165,250,.48); --text:#f6f7f9; --muted:#9ca3af; --blue:#60a5fa; }}
       * {{ box-sizing: border-box; }}
-      body {{ margin:0; min-height:100vh; background:linear-gradient(135deg,#030405 0%,#0b0d10 52%,#020203 100%); color:var(--text); font-family:Inter,"Segoe UI",sans-serif; }}
+      body {{ margin:0; min-height:100vh; background:linear-gradient(135deg,#030405 0%,#0b0d10 52%,#020203 100%); color:var(--text); font-family: "Space Grotesk", system-ui, sans-serif; }}
       a {{ color:inherit; text-decoration:none; }}
       a:focus-visible {{ outline:0; box-shadow:0 0 0 3px rgba(37,215,255,.2); }}
       .motion-lift {{ transition:transform .18s ease,border-color .12s ease,background .12s ease,box-shadow .18s ease,color .12s ease; will-change:transform; }}
@@ -3590,7 +3592,7 @@ fn control_plane_operator_page(
       .motion-glow:hover,.motion-glow:focus-visible {{ transform:scale(1.04); filter:drop-shadow(0 0 22px rgba(37,215,255,.52)); }}
       .shell {{ display:grid; grid-template-columns:250px minmax(0,1fr); min-height:100vh; }}
       .sidebar {{ position:sticky; top:0; height:100vh; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(5,6,7,.98),rgba(10,11,13,.95)); padding:26px 16px 18px; display:flex; flex-direction:column; gap:22px; }}
-      .brand {{ display:flex; align-items:center; gap:12px; font-family:Georgia,"Times New Roman",serif; font-size:22px; color:#fff; border-radius:8px; }}
+      .brand {{ display:flex; align-items:center; gap:12px; font-family: "Space Grotesk", system-ui, sans-serif; font-size:22px; color:#fff; border-radius:8px; }}
       .brand-mark {{ width:54px; height:54px; border-radius:50%; object-fit:contain; filter:drop-shadow(0 0 16px rgba(70,174,255,.34)); }}
       .brand-copy {{ display:grid; gap:2px; }}
       .brand-copy strong {{ letter-spacing:.16em; }}
@@ -3945,6 +3947,7 @@ fn control_plane_home(
         r##"<!doctype html>
 <html lang="en">
   <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>EHDA Control Plane</title>
@@ -3960,6 +3963,7 @@ fn control_plane_home(
       }})();
     </script>
     <style>
+button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ font-family:"JetBrains Mono",ui-monospace,monospace; }}
       :root {{
         color-scheme: dark;
         --bg: #050607;
@@ -3990,7 +3994,7 @@ fn control_plane_home(
           radial-gradient(circle at 78% 10%, rgba(96, 165, 250, 0.04), transparent 25%),
           linear-gradient(135deg, #020203 0%, #0c0e11 52%, #030304 100%);
         color: var(--text);
-        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+        font-family: "Space Grotesk", system-ui, sans-serif;
       }}
       a {{ color: inherit; text-decoration: none; }}
       a:focus-visible {{
@@ -4051,7 +4055,7 @@ fn control_plane_home(
         justify-content: center;
         gap: 10px;
         min-height: 112px;
-        font-family: Georgia, "Times New Roman", serif;
+        font-family: "Space Grotesk", system-ui, sans-serif;
         font-size: 13px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
