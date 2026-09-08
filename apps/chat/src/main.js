@@ -2833,19 +2833,16 @@ export function page(config = configFromEnv()) {
     function releaseVersionAtLeast(installed, required) {
       const parse = (value) => {
         const text = String(value || "").trim();
-        const match = text.match(/^(cli-v)?(\d+)\.(\d+)\.(\d+)$/);
-        return match ? { channel: match[1] ? "release" : "binary", parts: match.slice(2).map(Number) } : null;
+        const match = text.match(/^(?:(?:cli-)?v)?(\\d+)\\.(\\d+)\\.(\\d+)$/);
+        return match ? match.slice(1).map(Number) : null;
       };
       const current = parse(installed);
       const minimum = parse(required);
-      // Missing or legacy version metadata cannot prove that an update is needed.
-      // Connection health is handled separately by the heartbeat state.
+      // Missing or legacy version metadata cannot prove that an update is needed;
+      // connection health is handled separately by the heartbeat state.
       if (!current || !minimum) return true;
-      // Release tags and executable package versions are independent counters.
-      // Treat them as incomparable rather than forcing users into an update loop.
-      if (current.channel !== minimum.channel) return true;
       for (let index = 0; index < 3; index += 1) {
-        if (current.parts[index] !== minimum.parts[index]) return current.parts[index] > minimum.parts[index];
+        if (current[index] !== minimum[index]) return current[index] > minimum[index];
       }
       return true;
     }
