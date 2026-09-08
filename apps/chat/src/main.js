@@ -398,9 +398,11 @@ export function page(config = configFromEnv()) {
       padding: 22px 16px 18px;
       display: grid;
       grid-template-rows: auto auto minmax(0, 1fr) auto;
+      grid-template-columns: minmax(0, 1fr);
       gap: 16px;
     }
     .brand-block {
+      min-width: 0;
       display: flex;
       align-items: center;
       gap: 12px;
@@ -472,6 +474,7 @@ export function page(config = configFromEnv()) {
       padding-right: 2px;
     }
     .history-group {
+      min-width: 0;
       display: grid;
       gap: 6px;
       border-top: 1px solid var(--line);
@@ -684,6 +687,7 @@ export function page(config = configFromEnv()) {
       flex: 0 0 auto;
     }
     .account-info {
+      flex: 1 1 0;
       display: grid;
       gap: 1px;
       min-width: 0;
@@ -699,6 +703,9 @@ export function page(config = configFromEnv()) {
     .account-plan {
       color: var(--muted-2);
       font-size: 11px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
     .account-upgrade {
       margin-left: auto;
@@ -750,11 +757,13 @@ export function page(config = configFromEnv()) {
       min-width: 0;
     }
     .account-menu-name {
+      overflow-wrap: anywhere;
       color: var(--text);
       font-weight: 600;
       font-size: 14px;
     }
     .account-menu-plan {
+      overflow-wrap: anywhere;
       color: var(--muted-2);
       font-size: 12px;
     }
@@ -1985,7 +1994,7 @@ export function page(config = configFromEnv()) {
     .brand-copy { min-width:0; padding-top:1px; }
     .brand-name { font-family:Georgia,"Times New Roman",serif; font-size:17px; font-weight:500; letter-spacing:-.015em; }
     .brand-ehda { margin-top:1px; color:var(--muted); font-size:12px; font-weight:550; letter-spacing:.08em; }
-    .brand-kicker { margin-top:3px; font-size:7px; font-weight:700; letter-spacing:.075em; line-height:1.25; white-space:nowrap; }
+    .brand-kicker { margin-top:4px; font-size:7px; font-weight:700; letter-spacing:.075em; line-height:1.5; white-space:normal; overflow-wrap:break-word; }
     .new-chat { min-height:46px; border-radius:9px; box-shadow:0 11px 24px rgba(26,34,43,.20); }
     .new-chat:hover,.new-chat:focus-visible { filter:brightness(1.08); }
     .rail-destination-icon { color:var(--text); background:color-mix(in srgb,var(--text) 6%,transparent); }
@@ -2058,7 +2067,6 @@ export function page(config = configFromEnv()) {
             <span class="chevron">${ICON_CHEVRON_RIGHT}</span>
           </button>
           <div class="account-menu-divider"></div>
-          <button class="account-menu-item" type="button">${ICON_UPGRADE}<span>Upgrade plan</span></button>
           <button class="account-menu-item" type="button">${ICON_PERSONALIZATION}<span>Personalization</span></button>
           <button class="account-menu-item" type="button">${ICON_PROFILE}<span>Profile</span></button>
           <button class="account-menu-item" type="button">${ICON_SETTINGS}<span>Settings</span></button>
@@ -2074,7 +2082,6 @@ export function page(config = configFromEnv()) {
             <span class="account-name" data-account-name>MundusX user</span>
             <span class="account-plan" data-account-email></span>
           </span>
-          <span class="account-upgrade">Upgrade</span>
         </button>
       </div>
     </aside>
