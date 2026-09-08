@@ -1,0 +1,47 @@
+<section class="panel">
+  <h2>Global skills</h2>
+  <p class="meta">Built-in MundusX instructions used by the chat response pipeline. These are separate from skills installed in the Hermes agent runtime.</p>
+  <p id="skill-status" role="status">Loading global skills…</p>
+  <button type="button" id="skill-retry" hidden>Retry</button>
+  <div class="skill-layout">
+    <div id="skill-list" aria-label="Global skills"></div>
+    <section id="skill-detail" hidden>
+      <h3 id="skill-title"></h3><p id="skill-description" class="meta"></p><p id="skill-state"></p>
+      <p id="skill-restricted" class="meta">Internal instructions are restricted to administrators. Sign in as an admin to view or edit the Markdown.</p>
+      <form id="skill-editor" method="post" action="/v1/skills" hidden>
+        <label>Skill Markdown<textarea id="skill-content" required maxlength="12000" rows="16"></textarea></label>
+        <p class="meta">The first 12 meaningful instruction lines are used in the chat prompt. Keep instructions concise.</p>
+        <label><input id="skill-enabled" type="checkbox" style="width:auto;min-height:auto"> Enabled</label>
+        <button type="submit" id="skill-save">Save changes</button>
+      </form>
+    </section>
+  </div>
+</section>
+<style>
+.skill-layout{display:grid;grid-template-columns:minmax(180px,280px) minmax(0,1fr);gap:24px;align-items:start}
+#skill-list{display:grid;gap:8px}#skill-list button{text-align:left;padding:12px;border:1px solid var(--line);border-radius:8px;background:var(--surface);color:var(--text);cursor:pointer;font:inherit}
+#skill-list button[aria-pressed="true"]{border-color:var(--blue)}#skill-editor label{display:block;margin:12px 0}#skill-content{margin-top:8px;font-family:"JetBrains Mono",monospace}#skill-detail[hidden],#skill-editor[hidden],#skill-restricted[hidden],#skill-retry[hidden]{display:none}
+@media(max-width:760px){.skill-layout{grid-template-columns:1fr}}
+</style>
+<script>
+(()=>{
+  const el=id=>document.getElementById(id);let skills=[],active=null,canEdit=false;
+  async function api(options){const res=await fetch('/v1/skills',options);const data=await res.json();if(!res.ok)throw new Error(data.error||'Skills unavailable');return data;}
+  function select(skill){active=skill;el('skill-detail').hidden=false;el('skill-title').textContent=skill.title;el('skill-description').textContent=skill.description;el('skill-state').textContent=(skill.enabled?'Enabled':'Disabled')+' · Version '+skill.version;el('skill-editor').hidden=!canEdit;el('skill-restricted').hidden=canEdit;
+    el('skill-content').value=canEdit?skill.content:'';el('skill-enabled').checked=skill.enabled;
+    for(const button of el('skill-list').children)button.setAttribute('aria-pressed',String(button.dataset.skill===skill.id));
+  }
+  async function load(id){el('skill-status').textContent='Loading global skills…';el('skill-retry').hidden=true;
+    try{const data=await api();skills=data.system;canEdit=data.permissions.edit_global;el('skill-list').replaceChildren();
+      for(const skill of skills){const button=document.createElement('button');button.type='button';button.dataset.skill=skill.id;button.textContent=skill.title;button.onclick=()=>{if(active?.id!==skill.id&&canEdit&&el('skill-content').value!==active?.content&&!confirm('Discard unsaved Markdown changes?'))return;select(skill)};el('skill-list').append(button)}
+      const chosen=skills.find(x=>x.id===id)||skills[0];if(chosen)select(chosen);el('skill-status').textContent=skills.length?'':'No global skills are configured.';
+    }catch(error){el('skill-status').textContent=error.message;el('skill-retry').hidden=false;el('skill-detail').hidden=true;}
+  }
+  el('skill-retry').onclick=()=>load(active?.id);
+  el('skill-editor').onsubmit=async event=>{event.preventDefault();if(!canEdit||!active)return;el('skill-save').disabled=true;
+    try{await api({method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:active.id,content:el('skill-content').value,enabled:el('skill-enabled').checked})});await load(active.id);if(!el('skill-detail').hidden)el('skill-status').textContent='Saved. Changes apply to subsequent chat requests.';}
+    catch(error){el('skill-status').textContent=error.message}finally{el('skill-save').disabled=false}
+  };
+  load();
+})();
+</script>

@@ -19,6 +19,7 @@ import { createLocalAgentHttpController } from "./features/agent/http-controller
 import { renderSkillsPage } from "./features/skills/page.js";
 import { createSkillRegistry, validateSkillDraft } from "./features/skills/registry.js";
 import { createSkillsHttpController } from "./features/skills/http-controller.js";
+import { createGlobalSkillsController } from "./features/skills/control-plane.js";
 import { httpError } from "./shared/http-error.js";
 import { releaseDownloadLocation } from "./release-downloads.js";
 import {
@@ -2029,7 +2030,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           <div class="account-menu-divider"></div>
           <details class="account-advanced">
             <summary>Advanced</summary>
-            <a class="account-menu-item" href="/skills">${ICON_LAYERS}<span>Skills</span></a>
+            <a class="account-menu-item" href="/skills">${ICON_LAYERS}<span>My skills</span></a>
             ${config.mcpEnabled ? `<button class="account-menu-item" id="account-mcp" type="button">${ICON_LAYERS}<span>MCP connections</span></button>` : ""}
           </details>
           <button class="account-menu-item" type="button">${ICON_HELP_RING}<span>Help</span><span class="chevron">${ICON_CHEVRON_RIGHT}</span></button>
@@ -5981,6 +5982,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
 
 export function createServerApp(config = configFromEnv()) {
   const authStore = config.authStore ?? new PostgresAuthStore(config.auth ?? authConfigFromEnv());
+  const handleGlobalSkills = createGlobalSkillsController({ authStore, registry: SKILL_REGISTRY, token: config.operatorToken, readJsonBody, sendJson });
   const harnessService = createHarnessService({ config });
   const handleHarnessRequest = createHarnessHttpController({
     authStore,
@@ -6009,6 +6011,7 @@ export function createServerApp(config = configFromEnv()) {
   return createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? "/", "http://127.0.0.1");
+      if (await handleGlobalSkills({ request, response, url })) return;
       const releaseLocation = releaseDownloadLocation(url.pathname);
       if (["GET", "HEAD"].includes(request.method) && releaseLocation) {
         response.writeHead(307, {
