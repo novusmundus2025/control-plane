@@ -2,9 +2,38 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
+import { page } from "../src/main.js";
 
 const source = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 const configure = source.slice(source.indexOf("    function configureAgentRecoveryAction("), source.indexOf('    projectAgentUpdateEl?.addEventListener("click"'));
+
+test("only an older installed version offers an update download", () => {
+  // Test the browser-rendered function so template-string escaping is covered.
+  const html = page();
+  const compare = html.slice(html.indexOf("    function releaseVersionAtLeast("), html.indexOf("    function renderActiveProject("));
+  const attributes = new Map();
+  const link = { dataset: {}, removeAttribute: (key) => attributes.delete(key), setAttribute: (key, value) => attributes.set(key, value) };
+  const context = vm.createContext({ projectAgentUpdateEl: link, harnessDownloadEl: { href: "https://example.test/setup.exe" } });
+  vm.runInContext(compare + configure, context);
+  for (const [installed, required, needsUpdate] of [
+    ["0.1.56", "0.1.57", true],
+    ["0.1.57", "0.1.57", false],
+    ["0.1.66", "0.1.57", false],
+    ["0.1.9", "0.1.57", true],
+    ["0.1.100", "0.1.57", false],
+    ["0.2.0", "0.1.57", false],
+    ["1.0.0", "0.1.57", false],
+    ["v0.1.66", "0.1.57", false],
+    ["cli-v0.1.56", "0.1.57", true],
+    ["unknown", "0.1.57", false],
+  ]) {
+    const updateAvailable = !context.releaseVersionAtLeast(installed, required);
+    assert.equal(updateAvailable, needsUpdate, installed + " compared to " + required);
+    context.configureAgentRecoveryAction(updateAvailable, true);
+    assert.equal(attributes.has("download"), needsUpdate, installed);
+    assert.equal(link.dataset.action, needsUpdate ? "update" : "reconnect", installed);
+  }
+});
 
 test("Reconnect opens the installed app without downloading; Update still downloads", () => {
   const attributes = new Map([["download", ""]]);
