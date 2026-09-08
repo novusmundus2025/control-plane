@@ -521,6 +521,7 @@ impl SupabaseSyncStatus {
         }
     }
 
+
     fn tone(&self) -> &'static str {
         if !self.enabled {
             "red"
@@ -707,11 +708,16 @@ fn activate_held_chat_job(
 
 fn should_enable_live_stream(
     wants_stream: bool,
+    native_tool_turn: bool,
     mode: Option<&str>,
     record: &JobRecord,
     streaming_node_available: bool,
 ) -> bool {
-    wants_stream && mode.is_none() && !record.graph_execution_enabled && streaming_node_available
+    wants_stream
+        && !native_tool_turn
+        && mode.is_none()
+        && !record.graph_execution_enabled
+        && streaming_node_available
 }
 
 fn job_artifacts_path(job_id: &str) -> String {
@@ -5137,6 +5143,7 @@ button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ fon
         <div class="statusline">
           <span class="pill pill-{healthy_tone}">healthy</span>
           <span class="pill pill-{database_tone}">database: {database}</span>
+          <span class="pill pill-{planner_tone}">planner: {planner_status}</span>
           {deploy_badge}
         </div>
 
@@ -9125,7 +9132,23 @@ fn handle_connection_with_streams(
                     let completion_id = format!("chatcmpl-{}", Uuid::new_v4().simple());
                     let created = now_unix_seconds_u64();
                     let wants_stream = request_body.stream.unwrap_or(false);
-                    let (system_prompt, prompt) = chat_messages_to_prompt(&request_body.messages);
+                    let native_tool_turn = chat_gateway::is_native_tool_turn(&request_body);
+                    let (system_prompt, prompt) = if native_tool_turn {
+                        let mut native_request = request_body.clone();
+                        // The worker returns a complete native assistant message;
+                        // the control plane wraps it as SSE after validation.
+                        native_request.stream = Some(false);
+                        (
+                            None,
+                            format!(
+                                "__MUNDUSX_OPENAI_TOOL_TURN_V1__{}",
+                                serde_json::to_string(&native_request)
+                                    .expect("validated OpenAI request serializes")
+                            ),
+                        )
+                    } else {
+                        chat_messages_to_prompt(&request_body.messages)
+                    };
                     let metadata_request = chat_gateway::is_openwebui_metadata_request(&prompt);
                     let sensitive_history = system_prompt
                         .as_deref()
@@ -9140,7 +9163,7 @@ fn handle_connection_with_streams(
                             return write_chat_error(&mut stream, "400 Bad Request", &error);
                         }
                     };
-                    match if mode.is_none() {
+                    match if mode.is_none() && !native_tool_turn {
                         tools::execute(&request_body.messages)
                     } else {
                         Ok(None)
@@ -9218,7 +9241,11 @@ fn handle_connection_with_streams(
                         execution_mode: if mode.is_some() || metadata_request || sensitive_history {
                             JobExecutionMode::Single
                         } else {
-                            JobExecutionMode::Auto
+                            if native_tool_turn {
+                                JobExecutionMode::Single
+                            } else {
+                                JobExecutionMode::Auto
+                            }
                         },
                         // Plan without forcing single execution; eligible direct jobs are
                         // upgraded to live streaming after the graph decision is known.
@@ -9252,8 +9279,13 @@ fn handle_connection_with_streams(
                     });
                     // Plan first with buffered delivery so the graph remains authoritative.
                     // Only direct jobs are upgraded to live worker deltas.
+                    // Native Hermes turns must be buffered until the worker's
+                    // internal result envelope is decoded. Streaming that raw
+                    // envelope would expose it as assistant text instead of an
+                    // OpenAI `delta.tool_calls` event.
                     let live_stream_job = should_enable_live_stream(
                         wants_stream,
+                        native_tool_turn,
                         mode.as_deref(),
                         &submitted,
                         streaming_node_available,
@@ -9991,10 +10023,14 @@ mod tests {
             },
             "1".to_string(),
         );
-        assert!(should_enable_live_stream(true, None, &direct, true));
-        assert!(!should_enable_live_stream(true, None, &direct, false));
+        assert!(should_enable_live_stream(true, false, None, &direct, true));
+        assert!(!should_enable_live_stream(
+            true, false, None, &direct, false
+        ));
+        assert!(!should_enable_live_stream(true, true, None, &direct, true));
         assert!(!should_enable_live_stream(
             true,
+            false,
             Some("speakai"),
             &direct,
             true
@@ -10002,13 +10038,16 @@ mod tests {
 
         let mut graph = direct;
         graph.graph_execution_enabled = true;
-        assert!(!should_enable_live_stream(true, None, &graph, true));
+        assert!(!should_enable_live_stream(true, false, None, &graph, true));
     }
 
     fn chat_message(role: &str, content: &str) -> ChatMessage {
         ChatMessage {
             role: role.to_string(),
             content: serde_json::Value::String(content.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }
     }
 
@@ -10421,7 +10460,7 @@ mod tests {
             );
         });
         let body = serde_json::json!({
-            "model": "ehda-agnostic",
+            "model": "mundusx-agnostic",
             "messages": [{"role": "user", "content": "How is the weather today?"}],
             "stream": true
         })
@@ -10740,7 +10779,8 @@ mod tests {
         assert!(html.contains(CONTROL_PLANE_LOGO_PATH));
         assert!(html.contains(CONTROL_PLANE_VEHICLE_PATH));
         assert!(html.contains("Mercedes-Benz vehicle"));
-        assert!(html.contains("operator@ehda.local"));
+        assert!(html.contains(r#"id="admin-account""#));
+        assert!(!html.contains("operator@ehda.local"));
         assert!(html.contains("Status API"));
         assert!(html.contains("Network Topology"));
         assert!(html.contains("Planner Overview"));
@@ -10820,6 +10860,24 @@ mod tests {
         assert!(!serde_json::to_string(&status)
             .expect("status json")
             .contains("heartbeat_checkpoints"));
+    }
+
+    #[test]
+    fn operator_pages_use_the_persisted_overview_theme() {
+        let state = ControlPlaneState::default();
+        let html = control_plane_operator_page(
+            &state,
+            StorageSource::LocalJsonFallback,
+            &SupabaseSyncStatus::enabled(StorageSource::LocalJsonFallback),
+            OperatorPage::Nodes,
+            None,
+        );
+
+        assert!(html.contains(r#"localStorage.getItem("ehda-theme")"#));
+        assert!(html.contains(r#"document.documentElement.dataset.theme"#));
+        assert!(html.contains(r#"html[data-theme="light"] body"#));
+        assert!(html.contains(r#"html[data-theme="light"] .sidebar"#));
+        assert!(html.contains(r#"html[data-theme="light"] .metric"#));
     }
 
     #[test]

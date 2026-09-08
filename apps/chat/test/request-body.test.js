@@ -45,3 +45,16 @@ test("model discovery reports the deployed 131072-token window", async () => {
   assert.equal(model.max_model_len, 131072);
 });
 
+test("model context errors retain their status rather than becoming retryable outages", async () => {
+  const { relayNativeHermesToolStream } = await import("../src/main.js");
+  for (const status of [400, 413, 422]) {
+    let calls = 0;
+    await assert.rejects(relayNativeHermesToolStream({}, { messages: [], tools: [] }, {
+      agentModelProviders: [{ baseUrl: "https://model.test", model: "test" }],
+    }, async () => {
+      calls++;
+      return new Response("maximum context length exceeded", { status });
+    }), (error) => error.statusCode === status && /context length/.test(error.message));
+    assert.equal(calls, 1);
+  }
+});

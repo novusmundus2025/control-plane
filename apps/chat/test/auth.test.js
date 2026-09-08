@@ -173,6 +173,35 @@ test("Google callback rejects a verified ID-token claim that does not match user
   );
 });
 
+test("Google callback verifies an omitted email claim through Google's tokeninfo endpoint", async () => {
+  const client = { async query() { return { rows: [] }; }, release() {} };
+  const pool = {
+    async query() { return { rowCount: 1, rows: [{ code_verifier: "verifier", redirect_path: "/projects" }] }; },
+    async connect() { return client; },
+  };
+  const requests = [];
+  const store = new PostgresAuthStore({
+    googleClientId: "google-client", googleClientSecret: "google-secret", publicOrigin: "https://chat.mundusx.ai",
+  }, {
+    pool,
+    fetchImpl: async (url) => {
+      requests.push(String(url));
+      if (String(url).includes("/tokeninfo")) return { ok: true, async json() { return {
+        iss: "accounts.google.com", aud: "google-client", exp: String(Math.floor(Date.now() / 1000) + 300),
+        sub: "google-subject", email: "user@example.com", email_verified: "true",
+      }; } };
+      if (String(url).includes("/token")) return { ok: true, async json() { return { access_token: "access", id_token: "opaque-google-token" }; } };
+      return { ok: true, async json() { return { sub: "google-subject", email: "User@Example.com", name: "Example User" }; } };
+    },
+  });
+  let identity;
+  store.upsertIdentity = async (_client, value) => { identity = value; return "user-id"; };
+  store.createSession = async () => {};
+  assert.equal(await store.finishGoogle(new URLSearchParams({ state: "state", code: "code" }), {}), "/projects");
+  assert.equal(identity.email, "user@example.com");
+  assert.equal(requests.length, 3);
+});
+
 test("GitHub provider requires a valid 32-byte encryption key", () => {
   const config = authConfigFromEnv({
     MUNDUSX_GITHUB_CLIENT_ID: "client",
@@ -485,4 +514,24 @@ test("local agent auto claims select Hermes only when advertised and preferred",
   assert.match(queries[0].sql, /capabilities->'agent_runtimes' \? 'hermes'/);
   assert.match(queries[0].sql, /capabilities->>'preferred_agent' = 'hermes'/);
   assert.match(queries[0].sql, /order by created_at desc/);
+});
+
+test("project model jobs safely requeue retryable failures with the same idempotency key", async () => {
+  let insert;
+  const store = new PostgresAuthStore({}, { pool: {
+    async query(sql, values) {
+      insert = { sql, values };
+      return { rowCount: 1, rows: [{ job_id: values[0], state: "queued" }] };
+    },
+  } });
+  const created = await store.createProjectModelJob("22222222-2222-4222-8222-222222222222", {
+    project_task_id: "33333333-3333-4333-8333-333333333333",
+    connection_id: "11111111-1111-4111-8111-111111111111",
+    idempotency_key: "stable-model-turn-key",
+  });
+  assert.equal(created.state, "queued");
+  assert.match(insert.sql, /on conflict \(user_id, project_task_id, idempotency_key\)/);
+  assert.match(insert.sql, /error->>'retryable'/);
+  assert.match(insert.sql, /then 'queued'/);
+  assert.equal(insert.values[2], "stable-model-turn-key");
 });

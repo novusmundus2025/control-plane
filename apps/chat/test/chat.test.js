@@ -23,6 +23,7 @@ import {
   extractWeatherLocation,
   extractWeatherDayOffset,
   inferChatRequestTimeoutSeconds,
+  isRetryableHermesModelFailure,
   isFocusedQuotedRequest,
   isWeatherResourceRequest,
   normalizeWeatherWordTypos,
@@ -36,12 +37,17 @@ import {
   openAiSseBody,
   openAiSseFrames,
   openAiSseStartFrame,
+  parseFirstJsonObject,
+  parseHermesToolDecision,
+  parseAgentModelProviders,
   page,
   pollChatJob,
   redactSensitiveText,
   selectChatSkills,
   requiresValidatedStreaming,
   relayControlPlaneOpenAiStream,
+  relayNativeHermesToolStream,
+  resetAgentProviderCircuits,
   submitChatJob,
   submitChatTurn,
   submitOpenAiChatCompletion,
@@ -74,7 +80,10 @@ test("renders a usable chat page", () => {
     }),
   );
 
-  assert.match(html, /MundusX Chat/);
+  assert.match(html, /<title>Ehda<\/title>/);
+  assert.match(html, /class="brand-ehda">Ehda<\/div>/);
+  assert.match(html, /Powered by Mercedes-Benz Tech Community/);
+  assert.match(html, /A BETTER TOMORROW/);
   assert.match(html, /id="auth-gate"[^>]*hidden/);
   assert.match(html, /id="auth-google"/);
   assert.match(html, /Continue your chat/);
@@ -231,7 +240,8 @@ test("renders a usable chat page", () => {
   assert.doesNotMatch(html, /raw\.includes\("\r?\n"\)/);
   assert.match(html, /aria-label", role === "user" \? "Your message" : "MundusX response"/);
   assert.doesNotMatch(html, /avatar\.textContent = role === "user" \? "You" : "M"/);
-  assert.match(html, /\/assets\/mundusx-logo\.png/);
+  assert.match(html, /aria-label="Mercedes-Benz three-pointed star"/);
+  assert.match(html, /<\/aside>\s*<div class="history-context-menu"/);
   assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /\.header-actions \{\s*display: none;/);
   assert.match(html, /class="runtime-status-sentinel" id="runtime-status"/);
@@ -325,6 +335,7 @@ test("new chat leaves project mode and isolates background runner status", () =>
   const html = page(configFromEnv({ MUNDUSX_HARNESS_UI_ENABLED: "true" }));
   assert.match(html, /newChatEl\?\.addEventListener\("click", \(\) => \{[\s\S]*?setActiveProject\(null\)/);
   assert.match(html, /pendingRunnerAction = null/);
+  assert.match(html, /activeHistoryId === options\.conversationId/);
   assert.match(html, /activeHistoryId === conversationId\) setStatus\("working", runtimeLabel\)/);
 });
 
@@ -487,7 +498,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(projects, /<h2 id="project-dialog-title">Create project<\/h2>/);
   assert.match(projects, /id="repository-dialog-close"[^>]*type="button"[^>]*aria-label="Close"/);
   assert.match(projects, /id="project-create-fields"[\s\S]*name="project_slug"[^>]*pattern="\[a-z0-9\]/);
-  assert.match(projects, /Projects keep chats and files together/);
+  assert.match(projects, /This creates a folder inside the local workspace you approved/);
   assert.doesNotMatch(projects, /documents\\mundusx\\projects|Default memory|class="project-mark"/);
   assert.doesNotMatch(projects, /Project type|Java \(Maven\)|Project options|name="project_template"/);
   assert.doesNotMatch(projects, /Files stay on your device|GitHub is optional/);
@@ -497,13 +508,21 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.doesNotMatch(html, /id="web-search-toggle"/);
   assert.match(html, /id="active-project-name">Project<\/strong>/);
   assert.doesNotMatch(html, /id="runtime-select"|class="runtime-detail"/);
-  assert.match(html, /id="mutation-toggle"[^>]*aria-pressed="false"[^>]*hidden>Allow edits once/);
+  assert.match(html, /id="mutation-toggle"[^>]*aria-label="Project access"[^>]*hidden>[\s\S]*Ask before edits[\s\S]*Full access/);
   assert.match(html, /runtimePreference = "auto"/);
   assert.match(html, /runtime: options\.runtime \|\| "auto"/);
   assert.match(html, /function preferredProjectRuntime\(\)/);
   assert.match(html, /runtime: projectRuntime/);
   assert.match(html, /workspace_relative: options\.workspaceRelative \|\| null/);
-  assert.match(html, /mutationAllowed = false;[\s\S]*renderRuntimeControls\(\)/);
+  assert.match(html, /projectPermissionsKey = "mundusx\.chat\.projectPermissions\.v1:" \+ namespace/);
+  assert.match(html, /localStorage\.setItem\(projectPermissionsKey, JSON\.stringify\(projectPermissions\)\)/);
+  assert.match(html, /mundusx\.chat\.activeAgentTask\.v1:/);
+  assert.match(html, /localStorage\.setItem\(activeAgentTaskKey, JSON\.stringify/);
+  assert.match(html, /resumePersistedLocalAgentTask\(\)/);
+  assert.match(html, /Reconnecting to the active/);
+  assert.match(html, /projectPermissionMode\(activeProject\.slug\) === "full"/);
+  assert.match(html, /window\.confirm\('Allow Hermes to edit files and run commands in project/);
+  assert.doesNotMatch(html, /Allow edits once|Edits allowed · once|mutationAllowed/);
   assert.match(html, /id="project-context-menu"/);
   assert.match(html, /id="project-context-new"[^>]*>\+ New project/);
   assert.match(html, /id="project-context-list"/);
@@ -526,14 +545,33 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /closeProjects\(\);[\s\S]*showToast\('Project "/);
   assert.doesNotMatch(html, /repositoryDialogEl\?\.close\(\)/);
   assert.match(html, /requiresLocalProjectAction\(message\)/);
+  assert.match(html, /what\|which\|where\|when\|who\|why/);
+  assert.match(html, /\(\?:ask\|know\|understand\)/);
+  assert.match(html, /\(\?:changes\?\|files\?\|steps\?\|requirements\?\)/);
   assert.match(html, /const projectRuntime = preferredProjectRuntime\(\)/);
   assert.match(html, /openProjects\(\{ showRunnerSetup: true, project: activeProject \}\)/);
   assert.match(html, /existingProjectMode = Boolean\(showRunnerSetup && project\?\.slug\)/);
-  assert.match(html, /repositoryDialogTitleEl\.textContent = existingProjectMode \? "Connect local runner" : "Create project"/);
+  assert.match(html, /repositoryDialogTitleEl\.textContent = existingProjectMode \? "Connect local runner" : localRunnerReady \? "Create project" : "Connect this computer"/);
   assert.match(html, /projectCreateFieldsEl\.hidden = existingProjectMode/);
   assert.match(html, /projectRunnerContextNameEl\.textContent = existingProjectMode \? project\.slug : "Project"/);
   assert.match(html, /projectActionsEl\.hidden = existingProjectMode/);
   assert.match(html, /Respond in planning\/chat mode and do not claim files were changed/);
+  assert.match(html, /!activeProject \|\| runtimePreference === "cloud" \? false : await tryLocalAgentTurn/);
+  assert.match(html, /Reconnecting without losing progress/);
+  assert.match(html, /statusEl\.hidden = Boolean\(activeProject\)/);
+  assert.match(html, /\.runtime-status-sentinel\[hidden\] \{ display: none; \}/);
+  assert.match(html, /className = "agent-progress-orb"/);
+  assert.match(html, /className = "agent-progress-current"/);
+  assert.match(html, /Running a command/);
+  assert.doesNotMatch(html, /row\.textContent = \(index === steps\.length - 1 \? "● " : "✓ "\)/);
+  assert.doesNotMatch(html, /const deadline = Date\.now\(\) \+ 10 \* 60 \* 1000/);
+  assert.doesNotMatch(html, /Local agent task timed out/);
+  assert.match(html, /Elapsed " \+ formatDuration/);
+  assert.match(html, /Last activity " \+ formatDuration/);
+  assert.match(html, /Context left " \+ remainingPercent/);
+  assert.match(html, /Number\(candidate\?\.context_used\) > 0/);
+  assert.match(html, /telemetry\.api_calls/);
+  assert.match(html, /\/api\/agent\/tasks\/" \+ encodeURIComponent\(submitted\.task_id\) \+ "\/cancel"/);
   assert.match(html, /inferProjectTemplate[\s\S]*java\|maven\|spring\|junit\|gradle/);
   assert.match(projects, /id="project-runner-setup" hidden/);
   assert.match(projects, /Run code on this computer/);
@@ -546,9 +584,17 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /pendingRunnerAction = \{ pending, message, project: activeProject, conversationId \}/);
   assert.match(html, /Runner connected\. Resuming your request/);
   assert.match(html, /if \(localRunnerReady\) void resumePendingRunnerAction\(\)/);
+  assert.match(html, /projectReadinessRefreshEl\.hidden = localRunnerReady \|\| \(paired && !localRunnerReady\)/);
   assert.doesNotMatch(projects, />Create pairing code</);
   assert.doesNotMatch(projects, /<details|Set up local runner/);
   assert.match(projects, /MundusX-Setup\.exe/);
+  assert.match(projects, /mundusx\/releases\/releases\/download\/cli-windows-v0\.1\.57\/MundusX-Setup\.exe/);
+  assert.match(html, /const latestLocalAgentVersion = "0\.1\.57"/);
+  assert.match(html, /projectReadinessEl\.dataset\.state = updateAvailable \? "update"/);
+  assert.match(html, /projectReadinessTitleEl\.textContent = updateAvailable \? "Update required"/);
+  assert.match(html, /projectAgentUpdateEl\.textContent = updateAvailable[\s\S]*?"Update now"/);
+  assert.match(html, /project-readiness\[data-state="update"\]/);
+  assert.match(html, /\(\\d\+\)\\\.\(\\d\+\)\\\.\(\\d\+\)/);
   assert.match(projects, /id="project-readiness"/);
   assert.match(projects, /id="project-readiness-refresh"[^>]*>Retry/);
   assert.match(html, /Connect this computer/);
@@ -1726,6 +1772,37 @@ test("routes MundusX benefits questions to grounded product knowledge", async ()
   assert.match(result.output, /control plane can match jobs to nodes/i);
   assert.match(result.output, /not currently described as a blockchain consensus network/i);
   assert.doesNotMatch(result.output, /smart contracts|Ethereum Virtual Machine/i);
+});
+
+test("internal Hermes turns bypass public chat shortcuts", async () => {
+  let submittedJob;
+  const result = await submitChatJob(
+    {
+      message: "Continue the MundusX agent conversation and select the next action.",
+      systemPrompt: "You are the model inside a bounded coding agent.",
+      internalAgentTurn: true,
+      executionMode: "single",
+      toolMode: false,
+      skipQualityValidation: true,
+    },
+    configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://uat.mundusx.ai" }),
+    async (url, init = {}) => {
+      if (String(url).includes("/v1/nodes")) return jsonResponse({ nodes: [] });
+      if (String(url).endsWith("/v1/jobs") && init.method === "POST") {
+        submittedJob = JSON.parse(init.body);
+        return jsonResponse({
+          job_id: "job-hermes-internal",
+          job: { job_id: "job-hermes-internal", status: "completed", output: '{"kind":"final","content":"done"}' },
+        });
+      }
+      throw new Error(`unexpected URL ${url}`);
+    },
+  );
+
+  assert.equal(result.job_id, "job-hermes-internal");
+  assert.notEqual(result.model, "mundusx-knowledge");
+  assert.match(submittedJob.prompt, /select the next action/i);
+  assert.equal(submittedJob.system_prompt, "You are the model inside a bounded coding agent.");
 });
 
 test("routes weather questions to wttr without queuing an LLM job", async () => {
@@ -3576,6 +3653,69 @@ test("Open WebUI adapter exposes a discoverable model and buffered SSE completio
   assert.match(body, /data: \[DONE\]/);
 });
 
+test("OpenAI SSE completion preserves Hermes tool calls", () => {
+  const body = openAiSseBody({
+    id: "chatcmpl-tool",
+    created: 123,
+    model: "mundusx-agnostic",
+    choices: [{
+      message: {
+        role: "assistant",
+        content: null,
+        tool_calls: [{
+          id: "call_test",
+          type: "function",
+          function: { name: "write_file", arguments: '{"path":"package.json","content":"{}"}' },
+        }],
+      },
+      finish_reason: "tool_calls",
+    }],
+  });
+  assert.match(body, /"tool_calls":\[\{"index":0,"id":"call_test"/);
+  assert.match(body, /"name":"write_file"/);
+  assert.match(body, /"finish_reason":"tool_calls"/);
+  assert.match(body, /data: \[DONE\]/);
+});
+
+test("Hermes routing selects the first complete JSON tool decision", () => {
+  assert.deepEqual(
+    parseFirstJsonObject('preface {"kind":"tool","name":"read_file","arguments":{"path":"C:\\\\tmp\\\\a.json"}} {"kind":"final","content":"later"}'),
+    { kind: "tool", name: "read_file", arguments: { path: "C:\\tmp\\a.json" } },
+  );
+});
+
+test("Hermes routing safely repairs an unescaped nested arguments object", () => {
+  const decision = parseHermesToolDecision(
+    '{"kind":"tool","name":"terminal","arguments":"{"command":"npm init -y"}"}',
+    [{ name: "terminal" }],
+  );
+  assert.deepEqual(decision, { kind: "tool", name: "terminal", arguments: { command: "npm init -y" } });
+  assert.equal(parseHermesToolDecision(
+    '{"kind":"tool","name":"unknown","arguments":"{"command":"whoami"}"}',
+    [{ name: "terminal" }],
+  ), null);
+});
+
+test("Hermes routing accepts an allowed tool name used as the decision kind", () => {
+  assert.deepEqual(
+    parseHermesToolDecision(
+      '{"kind":"terminal","arguments":{"command":"ls -la"}}',
+      [{ name: "terminal" }, { name: "write_file" }],
+    ),
+    { kind: "tool", name: "terminal", arguments: { command: "ls -la" } },
+  );
+  assert.equal(
+    parseHermesToolDecision('{"kind":"unknown","arguments":{"command":"whoami"}}', [{ name: "terminal" }]),
+    null,
+  );
+});
+
+test("Hermes model turns retry only transient gateway failures", () => {
+  assert.equal(isRetryableHermesModelFailure("HTTP 502: Application failed to respond"), true);
+  assert.equal(isRetryableHermesModelFailure("connection reset by peer"), true);
+  assert.equal(isRetryableHermesModelFailure("invalid project-agent request"), false);
+});
+
 test("Open WebUI stream starts with a standard stable assistant identity chunk", () => {
   const frame = openAiSseStartFrame("chatcmpl-openwebui-stable", 123);
   const chunk = JSON.parse(frame.replace(/^data: /, "").trim());
@@ -3987,6 +4127,87 @@ test("streaming relay exposes the first upstream delta before completion", async
   assert.equal(result.completionId, "chatcmpl-live");
   assert.equal(result.finishReason, "stop");
   assert.equal(events.at(-1).type, "end");
+});
+
+test("native Hermes providers preserve OpenAI tools and fail over before streaming", async () => {
+  resetAgentProviderCircuits();
+  const requests = [];
+  const encoder = new TextEncoder();
+  const events = [];
+  const response = {
+    writableEnded: false,
+    writeHead: (status, headers) => events.push({ type: "headers", status, headers }),
+    flushHeaders: () => events.push({ type: "flush" }),
+    write: (value) => { events.push({ type: "write", value: Buffer.from(value).toString("utf8") }); return true; },
+    end(value) { this.writableEnded = true; events.push({ type: "end", value }); },
+  };
+  const body = {
+    model: "mundusx-agnostic",
+    stream: true,
+    messages: [{ role: "user", content: "Inspect the repository" }],
+    tools: [{ type: "function", function: { name: "search_files", parameters: { type: "object" } } }],
+    tool_choice: "auto",
+    project_task_id: "private-task",
+  };
+  const config = configFromEnv({
+    MUNDUSX_AGENT_MODEL_BASE_URLS: "https://primary.example/v1,https://backup.example/v1",
+    MUNDUSX_AGENT_MODEL_API_KEYS: "primary-secret,backup-secret",
+    MUNDUSX_AGENT_MODEL_IDS: "tool-model-a,tool-model-b",
+  });
+  await relayNativeHermesToolStream(response, body, config, async (url, init) => {
+    requests.push({ url, init, body: JSON.parse(init.body) });
+    if (url.includes("primary.example")) return new Response("unavailable", { status: 502 });
+    const stream = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(
+          'data: {"id":"chatcmpl-tools","choices":[{"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1","type":"function","function":{"name":"search_files","arguments":"{\\"pattern\\":\\"*.java\\"}"}}]},"finish_reason":null}]}\n\n' +
+          'data: {"id":"chatcmpl-tools","choices":[{"delta":{},"finish_reason":"tool_calls"}]}\n\n' +
+          'data: [DONE]\n\n',
+        ));
+        controller.close();
+      },
+    });
+    return new Response(stream, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[1].url, "https://backup.example/v1/chat/completions");
+  assert.equal(requests[1].init.headers.Authorization, "Bearer backup-secret");
+  assert.deepEqual(requests[1].body.tools, body.tools);
+  assert.deepEqual(requests[1].body.messages, body.messages);
+  assert.equal(requests[1].body.tool_choice, "auto");
+  assert.equal(requests[1].body.model, "tool-model-b");
+  assert.equal(requests[1].body.project_task_id, undefined);
+  assert.match(events.find((event) => event.type === "write")?.value || "", /tool_calls/);
+  assert.equal(events[0].headers["X-MundusX-Stream-Mode"], "native-agent-tools");
+  assert.equal(response.writableEnded, true);
+});
+
+test("native Hermes tools fail fast when the MundusX model node is outdated", async () => {
+  resetAgentProviderCircuits();
+  const response = { writeHead() {}, write() {}, end() {} };
+  const config = configFromEnv({ MUNDUSX_CONTROL_PLANE_URL: "https://mundusx.ai" });
+  await assert.rejects(
+    relayNativeHermesToolStream(response, {
+      model: "mundusx-agnostic",
+      messages: [{ role: "user", content: "Inspect the project" }],
+      tools: [{ type: "function", function: { name: "search_files", parameters: { type: "object" } } }],
+    }, config, async (url) => {
+      assert.match(url, /\/v1\/nodes/);
+      return jsonResponse({ items: [{ state: "ready", capabilities: { supported_tools: ["tool_use"] } }] });
+    }),
+    /shared model node needs an agent upgrade/,
+  );
+});
+
+test("agent model provider configuration keeps aligned models and credentials", () => {
+  assert.deepEqual(parseAgentModelProviders({
+    MUNDUSX_AGENT_MODEL_BASE_URLS: "https://one.example, https://two.example/v1/",
+    MUNDUSX_AGENT_MODEL_API_KEYS: "key-one,key-two",
+    MUNDUSX_AGENT_MODEL_IDS: "model-one,model-two",
+  }), [
+    { baseUrl: "https://one.example", apiKey: "key-one", model: "model-one" },
+    { baseUrl: "https://two.example/v1", apiKey: "key-two", model: "model-two" },
+  ]);
 });
 
 test("deterministic MundusX Chat requests return an explicit polling fallback without upstream work", async () => {

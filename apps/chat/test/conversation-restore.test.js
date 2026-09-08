@@ -78,3 +78,35 @@ test("New Chat cancels a pending restoration", async () => {
   await restoring;
   assert.deepEqual(app.rendered, []);
 });
+
+const resumeCode = source.slice(source.indexOf("    async function resumePersistedLocalAgentTask()"), source.indexOf("    async function resumeLocalAgentPolling("));
+
+test("task recovery does not reopen an old chat after selecting another chat or New Chat", async () => {
+  for (const selected of ["other", "new-chat"]) {
+    const context = vm.createContext({
+      activeHistoryId: selected, activeAgentTaskKey: "task",
+      localStorage: { getItem: () => JSON.stringify({ taskId: "task-1", conversationId: "old" }) },
+      fetch: async () => assert.fail("must not resume an unselected conversation"),
+    });
+    vm.runInContext(resumeCode, context);
+    assert.equal(await context.resumePersistedLocalAgentTask(), false);
+    assert.equal(context.activeHistoryId, selected);
+  }
+});
+
+test("switching chats while task recovery fetches does not switch back", async () => {
+  let finish;
+  const context = vm.createContext({
+    activeHistoryId: "old", activeAgentTaskKey: "task",
+    localStorage: { getItem: () => JSON.stringify({ taskId: "task-1", conversationId: "old" }) },
+    fetch: () => new Promise((resolve) => { finish = resolve; }),
+    readApiPayload: async () => ({ state: "running" }),
+    readHistory: () => assert.fail("must not restore the old chat after switching"),
+  });
+  vm.runInContext(resumeCode, context);
+  const recovering = context.resumePersistedLocalAgentTask();
+  context.activeHistoryId = "other";
+  finish({ ok: true });
+  assert.equal(await recovering, false);
+  assert.equal(context.activeHistoryId, "other");
+});

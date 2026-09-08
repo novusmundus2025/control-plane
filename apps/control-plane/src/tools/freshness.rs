@@ -48,6 +48,9 @@ mod tests {
         vec![ChatMessage {
             role: "user".to_string(),
             content: serde_json::Value::String(content.to_string()),
+            tool_calls: None,
+            tool_call_id: None,
+            name: None,
         }]
     }
 

@@ -31,7 +31,7 @@ import {
 
 export { localProjectAuthority };
 
-const DEFAULT_CONTROL_PLANE_URL = "https://uat.mundusx.ai";
+const DEFAULT_CONTROL_PLANE_URL = "https://mundusx.ai";
 const DEFAULT_TIMEOUT_SECONDS = 90;
 const DEFAULT_TOOL_PLANNER_TIMEOUT_SECONDS = 12;
 const DEFAULT_WEATHER_TTL_SECONDS = 7200;
@@ -132,6 +132,24 @@ const WELCOME_INNER_HTML = `<div class="welcome-inner">
               </div>
             </div>`;
 
+export function parseAgentModelProviders(env = process.env) {
+  const urls = String(env.MUNDUSX_AGENT_MODEL_BASE_URLS ?? "")
+    .split(",")
+    .map((value) => normalizeOrigin(value.trim()))
+    .filter(Boolean);
+  const keys = String(env.MUNDUSX_AGENT_MODEL_API_KEYS ?? "")
+    .split(",")
+    .map((value) => value.trim());
+  const models = String(env.MUNDUSX_AGENT_MODEL_IDS ?? "")
+    .split(",")
+    .map((value) => value.trim());
+  return urls.map((baseUrl, index) => ({
+    baseUrl,
+    apiKey: keys[index] || keys[0] || "",
+    model: models[index] || models[0] || "",
+  }));
+}
+
 export function configFromEnv(env = process.env) {
   const harnessUiEnabled = ["1", "true", "yes"].includes(
     String(env.MUNDUSX_HARNESS_UI_ENABLED ?? "").trim().toLowerCase(),
@@ -152,9 +170,10 @@ export function configFromEnv(env = process.env) {
     harnessAllowedPathPrefixes: (env.MUNDUSX_HARNESS_ALLOWED_PATH_PREFIXES ?? "").trim(),
     harnessValidationProfiles: (env.MUNDUSX_HARNESS_VALIDATION_PROFILES ?? "").trim(),
     harnessRunnerDownloadUrl: (env.MUNDUSX_HARNESS_RUNNER_DOWNLOAD_URL ?? "").trim()
-      || "https://github.com/mundusx/releases/releases/download/opengpu-prod/MundusX-Setup.exe?release=cli-v0.1.53",
-    latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "0.1.35",
+      || "https://github.com/mundusx/releases/releases/download/cli-windows-v0.1.57/MundusX-Setup.exe",
+    latestLocalAgentVersion: (env.MUNDUSX_LATEST_LOCAL_AGENT_VERSION ?? "").trim() || "0.1.57",
     modelOverride: (env.MUNDUSX_CHAT_MODEL ?? env.MUNDUSX_CHAT_DEFAULT_MODEL ?? "").trim(),
+    agentModelProviders: parseAgentModelProviders(env),
     weatherCacheUrl: (
       env.MUNDUSX_WEATHER_CACHE_URL ??
       env.VALKEY_URL ??
@@ -309,7 +328,7 @@ export function page(config = configFromEnv()) {
 <link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>MundusX Chat</title>
+  <title>Ehda</title>
   <script>try{document.documentElement.dataset.theme=localStorage.getItem("mundusx.chat.theme")||((matchMedia("(prefers-color-scheme: dark)").matches)?"dark":"light")}catch(_){document.documentElement.dataset.theme="light"}</script>
   <style>
 button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-family:"JetBrains Mono",ui-monospace,monospace; }
@@ -639,7 +658,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     .guest-widget { margin-top:auto; padding:12px; border:1px solid var(--border); border-radius:16px; background:var(--panel); box-shadow:0 10px 28px rgba(29,35,68,.08); }
     .guest-widget strong { display:block; color:var(--text); font-size:14px; margin-bottom:4px; }
     .guest-widget p { color:var(--muted); font-size:12px; line-height:1.45; margin:0 0 12px; }
-    .guest-login { width:100%; min-height:42px; border:0; border-radius:11px; background:linear-gradient(135deg,#477dff,#7657ed); color:#fff; font:700 14px "Space Grotesk", system-ui, sans-serif; cursor:pointer; box-shadow:0 8px 20px rgba(91,92,235,.2); }
+    .guest-login { width:100%; min-height:42px; border:0; border-radius:11px; background:var(--gradient); color:#fff; font:700 14px "Space Grotesk", system-ui, sans-serif; cursor:pointer; box-shadow:0 8px 20px rgba(35,43,52,.20); }
     .guest-login:hover,.guest-login:focus-visible { filter:brightness(1.05); transform:translateY(-1px); }
     .account-bar {
       width: 100%;
@@ -828,6 +847,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       text-transform: uppercase;
       background: #fff;
     }
+    .runtime-status-sentinel[hidden] { display: none; }
     .status-dot {
       width: 7px;
       height: 7px;
@@ -896,7 +916,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       position: relative;
       display: inline-block;
       padding-bottom: 10px;
-      background: linear-gradient(90deg, #3b82f6 0%, #7c5cf0 100%);
+      background: var(--gradient);
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
@@ -909,7 +929,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       width: 46px;
       height: 3px;
       border-radius: 999px;
-      background: linear-gradient(90deg, #3b82f6 0%, #7c5cf0 100%);
+      background: var(--gradient);
     }
     .welcome-rule {
       width: 46px;
@@ -1007,8 +1027,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     }
     .message.user .message-body {
       max-width: min(880px, 88%);
-      background: linear-gradient(90deg, rgba(124, 108, 246, 0.12), rgba(59, 130, 246, 0.08));
-      border: 1px solid rgba(124, 108, 246, 0.25);
+      background: linear-gradient(90deg, color-mix(in srgb,var(--purple) 12%,transparent), color-mix(in srgb,var(--blue) 8%,transparent));
+      border: 1px solid color-mix(in srgb,var(--purple) 25%,transparent);
       border-radius: 16px 16px 4px 16px;
       padding: 12px 16px;
     }
@@ -1020,6 +1040,71 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     }
     .message.error .message-body {
       color: #b3231f;
+    }
+    .agent-progress-timeline {
+      display: grid;
+      gap: 8px;
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .agent-progress-heading { display:flex; align-items:center; gap:9px; }
+    .agent-progress-orb {
+      width: 20px;
+      height: 20px;
+      display: inline-grid;
+      place-items: center;
+      border-radius: 7px;
+      color: white;
+      background: linear-gradient(135deg, var(--blue), var(--purple));
+      box-shadow: 0 5px 18px color-mix(in srgb, var(--purple) 28%, transparent);
+      animation: hermes-float 2.4s ease-in-out infinite;
+    }
+    .agent-progress-orb::before { content:"✦"; font-size:11px; }
+    .agent-progress-current {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      width: fit-content;
+      max-width: 100%;
+      min-height: 34px;
+      overflow: hidden;
+      border: 1px solid color-mix(in srgb, var(--purple) 18%, var(--line));
+      border-radius: 12px;
+      padding: 7px 12px;
+      color: var(--text);
+      background: color-mix(in srgb, var(--purple) 5%, var(--panel));
+      font-weight: 650;
+    }
+    .agent-progress-current::after {
+      content:"";
+      position:absolute;
+      inset:0;
+      transform:translateX(-120%);
+      background:linear-gradient(100deg,transparent,color-mix(in srgb,var(--purple) 10%,transparent),transparent);
+      animation:hermes-shimmer 2.2s ease-in-out infinite;
+      pointer-events:none;
+    }
+    .agent-progress-dot {
+      width: 7px;
+      height: 7px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      background: var(--purple);
+      box-shadow: 0 0 0 0 color-mix(in srgb,var(--purple) 38%,transparent);
+      animation: hermes-pulse 1.6s ease-out infinite;
+    }
+    .agent-progress-history { display:grid; gap:5px; padding-left:3px; color:var(--muted-2); font-size:12px; }
+    .agent-progress-step { display:flex; align-items:center; gap:7px; }
+    .agent-progress-check { color:var(--green); font-weight:800; }
+    .agent-progress-meta { display:flex; flex-wrap:wrap; gap:5px 12px; color:var(--muted-2); font-size:11px; font-variant-numeric:tabular-nums; }
+    .agent-progress-meta span { white-space:nowrap; }
+    @keyframes hermes-pulse { 70% { box-shadow:0 0 0 7px transparent; } 100% { box-shadow:0 0 0 0 transparent; } }
+    @keyframes hermes-shimmer { 55%,100% { transform:translateX(120%); } }
+    @keyframes hermes-float { 0%,100% { transform:translateY(0) rotate(0); } 50% { transform:translateY(-2px) rotate(8deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .agent-progress-orb,.agent-progress-dot,.agent-progress-current::after { animation:none; }
     }
     .message-error-actions {
       display: flex;
@@ -1332,7 +1417,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       margin-bottom: 16px;
     }
     .live-section {
-      border-left: 3px solid rgba(124, 108, 246, 0.38);
+      border-left: 3px solid color-mix(in srgb,var(--purple) 38%,transparent);
       padding-left: 14px;
     }
     .live-section h3 {
@@ -1341,9 +1426,9 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       line-height: 1.35;
     }
     .partial-response {
-      border: 1px solid rgba(124, 108, 246, 0.24);
+      border: 1px solid color-mix(in srgb,var(--purple) 24%,transparent);
       border-radius: 14px;
-      background: linear-gradient(145deg, rgba(124, 108, 246, 0.07), rgba(59, 130, 246, 0.04));
+      background: linear-gradient(145deg, color-mix(in srgb,var(--purple) 7%,transparent), color-mix(in srgb,var(--blue) 4%,transparent));
       padding: 16px 18px;
       margin-bottom: 16px;
     }
@@ -1525,7 +1610,9 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     .runtime-picker select { max-width:150px; border:0; border-radius:9px; padding:7px 24px 7px 7px; color:var(--text); background:var(--panel-2); font:inherit; font-size:12px; cursor:pointer; }
     .runtime-picker select:focus-visible { outline:2px solid color-mix(in srgb,var(--blue) 45%,transparent); outline-offset:1px; }
     .mutation-toggle[hidden] { display:none; }
-    .mutation-toggle[aria-pressed="true"] { color:#b45309; font-weight:750; }
+    .mutation-toggle { max-width:150px; border:0; border-radius:9px; padding:7px 24px 7px 8px; color:var(--muted); background:var(--panel-2); font:inherit; font-size:12px; cursor:pointer; }
+    .mutation-toggle[data-mode="full"] { color:#b45309; font-weight:750; }
+    .mutation-toggle:focus-visible { outline:2px solid color-mix(in srgb,var(--purple) 42%,transparent); outline-offset:1px; }
     .runtime-detail { width:min(880px,100%); margin:6px auto 0; padding:0 20px; color:var(--muted-2); font-size:11px; text-align:left; }
     .active-project-context { min-width:0; display:flex; align-items:center; color:var(--muted-2); }
     .active-project-context[hidden] { display: none; }
@@ -1607,6 +1694,9 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     .readiness-dot { width: 9px; height: 9px; flex: 0 0 auto; border-radius: 999px; background: var(--muted-2); box-shadow: 0 0 0 4px color-mix(in srgb, var(--muted-2) 15%, transparent); }
     [data-state="ready"] > .readiness-dot { background: var(--green); box-shadow: 0 0 0 4px color-mix(in srgb, var(--green) 15%, transparent); }
     [data-state="offline"] > .readiness-dot { background: #d98c16; box-shadow: 0 0 0 4px rgba(217,140,22,.14); }
+    .project-readiness[data-state="update"] { border-color: #efc46b; background: #fff8df; }
+    [data-state="update"] > .readiness-dot { background: #d98c16; box-shadow: 0 0 0 4px rgba(217,140,22,.18); }
+    [data-state="update"] #project-agent-update { border-color: #d98c16; background: #fff3c4; color: #7a4700; font-weight: 750; }
     .command-row { display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; margin-top: 9px; }
     .command-row[hidden] { display: none; }
     .command-row code { min-width: 0; overflow-wrap: anywhere; padding: 9px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); user-select: all; font-size: 12px; }
@@ -1728,8 +1818,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     .voice-button:hover:not(:disabled),
     .voice-button:focus-visible {
       color: var(--blue);
-      border-color: rgba(59, 130, 246, 0.36);
-      background: #eef5ff;
+      border-color: color-mix(in srgb,var(--blue) 36%,transparent);
+      background: color-mix(in srgb,var(--blue) 8%,var(--panel));
       transform: translateY(-1px);
     }
     .voice-button.is-active {
@@ -1888,15 +1978,62 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     @media (max-width:1050px) { .capability-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
     @media (max-width:860px) { .welcome h1 { font-size:clamp(30px,8vw,42px); } }
     @media (max-width:560px) { .capability-grid{grid-template-columns:1fr 1fr;gap:8px}.capability-card{grid-template-columns:28px 1fr;padding:10px}.capability-icon{width:28px;height:28px}.welcome-heading{gap:4px}.active-project-context strong{max-width:90px}#web-search-label{display:none} }
-    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:10px;right:10px}.project-heading{padding:18px 52px 10px 16px}.projects-dialog .harness-form{padding:8px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%}.runner-setup-step{grid-template-columns:28px minmax(0,1fr)}.runner-setup-step>button,.runner-step-actions{grid-column:2}.runner-step-actions{width:100%}.runner-step-actions>a,.runner-step-actions>button,.runner-setup-step>button{width:100%;text-align:center}.mcp-token-form{grid-template-columns:1fr}.mcp-token-form button{width:100%} }
+    @media (max-width:720px) { .projects-dialog{width:calc(100vw - 18px);max-height:calc(100vh - 18px)}.projects-dialog .dialog-close{top:10px;right:10px}.project-heading{padding:18px 52px 10px 16px}.projects-dialog .harness-form{padding:8px 16px 16px}.project-field-wide{grid-column:auto}.project-actions{align-items:stretch;flex-direction:column}.project-actions .harness-submit{width:100%}.mcp-token-form{grid-template-columns:1fr}.mcp-token-form button{width:100%} }
     @media (prefers-reduced-motion:reduce) { *,*::before,*::after { scroll-behavior:auto!important; animation-duration:.001ms!important; animation-iteration-count:1!important; transition-duration:.001ms!important; } }
+
+    /* Ehda / Mercedes-Benz Tech Community visual edition.
+       Presentation only: behavior and application contracts remain shared. */
+    :root {
+      --bg:#f7f8fa; --rail:rgba(250,251,252,.96); --panel:rgba(255,255,255,.88); --panel-2:rgba(255,255,255,.72);
+      --line:rgba(47,56,68,.12); --line-strong:rgba(47,56,68,.22); --text:#171b22; --muted:#687181; --muted-2:#929aa7;
+      --purple:#3d4855; --blue:#4b5664; --cyan:#303b47; --gradient:linear-gradient(135deg,#1e2732 0%,#4d5865 100%);
+      --mesh-a:68,78,90; --mesh-b:126,136,148; --surface-shadow:0 18px 54px rgba(35,43,52,.10);
+      --focus-ring:0 0 0 3px rgba(47,56,68,.20);
+    }
+    html[data-theme="dark"] {
+      --bg:#0d1116; --rail:rgba(15,19,24,.96); --panel:rgba(25,30,36,.88); --panel-2:rgba(31,37,44,.72);
+      --line:rgba(224,229,235,.12); --line-strong:rgba(224,229,235,.22); --text:#f2f4f6; --muted:#b4bbc4; --muted-2:#858e9a;
+      --mesh-a:164,174,185; --mesh-b:94,105,117; --surface-shadow:0 22px 70px rgba(0,0,0,.40);
+    }
+    .shell { grid-template-columns:minmax(0,268px) minmax(0,1fr); }
+    aside { padding:20px 13px 16px; }
+    .brand-block { gap:10px; padding:0 2px 2px; align-items:flex-start; }
+    .brand-mark { width:48px; height:48px; flex:0 0 48px; color:var(--text); filter:drop-shadow(0 2px 4px rgba(0,0,0,.08)); }
+    .brand-copy { min-width:0; padding-top:1px; }
+    .brand-name { font-family: "Space Grotesk", system-ui, sans-serif; font-size:17px; font-weight:500; letter-spacing:-.015em; }
+    .brand-ehda { margin-top:1px; color:var(--muted); font-size:12px; font-weight:550; letter-spacing:.08em; }
+    .brand-kicker { margin-top:4px; font-size:7px; font-weight:700; letter-spacing:.075em; line-height:1.5; white-space:normal; overflow-wrap:break-word; }
+    .new-chat { min-height:46px; border-radius:9px; box-shadow:0 11px 24px rgba(26,34,43,.20); }
+    .new-chat:hover,.new-chat:focus-visible { filter:brightness(1.08); }
+    .rail-destination-icon { color:var(--text); background:color-mix(in srgb,var(--text) 6%,transparent); }
+    .rail-destination.is-active { box-shadow:0 7px 20px rgba(35,43,52,.06); }
+    .theme-option[aria-pressed="true"] { background:var(--gradient); box-shadow:0 5px 14px rgba(30,39,50,.28); }
+    .atlas-word { color:#394656; }
+    html[data-theme="dark"] .atlas-word { color:#d8dde3; }
+    .atlas-sparkle { color:#808b98; }
+    .capability-icon { border-color:rgba(61,72,85,.30); color:#3d4855; }
+    html[data-theme="dark"] .capability-icon { color:#c3cad2; }
+    .capability-card:hover,.capability-card:focus-visible { border-color:rgba(61,72,85,.42); }
+    .composer { border-color:rgba(61,72,85,.20); }
+    .send { background:var(--gradient); }
+    code { background:color-mix(in srgb,var(--purple) 10%,transparent); border-color:color-mix(in srgb,var(--purple) 18%,transparent); color:var(--text); }
+    .history-item.active { color:var(--text); background:color-mix(in srgb,var(--purple) 9%,transparent); }
+    .message-body blockquote { border-left-color:color-mix(in srgb,var(--purple) 45%,transparent); }
+    .markdown-table tbody tr:hover { background:color-mix(in srgb,var(--purple) 4%,transparent); }
+    .chunk-row.is-active { border-color:color-mix(in srgb,var(--purple) 40%,transparent); box-shadow:0 0 0 3px color-mix(in srgb,var(--purple) 8%,transparent); }
+    .mx-spinner { border-color:color-mix(in srgb,var(--purple) 24%,transparent); border-top-color:var(--cyan); }
+    .tool-badge.is-web { background:color-mix(in srgb,var(--blue) 12%,transparent); color:var(--blue); }
+    .brand-motto { margin-right:auto; display:flex; align-items:center; gap:12px; color:var(--muted-2); font-family: "Space Grotesk", system-ui, sans-serif; font-size:12px; }
+    .brand-motto::after { content:"A BETTER TOMORROW"; font-family: "Space Grotesk", system-ui, sans-serif; font-size:10px; font-weight:650; letter-spacing:.14em; }
+    .brand-motto-separator { width:1px; height:13px; background:var(--line-strong); }
+    @media (max-width:860px) { .shell{grid-template-columns:1fr}.brand-motto{display:none} }
   </style>
 </head>
 <body data-auth-required="${config.auth?.required ? "true" : "false"}">
   <div class="auth-gate" id="auth-gate" role="dialog" aria-modal="true" aria-labelledby="auth-title" hidden>
     <div class="auth-card">
       <button class="auth-close" id="auth-close" type="button" aria-label="Close sign-in">&times;</button>
-      <div class="auth-brand"><img src="/assets/mundusx-logo.png" alt=""><span>MundusX</span></div>
+      <div class="auth-brand"><span>Ehda</span></div>
       <div><h1 id="auth-title">Continue your chat</h1><p>Sign in to send your message and keep your conversations synced.</p></div>
       <a class="auth-google" id="auth-google" href="/api/auth/google/start?return_to=/"><svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M21.6 12.23c0-.71-.06-1.4-.18-2.07H12v3.92h5.38a4.6 4.6 0 0 1-2 3.02v2.54h3.24c1.9-1.75 2.98-4.33 2.98-7.41Z"/><path fill="#34A853" d="M12 22c2.7 0 4.97-.9 6.62-2.36l-3.24-2.54c-.9.6-2.05.96-3.38.96-2.6 0-4.81-1.76-5.6-4.13H3.06v2.62A10 10 0 0 0 12 22Z"/><path fill="#FBBC05" d="M6.4 13.93A6 6 0 0 1 6.09 12c0-.67.11-1.32.31-1.93V7.45H3.06A10 10 0 0 0 2 12c0 1.61.39 3.14 1.06 4.55l3.34-2.62Z"/><path fill="#EA4335" d="M12 5.94c1.47 0 2.79.51 3.83 1.5l2.87-2.88A9.62 9.62 0 0 0 12 2a10 10 0 0 0-8.94 5.45l3.34 2.62c.79-2.37 3-4.13 5.6-4.13Z"/></svg><span>Continue with Google</span></a>
       <p class="auth-privacy">Google verifies your identity. Your Google password is never shared with MundusX.</p>
@@ -1906,10 +2043,11 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
   <div class="shell" data-control-plane="${escapeHtml(config.controlPlaneUrl)}">
     <aside>
       <div class="brand-block">
-        <img class="brand-logo" src="/assets/mundusx-logo.png" alt="" />
-        <div>
-          <div class="brand-name">MundusX</div>
-          <div class="brand-kicker">Decentralized AI Network</div>
+        <svg class="brand-mark" viewBox="0 0 64 64" role="img" aria-label="Mercedes-Benz three-pointed star"><circle cx="32" cy="32" r="27" fill="none" stroke="currentColor" stroke-width="2.2"/><circle cx="32" cy="32" r="24" fill="none" stroke="currentColor" stroke-width=".8" opacity=".62"/><path d="M32 8.5 35 29l18.9 12.8-20.2-8.1L32 56l-1.7-22.3-20.2 8.1L29 29 32 8.5Z" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg>
+        <div class="brand-copy">
+          <div class="brand-name">Mercedes-Benz</div>
+          <div class="brand-ehda">Ehda</div>
+          <div class="brand-kicker">Powered by Mercedes-Benz Tech Community</div>
         </div>
       </div>
       <div class="rail-primary">
@@ -1921,11 +2059,6 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         </nav>
       </div>
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
-      <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
-        <button type="button" data-action="rename" role="menuitem">Rename</button>
-        <button type="button" data-action="pin" role="menuitem">Pin chat</button>
-        <button class="danger" type="button" data-action="delete" role="menuitem">Delete</button>
-      </div>
       <div class="guest-widget" id="guest-widget">
         <strong>Try MundusX</strong>
         <p>Explore Chat and Projects. Sign in when you want to send, save conversations, or connect your local agent.</p>
@@ -1958,12 +2091,18 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         </button>
       </div>
     </aside>
+    <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
+      <button type="button" data-action="rename" role="menuitem">Rename</button>
+      <button type="button" data-action="pin" role="menuitem">Pin chat</button>
+      <button class="danger" type="button" data-action="delete" role="menuitem">Delete</button>
+    </div>
     ${repositoryDialog}
     ${mcpDialog}
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
     <main id="chat-main" class="is-empty-chat">
       <canvas class="mesh-canvas" id="mesh-canvas" aria-hidden="true"></canvas>
       <header>
+        <div class="brand-motto"><span>Mercedes-Benz</span><span class="brand-motto-separator" aria-hidden="true"></span></div>
         <div class="theme-switch" role="group" aria-label="Color theme"><button class="theme-option" id="theme-light" type="button" aria-label="Use light theme" aria-pressed="true">☀</button><button class="theme-option" id="theme-dark" type="button" aria-label="Use dark theme" aria-pressed="false">☾</button></div>
         <span class="runtime-status-sentinel" id="runtime-status" data-state="working"><span class="status-dot"></span><span id="runtime-status-text">Checking</span></span>
         ${repositoryMobileLauncher}
@@ -1982,7 +2121,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           <div class="composer-actions">
             <span class="composer-left-actions">
               ${config.harnessUiEnabled ? `<span class="active-project-context" id="active-project-context"><button class="tool-toggle project-context-open" id="active-project-open" type="button" aria-pressed="false" title="Choose a project"><span class="kbd" aria-hidden="true">⌁</span><strong id="active-project-name">Project</strong></button><button class="project-context-clear" id="active-project-clear" type="button" aria-label="Leave active project" title="Leave active project" hidden>&times;</button></span>` : ""}
-              <button class="tool-toggle mutation-toggle" id="mutation-toggle" type="button" aria-pressed="false" hidden>Allow edits once</button>
+              <select class="mutation-toggle" id="mutation-toggle" aria-label="Project access" title="Access is saved for this project" hidden><option value="ask">Ask before edits</option><option value="full">Full access</option></select>
             </span>
             <button class="tool-toggle" id="enter-to-send-toggle" type="button" aria-pressed="false" title="Toggle sending messages with Enter"><span class="kbd">&#8629;</span><span id="enter-to-send-label">Enter to Send</span></button>
             <span class="voice-controls" id="voice-controls">
@@ -2079,6 +2218,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     let activeProjectKey = "mundusx.chat.activeProject.v1:anonymous";
     let recentProjectsKey = "mundusx.chat.localProjects.v1:anonymous";
     let removedProjectsKey = "mundusx.chat.removedProjects.v1:anonymous";
+    let projectPermissionsKey = "mundusx.chat.projectPermissions.v1:anonymous";
+    let activeAgentTaskKey = "mundusx.chat.activeAgentTask.v1:anonymous";
     const PROJECT_ALLOWED_OPERATIONS = ["repository.status", "repository.diff", "file.read", "file.search", "patch.apply", "validation.run"];
     const mobileProjectsViewport = window.matchMedia("(max-width: 860px)");
     function projectsAvailableOnDevice() { return !mobileProjectsViewport.matches; }
@@ -2097,13 +2238,15 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     let pendingRunnerAction = null;
     let pendingRunnerResumeInProgress = false;
     let runtimePreference = "auto";
-    let mutationAllowed = false;
+    let projectPermissions = {};
     let lastLocalAgentStatus = null;
     let appToastTimer = null;
     function loadStoredProjectContext(namespace) {
       activeProjectKey = "mundusx.chat.activeProject.v1:" + namespace;
       recentProjectsKey = "mundusx.chat.localProjects.v1:" + namespace;
       removedProjectsKey = "mundusx.chat.removedProjects.v1:" + namespace;
+      projectPermissionsKey = "mundusx.chat.projectPermissions.v1:" + namespace;
+      activeAgentTaskKey = "mundusx.chat.activeAgentTask.v1:" + namespace;
       runtimePreference = "auto";
       try { activeProject = JSON.parse(localStorage.getItem(activeProjectKey) || "null"); } catch { activeProject = null; }
       try {
@@ -2117,6 +2260,10 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           .filter((slug) => !removedProjectSlugs.includes(slug))
           .slice(0, 100);
       } catch { availableProjectSlugs = []; }
+      try {
+        const storedPermissions = JSON.parse(localStorage.getItem(projectPermissionsKey) || "{}");
+        projectPermissions = storedPermissions && typeof storedPermissions === "object" ? storedPermissions : {};
+      } catch { projectPermissions = {}; }
       if (activeProject?.slug && removedProjectSlugs.includes(activeProject.slug)) {
         activeProject = null;
         localStorage.removeItem(activeProjectKey);
@@ -2336,6 +2483,9 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         }
         renderHistory();
         authGateEl.hidden = true;
+        resumePersistedLocalAgentTask().catch((error) => {
+          console.warn("Unable to resume the active Hermes task", error);
+        });
       } catch {
         currentUser = null;
         accountWidgetEl.hidden = true;
@@ -2770,7 +2920,6 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         runnerPairingExpiresAt = Date.now() + 10 * 60 * 1000;
         pollRunnerPairing();
       }
-      updateRunnerSetupState({ paired, ready: localRunnerReady, agentMissing });
       const runtime = readyConnection?.capabilities?.preferred_agent
         || readyConnection?.capabilities?.agent_runtimes?.[0]
         || null;
@@ -2778,6 +2927,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       const installedVersion = knownConnection?.capabilities?.client_version || "unknown";
       const updateAvailable = Boolean(knownConnection)
         && !releaseVersionAtLeast(installedVersion, latestLocalAgentVersion);
+      localRunnerReady = localRunnerReady && !updateAvailable;
+      updateRunnerSetupState({ paired, ready: localRunnerReady, agentMissing });
       if (projectAgentUpdateEl) {
         projectAgentUpdateEl.hidden = !(updateAvailable || (paired && !localRunnerReady));
         configureAgentRecoveryAction(updateAvailable, paired && !localRunnerReady);
@@ -2787,8 +2938,12 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           ? "Reconnect"
           : installedVersion === "unknown" ? "Install latest" : "Update";
       }
-      if (projectReadinessRefreshEl) projectReadinessRefreshEl.hidden = paired && !localRunnerReady;
-      const statusText = readyConnection
+      // A healthy connector is authoritative. Do not leave a stale manual
+      // retry action visible after automatic readiness polling succeeds.
+      if (projectReadinessRefreshEl) projectReadinessRefreshEl.hidden = localRunnerReady || (paired && !localRunnerReady);
+      const statusText = updateAvailable
+        ? "Update required · Installed " + installedVersion + " · Latest " + latestLocalAgentVersion
+        : readyConnection
         ? "Ready · " + (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent")
         : ready
           ? "Ready · bounded MundusX runner"
@@ -2800,9 +2955,11 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
                 ? "Waiting for installer approval and runner startup…"
                 : "No computer is connected to this account yet.";
       harnessRunnerStatusEl.textContent = statusText;
-      if (projectReadinessEl) projectReadinessEl.dataset.state = localRunnerReady ? "ready" : paired ? "offline" : "setup";
-      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = updateAvailable ? "Agent update available" : localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Connect this computer";
-      if (projectReadinessTextEl) projectReadinessTextEl.textContent = localRunnerReady
+      if (projectReadinessEl) projectReadinessEl.dataset.state = updateAvailable ? "update" : localRunnerReady ? "ready" : paired ? "offline" : "setup";
+      if (projectReadinessTitleEl) projectReadinessTitleEl.textContent = updateAvailable ? "Update required" : localRunnerReady ? "Local agent ready" : agentMissing ? "Coding agent missing" : paired ? "Local agent offline" : "Connect this computer";
+      if (projectReadinessTextEl) projectReadinessTextEl.textContent = updateAvailable
+        ? "Installed " + installedVersion + " · Required " + latestLocalAgentVersion + " or newer. Update now to create or run local projects."
+        : localRunnerReady
         ? (runtime === "hermes" ? "Hermes Agent" : "MundusX Agent") + " · Installed " + installedVersion + " · Required " + latestLocalAgentVersion + " or newer. Your project tools run locally; model inference uses MundusX EHDA."
         : agentMissing
           ? "Install Hermes or select the native MundusX Agent, then retry."
@@ -2880,6 +3037,9 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         : "Ask everyone...";
       renderProjectMenu();
       renderRuntimeControls();
+      // Project execution already has a detailed inline Hermes timeline. The
+      // global status pill duplicates raw tool events and distracts from it.
+      if (statusEl) statusEl.hidden = Boolean(activeProject);
     }
 
     function onlineRuntimeAvailable(runtime) {
@@ -2907,12 +3067,23 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
 
     function renderRuntimeControls() {
       mutationToggleEl.hidden = !(activeProject && preferredProjectRuntime());
-      mutationToggleEl.setAttribute("aria-pressed", String(mutationAllowed));
-      mutationToggleEl.textContent = mutationAllowed ? "Edits allowed · once" : "Allow edits once";
+      const mode = projectPermissionMode(activeProject?.slug);
+      mutationToggleEl.value = mode;
+      mutationToggleEl.dataset.mode = mode;
     }
 
-    mutationToggleEl?.addEventListener("click", () => {
-      mutationAllowed = !mutationAllowed;
+    function projectPermissionMode(slug) {
+      return slug && projectPermissions[slug] === "full" ? "full" : "ask";
+    }
+
+    function saveProjectPermission(slug, mode) {
+      if (!slug) return;
+      projectPermissions = { ...projectPermissions, [slug]: mode === "full" ? "full" : "ask" };
+      localStorage.setItem(projectPermissionsKey, JSON.stringify(projectPermissions));
+    }
+
+    mutationToggleEl?.addEventListener("change", () => {
+      saveProjectPermission(activeProject?.slug, mutationToggleEl.value);
       renderRuntimeControls();
       promptEl?.focus();
     });
@@ -3166,6 +3337,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     function setStatus(state, label) {
       statusEl.dataset.state = state;
       statusTextEl.textContent = label;
+      statusEl.hidden = Boolean(activeProject);
     }
 
     function isIdleRuntimeStatus() {
@@ -3424,7 +3596,6 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       setWorkspaceDestination("chats");
       setActiveProject(null);
       pendingRunnerAction = null;
-      mutationAllowed = false;
       renderRuntimeControls();
       activeHistoryLoadToken += 1;
       loadingHistoryConversationId = null;
@@ -3450,6 +3621,12 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         openAuthentication();
         return;
       }
+      const mutatingProjectRequest = Boolean(activeProject && requiresLocalProjectAction(message));
+      const allowProjectMutation = mutatingProjectRequest && (
+        projectPermissionMode(activeProject.slug) === "full"
+        || window.confirm('Allow Hermes to edit files and run commands in project "' + activeProject.slug + '" for this task?')
+      );
+      if (mutatingProjectRequest && !allowProjectMutation) return;
 
       activeHistoryLoadToken += 1;
       followLatestMessage = true;
@@ -3467,15 +3644,10 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           await loadHarnessRunners().catch(() => []);
           const projectRuntime = preferredProjectRuntime();
           if (projectRuntime) {
-            if (!mutationAllowed) {
-              throw new Error("This project request can change files. Turn on ‘Allow edits once’, then send it again.");
-            }
-            mutationAllowed = false;
-            renderRuntimeControls();
             const handledBySelectedRuntime = await tryLocalAgentTurn(pending, message, conversationId, {
               runtime: projectRuntime,
               workspaceRelative: activeProject.slug,
-              allowMutations: true,
+              allowMutations: allowProjectMutation,
             });
             if (!handledBySelectedRuntime) throw new Error("The selected local runtime is not connected.");
             syncNetworkRuntimeStatus(true);
@@ -3502,7 +3674,9 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         const chatMessage = activeProject
           ? "Active local project: " + activeProject.slug + ". Respond in planning/chat mode and do not claim files were changed.\\n\\n" + message
           : message;
-        const handledLocally = runtimePreference === "cloud" ? false : await tryLocalAgentTurn(
+        // A normal conversation never invokes a local harness. Local execution
+        // is activated only by an explicitly attached project.
+        const handledLocally = !activeProject || runtimePreference === "cloud" ? false : await tryLocalAgentTurn(
           pending,
           chatMessage,
           conversationId,
@@ -3548,7 +3722,9 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
 
     function requiresLocalProjectAction(message) {
       const value = String(message || "").trim();
-      if (/^(what|why|how|should|do i|does|is|are|explain|compare|recommend)\\b/i.test(value)) return false;
+      if (/^(what|which|where|when|who|why|how|should|do i|does|is|are|explain|compare|recommend)\\b/i.test(value)) return false;
+      if (/^(can|could|may) i (?:ask|know|understand)\\b/i.test(value)) return false;
+      if (/\\b(?:what|which) (?:changes?|files?|steps?|requirements?) (?:would|will|do|are|is)\\b/i.test(value)) return false;
       return /\\b(create|make|add|write|edit|modify|update|delete|remove|rename|move|generate|scaffold|implement|fix|refactor|format|install|run|test|build|compile|lint|commit|checkout|merge|push|pull)\\b/i.test(value);
     }
 
@@ -3635,21 +3811,91 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       const submitted = await readApiPayload(created, "local agent request failed");
       if (!created.ok) throw new Error(submitted.error || "local agent request failed");
 
+      localStorage.setItem(activeAgentTaskKey, JSON.stringify({
+        taskId: submitted.task_id,
+        conversationId,
+        message,
+        runtime: options.runtime || "auto",
+        runtimeLabel: options.runtime === "hermes" ? "Hermes" : options.runtime === "native" ? "MundusX Local" : "local agent",
+        projectSlug: options.workspaceRelative || null,
+        startedAt: Date.now(),
+      }));
+
       const body = pending.querySelector(".message-body");
       const runtimeLabel = options.runtime === "hermes" ? "Hermes" : options.runtime === "native" ? "MundusX Local" : "local agent";
       if (body) body.textContent = "Connected to " + runtimeLabel + " on your device…";
       if (activeHistoryId === conversationId) setStatus("working", runtimeLabel);
       let payload = submitted;
-      const deadline = Date.now() + 10 * 60 * 1000;
+      const progressStartedAt = Date.now();
+      let progressLastActivityAt = progressStartedAt;
+      let progressMarker = "";
+      let pollRecoveryDeadline = 0;
+      let cancellationRequested = false;
+      const renderProgress = (extra = {}) => {
+        const events = Array.isArray(payload?.events) ? payload.events : [];
+        const latestEvent = events.at(-1);
+        const marker = [payload?.state, events.length, latestEvent?.sequence, latestEvent?.event?.type, latestEvent?.event?.summary].join(":");
+        if (marker !== progressMarker) {
+          progressMarker = marker;
+          progressLastActivityAt = Date.now();
+        }
+        renderLocalAgentProgress(pending, payload, runtimeLabel, {
+          onCancel: cancelTask,
+          conversationId,
+          startedAt: progressStartedAt,
+          lastActivityAt: progressLastActivityAt,
+          ...extra,
+        });
+      };
+      const cancelTask = async () => {
+        if (cancellationRequested) return;
+        cancellationRequested = true;
+        renderProgress({ cancelling: true });
+        const cancelled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id) + "/cancel", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: "{}",
+        });
+        const cancelPayload = await readApiPayload(cancelled, "local agent cancellation failed");
+        if (!cancelled.ok) {
+          cancellationRequested = false;
+          throw new Error(cancelPayload.error || "local agent cancellation failed");
+        }
+        payload = cancelPayload;
+      };
+      renderProgress();
       while (!["completed", "failed", "cancelled"].includes(payload.state)) {
-        if (Date.now() >= deadline) throw new Error("Local agent task timed out");
         await sleep(1000);
-        const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
-        payload = await readApiPayload(polled, "local agent poll failed");
-        if (!polled.ok) throw new Error(payload.error || "local agent poll failed");
+        try {
+          const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
+          payload = await readApiPayload(polled, "local agent poll failed");
+          if (!polled.ok) {
+            const error = new Error(payload.error || "local agent poll failed");
+            error.status = polled.status;
+            throw error;
+          }
+          pollRecoveryDeadline = 0;
+        } catch (pollError) {
+          const status = Number(pollError?.status);
+          const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
+          pollRecoveryDeadline ||= Date.now() + 120000;
+          if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
+          renderProgress({ reconnecting: true });
+          continue;
+        }
+        renderProgress({ cancelling: cancellationRequested });
       }
       if (payload.state !== "completed") {
-        throw new Error(payload.error || (payload.state === "cancelled" ? "Local agent task was cancelled" : "Local agent task failed"));
+        clearActiveAgentTask(submitted.task_id);
+        const changedFiles = Array.isArray(payload.result?.changed_files)
+          ? payload.result.changed_files.filter(Boolean).slice(0, 20)
+          : [];
+        const partial = changedFiles.length
+          ? "\\n\\nFiles changed before the failure:\\n" + changedFiles.map((path) => "- " + path).join("\\n")
+          : "";
+        throw new Error(
+          (payload.error || (payload.state === "cancelled" ? "Local agent task was cancelled" : "Local agent task failed")) + partial,
+        );
       }
       const output = payload.result?.content
         || payload.result?.choices?.[0]?.message?.content
@@ -3661,10 +3907,272 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         routing: "local-agent",
         model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
       }, conversationId);
+      clearActiveAgentTask(submitted.task_id);
       if (activeHistoryId === conversationId) {
         setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
       }
       return true;
+    }
+
+    function clearActiveAgentTask(taskId) {
+      try {
+        const active = JSON.parse(localStorage.getItem(activeAgentTaskKey) || "null");
+        if (!taskId || active?.taskId === taskId) localStorage.removeItem(activeAgentTaskKey);
+      } catch {
+        localStorage.removeItem(activeAgentTaskKey);
+      }
+    }
+
+    async function resumePersistedLocalAgentTask() {
+      let saved = null;
+      try { saved = JSON.parse(localStorage.getItem(activeAgentTaskKey) || "null"); } catch { saved = null; }
+      if (!saved?.taskId || !saved?.conversationId) return false;
+      // Recover work only in the chat the user selected, including after New Chat.
+      if (activeHistoryId !== saved.conversationId) return false;
+
+      const response = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId));
+      const payload = await readApiPayload(response, "active local agent task unavailable");
+      if (activeHistoryId !== saved.conversationId) return false;
+      if (!response.ok) {
+        if ([404, 410].includes(response.status)) clearActiveAgentTask(saved.taskId);
+        return false;
+      }
+
+      const historyItem = readHistory().find((item) => (item.conversationId || item.id) === saved.conversationId);
+      if (historyItem) await loadHistoryItem(historyItem);
+      else {
+        activeHistoryId = saved.conversationId;
+        localStorage.setItem(conversationIdKey, saved.conversationId);
+        clearConversation();
+        if (saved.message) addMessage(saved.message, "user");
+      }
+
+      if (activeHistoryId !== saved.conversationId) return false;
+
+      if (["completed", "failed", "cancelled"].includes(payload.state)) {
+        clearActiveAgentTask(saved.taskId);
+        if (payload.state === "completed") {
+          renderCompletedJob(addMessage("", "assistant"), {
+            status: "completed",
+            output: payload.result?.content || payload.result?.choices?.[0]?.message?.content || "(empty response)",
+            job_id: payload.task_id,
+            routing: "local-agent",
+            model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
+          }, saved.conversationId);
+        }
+        return true;
+      }
+
+      const pending = addMessage("Reconnecting to the active " + (saved.runtimeLabel || "local agent") + " task…", "assistant", "Working");
+      setStatus("working", saved.runtimeLabel || "Hermes");
+      await resumeLocalAgentPolling(pending, payload, saved);
+      return true;
+    }
+
+    async function resumeLocalAgentPolling(pending, initialPayload, saved) {
+      let payload = initialPayload;
+      let lastActivityAt = Date.now();
+      let marker = "";
+      let pollRecoveryDeadline = 0;
+      let cancellationRequested = false;
+      const startedAt = Number(saved.startedAt || Date.now());
+      const renderProgress = (extra = {}) => {
+        const events = Array.isArray(payload?.events) ? payload.events : [];
+        const latestEvent = events.at(-1);
+        const nextMarker = [payload?.state, events.length, latestEvent?.sequence, latestEvent?.event?.type, latestEvent?.event?.summary].join(":");
+        if (nextMarker !== marker) {
+          marker = nextMarker;
+          lastActivityAt = Date.now();
+        }
+        renderLocalAgentProgress(pending, payload, saved.runtimeLabel || "Hermes", {
+          conversationId: saved.conversationId,
+          startedAt,
+          lastActivityAt,
+          onCancel: async () => {
+            if (cancellationRequested) return;
+            cancellationRequested = true;
+            const cancelled = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId) + "/cancel", {
+              method: "POST", headers: { "Content-Type": "application/json" }, body: "{}",
+            });
+            payload = await readApiPayload(cancelled, "local agent cancellation failed");
+          },
+          ...extra,
+        });
+      };
+      renderProgress();
+      while (!["completed", "failed", "cancelled"].includes(payload.state)) {
+        await sleep(1000);
+        try {
+          const response = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId));
+          payload = await readApiPayload(response, "local agent poll failed");
+          if (!response.ok) {
+            const error = new Error(payload.error || "local agent poll failed");
+            error.status = response.status;
+            throw error;
+          }
+          pollRecoveryDeadline = 0;
+        } catch (pollError) {
+          const status = Number(pollError?.status);
+          const retryable = !Number.isFinite(status) || [408, 425, 429, 500, 502, 503, 504].includes(status);
+          pollRecoveryDeadline ||= Date.now() + 120000;
+          if (!retryable || Date.now() >= pollRecoveryDeadline) throw pollError;
+          renderProgress({ reconnecting: true, cancelling: cancellationRequested });
+          continue;
+        }
+        renderProgress({ cancelling: cancellationRequested });
+      }
+      clearActiveAgentTask(saved.taskId);
+      if (payload.state !== "completed") throw new Error(payload.error || "Local agent task " + payload.state);
+      renderCompletedJob(pending, {
+        status: "completed",
+        output: payload.result?.content || payload.result?.choices?.[0]?.message?.content || "(empty response)",
+        job_id: payload.task_id,
+        routing: "local-agent",
+        model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
+      }, saved.conversationId);
+      setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
+    }
+
+    function renderLocalAgentProgress(pending, payload, runtimeLabel, options = {}) {
+      const body = pending.querySelector(".message-body");
+      if (!body) return;
+      const events = Array.isArray(payload?.events) ? payload.events : [];
+      const latest = events.at(-1)?.event || null;
+      const friendlyEvent = (event, active = false) => {
+        const type = event?.type || "";
+        const tool = String(event?.metadata?.tool || "").toLowerCase();
+        if (type === "tool_started") {
+          if (tool === "terminal") return "Running a command";
+          if (["write_file", "patch", "apply_patch"].includes(tool)) return "Writing project files";
+          if (["search_files", "read_file"].includes(tool)) return "Exploring the codebase";
+          return "Using " + (tool || "a project tool").replaceAll("_", " ");
+        }
+        if (type === "tool_completed") {
+          if (active) return "Reviewing the tool result";
+          if (tool === "terminal") return "Command finished";
+          if (["write_file", "patch", "apply_patch"].includes(tool)) return "Project files updated";
+          return (tool ? tool.replaceAll("_", " ") : "Tool") + " completed";
+        }
+        if (type === "skills_selected") {
+          const skills = Array.isArray(event?.metadata?.skills) ? event.metadata.skills : [];
+          return skills.length ? "Using " + skills.map((skill) => String(skill).replaceAll("-", " ")).join(", ") : "Loading project skills";
+        }
+        const labels = {
+          harness_started: "Starting in your project",
+          model_turn_queued: "Planning the next step",
+          model_requested: "Thinking through the next step",
+          model_turn_completed: active ? "Preparing the next action" : "Model step completed",
+          skills_unavailable: "Continuing with built-in tools",
+          file_changed: "Updating project files",
+          verification_started: "Checking the work",
+          verification_completed: "Checks completed",
+          agent_progress: "Working through the task",
+        };
+        return labels[type] || String(event?.summary || "Working through the task");
+      };
+      const summary = options.cancelling
+        ? "Stopping safely"
+        : options.reconnecting
+          ? "Reconnecting without losing progress"
+          : friendlyEvent(latest, true);
+      const steps = [...new Set(events.slice(0, -1)
+        .map((item) => friendlyEvent(item?.event, false).trim())
+        .filter(Boolean))]
+        .slice(-3);
+      body.replaceChildren();
+      const headingRow = document.createElement("div");
+      headingRow.className = "agent-progress-heading";
+      const orb = document.createElement("span");
+      orb.className = "agent-progress-orb";
+      orb.setAttribute("aria-hidden", "true");
+      const heading = document.createElement("strong");
+      heading.textContent = runtimeLabel + " is working";
+      headingRow.append(orb, heading);
+      body.appendChild(headingRow);
+      const timeline = document.createElement("div");
+      timeline.className = "agent-progress-timeline";
+      if (steps.length) {
+        const history = document.createElement("div");
+        history.className = "agent-progress-history";
+        for (const step of steps) {
+          const row = document.createElement("div");
+          row.className = "agent-progress-step";
+          const check = document.createElement("span");
+          check.className = "agent-progress-check";
+          check.textContent = "✓";
+          const text = document.createElement("span");
+          text.textContent = step;
+          row.append(check, text);
+          history.appendChild(row);
+        }
+        timeline.appendChild(history);
+      }
+      const current = document.createElement("div");
+      current.className = "agent-progress-current";
+      const dot = document.createElement("span");
+      dot.className = "agent-progress-dot";
+      dot.setAttribute("aria-hidden", "true");
+      const currentText = document.createElement("span");
+      currentText.textContent = summary;
+      current.append(dot, currentText);
+      timeline.appendChild(current);
+      const formatDuration = (milliseconds) => {
+        const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+        if (seconds < 60) return seconds + "s";
+        const minutes = Math.floor(seconds / 60);
+        return minutes + "m " + String(seconds % 60).padStart(2, "0") + "s";
+      };
+      const formatTokens = (value) => {
+        const number = Number(value || 0);
+        if (number < 1000) return String(number);
+        return (number / 1000).toFixed(number >= 10000 ? 0 : 1) + "k";
+      };
+      // A provider may advertise its context window without returning token
+      // usage. In that case context_used is zero/unknown, not proof that the
+      // entire window remains. Only surface context telemetry once Hermes has
+      // received a real prompt-token count from the provider.
+      const telemetryEvent = [...events].reverse().find((item) => {
+        const candidate = item?.event?.metadata?.telemetry;
+        return Number(candidate?.context_length) > 0 && Number(candidate?.context_used) > 0;
+      });
+      const telemetry = telemetryEvent?.event?.metadata?.telemetry || {};
+      const now = Date.now();
+      const meta = document.createElement("div");
+      meta.className = "agent-progress-meta";
+      const facts = [
+        "Elapsed " + formatDuration(now - Number(options.startedAt || now)),
+        "Last activity " + formatDuration(now - Number(options.lastActivityAt || now)) + " ago",
+      ];
+      const contextLength = Number(telemetry.context_length || 0);
+      const contextRemaining = Number(telemetry.context_remaining || 0);
+      if (contextLength > 0 && contextRemaining >= 0) {
+        const remainingPercent = Math.max(0, Math.min(100, Math.round(contextRemaining / contextLength * 100)));
+        facts.push("Context left " + remainingPercent + "% · " + formatTokens(contextRemaining) + " tokens");
+      }
+      if (Number(telemetry.api_calls || 0) > 0) facts.push(telemetry.api_calls + " model turns");
+      if (Number(telemetry.compressions || 0) > 0) facts.push(telemetry.compressions + " context rebuilds");
+      for (const fact of facts) {
+        const item = document.createElement("span");
+        item.textContent = fact;
+        meta.appendChild(item);
+      }
+      timeline.appendChild(meta);
+      body.appendChild(timeline);
+      if (typeof options.onCancel === "function" && !["completed", "failed", "cancelled"].includes(payload?.state)) {
+        const actions = document.createElement("div");
+        actions.className = "message-error-actions";
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "message-retry-button";
+        cancel.textContent = options.cancelling ? "Stopping…" : "Stop";
+        cancel.disabled = options.cancelling === true;
+        cancel.addEventListener("click", () => void options.onCancel().catch((error) => {
+          showToast(error?.message || "Could not stop local task");
+        }));
+        actions.appendChild(cancel);
+        body.appendChild(actions);
+      }
+      if (!options.conversationId || activeHistoryId === options.conversationId) setStatus("working", summary);
     }
 
     async function tryLiveChatTurn(pending, message, conversationId) {
@@ -5651,6 +6159,43 @@ export function createServerApp(config = configFromEnv()) {
       if (url.pathname.startsWith("/api/agent/model/v1/")) {
         const connector = await authStore.mcpSession(request);
         if (!connector) throw httpError(401, "A connected MundusX agent credential is required");
+        if (request.method === "POST" && url.pathname === "/api/agent/model/v1/jobs") {
+          const body = await readJsonBody(request, MAX_AGENT_MODEL_BODY_BYTES);
+          if (body?.protocol !== "mundusx-project-agent/v1" || body?.model !== PUBLIC_MODEL_ID ||
+              !Array.isArray(body?.messages) || !Array.isArray(body?.tools)) {
+            throw httpError(400, "Invalid project-agent v1 model job");
+          }
+          const accepted = await authStore.createProjectModelJob(connector.id, body);
+          queueMicrotask(async () => {
+            const modelRequest = await authStore.startProjectModelJob(connector.id, accepted.job_id).catch(() => null);
+            if (!modelRequest) return;
+            try {
+              const completion = await submitHermesToolCompletion(modelRequest, config);
+              await authStore.finishProjectModelJob(connector.id, accepted.job_id, completion);
+            } catch (error) {
+              await authStore.finishProjectModelJob(connector.id, accepted.job_id, null, {
+                code: "model_turn_failed", message: String(error?.message || error).slice(0, 1000), retryable: true,
+              }).catch(() => {});
+            }
+          });
+          return sendOpenAiJson(response, 202, {
+            protocol: "mundusx-project-agent/v1", job_id: accepted.job_id, status: accepted.state, retry_after_ms: 500,
+          });
+        }
+        const asyncJob = url.pathname.match(/^\/api\/agent\/model\/v1\/jobs\/([0-9a-f-]+)(\/cancel)?$/i);
+        if (asyncJob && request.method === "GET" && !asyncJob[2]) {
+          const job = await authStore.projectModelJob(connector.id, asyncJob[1]);
+          return sendOpenAiJson(response, 200, {
+            protocol: "mundusx-project-agent/v1", job_id: job.job_id, status: job.state,
+            ...(job.state === "completed" ? { result: job.result } : {}),
+            ...(job.error ? { error: job.error } : {}),
+            ...(["queued", "running"].includes(job.state) ? { retry_after_ms: 500 } : {}),
+          });
+        }
+        if (asyncJob && request.method === "POST" && asyncJob[2]) {
+          const job = await authStore.cancelProjectModelJob(connector.id, asyncJob[1]);
+          return sendOpenAiJson(response, 200, { protocol: "mundusx-project-agent/v1", job_id: job.job_id, status: job.state });
+        }
         if (request.method === "GET" && url.pathname === "/api/agent/model/v1/models") {
           return sendOpenAiJson(response, 200, openAiModelsResponse());
         }
@@ -5658,7 +6203,11 @@ export function createServerApp(config = configFromEnv()) {
           const body = await readJsonBody(request, MAX_AGENT_MODEL_BODY_BYTES);
           const routedBody = { ...body, model: PUBLIC_MODEL_ID };
           if (Array.isArray(routedBody.tools) && routedBody.tools.length) {
-            return sendOpenAiJson(response, 200, await submitHermesToolCompletion(routedBody, config));
+            // Preserve Hermes' native OpenAI messages and tool schema all the
+            // way to the selected model runtime. The control plane is the
+            // default provider; deployments may configure additional native
+            // providers for health-based failover.
+            return await relayNativeHermesToolStream(response, routedBody, config);
           }
           if (routedBody.stream === true) {
             return await streamOpenAiChatCompletion(response, routedBody, config);
@@ -5955,22 +6504,40 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
     "Conversation:",
     JSON.stringify(transcript),
   ].join("\n");
-  const result = await submitChatTurn({
+  const turn = {
     message: routerPrompt,
     systemPrompt: systemContext || "You are the model inside a bounded coding agent.",
+    internalAgentTurn: true,
     executionMode: "single",
     toolMode: false,
     structuredOutput: false,
+    skipQualityValidation: true,
     maxTokens: Math.min(Number(body?.max_tokens || 2048), 4096),
     temperature: 0,
-  }, config, fetchImpl);
+  };
+  let result;
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      result = await submitChatTurn({ ...turn, requestId: attempt ? undefined : body?.request_id }, config, fetchImpl);
+      if (String(result?.status || "").toLowerCase() === "completed" || !isRetryableHermesModelFailure(result?.error)) break;
+      lastError = new Error(result?.error || "MundusX agent model request failed");
+    } catch (error) {
+      lastError = error;
+      if (!isRetryableHermesModelFailure(error?.message)) throw error;
+    }
+    if (attempt < 2) await delay(750 * (attempt + 1));
+  }
+  if (!result && lastError) throw lastError;
   if (String(result?.status || "").toLowerCase() !== "completed") {
     throw httpError(502, result?.error || "MundusX agent model request failed");
   }
   const raw = String(result?.output || "").trim();
   const normalized = normalizeRequestedStructuredOutput(raw, true);
-  let decision;
-  try { decision = JSON.parse(normalized); } catch { decision = null; }
+  const decision = parseHermesToolDecision(normalized, tools)
+    ?? parseHermesToolDecision(raw, tools)
+    ?? parseFirstJsonObject(normalized)
+    ?? parseFirstJsonObject(raw);
   const created = Math.floor(Date.now() / 1000);
   const id = normalizeOpenAiCompletionId(body?.request_id);
   const selected = tools.find((tool) => tool.name === decision?.name);
@@ -6003,6 +6570,291 @@ export async function submitHermesToolCompletion(body, config = configFromEnv(),
     model: PUBLIC_MODEL_ID,
     choices: [{ index: 0, message: { role: "assistant", content }, finish_reason: "stop" }],
   };
+}
+
+export function isRetryableHermesModelFailure(value) {
+  return /\b(?:408|425|429|500|502|503|504)\b|application failed to respond|timed?\s*out|temporar(?:y|ily)|connection (?:reset|closed|refused)/i
+    .test(String(value || ""));
+}
+
+const agentProviderCircuits = new Map();
+const AGENT_PROVIDER_FAILURE_THRESHOLD = 2;
+const AGENT_PROVIDER_COOLDOWN_MS = 30_000;
+const AGENT_PROVIDER_FIRST_EVENT_TIMEOUT_MS = 60_000;
+
+export function resetAgentProviderCircuits() {
+  agentProviderCircuits.clear();
+}
+
+function agentProviderAvailable(provider, now = Date.now()) {
+  return (agentProviderCircuits.get(provider.baseUrl)?.openUntil || 0) <= now;
+}
+
+function noteAgentProviderSuccess(provider) {
+  agentProviderCircuits.delete(provider.baseUrl);
+}
+
+function noteAgentProviderFailure(provider, now = Date.now()) {
+  const previous = agentProviderCircuits.get(provider.baseUrl) || { failures: 0, openUntil: 0 };
+  const failures = previous.failures + 1;
+  agentProviderCircuits.set(provider.baseUrl, {
+    failures,
+    openUntil: failures >= AGENT_PROVIDER_FAILURE_THRESHOLD ? now + AGENT_PROVIDER_COOLDOWN_MS : 0,
+  });
+}
+
+function nativeChatCompletionUrl(baseUrl) {
+  const normalized = String(baseUrl || "").replace(/\/+$/, "");
+  return normalized.endsWith("/v1") ? `${normalized}/chat/completions` : `${normalized}/v1/chat/completions`;
+}
+
+function inspectNativeOpenAiEvents(text) {
+  for (const event of String(text || "").split(/\r?\n\r?\n/)) {
+    const data = event.split(/\r?\n/)
+      .filter((line) => line.startsWith("data:"))
+      .map((line) => line.slice(5).trimStart())
+      .join("\n")
+      .trim();
+    if (!data || data === "[DONE]") continue;
+    try {
+      const value = JSON.parse(data);
+      if (value?.error) return { error: String(value.error.message || value.error) };
+      if (Array.isArray(value?.choices)) return { valid: true };
+    } catch {
+      // Wait for a complete SSE event before deciding that the provider is bad.
+    }
+  }
+  return {};
+}
+
+async function requireNativeToolNode(provider, config, fetchImpl) {
+  const providerBase = String(provider?.baseUrl || "").replace(/\/+$/, "");
+  const controlPlaneBase = String(config?.controlPlaneUrl || "").replace(/\/+$/, "");
+  if (!providerBase || providerBase !== controlPlaneBase) return;
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5_000);
+  timeout.unref?.();
+  try {
+    const upstream = await fetchImpl(`${controlPlaneBase}/v1/nodes?page=1&page_size=100`, {
+      headers: provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {},
+      signal: controller.signal,
+    });
+    if (!upstream.ok) return; // The completion endpoint remains authoritative.
+    const payload = await upstream.json();
+    const nodes = Array.isArray(payload) ? payload : payload?.items || payload?.nodes || [];
+    const capable = nodes.some((node) => {
+      if (!['ready', 'online'].includes(String(node?.state || node?.status || '').toLowerCase())) return false;
+      const tools = [
+        ...(node?.capabilities?.supported_tools || []),
+        ...(node?.worker_health?.capabilities?.supported_tools || []),
+      ];
+      return tools.includes('native_tool_calls_v1');
+    });
+    if (!capable) {
+      throw httpError(
+        503,
+        'Hermes native tools are unavailable because the shared model node needs an agent upgrade. The local project runner is healthy; ordinary users do not need to reinstall it.',
+      );
+    }
+  } catch (error) {
+    if (error?.statusCode === 503 || error?.status === 503) throw error;
+    // Discovery must not turn a transient status failure into a false outage.
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+export async function relayNativeHermesToolStream(
+  response,
+  body,
+  config = configFromEnv(),
+  fetchImpl = fetch,
+) {
+  const configured = Array.isArray(config.agentModelProviders) && config.agentModelProviders.length
+    ? config.agentModelProviders
+    : [{
+        baseUrl: config.controlPlaneUrl,
+        apiKey: config.operatorToken || "",
+        model: config.modelOverride || PUBLIC_MODEL_ID,
+      }];
+  const available = configured.filter((provider) => agentProviderAvailable(provider));
+  const providers = available.length ? available : configured;
+  let lastError = "No native agent model provider is configured";
+
+  for (const provider of providers) {
+    const controller = new AbortController();
+    let timeout = setTimeout(() => controller.abort(), AGENT_PROVIDER_FIRST_EVENT_TIMEOUT_MS);
+    timeout.unref?.();
+    let reader;
+    try {
+      await requireNativeToolNode(provider, config, fetchImpl);
+      const upstreamBody = { ...body, stream: true };
+      delete upstreamBody.protocol;
+      delete upstreamBody.project_task_id;
+      delete upstreamBody.connection_id;
+      delete upstreamBody.request_id;
+      if (provider.model) upstreamBody.model = provider.model;
+      else if (config.modelOverride) upstreamBody.model = config.modelOverride;
+      const upstream = await fetchImpl(nativeChatCompletionUrl(provider.baseUrl), {
+        method: "POST",
+        headers: {
+          Accept: "text/event-stream",
+          "Content-Type": "application/json",
+          ...(provider.apiKey ? { Authorization: `Bearer ${provider.apiKey}` } : {}),
+        },
+        body: JSON.stringify(upstreamBody),
+        signal: controller.signal,
+      });
+      if (!upstream.ok) {
+        const detail = (await upstream.text()).trim().slice(0, 500);
+        lastError = `native agent provider returned ${upstream.status}: ${detail || upstream.statusText}`;
+        if (![408, 425, 429, 500, 502, 503, 504].includes(upstream.status)) throw httpError(upstream.status, lastError);
+        noteAgentProviderFailure(provider);
+        continue;
+      }
+      if (!upstream.body?.getReader) {
+        lastError = "native agent provider did not return a readable SSE stream";
+        noteAgentProviderFailure(provider);
+        continue;
+      }
+
+      reader = upstream.body.getReader();
+      const decoder = new TextDecoder();
+      const buffered = [];
+      let inspected = "";
+      let accepted = false;
+      while (!accepted) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        clearTimeout(timeout);
+        timeout = setTimeout(() => controller.abort(), AGENT_PROVIDER_FIRST_EVENT_TIMEOUT_MS);
+        timeout.unref?.();
+        buffered.push(value);
+        inspected += decoder.decode(value, { stream: true });
+        const verdict = inspectNativeOpenAiEvents(inspected);
+        if (verdict.error) {
+          if (/maximum context length|context_length_exceeded|exceeds the model's context/i.test(verdict.error)) {
+            throw httpError(400, verdict.error);
+          }
+          lastError = verdict.error;
+          break;
+        }
+        if (verdict.valid) accepted = true;
+        if (inspected.length > 65_536) {
+          lastError = "native agent provider sent no valid OpenAI SSE event";
+          break;
+        }
+      }
+      if (!accepted) {
+        noteAgentProviderFailure(provider);
+        await reader.cancel().catch(() => {});
+        continue;
+      }
+
+      clearTimeout(timeout);
+      noteAgentProviderSuccess(provider);
+      startOpenAiStream(response, "native-agent-tools");
+      for (const chunk of buffered) response.write(chunk);
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        response.write(value);
+      }
+      return response.end();
+    } catch (error) {
+      // Context and payload errors require a smaller request, not retries or
+      // another provider. Preserve their status for the desktop connector.
+      if ([400, 413, 422].includes(error?.statusCode)) throw error;
+      lastError = error?.name === "AbortError"
+        ? "native agent provider timed out before its first OpenAI event"
+        : String(error?.message || error);
+      noteAgentProviderFailure(provider);
+      await reader?.cancel?.().catch(() => {});
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+  throw httpError(502, `All native agent model providers failed: ${lastError}`);
+}
+
+export function parseFirstJsonObject(value) {
+  const text = String(value ?? "");
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "{") continue;
+    let depth = 0;
+    let quoted = false;
+    let escaped = false;
+    for (let cursor = start; cursor < text.length; cursor += 1) {
+      const char = text[cursor];
+      if (quoted) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === '"') quoted = false;
+        continue;
+      }
+      if (char === '"') quoted = true;
+      else if (char === "{") depth += 1;
+      else if (char === "}" && --depth === 0) {
+        try { return JSON.parse(text.slice(start, cursor + 1)); } catch { break; }
+      }
+    }
+  }
+  return null;
+}
+
+export function parseHermesToolDecision(value, tools = []) {
+  const text = String(value ?? "");
+  const parsed = parseFirstJsonObject(text);
+  const allowed = new Set(tools.map((tool) => String(tool?.name || "")).filter(Boolean));
+  const parsedName = parsed?.kind === "tool"
+    ? String(parsed.name || "")
+    : allowed.has(String(parsed?.kind || ""))
+      ? String(parsed.kind)
+      : "";
+  if (parsedName && allowed.has(parsedName)) {
+    let args = parsed.arguments;
+    if (typeof args === "string") args = parseFirstJsonObject(args);
+    if (args && typeof args === "object" && !Array.isArray(args)) {
+      return { ...parsed, kind: "tool", name: parsedName, arguments: args };
+    }
+  }
+
+  // Small models sometimes quote a JSON arguments object without escaping its
+  // inner quotes. Recover only the explicit tool/name/arguments shape and only
+  // when the named tool was offered by Hermes for this turn.
+  if (!/["']kind["']\s*:\s*["']tool["']/i.test(text)) return null;
+  const name = text.match(/["']name["']\s*:\s*["']([A-Za-z0-9_.:-]+)["']/i)?.[1];
+  if (!name || !allowed.has(name)) return null;
+  const marker = text.search(/["']arguments["']\s*:/i);
+  if (marker < 0) return null;
+  const argumentsObject = parseFirstJsonObject(text.slice(marker));
+  if (!argumentsObject || Array.isArray(argumentsObject)) return null;
+  return { kind: "tool", name, arguments: argumentsObject };
+}
+
+export async function streamHermesToolCompletion(response, body, config = configFromEnv(), fetchImpl = fetch) {
+  const completionId = normalizeOpenAiCompletionId(body?.request_id);
+  startOpenAiStream(response, "agent-tools", completionId);
+  response.flushHeaders?.();
+  // Force proxy headers/body onto the wire before waiting on EHDA. A delayed
+  // first byte can otherwise be classified as an unresponsive application.
+  response.write(openAiSseStartFrame(completionId));
+  response.write(`: ${" ".repeat(2048)}\n\n`);
+  const heartbeat = setInterval(() => {
+    if (!response.writableEnded) response.write(": keep-alive\n\n");
+  }, 10_000);
+  heartbeat.unref?.();
+  try {
+    const completion = await submitHermesToolCompletion(body, config, fetchImpl);
+    for (const frame of openAiSseFrames(completion, { buffered: true, roleAlreadySent: true })) response.write(frame);
+    response.end("data: [DONE]\n\n");
+  } catch (error) {
+    const payload = { error: { message: error.message ?? "agent model request failed", type: "mundusx_agent_error" } };
+    response.end(`data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`);
+  } finally {
+    clearInterval(heartbeat);
+  }
 }
 
 export function requiresValidatedStreaming(message, body = {}) {
@@ -6291,17 +7143,37 @@ export function openAiSseFrames(completion, { buffered = true, roleAlreadySent =
     model: PUBLIC_MODEL_ID,
   };
   const content = String(choice?.message?.content ?? "");
-  const pieces = buffered ? [content] : splitOrdinaryStreamContent(content);
+  const toolCalls = Array.isArray(choice?.message?.tool_calls) ? choice.message.tool_calls : [];
+  const pieces = content ? (buffered ? [content] : splitOrdinaryStreamContent(content)) : [];
   const contentChunks = pieces.map((piece, index) => ({
     ...base,
     choices: [{ index: 0, delta: { ...(!roleAlreadySent && index === 0 ? { role: "assistant" } : {}), content: piece }, finish_reason: null }],
+  }));
+  const toolChunks = toolCalls.map((toolCall, index) => ({
+    ...base,
+    choices: [{
+      index: 0,
+      delta: {
+        ...(!roleAlreadySent && contentChunks.length === 0 && index === 0 ? { role: "assistant" } : {}),
+        tool_calls: [{
+          index,
+          id: toolCall.id,
+          type: toolCall.type || "function",
+          function: {
+            name: toolCall.function?.name,
+            arguments: String(toolCall.function?.arguments ?? "{}"),
+          },
+        }],
+      },
+      finish_reason: null,
+    }],
   }));
   const finalChunk = {
     ...base,
     choices: [{ index: 0, delta: {}, finish_reason: choice?.finish_reason ?? "stop" }],
     ...(completion?.usage ? { usage: completion.usage } : {}),
   };
-  return [...contentChunks, finalChunk].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`);
+  return [...contentChunks, ...toolChunks, finalChunk].map((chunk) => `data: ${JSON.stringify(chunk)}\n\n`);
 }
 
 function splitOrdinaryStreamContent(value, targetChars = 120) {
@@ -6424,7 +7296,8 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
 
   const toolMode = isToolModeEnabled(body);
   const toolMessage = message;
-  const compoundToolPrompt = isMultiIntentPlanningCandidate(toolMessage);
+  const internalAgentTurn = body?.internalAgentTurn === true;
+  const compoundToolPrompt = !internalAgentTurn && isMultiIntentPlanningCandidate(toolMessage);
 
   if (compoundToolPrompt) {
     const compoundJob = await fetchPlannedCompoundToolJob(toolMessage, config, fetchImpl, body?.voicePersona);
@@ -6433,7 +7306,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     }
   }
 
-  if (!compoundToolPrompt) {
+  if (!compoundToolPrompt && !internalAgentTurn) {
     if (isNodeExpressMysqlCustomerCrudRequest(toolMessage)) {
       return recordAssistantTurn(conversationId, config, fetchImpl, fetchNodeExpressMysqlCustomerCrudJob(toolMessage));
     }
@@ -6502,7 +7375,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     }
   }
 
-  if (toolMode && needsGrounding(toolMessage)) {
+  if (!internalAgentTurn && toolMode && needsGrounding(toolMessage)) {
     const groundingQuery = extractGeneralLookupTopic(toolMessage) || toolMessage;
     const webSearchJob = await fetchWebSearchJob(message, groundingQuery, config, fetchImpl, {
       model: body?.model,
@@ -6524,7 +7397,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
   const model = String(body?.model ?? config.modelOverride ?? "").trim();
   const capacityProfile = await fetchChatCapacityProfile(config, fetchImpl, model);
   const contextWindowTokens = capacityProfile?.contextWindowTokens ?? DEFAULT_CONTEXT_WINDOW_TOKENS;
-  let systemPrompt = buildChatSystemPrompt(message, body?.voicePersona, body?.skillContext);
+  let systemPrompt = body?.systemPrompt || buildChatSystemPrompt(message, body?.voicePersona, body?.skillContext);
   if (body?.qualityRetry === true) {
     systemPrompt += " This is an internal validation retry. Return a corrected complete answer only. Do not repeat words, clauses, sentences, or sections. Satisfy every requested method, entrypoint, call relationship, import, and formatting requirement. For code requests, use readable multiline source code in one fenced block.";
   }
@@ -6613,7 +7486,10 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     throw httpError(502, "control plane did not return a job id");
   }
   rememberPromptForJob(jobId, message);
-  rememberValidationContractForJob(jobId, { structuredOutput: body?.structuredOutput === true });
+  rememberValidationContractForJob(jobId, {
+    structuredOutput: body?.structuredOutput === true,
+    skipQualityValidation: body?.skipQualityValidation === true,
+  });
   const contextUsage = plannedContextUsage({
     contextWindowTokens,
     systemPrompt: jobBody.system_prompt,
@@ -6627,6 +7503,7 @@ export async function submitChatJob(body, config = configFromEnv(), fetchImpl = 
     prompt: message,
     contextUsage,
     structuredOutput: body?.structuredOutput === true,
+    skipQualityValidation: body?.skipQualityValidation === true,
   });
   return formatted.status === "completed"
     ? recordAssistantTurn(conversationId, config, fetchImpl, formatted)
@@ -10004,8 +10881,10 @@ function forgetContextUsageForJob(jobId) {
 
 function rememberValidationContractForJob(jobId, contract) {
   const key = String(jobId ?? "").trim();
-  if (!key || !contract?.structuredOutput) return;
-  validationContractByJobId.set(key, { structuredOutput: true });
+  const structuredOutput = contract?.structuredOutput === true;
+  const skipQualityValidation = contract?.skipQualityValidation === true;
+  if (!key || (!structuredOutput && !skipQualityValidation)) return;
+  validationContractByJobId.set(key, { structuredOutput, skipQualityValidation });
   while (validationContractByJobId.size > MAX_TRACKED_PROMPT_CONTEXTS) {
     validationContractByJobId.delete(validationContractByJobId.keys().next().value);
   }
@@ -10210,6 +11089,7 @@ export async function pollChatJob(jobId, config = configFromEnv(), fetchImpl = f
     prompt,
     contextUsage,
     structuredOutput: validationContract?.structuredOutput === true,
+    skipQualityValidation: validationContract?.skipQualityValidation === true,
   });
   if (["completed", "failed"].includes(String(formatted.status ?? "").toLowerCase())) {
     forgetPromptForJob(jobId);
@@ -10299,7 +11179,9 @@ function formatChatJob(jobId, job, fallbackModel, options = {}) {
     ? normalizeRequestedStructuredOutput(promotedOutput, options.structuredOutput === true)
     : "";
   const output = job.status === "completed"
-    ? normalizeCompleteCodeOutput(structuredOutput, options.prompt)
+    ? options.skipQualityValidation === true
+      ? promotedOutput
+      : normalizeCompleteCodeOutput(structuredOutput, options.prompt)
     : "";
   const partialOutput = job.status === "completed" || !job.graph_execution_enabled
     ? ""
@@ -10313,20 +11195,20 @@ function formatChatJob(jobId, job, fallbackModel, options = {}) {
     : 0;
   const promptLower = String(options.prompt ?? "").toLowerCase();
   const verifyCompletedOutput = CHAT_VERIFIER_ENABLED || looksLikeMathRequest(promptLower);
-  const verifierFlags = verifyCompletedOutput && job.status === "completed"
+  const verifierFlags = options.skipQualityValidation !== true && verifyCompletedOutput && job.status === "completed"
     ? detectChatQualityFlags(sourceOutput, rawOutput, output, options.prompt)
     : [];
-  const codeFlags = job.status === "completed"
+  const codeFlags = options.skipQualityValidation !== true && job.status === "completed"
     ? detectCompleteCodeQualityFlags(output, options.prompt)
     : [];
-  const repetitionFlags = job.status === "completed"
+  const repetitionFlags = options.skipQualityValidation !== true && job.status === "completed"
     ? detectDegenerateRepetitionQualityFlags(output)
     : [];
-  const structuredFlags = job.status === "completed"
+  const structuredFlags = options.skipQualityValidation !== true && job.status === "completed"
     ? detectStructuredOutputQualityFlags(output, options.structuredOutput === true)
     : [];
   const finishReason = inferChatFinishReason(job, progress);
-  const tokenLimitFlags = job.status === "completed" && finishReason === "length" &&
+  const tokenLimitFlags = options.skipQualityValidation !== true && job.status === "completed" && finishReason === "length" &&
     (job.max_tokens_source === "auto" || options.structuredOutput === true || requiresValidatedStreaming(options.prompt))
     ? [{ code: "output_token_limit", severity: "reject", message: "MundusX reached the output token limit before completing a validated answer. Please retry." }]
     : [];
