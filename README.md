@@ -47,11 +47,11 @@ Versioned execution contracts:
 | `MUNDUSX_CHAT_MAX_ACTIVE_REQUESTS` | No | Maximum admitted parent OpenAI chat requests. Defaults to 7 and is bounded to 1–64. Additional streaming requests wait FIFO with SSE keep-alives before graph planning; non-streaming requests receive `429` plus `Retry-After` so an intermediary cannot abandon a silent queued connection. |
 | `MUNDUSX_CHAT_TIMEOUT_SECONDS` | No | Maximum synchronous OpenAI chat execution wait after parent admission. Defaults to 600 seconds and is bounded to 5–900 seconds. |
 | `MUNDUSX_WEATHER_URL` | No | Weather-tool origin. Defaults to `https://wttr.in`; override only with a compatible trusted endpoint. |
-| `MUNDUSX_SPORTS_URL` | No | TheSportsDB-compatible v1 origin. Defaults to `https://www.thesportsdb.com/api/v1/json`; non-HTTPS overrides are rejected except loopback tests. |
-| `MUNDUSX_SPORTS_API_KEY` | Recommended for broad sports coverage | TheSportsDB v1 key. Defaults to the documented free key `123`, whose event coverage is intentionally limited. Store production keys only in deployment secrets. |
 | `MUNDUSX_WEB_SEARCH_URL` | Required for generic fresh web queries | Trusted HTTPS JSON search endpoint. MundusX appends `q=<encoded query>` and accepts either `results[]` or Brave-style `web.results[]` records. If unset, current questions without a dedicated tool fail honestly instead of falling through to model memory. |
 | `MUNDUSX_WEB_SEARCH_API_KEY` | Provider-dependent | Optional search-provider credential sent only by the control plane. Never place it in node jobs or client payloads. |
 | `MUNDUSX_WEB_SEARCH_API_KEY_HEADER` | No | Search-provider credential header. Defaults to `X-Subscription-Token`. |
+
+Sports research is handled by the Hermes harness using its available search and browser tools. The gateway does not require a sports-provider key or replace harness tool results with a provider-specific sports answer.
 
 ### Local `.env`
 
