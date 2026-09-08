@@ -3530,6 +3530,7 @@ fn control_plane_operator_page(
         r#"<!doctype html>
 <html lang="en">
   <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{title} - MundusX</title>
@@ -3545,9 +3546,10 @@ fn control_plane_operator_page(
       }})();
     </script>
     <style>
+button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ font-family:"JetBrains Mono",ui-monospace,monospace; }}
       :root {{ color-scheme: dark; --bg:#020711; --surface:#06101d; --line:rgba(73,159,255,.22); --line-strong:rgba(45,164,255,.48); --text:#f6fbff; --muted:#9baac0; --blue:#33a8ff; }}
       * {{ box-sizing: border-box; }}
-      body {{ margin:0; min-height:100vh; background:linear-gradient(135deg,#020711,#050b16 52%,#01040b); color:var(--text); font-family:Inter,"Segoe UI",sans-serif; }}
+      body {{ margin:0; min-height:100vh; background:linear-gradient(135deg,#020711,#050b16 52%,#01040b); color:var(--text); font-family: "Space Grotesk", system-ui, sans-serif; }}
       a {{ color:inherit; text-decoration:none; }}
       a:focus-visible {{ outline:0; box-shadow:0 0 0 3px rgba(37,215,255,.2); }}
       .motion-lift {{ transition:transform .18s ease,border-color .12s ease,background .12s ease,box-shadow .18s ease,color .12s ease; will-change:transform; }}
@@ -3556,7 +3558,7 @@ fn control_plane_operator_page(
       .motion-glow:hover,.motion-glow:focus-visible {{ transform:scale(1.04); filter:drop-shadow(0 0 22px rgba(37,215,255,.52)); }}
       .shell {{ display:grid; grid-template-columns:250px minmax(0,1fr); min-height:100vh; }}
       .sidebar {{ position:sticky; top:0; height:100vh; border-right:1px solid var(--line); background:linear-gradient(180deg,rgba(2,9,18,.96),rgba(2,8,16,.9)); padding:26px 16px 18px; display:flex; flex-direction:column; gap:22px; }}
-      .brand {{ display:flex; align-items:center; gap:12px; font-family:Georgia,"Times New Roman",serif; font-size:22px; color:#fff; border-radius:8px; }}
+      .brand {{ display:flex; align-items:center; gap:12px; font-family: "Space Grotesk", system-ui, sans-serif; font-size:22px; color:#fff; border-radius:8px; }}
       .brand-mark {{ width:54px; height:54px; border-radius:50%; object-fit:contain; filter:drop-shadow(0 0 16px rgba(70,174,255,.34)); }}
       .nav {{ display:grid; gap:8px; }}
       .nav-item {{ min-height:54px; display:flex; align-items:center; gap:14px; border:1px solid transparent; border-radius:7px; padding:0 13px; color:#b9c5d6; }}
@@ -3837,6 +3839,7 @@ fn control_plane_home(
         r##"<!doctype html>
 <html lang="en">
   <head>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600;700&amp;family=Space+Grotesk:wght@400;500;600;700&amp;display=swap">
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Control Plane</title>
@@ -3852,6 +3855,7 @@ fn control_plane_home(
       }})();
     </script>
     <style>
+button,input,select,textarea {{ font-family:inherit; }} code,pre,kbd,samp {{ font-family:"JetBrains Mono",ui-monospace,monospace; }}
       :root {{
         color-scheme: dark;
         --bg: #070d14;
@@ -3881,7 +3885,7 @@ fn control_plane_home(
           radial-gradient(circle at 72% 0%, rgba(31, 89, 142, 0.08), transparent 31%),
           linear-gradient(135deg, #071019 0%, #070c12 60%, #050a10 100%);
         color: var(--text);
-        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+        font-family: "Space Grotesk", system-ui, sans-serif;
       }}
       a {{ color: inherit; text-decoration: none; }}
       a:focus-visible {{
@@ -3939,7 +3943,7 @@ fn control_plane_home(
         display: flex;
         align-items: center;
         gap: 12px;
-        font-family: Inter, "SF Pro Text", "Segoe UI", sans-serif;
+        font-family: "Space Grotesk", system-ui, sans-serif;
         font-size: 26px;
         font-weight: 750;
         color: #fff;
