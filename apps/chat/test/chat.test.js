@@ -241,6 +241,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /aria-label", role === "user" \? "Your message" : "MundusX response"/);
   assert.doesNotMatch(html, /avatar\.textContent = role === "user" \? "You" : "M"/);
   assert.match(html, /aria-label="Mercedes-Benz three-pointed star"/);
+  assert.match(html, /<\/aside>\s*<div class="history-context-menu"/);
   assert.match(html, /uat\.mundusx\.ai/);
   assert.match(html, /\.header-actions \{\s*display: none;/);
   assert.match(html, /class="runtime-status-sentinel" id="runtime-status"/);

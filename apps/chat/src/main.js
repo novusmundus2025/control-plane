@@ -2030,11 +2030,6 @@ export function page(config = configFromEnv()) {
         </nav>
       </div>
       <div class="rail-list" id="history-list" aria-label="Conversation history"></div>
-      <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
-        <button type="button" data-action="rename" role="menuitem">Rename</button>
-        <button type="button" data-action="pin" role="menuitem">Pin chat</button>
-        <button class="danger" type="button" data-action="delete" role="menuitem">Delete</button>
-      </div>
       <div class="guest-widget" id="guest-widget">
         <strong>Try MundusX</strong>
         <p>Explore Chat and Projects. Sign in when you want to send, save conversations, or connect your local agent.</p>
@@ -2071,6 +2066,11 @@ export function page(config = configFromEnv()) {
         </button>
       </div>
     </aside>
+    <div class="history-context-menu" id="history-context-menu" role="menu" aria-label="Conversation actions">
+      <button type="button" data-action="rename" role="menuitem">Rename</button>
+      <button type="button" data-action="pin" role="menuitem">Pin chat</button>
+      <button class="danger" type="button" data-action="delete" role="menuitem">Delete</button>
+    </div>
     ${repositoryDialog}
     ${mcpDialog}
     <div class="app-toast" id="app-toast" role="status" aria-live="polite" aria-atomic="true" hidden></div>
