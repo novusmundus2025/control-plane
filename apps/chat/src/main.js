@@ -648,7 +648,7 @@ export function page(config = configFromEnv()) {
     .guest-widget { margin-top:auto; padding:12px; border:1px solid var(--border); border-radius:16px; background:var(--panel); box-shadow:0 10px 28px rgba(29,35,68,.08); }
     .guest-widget strong { display:block; color:var(--text); font-size:14px; margin-bottom:4px; }
     .guest-widget p { color:var(--muted); font-size:12px; line-height:1.45; margin:0 0 12px; }
-    .guest-login { width:100%; min-height:42px; border:0; border-radius:11px; background:linear-gradient(135deg,#477dff,#7657ed); color:#fff; font:700 14px Inter,Segoe UI,sans-serif; cursor:pointer; box-shadow:0 8px 20px rgba(91,92,235,.2); }
+    .guest-login { width:100%; min-height:42px; border:0; border-radius:11px; background:var(--gradient); color:#fff; font:700 14px Inter,Segoe UI,sans-serif; cursor:pointer; box-shadow:0 8px 20px rgba(35,43,52,.20); }
     .guest-login:hover,.guest-login:focus-visible { filter:brightness(1.05); transform:translateY(-1px); }
     .account-bar {
       width: 100%;
@@ -895,7 +895,7 @@ export function page(config = configFromEnv()) {
       position: relative;
       display: inline-block;
       padding-bottom: 10px;
-      background: linear-gradient(90deg, #3b82f6 0%, #7c5cf0 100%);
+      background: var(--gradient);
       -webkit-background-clip: text;
       background-clip: text;
       color: transparent;
@@ -908,7 +908,7 @@ export function page(config = configFromEnv()) {
       width: 46px;
       height: 3px;
       border-radius: 999px;
-      background: linear-gradient(90deg, #3b82f6 0%, #7c5cf0 100%);
+      background: var(--gradient);
     }
     .welcome-rule {
       width: 46px;
@@ -1006,8 +1006,8 @@ export function page(config = configFromEnv()) {
     }
     .message.user .message-body {
       max-width: min(880px, 88%);
-      background: linear-gradient(90deg, rgba(124, 108, 246, 0.12), rgba(59, 130, 246, 0.08));
-      border: 1px solid rgba(124, 108, 246, 0.25);
+      background: linear-gradient(90deg, color-mix(in srgb,var(--purple) 12%,transparent), color-mix(in srgb,var(--blue) 8%,transparent));
+      border: 1px solid color-mix(in srgb,var(--purple) 25%,transparent);
       border-radius: 16px 16px 4px 16px;
       padding: 12px 16px;
     }
@@ -1396,7 +1396,7 @@ export function page(config = configFromEnv()) {
       margin-bottom: 16px;
     }
     .live-section {
-      border-left: 3px solid rgba(124, 108, 246, 0.38);
+      border-left: 3px solid color-mix(in srgb,var(--purple) 38%,transparent);
       padding-left: 14px;
     }
     .live-section h3 {
@@ -1405,9 +1405,9 @@ export function page(config = configFromEnv()) {
       line-height: 1.35;
     }
     .partial-response {
-      border: 1px solid rgba(124, 108, 246, 0.24);
+      border: 1px solid color-mix(in srgb,var(--purple) 24%,transparent);
       border-radius: 14px;
-      background: linear-gradient(145deg, rgba(124, 108, 246, 0.07), rgba(59, 130, 246, 0.04));
+      background: linear-gradient(145deg, color-mix(in srgb,var(--purple) 7%,transparent), color-mix(in srgb,var(--blue) 4%,transparent));
       padding: 16px 18px;
       margin-bottom: 16px;
     }
@@ -1797,8 +1797,8 @@ export function page(config = configFromEnv()) {
     .voice-button:hover:not(:disabled),
     .voice-button:focus-visible {
       color: var(--blue);
-      border-color: rgba(59, 130, 246, 0.36);
-      background: #eef5ff;
+      border-color: color-mix(in srgb,var(--blue) 36%,transparent);
+      background: color-mix(in srgb,var(--blue) 8%,var(--panel));
       transform: translateY(-1px);
     }
     .voice-button.is-active {
@@ -1994,6 +1994,13 @@ export function page(config = configFromEnv()) {
     .capability-card:hover,.capability-card:focus-visible { border-color:rgba(61,72,85,.42); }
     .composer { border-color:rgba(61,72,85,.20); }
     .send { background:var(--gradient); }
+    code { background:color-mix(in srgb,var(--purple) 10%,transparent); border-color:color-mix(in srgb,var(--purple) 18%,transparent); color:var(--text); }
+    .history-item.active { color:var(--text); background:color-mix(in srgb,var(--purple) 9%,transparent); }
+    .message-body blockquote { border-left-color:color-mix(in srgb,var(--purple) 45%,transparent); }
+    .markdown-table tbody tr:hover { background:color-mix(in srgb,var(--purple) 4%,transparent); }
+    .chunk-row.is-active { border-color:color-mix(in srgb,var(--purple) 40%,transparent); box-shadow:0 0 0 3px color-mix(in srgb,var(--purple) 8%,transparent); }
+    .mx-spinner { border-color:color-mix(in srgb,var(--purple) 24%,transparent); border-top-color:var(--cyan); }
+    .tool-badge.is-web { background:color-mix(in srgb,var(--blue) 12%,transparent); color:var(--blue); }
     .brand-motto { margin-right:auto; display:flex; align-items:center; gap:12px; color:var(--muted-2); font-family:Georgia,"Times New Roman",serif; font-size:12px; }
     .brand-motto::after { content:"A BETTER TOMORROW"; font-family:Inter,"Segoe UI",sans-serif; font-size:10px; font-weight:650; letter-spacing:.14em; }
     .brand-motto-separator { width:1px; height:13px; background:var(--line-strong); }
