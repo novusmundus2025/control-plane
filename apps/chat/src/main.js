@@ -2374,7 +2374,7 @@ export function page(config = configFromEnv()) {
       }
       if (ready) harnessRunnerStatusEl.textContent = "Agent ready. Files, commands, and Git stay on this computer.";
       else if (agentMissing) harnessRunnerStatusEl.textContent = "MundusX is connected, but no coding agent is available. Install or enable Hermes, then retry.";
-      else if (paired) harnessRunnerStatusEl.textContent = "Connected but offline. MundusX normally restarts itself; use Repair if it does not reconnect.";
+      else if (paired) harnessRunnerStatusEl.textContent = "Connected but offline. Choose Reconnect to restart the installed MundusX app.";
       else if (runnerPairingInProgress) harnessRunnerStatusEl.textContent = "Open the downloaded installer and approve this computer in the browser. Waiting for it to connect…";
       else harnessRunnerStatusEl.textContent = "No computer is connected to this account. Download MundusX, finish setup, and approve the browser connection. Compute contribution remains off unless enabled separately.";
     }
@@ -2388,14 +2388,14 @@ export function page(config = configFromEnv()) {
       stopRunnerPairingPoll();
       if (!runnerPairingInProgress || Date.now() >= runnerPairingExpiresAt) {
         runnerPairingInProgress = false;
-        if (harnessRunnerStatusEl && Date.now() >= runnerPairingExpiresAt) harnessRunnerStatusEl.textContent = "The installer was not detected. Choose Connect this computer to try again.";
+        if (harnessRunnerStatusEl && Date.now() >= runnerPairingExpiresAt) harnessRunnerStatusEl.textContent = "MundusX has not connected yet. Open the installed app or choose Reconnect to retry.";
         return;
       }
       runnerPairingPollTimer = window.setTimeout(async () => {
         runnerPairingPollTimer = null;
         try {
-          const runners = await loadHarnessRunners();
-          if (localProjectAgentReady || runners.length) {
+          await loadHarnessRunners();
+          if (localRunnerReady) {
             runnerPairingInProgress = false;
             stopRunnerPairingPoll();
             return;
@@ -2759,8 +2759,11 @@ export function page(config = configFromEnv()) {
         && !releaseVersionAtLeast(installedVersion, latestLocalAgentVersion);
       if (projectAgentUpdateEl) {
         projectAgentUpdateEl.hidden = !(updateAvailable || (paired && !localRunnerReady));
-        projectAgentUpdateEl.textContent = paired && !localRunnerReady
-          ? (updateAvailable ? "Update & reconnect" : "Reconnect")
+        configureAgentRecoveryAction(updateAvailable, paired && !localRunnerReady);
+        projectAgentUpdateEl.textContent = updateAvailable
+          ? "Update now"
+          : paired && !localRunnerReady
+          ? "Reconnect"
           : installedVersion === "unknown" ? "Install latest" : "Update";
       }
       if (projectReadinessRefreshEl) projectReadinessRefreshEl.hidden = paired && !localRunnerReady;
@@ -2783,7 +2786,7 @@ export function page(config = configFromEnv()) {
         : agentMissing
           ? "Install Hermes or select the native MundusX Agent, then retry."
           : paired
-            ? "Wait a few seconds and retry. If it stays offline, choose Repair; no terminal is required."
+            ? "MundusX is reconnecting. Choose Reconnect to restart the installed app; allow your browser to open MundusX if asked."
             : "Chat cannot inspect installed apps directly. Install MundusX, complete its browser approval, then retry.";
       if (!runnerTargetProject) {
         if (repositoryDialogTitleEl) repositoryDialogTitleEl.textContent = localRunnerReady ? "Create project" : "Connect this computer";
@@ -3027,6 +3030,21 @@ export function page(config = configFromEnv()) {
         window.getSelection()?.selectAllChildren(target);
       }
     }));
+    function configureAgentRecoveryAction(updateAvailable, offline) {
+      if (!projectAgentUpdateEl) return;
+      const reconnect = offline && !updateAvailable;
+      projectAgentUpdateEl.href = reconnect ? "mundusx://reconnect" : harnessDownloadEl.href;
+      projectAgentUpdateEl.dataset.action = reconnect ? "reconnect" : "update";
+      if (reconnect) projectAgentUpdateEl.removeAttribute("download");
+      else projectAgentUpdateEl.setAttribute("download", "");
+    }
+    projectAgentUpdateEl?.addEventListener("click", () => {
+      if (projectAgentUpdateEl.dataset.action !== "reconnect") return;
+      runnerPairingInProgress = true;
+      runnerPairingExpiresAt = Date.now() + 10 * 60 * 1000;
+      if (projectReadinessTextEl) projectReadinessTextEl.textContent = "Opening MundusX to reconnect. Allow the browser prompt. If the app does not open, open MundusX from the Start menu; older installations may need an update to support browser reconnect.";
+      pollRunnerPairing();
+    });
     harnessDownloadEl?.addEventListener("click", () => {
       runnerDownloadStarted = true;
       runnerPairingInProgress = true;
