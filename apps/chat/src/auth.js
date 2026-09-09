@@ -469,6 +469,17 @@ export class PostgresAuthStore {
     if (workspaceRelative && !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(workspaceRelative)) {
       throw Object.assign(new Error("workspace_relative must be a project slug"), { statusCode: 400 });
     }
+    let browserConnection = null;
+    if (prompt.startsWith("MUNDUSX_PROJECT_IO_V1:")) {
+      let operation;
+      try { operation = JSON.parse(prompt.slice(22)); } catch { throw Object.assign(new Error("Invalid project operation"), {statusCode:400}); }
+      browserConnection = operation?.connection_id;
+      if (!workspaceRelative || !UUID_PATTERN.test(String(browserConnection || ""))) throw Object.assign(new Error("Project browsing requires a project and device"), {statusCode:400});
+      const connection = await this.pool.query(`select connection_id from public.local_agent_connections
+        where connection_id=$1::uuid and user_id=$2::uuid and revoked_at is null
+          and capabilities->>'project_browser'='true'`, [browserConnection,userId]);
+      if (!connection.rows.length) throw Object.assign(new Error("Project device is unavailable"), {statusCode:403});
+    }
     const taskId = randomUUID();
     const result = await this.pool.query(`with superseded as (
       update public.local_agent_tasks set
@@ -480,17 +491,19 @@ export class PostgresAuthStore {
         and state = 'queued'
         and $8::text is not null
         and workspace_relative = $8
+        and left(prompt, 22) <> 'MUNDUSX_PROJECT_IO_V1:'
+        and left($5::text, 22) <> 'MUNDUSX_PROJECT_IO_V1:'
       returning task_id
     )
     insert into public.local_agent_tasks
-      (task_id, user_id, conversation_id, session_id, prompt, allow_mutations, runtime_requested, workspace_relative)
-      values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8)
+      (task_id, user_id, conversation_id, session_id, prompt, allow_mutations, runtime_requested, workspace_relative, connection_id)
+      values ($1::uuid, $2::uuid, $3::uuid, $4::uuid, $5, $6, $7, $8, $9::uuid)
       returning task_id, conversation_id, session_id, runtime_requested, workspace_relative, state, created_at`,
-    [taskId, userId, conversationId, sessionId, prompt, input.allow_mutations === true, runtimeRequested, workspaceRelative]);
+    [taskId, userId, conversationId, sessionId, prompt, input.allow_mutations === true, runtimeRequested, workspaceRelative, browserConnection]);
     return result.rows[0];
   }
 
-  async claimLocalAgentTask(userId, connectionId) {
+  async claimLocalAgentTask(userId, connectionId, projectRequestsOnly = false) {
     this.ensureReady();
     if (!UUID_PATTERN.test(String(connectionId || ""))) {
       throw Object.assign(new Error("connection_id must be a UUID"), { statusCode: 400 });
@@ -498,6 +511,7 @@ export class PostgresAuthStore {
     const result = await this.pool.query(`with candidate as (
       select task_id from public.local_agent_tasks
       where user_id = $1::uuid
+        and (not $3::boolean or prompt like 'MUNDUSX_PROJECT_IO_V1:%')
         and exists (select 1 from public.local_agent_connections connection
           where connection.connection_id = $2::uuid and connection.user_id = $1::uuid
             and connection.revoked_at is null)
@@ -509,6 +523,11 @@ export class PostgresAuthStore {
           where runtime_connection.connection_id = $2::uuid
             and runtime_connection.capabilities->'agent_runtimes' ? 'hermes'
         ))
+        and (prompt not like 'MUNDUSX_PROJECT_IO_V1:%' or (connection_id = $2::uuid and exists (
+          select 1 from public.local_agent_connections browser_connection
+          where browser_connection.connection_id = $2::uuid
+            and browser_connection.capabilities->>'project_browser' = 'true'
+        )))
       order by created_at desc for update skip locked limit 1
     )
     update public.local_agent_tasks task set
@@ -527,7 +546,7 @@ export class PostgresAuthStore {
     from candidate where task.task_id = candidate.task_id
     returning task.task_id, task.conversation_id, task.session_id, task.prompt,
       task.allow_mutations, task.runtime_requested, task.runtime_selected,
-      task.workspace_relative, task.state`, [userId, connectionId]);
+      task.workspace_relative, task.state`, [userId, connectionId, projectRequestsOnly === true]);
     await this.pool.query(`update public.local_agent_connections set last_seen_at = now()
       where connection_id = $1::uuid and user_id = $2::uuid and revoked_at is null`,
     [connectionId, userId]);
