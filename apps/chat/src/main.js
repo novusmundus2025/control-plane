@@ -12294,7 +12294,7 @@ export function selectChatSkills(message = "", globalOverrides = []) {
   if (complexity.requiresDecomposition || looksLikeCompleteProgramRequest(lower) || complexity.size === "long") {
     skills.push({ name: "chunk-planner.md", content: CHAT_SKILLS.chunkPlanner });
   }
-  if (CHAT_VERIFIER_ENABLED && (
+  if ((CHAT_VERIFIER_ENABLED || globalOverrides?.some?.(item => item.skill_id === "verifier" && item.enabled === true)) && (
     looksLikeCompleteProgramRequest(lower) ||
     looksLikeMathRequest(lower) ||
     needsGrounding(text) ||
@@ -12303,10 +12303,13 @@ export function selectChatSkills(message = "", globalOverrides = []) {
     skills.push({ name: "verifier.md", content: CHAT_SKILLS.verifier });
   }
 
+  for (const id of ["security", "guardrails", "rag-integration", "model-provider"]) {
+    skills.push({ name: id + ".md", content: SKILL_REGISTRY.content(id) });
+  }
   const overrides = new Map((Array.isArray(globalOverrides) ? globalOverrides : []).map((item) => [item.skill_id, item]));
   const ids = { "router.md": "router", "formatter.md": "formatter", "persona-atlas.md": "persona-atlas", "translation.md": "translation", "code.md": "code", "math.md": "math", "weather.md": "weather", "facts.md": "facts", "chunk-planner.md": "chunk-planner", "verifier.md": "verifier" };
   return dedupeSkills(skills.map((skill) => {
-    const override = overrides.get(ids[skill.name]);
+    const override = overrides.get(ids[skill.name] || skill.name.replace(/\.md$/, ""));
     return override ? { ...skill, content: override.enabled === false ? null : override.content } : skill;
   }).filter((skill) => skill.content));
 }

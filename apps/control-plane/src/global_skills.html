@@ -9,9 +9,10 @@
       <h3 id="skill-title"></h3><p id="skill-description" class="meta"></p><p id="skill-state"></p>
       <p id="skill-restricted" class="meta">Internal instructions are restricted to administrators. Sign in as an admin to view or edit the Markdown.</p>
       <form id="skill-editor" method="post" action="/v1/skills" hidden>
-        <label>Skill Markdown<textarea id="skill-content" required maxlength="12000" rows="16"></textarea></label>
+        <label>Skill Markdown<textarea id="skill-content" maxlength="12000" rows="16"></textarea></label>
         <p class="meta">The first 12 meaningful instruction lines are used in the chat prompt. Keep instructions concise.</p>
         <label><input id="skill-enabled" type="checkbox" style="width:auto;min-height:auto"> Enabled</label>
+        <p class="meta">This checkbox controls the selected skill's Markdown on subsequent chat requests. Blank skills must remain disabled. It does not disable access controls or activate external integrations.</p>
         <button class="button" type="submit" id="skill-save">Save changes</button>
       </form>
     </section>
@@ -34,12 +35,12 @@ html[data-theme="light"] #skill-content::selection{background:#c7ddff;color:#102
   const el=id=>document.getElementById(id);let skills=[],active=null,canEdit=false;
   async function api(options){const res=await fetch('/v1/skills',options);const data=await res.json();if(!res.ok)throw new Error(data.error||'Skills unavailable');return data;}
   function select(skill){active=skill;el('skill-detail').hidden=false;el('skill-title').textContent=skill.title;el('skill-description').textContent=skill.description;el('skill-state').textContent=(skill.enabled?'Enabled':'Disabled')+' · Version '+skill.version;el('skill-editor').hidden=!canEdit;el('skill-restricted').hidden=canEdit;
-    el('skill-content').value=canEdit?skill.content:'';el('skill-enabled').checked=skill.enabled;
+    el('skill-content').value=canEdit?skill.content:'';el('skill-enabled').checked=skill.enabled;el('skill-enabled').disabled=!canEdit;el('skill-enabled').setAttribute('aria-label','Enable '+skill.title);
     for(const button of el('skill-list').children)button.setAttribute('aria-pressed',String(button.dataset.skill===skill.id));
   }
   async function load(id){el('skill-status').textContent='Loading global skills…';el('skill-retry').hidden=true;
     try{const data=await api();skills=data.system;canEdit=data.permissions.edit_global;el('skill-list').replaceChildren();
-      for(const skill of skills){const button=document.createElement('button');button.type='button';button.dataset.skill=skill.id;button.textContent=skill.title;button.onclick=()=>{if(active?.id!==skill.id&&canEdit&&el('skill-content').value!==active?.content&&!confirm('Discard unsaved Markdown changes?'))return;select(skill)};el('skill-list').append(button)}
+      for(const skill of skills){const button=document.createElement('button');button.type='button';button.dataset.skill=skill.id;button.textContent=skill.title+' · '+(skill.enabled?'Enabled':'Disabled')+(canEdit&&!skill.content?.trim()?' · Not configured':'');button.onclick=()=>{if(active?.id!==skill.id&&canEdit&&(el('skill-content').value!==active?.content||el('skill-enabled').checked!==active?.enabled)&&!confirm('Discard unsaved skill changes?'))return;select(skill)};el('skill-list').append(button)}
       const chosen=skills.find(x=>x.id===id)||skills[0];if(chosen)select(chosen);el('skill-status').textContent=skills.length?'':'No global skills are configured.';
     }catch(error){el('skill-status').textContent=error.message;el('skill-retry').hidden=false;el('skill-detail').hidden=true;}
   }
