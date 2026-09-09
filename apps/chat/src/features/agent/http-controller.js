@@ -1,4 +1,5 @@
 import { httpError } from "../../shared/http-error.js";
+import { streamAgentTask } from "./task-stream.js";
 
 const UUID = "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 
@@ -76,7 +77,12 @@ export function createLocalAgentHttpController({ authStore, readJsonBody, sendJs
       sendJson(response, 202, await authStore.createLocalAgentTask(session.id, body));
       return true;
     }
-    const browserTask = url.pathname.match(new RegExp(`^/api/agent/tasks/(${UUID})(/cancel)?$`, "i"));
+    const browserTask = url.pathname.match(new RegExp(`^/api/agent/tasks/(${UUID})(/cancel|/stream)?$`, "i"));
+    if (browserTask && request.method === "GET" && browserTask[2] === "/stream") {
+      const first = await authStore.localAgentTask(session.id, browserTask[1]);
+      await streamAgentTask(response, first, () => authStore.localAgentTask(session.id, browserTask[1]));
+      return true;
+    }
     if (browserTask && request.method === "GET" && !browserTask[2]) {
       sendJson(response, 200, await authStore.localAgentTask(session.id, browserTask[1]));
       return true;
