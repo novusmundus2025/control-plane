@@ -16,7 +16,7 @@ try {
   if(path==="/api/auth/session") body={user:{id:"test-user",email:"test@example.test"},csrf_token:"test"};
   if(path==="/api/agent/status") body={online:true,connections:[{online:true,capabilities:{agent_runtimes:["hermes"],preferred_agent:"hermes"}}]};
   if(path==="/api/agent/tasks") {submitted.push(r.request().postDataJSON());body={task_id:"test-task",state:"queued",events:[]};}
-  if(path==="/api/agent/tasks/test-task") {polls++;body={task_id:"test-task",state:scenario==="restore-failed"?"failed":scenario==="restore-completed"?"completed":polls<3?"running":"completed",runtime_selected:"hermes",events:[{sequence:1,event:{type:"tool_started",metadata:{activity:"inspect"}}}],error:scenario==="restore-failed"?"The model connection failed":null,result:{content:"Navbar corrected and verified."}};}
+  if(path==="/api/agent/tasks/test-task") {polls++;body={task_id:"test-task",state:scenario==="restore-failed"?"failed":scenario==="restore-completed"?"completed":polls<6?"running":"completed",runtime_selected:"hermes",events:[{sequence:1,event:{type:"tool_started",metadata:{activity:"inspect"}}}],error:scenario==="restore-failed"?"The model connection failed":null,result:{content:"Navbar corrected and verified."}};}
   return r.fulfill({contentType:"application/json",body:JSON.stringify(body)});
  });
  await tab.goto("http://127.0.0.1:"+server.address().port);

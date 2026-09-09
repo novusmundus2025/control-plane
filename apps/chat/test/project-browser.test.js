@@ -50,5 +50,8 @@ test("file operations preserve coding tasks and are only claimed by capable conn
     assert.equal(recent.events.length,500);
     assert.equal(Number(recent.events[0].sequence),51);
     assert.equal(Number(recent.events.at(-1).sequence),550,"long tasks retain their newest progress");
+    await query("update local_agent_task_events set event=$2::jsonb where task_id=$1 and sequence=1",[pending.task_id,JSON.stringify({type:"assistant_snapshot",metadata:{text:"Earlier answer"}})]);
+    assert.equal((await store.localAgentTask(user,pending.task_id)).answer.event.metadata.text,"Earlier answer","refresh recovers answer outside latest 500 progress events");
+    await assert.rejects(store.localAgentTask(randomUUID(),pending.task_id),/not found/);
   } finally { await db.close(); }
 });
