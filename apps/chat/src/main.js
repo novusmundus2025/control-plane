@@ -2234,7 +2234,6 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       renderActiveProject();
       renderRuntimeControls();
     }
-    loadStoredProjectContext("anonymous");
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition = null;
     let isListening = false;
@@ -3081,6 +3080,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     });
 
     ${readFileSync(resolve(CHAT_ROOT, "src/features/project-browser-ui.js"), "utf8")}
+    // Restore saved projects only after the tree's state has been initialized.
+    loadStoredProjectContext("anonymous");
 
     function renderProjectMenu() {
       renderSidebarProjects();
