@@ -4008,52 +4008,21 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       setStatus("ready", payload.runtime_selected === "hermes" ? "Hermes · Local" : "MundusX · Local");
     }
 
+    ${readFileSync(resolve(CHAT_ROOT, "src/features/agent/progress-labels.js"), "utf8")}
+
     function renderLocalAgentProgress(pending, payload, runtimeLabel, options = {}) {
       const body = pending.querySelector(".message-body");
       if (!body) return;
       const events = Array.isArray(payload?.events) ? payload.events : [];
-      const latest = events.at(-1)?.event || null;
-      const friendlyEvent = (event, active = false) => {
-        const type = event?.type || "";
-        const tool = String(event?.metadata?.tool || "").toLowerCase();
-        if (type === "tool_started") {
-          if (tool === "terminal") return "Running a command";
-          if (["write_file", "patch", "apply_patch"].includes(tool)) return "Writing project files";
-          if (["search_files", "read_file"].includes(tool)) return "Exploring the codebase";
-          return "Using " + (tool || "a project tool").replaceAll("_", " ");
-        }
-        if (type === "tool_completed") {
-          if (active) return "Reviewing the tool result";
-          if (tool === "terminal") return "Command finished";
-          if (["write_file", "patch", "apply_patch"].includes(tool)) return "Project files updated";
-          return (tool ? tool.replaceAll("_", " ") : "Tool") + " completed";
-        }
-        if (type === "skills_selected") {
-          const skills = Array.isArray(event?.metadata?.skills) ? event.metadata.skills : [];
-          return skills.length ? "Using " + skills.map((skill) => String(skill).replaceAll("-", " ")).join(", ") : "Loading project skills";
-        }
-        const labels = {
-          harness_started: "Starting in your project",
-          model_turn_queued: "Planning the next step",
-          model_requested: "Thinking through the next step",
-          model_turn_completed: active ? "Preparing the next action" : "Model step completed",
-          skills_unavailable: "Continuing with built-in tools",
-          file_changed: "Updating project files",
-          verification_started: "Checking the work",
-          verification_completed: "Checks completed",
-          agent_progress: "Working through the task",
-        };
-        return labels[type] || String(event?.summary || "Working through the task");
-      };
+      const meaningfulEvents = events.filter((item) => item?.event?.type !== "agent_progress" || (item.event.summary && item.event.summary !== "Hermes is working"));
+      const latest = meaningfulEvents.at(-1)?.event || null;
+      const progress = describeAgentProgress(latest, true);
       const summary = options.cancelling
         ? "Stopping safely"
         : options.reconnecting
           ? "Reconnecting without losing progress"
-          : friendlyEvent(latest, true);
-      const steps = [...new Set(events.slice(0, -1)
-        .map((item) => friendlyEvent(item?.event, false).trim())
-        .filter(Boolean))]
-        .slice(-3);
+          : progress.label;
+      const steps = meaningfulEvents.slice(0, -1).filter((item) => !["tool_started", "tool_proposed", "model_turn_queued"].includes(item.event.type)).slice(-4).map((item) => describeAgentProgress(item.event));
       body.replaceChildren();
       const headingRow = document.createElement("div");
       headingRow.className = "agent-progress-heading";
@@ -4061,7 +4030,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       orb.className = "agent-progress-orb";
       orb.setAttribute("aria-hidden", "true");
       const heading = document.createElement("strong");
-      heading.textContent = runtimeLabel + " is working";
+      heading.textContent = "MundusX · " + runtimeLabel;
       headingRow.append(orb, heading);
       body.appendChild(headingRow);
       const timeline = document.createElement("div");
@@ -4074,9 +4043,10 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           row.className = "agent-progress-step";
           const check = document.createElement("span");
           check.className = "agent-progress-check";
-          check.textContent = "✓";
+          check.textContent = step.outcome === "failed" ? "!" : step.outcome === "succeeded" ? "✓" : "·";
+          if (step.outcome === "failed") check.style.color = "var(--red, #c43838)";
           const text = document.createElement("span");
-          text.textContent = step;
+          text.textContent = step.source + " · " + step.label;
           row.append(check, text);
           history.appendChild(row);
         }
@@ -4088,9 +4058,13 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       dot.className = "agent-progress-dot";
       dot.setAttribute("aria-hidden", "true");
       const currentText = document.createElement("span");
-      currentText.textContent = summary;
+      const updateNumber = Number(meaningfulEvents.at(-1)?.sequence || 0);
+      currentText.textContent = progress.source + (updateNumber ? " · Update " + updateNumber : "") + " · " + summary;
       current.append(dot, currentText);
       timeline.appendChild(current);
+      const purpose = document.createElement("p"); purpose.className = "meta";
+      purpose.textContent = options.cancelling ? "Waiting for the current operation to stop." : options.reconnecting ? "Checking the existing task; your request is not being submitted again." : progress.purpose;
+      timeline.appendChild(purpose);
       const formatDuration = (milliseconds) => {
         const seconds = Math.max(0, Math.floor(milliseconds / 1000));
         if (seconds < 60) return seconds + "s";
@@ -4344,7 +4318,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       body.appendChild(live);
       const meta = document.createElement("div");
       meta.className = "meta";
-      meta.textContent = completionId ? "job " + completionId + " / streaming" : "Streaming...";
+      meta.textContent = "MundusX · Receiving your answer";
+      if (completionId) meta.title = "Request " + completionId;
       body.appendChild(meta);
       setStatus("working", "Streaming");
       scrollChatToLatest();
@@ -4377,10 +4352,10 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       }
       if (state.status === "waiting") {
         const body = node.querySelector(".message-body");
-        body.textContent = "Connected to MundusX...";
+        body.textContent = "MundusX received your request. Waiting for response content…";
         const meta = document.createElement("div");
         meta.className = "meta";
-        meta.textContent = "Streaming - waiting for first token";
+        meta.textContent = "Chat · Waiting for the first response token";
         body.appendChild(meta);
         setStatus("working", "Streaming");
         scrollChatToLatest();
@@ -4391,10 +4366,10 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         return;
       }
       const body = node.querySelector(".message-body");
-      body.textContent = "Connecting to MundusX...";
+      body.textContent = "MundusX · Sending your chat request…";
       const meta = document.createElement("div");
       meta.className = "meta";
-      meta.textContent = "Stream starting";
+      meta.textContent = "Chat · Establishing the response stream";
       body.appendChild(meta);
       setStatus("working", "Connecting");
     }

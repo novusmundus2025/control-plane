@@ -617,8 +617,10 @@ export class PostgresAuthStore {
       from public.local_agent_tasks where task_id = $1::uuid and user_id = $2::uuid`,
     [taskId, userId]);
     if (result.rowCount !== 1) throw Object.assign(new Error("Local agent task was not found"), { statusCode: 404 });
-    const events = await this.pool.query(`select sequence, event, created_at
-      from public.local_agent_task_events where task_id = $1::uuid order by sequence limit 500`, [taskId]);
+    const events = await this.pool.query(`select sequence, event, created_at from (
+      select sequence, event, created_at from public.local_agent_task_events
+      where task_id = $1::uuid order by sequence desc limit 500
+    ) recent order by sequence`, [taskId]);
     return { ...result.rows[0], events: events.rows };
   }
 
