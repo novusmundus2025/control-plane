@@ -41,7 +41,7 @@ export function createLocalAgentHttpController({ authStore, readJsonBody, sendJs
     if (request.method === "POST" && url.pathname === "/api/agent/connector/tasks/next") {
       const connector = await requireConnector(request, authStore);
       const body = await readJsonBody(request);
-      const task = await authStore.claimLocalAgentTask(connector.id, body?.connection_id);
+      const task = await authStore.claimLocalAgentTask(connector.id, body?.connection_id, ...(body?.project_requests_only === true ? [true] : []));
       sendJson(response, 200, { task });
       return true;
     }
