@@ -2766,11 +2766,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     });
     sidebarProjectAddEl?.addEventListener("click", () => openProjects());
     sidebarProjectListEl?.addEventListener("click", (event) => {
-      const button = event.target.closest("button[data-project-slug]");
-      if (!button) return;
-      setActiveProject({ slug: button.dataset.projectSlug });
-      setWorkspaceDestination("chats");
-      promptEl?.focus();
+      void handleProjectTreeClick(event).catch((error) => showToast(error.message));
     });
     repositoryOpenMobileEl?.addEventListener("click", () => openProjects());
     repositoryDialogCloseEl?.addEventListener("click", closeProjects);
@@ -3149,20 +3145,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       promptEl?.focus();
     });
 
-    function renderSidebarProjects() {
-      if (!sidebarProjectListEl) return;
-      sidebarProjectListEl.replaceChildren();
-      if (!availableProjectSlugs.length) {
-        const empty = document.createElement("p"); empty.className = "project-context-empty";
-        empty.textContent = "No projects yet. Use + to create one."; sidebarProjectListEl.append(empty);
-      }
-      for (const slug of availableProjectSlugs) {
-        const button = document.createElement("button"); button.type = "button"; button.className = "sidebar-project-choice";
-        button.dataset.projectSlug = slug; button.title = slug; button.setAttribute("aria-current", String(activeProject?.slug === slug));
-        button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h5l2 2h7a2 2 0 0 1 2 2v10H3Z"/></svg>';
-        const label = document.createElement("span"); label.textContent = slug; button.append(label); sidebarProjectListEl.append(button);
-      }
-    }
+    ${readFileSync(resolve(CHAT_ROOT, "src/features/project-browser-ui.js"), "utf8")}
 
     function renderProjectMenu() {
       renderSidebarProjects();
