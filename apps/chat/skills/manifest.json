@@ -10,6 +10,10 @@
     { "id": "weather", "file": "weather.md", "title": "Weather", "description": "Routes live conditions through the weather tool.", "enabled": true },
     { "id": "facts", "file": "facts.md", "title": "Facts", "description": "Requires grounded sources for factual and current-information answers.", "enabled": true },
     { "id": "chunk-planner", "file": "chunk-planner.md", "title": "Chunk planner", "description": "Splits complex work into bounded, dependency-aware sections.", "enabled": true },
-    { "id": "verifier", "file": "verifier.md", "title": "Verifier", "description": "Describes output-quality checks; runtime activation remains separately gated.", "enabled": false }
+    { "id": "verifier", "file": "verifier.md", "title": "Verifier", "description": "Describes output-quality checks; runtime activation remains separately gated.", "enabled": false },
+    { "id": "security", "file": "security.md", "title": "Security", "description": "Reserved security instructions. Blank and disabled until configured by an administrator.", "enabled": false },
+    { "id": "guardrails", "file": "guardrails.md", "title": "Guardrails", "description": "Reserved behavior instructions. Existing access controls remain enforced independently.", "enabled": false },
+    { "id": "rag-integration", "file": "rag-integration.md", "title": "RAG integration", "description": "Reserved retrieval instructions. This Markdown does not configure or call a RAG endpoint.", "enabled": false },
+    { "id": "model-provider", "file": "model-provider.md", "title": "Model provider", "description": "Reserved provider instructions. This Markdown does not register or route to a new model.", "enabled": false }
   ]
 }
