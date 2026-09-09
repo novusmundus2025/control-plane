@@ -25,9 +25,11 @@ export function createGlobalSkillsController({ authStore, registry, token, readJ
     if (request.method === "PUT") {
       const input = await readJsonBody(request);
       if (!registry.has(input?.id)) throw httpError(404, "Global skill not found");
+      if (typeof input.enabled !== "boolean") throw httpError(400, "Choose whether this skill is enabled");
       const content = String(input.content || "").trim();
       const validation = validateSkillDraft(content);
-      if (!validation.valid) throw httpError(400, validation.errors.join("; "));
+      if (!(input.enabled === false && !content) && !validation.valid) throw httpError(400, validation.errors.join("; "));
+      if (input.enabled && validation.promptLines.length === 0) throw httpError(400, "Add instructions before enabling this skill");
       const saved = await authStore.saveControlPlaneGlobalSkill(input.actor, input.id, { content, enabled: input.enabled !== false });
       sendJson(response, 200, saved);
       return true;

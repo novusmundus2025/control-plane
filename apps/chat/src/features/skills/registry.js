@@ -14,7 +14,7 @@ export function createSkillRegistry({ skillsDir }) {
   for (const entry of manifest.skills) {
     const content = readFileSync(resolve(skillsDir, entry.file), "utf8").trim();
     const validation = validateSkillDraft(content);
-    if (!validation.valid) {
+    if (!validation.valid && !(entry.enabled === false && !content)) {
       throw new Error(`Skill ${entry.id} is invalid: ${validation.errors.join("; ")}`);
     }
     records.set(entry.id, Object.freeze({ ...entry, content, validation }));
