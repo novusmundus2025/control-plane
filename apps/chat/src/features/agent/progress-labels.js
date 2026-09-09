@@ -23,7 +23,7 @@ function describeAgentProgress(event = {}, active = false) {
     const success = metadata.is_error === true ? false : metadata.success;
     const outcome = type !== "tool_completed" ? "running" : success === false ? "failed" : success === true ? "succeeded" : "unknown";
     let label = action;
-    if (type === "tool_completed") label += outcome === "failed" ? " — failed" : outcome === "succeeded" ? " — succeeded" : " — finished; result unconfirmed";
+    if (type === "tool_completed") label += outcome === "failed" ? " — failed" : outcome === "succeeded" ? " — succeeded" : " — finished";
     if (type === "tool_proposed") label = "Preparing: " + action;
     return {label, purpose: type === "tool_completed" && active ? "Waiting for the next agent action; this tool has finished." : purpose, source:"Tool", outcome};
   }
