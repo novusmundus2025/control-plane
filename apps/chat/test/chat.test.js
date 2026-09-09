@@ -269,7 +269,7 @@ test("renders a usable chat page", () => {
   assert.match(html, /state\.node\?\.isConnected/);
   assert.match(html, /conversationStreamStates\.get\(state\.conversationId\) === state/);
   assert.match(html, /streamState\.status = "waiting"/);
-  assert.match(html, /Streaming - waiting for first token/);
+  assert.match(html, /Chat · Waiting for the first response token/);
   assert.match(html, /response\.headers\.get\("x-mundusx-completion-id"\)/);
   assert.match(html, /const firstTokenDeadline = Date\.now\(\) \+ 60000/);
   assert.match(html, /MundusX did not produce a first token within 60 seconds/);
@@ -557,7 +557,7 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /\.runtime-status-sentinel\[hidden\] \{ display: none; \}/);
   assert.match(html, /className = "agent-progress-orb"/);
   assert.match(html, /className = "agent-progress-current"/);
-  assert.match(html, /Running a command/);
+  assert.match(html, /Running a local command/);
   assert.doesNotMatch(html, /row\.textContent = \(index === steps\.length - 1 \? "● " : "✓ "\)/);
   assert.doesNotMatch(html, /const deadline = Date\.now\(\) \+ 10 \* 60 \* 1000/);
   assert.doesNotMatch(html, /Local agent task timed out/);

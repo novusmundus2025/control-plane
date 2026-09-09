@@ -32,7 +32,7 @@ test("file operations preserve coding tasks and are only claimed by capable conn
     const user = randomUUID(), old = randomUUID(), current = randomUUID();
     await db.query("insert into users values ($1)", [user]);
     await db.query("insert into local_agent_connections (connection_id,user_id,device_name,capabilities) values ($1,$3,'old','{}'),($2,$3,'new','{\"project_browser\":true}')", [old,current,user]);
-    const query = async (sql,args) => { const result = await db.query(sql,args); return {...result,rowCount:result.affectedRows ?? result.rows.length}; };
+    const query = async (sql,args) => { const result = await db.query(sql,args); return {...result,rowCount:result.rows.length || result.affectedRows || 0}; };
     const store = new PostgresAuthStore({}, {pool:{query}});
     const code = await store.createLocalAgentTask(user, {prompt:"Build a frontend",workspace_relative:"fe"});
     const request = "MUNDUSX_PROJECT_IO_V1:" + JSON.stringify({operation:"list",connection_id:current});
@@ -45,5 +45,10 @@ test("file operations preserve coding tasks and are only claimed by capable conn
     const pending = await store.createLocalAgentTask(user,{prompt:request,workspace_relative:"fe"});
     await store.createLocalAgentTask(user,{prompt:"Continue the frontend",workspace_relative:"fe"});
     assert.equal((await query("select state from local_agent_tasks where task_id=$1",[pending.task_id])).rows[0].state,"queued");
+    await query("insert into local_agent_task_events(task_id,sequence,event) select $1::uuid,n,'{\"type\":\"tool_completed\"}'::jsonb from generate_series(1,550) n",[pending.task_id]);
+    const recent = await store.localAgentTask(user,pending.task_id);
+    assert.equal(recent.events.length,500);
+    assert.equal(Number(recent.events[0].sequence),51);
+    assert.equal(Number(recent.events.at(-1).sequence),550,"long tasks retain their newest progress");
   } finally { await db.close(); }
 });
