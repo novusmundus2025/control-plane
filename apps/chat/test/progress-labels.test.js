@@ -34,5 +34,7 @@ test("failed and unknown tool results are never reported as successful",()=>{
     const result=describe({type:"tool_completed",metadata:{activity:"build",success}},true);
     assert.equal(result.outcome,outcome); assert.match(result.purpose,/tool has finished/);
     if(success!==true) assert.doesNotMatch(result.label,/succeeded/);
+    if(success===null) assert.match(result.label,/ — finished$/);
+    assert.doesNotMatch(result.label,/unconfirmed|verified/i);
   }
 });
