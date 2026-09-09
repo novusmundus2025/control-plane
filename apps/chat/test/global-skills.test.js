@@ -2,8 +2,22 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { createGlobalSkillsController } from "../src/features/skills/control-plane.js";
 import { selectChatSkills } from "../src/main.js";
+import {PGlite} from "@electric-sql/pglite";
+import {readFileSync} from "node:fs";
 
 const token = "test-control-plane-token-".repeat(3);
+test("database migration permits only disabled empty global drafts",async()=>{
+  const db=new PGlite();
+  try {
+    await db.exec("create table users(id uuid primary key)");
+    for(const name of ["0027_user_and_global_skills.sql","0035_disabled_global_skill_drafts.sql"])
+      await db.exec(readFileSync(new URL("../../../db/migrations/"+name,import.meta.url),"utf8"));
+    await db.exec("insert into users values('123e4567-e89b-42d3-a456-426614174000')");
+    await db.exec("insert into global_skill_overrides(skill_id,content,enabled,updated_by) values('security','',false,'123e4567-e89b-42d3-a456-426614174000')");
+    await assert.rejects(db.exec("update global_skill_overrides set enabled=true where skill_id='security'"));
+    await db.exec("update global_skill_overrides set content='# Security\nProtect data.', enabled=true where skill_id='security'");
+  } finally {await db.close();}
+});
 function fixture(body = {}) {
   const output = [], writes = [];
   const handle = createGlobalSkillsController({
