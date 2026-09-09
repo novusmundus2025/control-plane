@@ -3706,7 +3706,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       if (/^(what|why|how|should|do i|does|is|are|explain|compare|recommend)\\b/i.test(value)) return false;
       if (/^(can|could|may) i (?:ask|know|understand)\\b/i.test(value)) return false;
       if (/\\b(?:what|which) (?:changes?|files?|steps?|requirements?) (?:would|will|do|are|is)\\b/i.test(value)) return false;
-      return /\\b(create|make|add|write|edit|modify|update|delete|remove|rename|move|generate|scaffold|implement|fix|refactor|format|install|run|test|build|compile|lint|commit|checkout|merge|push|pull)\\b/i.test(value);
+      return /\\b(create|make|add|write|edit|modify|update|delete|remove|rename|move|generate|scaffold|implement|fix|correct|repair|restore|refactor|format|install|run|test|build|compile|lint|commit|checkout|merge|push|pull)\\b/i.test(value);
     }
 
     async function runPolledChatTurn(pending, message, conversationId) {
@@ -3804,7 +3804,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
 
       const body = pending.querySelector(".message-body");
       const runtimeLabel = options.runtime === "hermes" ? "Hermes" : options.runtime === "native" ? "MundusX Local" : "local agent";
-      if (body) body.textContent = "Connected to " + runtimeLabel + " on your device…";
+      if (body) body.textContent = "Request accepted. Waiting for " + runtimeLabel + " progress…";
       if (activeHistoryId === conversationId) setStatus("working", runtimeLabel);
       let payload = submitted;
       const progressStartedAt = Date.now();
@@ -3820,7 +3820,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           progressMarker = marker;
           progressLastActivityAt = Date.now();
         }
-        renderLocalAgentProgress(pending, payload, runtimeLabel, {
+        renderLocalAgentProgressSafely(pending, payload, runtimeLabel, {
           onCancel: cancelTask,
           conversationId,
           startedAt: progressStartedAt,
@@ -3935,13 +3935,20 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
             routing: "local-agent",
             model: payload.runtime_selected === "hermes" ? "hermes" : "mundusx-agent",
           }, saved.conversationId);
+        } else {
+          failConversationStream(saved.conversationId, addMessage("", "assistant"), saved.message,
+            new Error(payload.error || "Local agent task " + payload.state));
         }
         return true;
       }
 
       const pending = addMessage("Reconnecting to the active " + (saved.runtimeLabel || "local agent") + " task…", "assistant", "Working");
       setStatus("working", saved.runtimeLabel || "Hermes");
-      await resumeLocalAgentPolling(pending, payload, saved);
+      try {
+        await resumeLocalAgentPolling(pending, payload, saved);
+      } catch (error) {
+        failConversationStream(saved.conversationId, pending, saved.message, error);
+      }
       return true;
     }
 
@@ -3960,7 +3967,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           marker = nextMarker;
           lastActivityAt = Date.now();
         }
-        renderLocalAgentProgress(pending, payload, saved.runtimeLabel || "Hermes", {
+        renderLocalAgentProgressSafely(pending, payload, saved.runtimeLabel || "Hermes", {
           conversationId: saved.conversationId,
           startedAt,
           lastActivityAt,
@@ -4010,6 +4017,18 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     }
 
     ${readFileSync(resolve(CHAT_ROOT, "src/features/agent/progress-labels.js"), "utf8")}
+
+    // Rendering telemetry must never interrupt polling an already accepted task.
+    function renderLocalAgentProgressSafely(pending, payload, runtimeLabel, options = {}) {
+      try {
+        renderLocalAgentProgress(pending, payload, runtimeLabel, options);
+      } catch (error) {
+        console.warn("Unable to display detailed local task progress; continuing to retrieve the result", error);
+        const body = pending.querySelector(".message-body");
+        if (body) body.textContent = "MundusX · " + runtimeLabel + " · " + (payload?.state || "queued")
+          + " — Checking this task for updates. Your request has already been accepted.";
+      }
+    }
 
     function renderLocalAgentProgress(pending, payload, runtimeLabel, options = {}) {
       const body = pending.querySelector(".message-body");
@@ -12789,7 +12808,7 @@ function readJsonBody(request) {
 }
 
 function sendHtml(response, html) {
-  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+  response.writeHead(200, { "Content-Type": "text/html; charset=utf-8", "Cache-Control": "no-store" });
   response.end(html);
 }
 
