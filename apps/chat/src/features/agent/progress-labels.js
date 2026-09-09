@@ -1,4 +1,5 @@
 function describeAgentProgress(event = {}, active = false) {
+  event = event || {};
   const type = event?.type || "", metadata = event?.metadata || {};
   const tool = String(metadata.tool || "").replaceAll("_", " ");
   const activities = {
@@ -38,7 +39,7 @@ function describeAgentProgress(event = {}, active = false) {
     verification_started:["Running verification", "Check the completed work.", "Tool"],
     verification_completed:["Verification finished", "Review the reported check results.", "Tool"],
   };
-  if (type === "skills_selected") return {label:"Loaded skills: " + (metadata.skills || []).map(s => String(s).replaceAll("-", " ")).join(", "),purpose:"Use these workflows for this project task.",source:"Harness",outcome:"info"};
+  if (type === "skills_selected") return {label:"Loaded skills: " + (Array.isArray(metadata.skills) ? metadata.skills : []).map(s => String(s).replaceAll("-", " ")).join(", "),purpose:"Use these workflows for this project task.",source:"Harness",outcome:"info"};
   const [label,purpose,source] = labels[type] || [String(event?.summary || "Waiting for the connector"), "The next update will appear when the harness reports activity.", "Harness"];
   return {label,purpose,source,outcome:type === "model_failed" ? "failed" : "info"};
 }
