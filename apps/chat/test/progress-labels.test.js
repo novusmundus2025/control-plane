@@ -2,9 +2,25 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {readFileSync} from "node:fs";
 import vm from "node:vm";
+import {page} from "../src/main.js";
 const context = vm.createContext({});
 vm.runInContext(readFileSync(new URL("../src/features/agent/progress-labels.js",import.meta.url),"utf8"),context);
 const describe = context.describeAgentProgress;
+
+test("queued tasks render before any progress event exists",()=>{
+  assert.equal(describe(null).label,"Waiting for the connector");
+  assert.equal(describe(undefined).label,"Waiting for the connector");
+  const nodes=[];
+  const element=()=>{const node={style:{},setAttribute(){},append(){},appendChild(){},replaceChildren(){}};nodes.push(node);return node;};
+  const body=element();
+  const runtime=vm.createContext({document:{createElement:element},describeAgentProgress:describe,activeHistoryId:"test",setStatus(){}});
+  const html=page();
+  vm.runInContext(html.slice(html.indexOf("    function renderLocalAgentProgress("),html.indexOf("    async function tryLiveChatTurn(")),runtime);
+  for(const events of [undefined,[],[null,{event:null}]]) {
+    runtime.renderLocalAgentProgress({querySelector:()=>body},{state:"queued",events},"Hermes");
+  }
+  assert.ok(nodes.some(node=>String(node.textContent).includes("Waiting for the connector")));
+});
 
 test("progress distinguishes model calls, program execution and verification",()=>{
   assert.equal(describe({type:"model_requested"}).source,"Model");

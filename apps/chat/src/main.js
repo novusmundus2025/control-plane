@@ -4100,7 +4100,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       const body = pending.querySelector(".message-body");
       if (!body) return;
       const events = Array.isArray(payload?.events) ? payload.events : [];
-      const meaningfulEvents = events.filter((item) => item?.event?.type !== "agent_progress" || (item.event.summary && item.event.summary !== "Hermes is working"));
+      const meaningfulEvents = events.filter((item) => item?.event && (item.event.type !== "agent_progress" || (item.event.summary && item.event.summary !== "Hermes is working")));
       const latest = meaningfulEvents.at(-1)?.event || null;
       const progress = describeAgentProgress(latest, true);
       const summary = options.cancelling
