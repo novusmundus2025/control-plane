@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createGlobalSkillsController } from "../src/features/skills/control-plane.js";
+import { selectChatSkills } from "../src/main.js";
 
 const token = "test-control-plane-token-".repeat(3);
 function fixture(body = {}) {
@@ -33,4 +34,25 @@ test("global writes validate Markdown and retain the verified actor for audit", 
   const f = fixture({ id: "router", content: "# Router\nChoose tools.", enabled: false, actor: "admin@example.com" });
   await f.call("PUT");
   assert.deepEqual(f.writes[0], ["admin@example.com", "router", { content: "# Router\nChoose tools.", enabled: false }]);
+});
+
+test("blank disabled drafts are allowed, but empty instructions cannot be enabled", async () => {
+  const blank = fixture({ id: "router", content: "", enabled: false });
+  await blank.call("PUT");
+  assert.equal(blank.writes[0][2].enabled, false);
+  for (const content of ["", "# Empty heading"]) {
+    const enabled = fixture({ id:"router", content, enabled:true });
+    await assert.rejects(enabled.call("PUT"), {statusCode:400});
+    assert.equal(enabled.writes.length,0);
+  }
+});
+
+test("every global Markdown slot respects its independent enabled override", () => {
+  for (const id of ["router", "formatter", "persona-atlas", "translation", "code", "math", "weather", "facts", "chunk-planner", "verifier", "security", "guardrails", "rag-integration", "model-provider"]) {
+    const messages=["Who are you?", "Translate to German", "Calculate 2+2", "Write a complete Python program", "What is the weather?", "Who is the current president?"];
+    const off=[{skill_id:id,content:"# Example\nExample instructions",enabled:false}];
+    for(const message of messages) assert.ok(!selectChatSkills(message,off).some(skill=>skill.name===id+".md"));
+    const on=[{...off[0],enabled:true}];
+    assert.ok(messages.some(message=>selectChatSkills(message,on).some(skill=>skill.name===id+".md")), id+" can be enabled");
+  }
 });
