@@ -3926,9 +3926,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       };
       renderProgress();
       while (!["completed", "failed", "cancelled"].includes(payload.state)) {
-        await sleep(1000);
         try {
-          const polled = await fetch("/api/agent/tasks/" + encodeURIComponent(submitted.task_id));
+          const polled = await nextLocalTaskResponse(submitted.task_id);
           payload = await readApiPayload(polled, "local agent poll failed");
           if (!polled.ok) {
             const error = new Error(payload.error || "local agent poll failed");
@@ -3976,6 +3975,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     }
 
     function clearActiveAgentTask(taskId) {
+      if (taskId) closeLocalTaskStream(taskId);
       try {
         const active = JSON.parse(localStorage.getItem(activeAgentTaskKey) || "null");
         if (!taskId || active?.taskId === taskId) localStorage.removeItem(activeAgentTaskKey);
@@ -4069,9 +4069,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       };
       renderProgress();
       while (!["completed", "failed", "cancelled"].includes(payload.state)) {
-        await sleep(1000);
         try {
-          const response = await fetch("/api/agent/tasks/" + encodeURIComponent(saved.taskId));
+          const response = await nextLocalTaskResponse(saved.taskId);
           payload = await readApiPayload(response, "local agent poll failed");
           if (!response.ok) {
             const error = new Error(payload.error || "local agent poll failed");
@@ -4102,6 +4101,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     }
 
     ${readFileSync(resolve(CHAT_ROOT, "src/features/agent/progress-labels.js"), "utf8")}
+    ${readFileSync(resolve(CHAT_ROOT, "src/features/agent/task-stream-client.js"), "utf8")}
 
     // Rendering telemetry must never interrupt polling an already accepted task.
     function renderLocalAgentProgressSafely(pending, payload, runtimeLabel, options = {}) {
@@ -4113,6 +4113,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         if (body) body.textContent = "MundusX · " + runtimeLabel + " · " + (payload?.state || "queued")
           + " — Checking this task for updates. Your request has already been accepted.";
       }
+      renderLocalAgentAnswer(pending, payload);
     }
 
     function renderLocalAgentProgress(pending, payload, runtimeLabel, options = {}) {
@@ -4504,6 +4505,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     }
 
     function failConversationStream(conversationId, fallbackNode, message, error) {
+      const previewLabel = fallbackNode?.querySelector(".agent-answer-preview .meta");
+      if (previewLabel) previewLabel.textContent = "Hermes · Partial answer (task interrupted)";
       const state = conversationStreamStates.get(conversationId) || {
         conversationId,
         message,
@@ -4598,6 +4601,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     }
 
     function renderCompletedJob(node, payload, conversationId = null, options = {}) {
+      node.querySelector(".agent-answer-preview")?.remove();
       const body = node.querySelector(".message-body");
       const userPrompt = findPreviousUserMessage(node);
       const output = stripEchoedPrompt(payload.output || "(empty response)", userPrompt);
