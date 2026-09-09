@@ -22,6 +22,8 @@ projectTreeStyle.textContent = `
 .project-browser-dialog pre { white-space:pre-wrap; overflow-wrap:anywhere; font:13px/1.6 monospace; }
 .project-browser-actions { display:flex; flex-wrap:wrap; gap:8px; margin-top:12px; }
 .project-browser-dialog p { font-size:13px; color:var(--muted); }
+.project-actions-popover { width:224px; min-width:0; max-width:calc(100vw - 16px); max-height:calc(100vh - 16px); overflow-y:auto; box-sizing:border-box; }
+.project-actions-popover hr { margin:4px 3px; border:0; border-top:1px solid var(--line); }
 `;
 document.head.append(projectTreeStyle);
 
@@ -92,7 +94,7 @@ function appendProjectTreeRow(parent, slug, path, label, directory, root, depth)
   const labelEl = document.createElement("span"); labelEl.textContent = label; name.append(labelEl);
   name.title = path || slug;
   if (root) name.setAttribute("aria-current", String(activeProject?.slug === slug));
-  const menu = projectTreeButton("⋯", "menu", slug, path); menu.setAttribute("aria-label", "Actions for " + label);
+  const menu = projectTreeButton("⋯", "menu", slug, path); menu.setAttribute("aria-label", "Actions for " + label); menu.setAttribute("aria-haspopup", "menu"); menu.setAttribute("aria-expanded", "false");
   row.append(name, menu); parent.append(row);
   if (directory && expanded) appendProjectDirectory(parent, slug, path, depth + 1);
 }
@@ -120,7 +122,7 @@ async function handleProjectTreeClick(event) {
   const button = event.target.closest("button[data-tree-action]"); if (!button) return;
   const { treeAction:action, projectSlug:slug, path } = button.dataset;
   const row = button.closest(".project-tree-row");
-  if (action === "menu") { showProjectActions(slug, path, row.dataset.directory === "true", row.dataset.root === "true"); return; }
+  if (action === "menu") { showProjectActions(slug, path, row.dataset.directory === "true", row.dataset.root === "true", button); return; }
   if (action === "preview") {
     const dialog = projectBrowserDialog(path); const content = document.createElement("pre"); content.textContent = "Loading preview…"; dialog.append(content);
     try { const result = await projectOperation(slug, {operation:"read", path}); content.textContent = result.content + (result.truncated ? "\n\n[Preview truncated to 8,000 characters]" : ""); } catch (error) { content.textContent = error.message; } return;
@@ -139,21 +141,43 @@ async function handleProjectTreeClick(event) {
 
 sidebarProjectListEl?.addEventListener("contextmenu", (event) => {
   const row = event.target.closest(".project-tree-row"); if (!row) return;
-  event.preventDefault(); showProjectActions(row.dataset.projectSlug, row.dataset.path, row.dataset.directory === "true", row.dataset.root === "true");
+  event.preventDefault(); showProjectActions(row.dataset.projectSlug, row.dataset.path, row.dataset.directory === "true", row.dataset.root === "true", row.querySelector('[data-tree-action="menu"]'), {x:event.clientX,y:event.clientY});
 });
 
-function showProjectActions(slug, path, directory, root) {
-  const dialog = projectBrowserDialog(path || slug), actions = document.createElement("div"); actions.className = "project-browser-actions"; dialog.append(actions);
+let projectActionsMenu = null;
+let projectActionsAnchor = null;
+function closeProjectActions(restoreFocus = false) {
+  projectActionsMenu?.remove(); projectActionsMenu = null;
+  const anchor = projectActionsAnchor; projectActionsAnchor = null;
+  anchor?.setAttribute("aria-expanded", "false");
+  if (restoreFocus && anchor?.isConnected) anchor.focus();
+}
+document.addEventListener("pointerdown", (event) => {
+  if (!projectActionsMenu?.contains(event.target) && !event.target.closest('[data-tree-action="menu"]')) closeProjectActions();
+});
+window.addEventListener("resize", () => closeProjectActions());
+document.addEventListener("scroll", (event) => { if (projectActionsMenu && !projectActionsMenu.contains(event.target)) closeProjectActions(); }, true);
+
+function showProjectActions(slug, path, directory, root, anchor, position) {
+  const wasOpen = projectActionsMenu && projectActionsAnchor === anchor;
+  closeProjectActions(); closeHistoryMenu();
+  if (wasOpen && !position) return;
+  const actions = document.createElement("div"); actions.className = "history-context-menu project-actions-popover is-open";
+  actions.setAttribute("role", "menu"); actions.setAttribute("aria-label", "Actions for " + (path || slug));
+  projectActionsMenu = actions; projectActionsAnchor = anchor;
+  anchor?.setAttribute("aria-expanded", "true");
+  const separator = () => { const line = document.createElement("hr"); line.setAttribute("role", "separator"); actions.append(line); };
   function action(label, callback) {
-    const button = document.createElement("button"); button.textContent = label;
-    button.addEventListener("click", async () => { dialog.close(); try { await callback(); } catch (error) { showToast(error.message); } }); actions.append(button);
+    const button = document.createElement("button"); button.type = "button"; button.setAttribute("role", "menuitem"); button.textContent = label;
+    if (label === "Remove from sidebar") button.className = "danger";
+    button.addEventListener("click", async () => { closeProjectActions(true); try { await callback(); } catch (error) { showToast(error.message); } }); actions.append(button);
   }
   if (root) {
     action("New chat in this project", () => { newChatEl.click(); setActiveProject({slug}); });
     action("Project instructions", () => editProjectDocument(slug, "instructions"));
     action("Project skills", () => editProjectDocument(slug, "skills"));
     action("Saved prompts", () => editProjectDocument(slug, "prompts"));
-    action("Remove from sidebar", () => { if (expandedProject === slug) expandedProject = null; removeProject(slug); });
+    separator();
   }
   if (directory) {
     action("New file", () => createProjectEntry(slug, path, false));
@@ -163,6 +187,24 @@ function showProjectActions(slug, path, directory, root) {
     if (!root) action("Use as task scope", () => { setActiveProject({slug}); promptEl.value = "Work within folder " + JSON.stringify(path) + ".\n\n" + promptEl.value; promptEl.dispatchEvent(new Event("input", {bubbles:true})); promptEl.focus(); });
   }
   action("Copy relative path", () => navigator.clipboard.writeText(path || "."));
+  if (root) { separator(); action("Remove from sidebar", () => { if (expandedProject === slug) expandedProject = null; removeProject(slug); }); }
+  actions.addEventListener("keydown", (event) => {
+    const buttons = [...actions.querySelectorAll("button")];
+    const index = buttons.indexOf(document.activeElement);
+    if (event.key === "Escape") { event.preventDefault(); closeProjectActions(true); }
+    else if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      const next = event.key === "Home" ? 0 : event.key === "End" ? buttons.length-1 : (index + (event.key === "ArrowDown" ? 1 : -1) + buttons.length) % buttons.length;
+      buttons[next]?.focus();
+    }
+  });
+  actions.addEventListener("focusout", () => queueMicrotask(() => { if (projectActionsMenu === actions && !actions.contains(document.activeElement) && document.activeElement !== anchor) closeProjectActions(); }));
+  document.body.append(actions);
+  const rect = anchor?.getBoundingClientRect() || {left:8,right:8,top:8};
+  const beside = rect.right + 6 + actions.offsetWidth <= window.innerWidth - 8 ? rect.right + 6 : rect.left - actions.offsetWidth - 6;
+  actions.style.left = Math.max(8, Math.min(position?.x ?? beside, window.innerWidth - actions.offsetWidth - 8)) + "px";
+  actions.style.top = Math.max(8, Math.min(position?.y ?? rect.top, window.innerHeight - actions.offsetHeight - 8)) + "px";
+  actions.querySelector("button")?.focus({preventScroll:true});
 }
 
 async function editProjectDocument(slug, section) {
