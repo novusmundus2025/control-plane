@@ -6990,7 +6990,6 @@ export function canLiveStreamChatTurn(body = {}) {
   const toolMessage = message;
   if (
     isMultiIntentPlanningCandidate(toolMessage) ||
-    fetchMathJobForPrompt(toolMessage) ||
     extractWeatherLocation(toolMessage) ||
     looksLikeWeatherRequest(toolMessage.toLowerCase()) ||
     extractAssistantIdentityTopic(toolMessage) ||
