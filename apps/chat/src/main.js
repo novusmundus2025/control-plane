@@ -2077,7 +2077,6 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         <button class="new-chat" id="new-chat" type="button"><span>＋ New Chat</span><span class="kbd-hint" aria-hidden="true"><svg viewBox="0 0 28 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><rect x="2" y="4" width="24" height="16" rx="3"/><path d="M7 8h.5m4 0h.5m4 0h.5m4 0h.5M7 12h.5m4 0h.5m4 0h.5m4 0h.5M8 16h12"/></svg></span></button>
         <nav class="workspace-nav" aria-label="Workspace">
           <span class="workspace-label">Workspace</span>
-          <button class="rail-destination is-active" id="chats-open" type="button" aria-current="page"><span class="rail-destination-icon" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none"><path d="M5 5.5h14a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H9l-5 3v-13a2 2 0 0 1 2-2Z" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"/></svg></span><span>Chats</span></button>
           ${repositoryLauncher}
         </nav>
       </div>
@@ -2216,7 +2215,6 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
     const mcpTokenOnceEl = document.getElementById("mcp-token-once");
     const mcpTokenValueEl = document.getElementById("mcp-token-value");
     const mcpTokenListEl = document.getElementById("mcp-token-list");
-    const chatsOpenEl = document.getElementById("chats-open");
     const repositoryOpenEl = document.getElementById("repository-open");
     const sidebarProjectListEl = document.getElementById("sidebar-project-list");
     const sidebarProjectAddEl = document.getElementById("sidebar-project-add");
@@ -2541,13 +2539,10 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
 
     function setWorkspaceDestination(destination) {
       const projectsActive = destination === "projects";
-      chatsOpenEl?.classList.toggle("is-active", !projectsActive);
       repositoryOpenEl?.classList.toggle("is-active", projectsActive);
       if (projectsActive) {
         repositoryOpenEl?.setAttribute("aria-current", "page");
-        chatsOpenEl?.removeAttribute("aria-current");
       } else {
-        chatsOpenEl?.setAttribute("aria-current", "page");
         repositoryOpenEl?.removeAttribute("aria-current");
       }
     }
