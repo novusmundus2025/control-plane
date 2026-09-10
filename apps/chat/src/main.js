@@ -5025,6 +5025,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       flushParagraph();
     }
 
+    ${expandCompactMarkdownTable.toString()}
     ${normalizeAssistantDisplayText.toString()}
     ${protectMathSegments.toString()}
 
