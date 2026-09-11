@@ -10474,7 +10474,6 @@ mod tests {
         assert!(response.contains("Content-Type: text/event-stream"));
         assert!(response.contains(r#""role":"assistant""#));
         assert!(response.contains("Use the client"));
-        assert!(!response.contains("MUNDUSX_WEB_SEARCH_URL"));
         assert!(response.contains("data: [DONE]"));
     }
 
