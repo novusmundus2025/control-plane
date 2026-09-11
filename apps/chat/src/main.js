@@ -4266,24 +4266,31 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       let completionId = response.headers.get("x-mundusx-completion-id") || null;
       let finishReason = null;
       let sawDone = false;
-      const firstTokenDeadline = Date.now() + 60000;
+      // The control plane sends SSE comments while a queued or reasoning-heavy
+      // request is still healthy. Treat those bytes as activity instead of
+      // abandoning a live response merely because visible content has not
+      // arrived yet.
+      let lastStreamActivityAt = Date.now();
+      const streamInactivityTimeoutMs = 75000;
 
       const readStreamChunk = async () => {
         if (output) return reader.read();
-        const remaining = firstTokenDeadline - Date.now();
+        const remaining = lastStreamActivityAt + streamInactivityTimeoutMs - Date.now();
         if (remaining <= 0) {
-          throw new Error("MundusX did not produce a first token within 60 seconds");
+          throw new Error("MundusX response stream was inactive for 75 seconds");
         }
         let timeoutId;
         try {
-          return await Promise.race([
+          const next = await Promise.race([
             reader.read(),
             new Promise((_, reject) => {
               timeoutId = window.setTimeout(() => {
-                reject(new Error("MundusX did not produce a first token within 60 seconds"));
+                reject(new Error("MundusX response stream was inactive for 75 seconds"));
               }, remaining);
             }),
           ]);
+          if (!next.done && next.value?.byteLength) lastStreamActivityAt = Date.now();
+          return next;
         } finally {
           window.clearTimeout(timeoutId);
         }
@@ -4300,7 +4307,11 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
             prompt: message,
           });
           let payload = { job_id: completionId, status: "assigned" };
-          const recoveryDeadline = Date.now() + 120000;
+          // A direct control-plane job may legitimately run for up to ten
+          // minutes. Keep recovery attached long enough to observe its real
+          // terminal state instead of replacing it with a premature client
+          // timeout.
+          const recoveryDeadline = Date.now() + 660000;
           while (!["completed", "failed"].includes(payload.status)) {
             try {
               const polled = await fetch(
@@ -4448,7 +4459,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         meta.className = "meta";
         meta.textContent = "Chat · Waiting for the first response token";
         body.appendChild(meta);
-        setStatus("working", "Streaming");
+        setStatus("working", "Waiting");
         scrollChatToLatest();
         return;
       }
@@ -6958,7 +6969,14 @@ export function requiresValidatedStreaming(message, body = {}) {
 
 export function canLiveStreamChatTurn(body = {}) {
   const message = String(body?.message ?? "").trim();
-  return Boolean(message) && !detectClientMetadataTask(message);
+  return Boolean(message)
+    && !detectClientMetadataTask(message)
+    && !explicitlyRequestsParallelPlanning(message);
+}
+
+export function explicitlyRequestsParallelPlanning(message) {
+  const text = String(message ?? "").trim();
+  return /\b(?:run (?:it|them|these|the work|the tasks) in parallel|parallelize|parallelise|multiple independent tasks|split (?:it|this|the work|the task) into independent tasks)\b/i.test(text);
 }
 
 export async function streamChatTurn(response, body, config = configFromEnv(), fetchImpl = fetch) {
