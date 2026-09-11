@@ -6269,6 +6269,20 @@ export function createServerApp(config = configFromEnv()) {
       if (request.method === "GET" && url.pathname === "/v1/models") {
         return sendOpenAiJson(response, 200, openAiModelsResponse());
       }
+      const chatCancellation = url.pathname.match(/^\/v1\/chat\/completions\/([^/]+)\/cancel$/);
+      if (request.method === "POST" && chatCancellation) {
+        const resumeToken = request.headers["x-mundusx-resume-token"];
+        const upstream = await fetch(`${config.controlPlaneUrl}${url.pathname}`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            ...(resumeToken ? { "X-MundusX-Resume-Token": resumeToken } : {}),
+          },
+          body: "{}",
+        });
+        const payload = await upstream.json().catch(() => ({ error: `control plane returned ${upstream.status}` }));
+        return sendOpenAiJson(response, upstream.status, payload);
+      }
       if (request.method === "POST" && url.pathname === "/v1/chat/completions") {
         const body = await readJsonBody(request);
         if (body?.stream === true) {
@@ -7030,7 +7044,8 @@ export async function relayControlPlaneOpenAiStream(
 
   const upstreamMode = upstream.headers?.get?.("x-mundusx-stream-mode") || "live-delta";
   const upstreamCompletionId = upstream.headers?.get?.("x-mundusx-completion-id") || null;
-  startOpenAiStream(response, upstreamMode, upstreamCompletionId);
+  const upstreamResumeToken = upstream.headers?.get?.("x-mundusx-resume-token") || null;
+  startOpenAiStream(response, upstreamMode, upstreamCompletionId, upstreamResumeToken);
   reader = upstream.body.getReader();
   } catch (error) {
     response.off?.("close", disconnect);
@@ -12775,7 +12790,7 @@ function sendOpenAiJson(response, status, payload) {
     "Content-Type": "application/json; charset=utf-8",
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-MundusX-Resume-Token",
   });
   response.end(payload === null ? "" : JSON.stringify(payload));
 }
@@ -12785,7 +12800,7 @@ function sendOpenAiStream(response, completion) {
   response.end(openAiSseBody(completion));
 }
 
-function startOpenAiStream(response, mode, completionId = null) {
+function startOpenAiStream(response, mode, completionId = null, resumeToken = null) {
   response.writeHead(200, {
     "Content-Type": "text/event-stream; charset=utf-8",
     "Cache-Control": "no-cache, no-transform",
@@ -12793,10 +12808,11 @@ function startOpenAiStream(response, mode, completionId = null) {
     "Keep-Alive": "timeout=900",
     "X-Accel-Buffering": "no",
     "Access-Control-Allow-Origin": "*",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type",
-    "Access-Control-Expose-Headers": "X-MundusX-Stream-Mode, X-MundusX-Completion-Id",
+    "Access-Control-Allow-Headers": "Authorization, Content-Type, X-MundusX-Resume-Token",
+    "Access-Control-Expose-Headers": "X-MundusX-Stream-Mode, X-MundusX-Completion-Id, X-MundusX-Resume-Token",
     "X-MundusX-Stream-Mode": mode,
     ...(completionId ? { "X-MundusX-Completion-Id": completionId } : {}),
+    ...(resumeToken ? { "X-MundusX-Resume-Token": resumeToken } : {}),
   });
   response.flushHeaders?.();
 }
