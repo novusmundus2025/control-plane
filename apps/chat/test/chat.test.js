@@ -273,6 +273,13 @@ test("renders a usable chat page", () => {
   assert.match(html, /Chat · Waiting for the first response token/);
   assert.match(html, /response\.headers\.get\("x-mundusx-completion-id"\)/);
   assert.match(html, /const firstTokenDeadline = Date\.now\(\) \+ 60000/);
+  assert.match(html, /const yieldToStreamPaint = \(\) => new Promise/);
+  assert.match(html, /function requestAnimationFrame|requestAnimationFrame\(commitStreamPaint\)/);
+  assert.match(html, /scheduleStreamPaint\(\)/);
+  assert.match(html, /await flushStreamPaint\(\)/);
+  assert.match(html, /highlightCode: false/);
+  assert.match(html, /\[chat-stream-render\]/);
+  assert.match(html, /live\.textContent = output/);
   assert.match(html, /MundusX did not produce a first token within 60 seconds/);
   assert.match(html, /MundusX job did not complete during stream recovery/);
   assert.match(html, /finishReason === "error"/);
@@ -627,7 +634,10 @@ test("renders local-first Projects without a separate Computer surface", () => {
   assert.match(html, /pendingRunnerAction = \{ pending, message, project: activeProject, conversationId \}/);
   assert.match(html, /Runner connected\. Resuming your request/);
   assert.match(html, /if \(localRunnerReady\) void resumePendingRunnerAction\(\)/);
-  assert.match(html, /projectReadinessRefreshEl\.hidden = localRunnerReady \|\| \(paired && !localRunnerReady\)/);
+  assert.match(
+    html,
+    /projectReadinessRefreshEl\.hidden = localRunnerReady \|\| \(paired && !localRunnerReady && !reconnectTimedOut\)/,
+  );
   assert.doesNotMatch(projects, />Create pairing code</);
   assert.doesNotMatch(projects, /<details|Set up local runner/);
   assert.match(projects, /MundusX-Setup\.exe/);

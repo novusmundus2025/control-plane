@@ -4266,6 +4266,47 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       let finishReason = null;
       let sawDone = false;
       const firstTokenDeadline = Date.now() + 60000;
+      let streamPaintPending = false;
+      let streamPaintWaiters = [];
+
+      const yieldToStreamPaint = () => new Promise((resolve) => {
+        if (typeof window.requestAnimationFrame === "function") {
+          window.requestAnimationFrame(() => resolve());
+        } else {
+          window.setTimeout(resolve, 16);
+        }
+      });
+
+      const commitStreamPaint = () => {
+        streamPaintPending = false;
+        streamState.status = "streaming";
+        streamState.output = output;
+        streamState.completionId = completionId;
+        renderConversationStreamState(streamState);
+        const waiters = streamPaintWaiters;
+        streamPaintWaiters = [];
+        waiters.forEach((resolve) => resolve());
+      };
+
+      const scheduleStreamPaint = () => {
+        if (streamPaintPending) return;
+        streamPaintPending = true;
+        window.setTimeout(() => {
+          if (typeof window.requestAnimationFrame === "function") {
+            window.requestAnimationFrame(commitStreamPaint);
+          } else {
+            commitStreamPaint();
+          }
+        }, 32);
+      };
+
+      const flushStreamPaint = async () => {
+        if (!streamPaintPending && streamState.output === output) return;
+        const painted = new Promise((resolve) => streamPaintWaiters.push(resolve));
+        scheduleStreamPaint();
+        await painted;
+        await yieldToStreamPaint();
+      };
 
       const readStreamChunk = async () => {
         if (output) return reader.read();
@@ -4358,10 +4399,10 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         const delta = String(choice?.delta?.content || "");
         if (delta) {
           output += delta;
-          streamState.status = "streaming";
-          streamState.output = output;
-          streamState.completionId = completionId;
-          renderConversationStreamState(streamState);
+          // A network read can contain many small model events. Coalesce them
+          // into one browser paint so long code blocks do not repeatedly block
+          // the stream reader with Markdown parsing and DOM reconstruction.
+          scheduleStreamPaint();
         }
         if (choice?.finish_reason) finishReason = choice.finish_reason;
       };
@@ -4373,7 +4414,9 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           buffer += decoder.decode(next.value, { stream: true });
           const events = buffer.split(/\\r?\\n\\r?\\n/);
           buffer = events.pop() || "";
-          events.forEach(consumeEvent);
+          for (const event of events) {
+            consumeEvent(event);
+          }
         }
         buffer += decoder.decode();
         if (buffer.trim()) consumeEvent(buffer);
@@ -4382,7 +4425,11 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           throw new Error("MundusX replaced an invalid streamed draft with a validated result");
         }
         if (!output.trim()) throw new Error("MundusX completed without assistant output");
+        // Do not replace the streaming node with the completed view until the
+        // browser has painted the last received delta at least once.
+        await flushStreamPaint();
       } catch (streamError) {
+        if (output) await flushStreamPaint();
         await reader.cancel().catch(() => {});
         return recoverCompletedJob(streamError);
       }
@@ -4404,7 +4451,14 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       const live = document.createElement("section");
       live.className = "streaming-response";
       live.setAttribute("aria-live", "polite");
-      appendRichMessage(live, output);
+      try {
+        appendRichMessage(live, output, { highlightCode: false });
+      } catch (error) {
+        // Partial Markdown is expected during a live response. A renderer
+        // failure must not abort the transport or force final-only recovery.
+        console.warn("[chat-stream-render]", error?.message || error);
+        live.textContent = output;
+      }
       body.appendChild(live);
       const meta = document.createElement("div");
       meta.className = "meta";
@@ -4824,16 +4878,16 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       return text || output;
     }
 
-    function appendRichMessage(container, text) {
+    function appendRichMessage(container, text, options = {}) {
       const parts = splitMarkdownCode(String(text || ""));
       if (!parts.some((part) => part.type === "code") && looksLikeCode(text)) {
-        container.appendChild(createCodeBlock("code", formatCodeForDisplay(text)));
+        container.appendChild(createCodeBlock("code", formatCodeForDisplay(text), "", options));
         return;
       }
       for (const part of parts) {
         if (part.type === "code") {
           const displayName = codeBlockDisplayName(container);
-          container.appendChild(createCodeBlock(part.language, formatCodeForDisplay(part.value), displayName));
+          container.appendChild(createCodeBlock(part.language, formatCodeForDisplay(part.value), displayName, options));
         } else {
           appendTextParagraphs(container, part.value);
         }
@@ -5149,7 +5203,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       }
     }
 
-    function createCodeBlock(language, code, displayName = "") {
+    function createCodeBlock(language, code, displayName = "", options = {}) {
       const wrapper = document.createElement("div");
       wrapper.className = "code-block";
       const normalizedLanguage = normalizeCodeLanguage(language);
@@ -5205,7 +5259,11 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       const pre = document.createElement("pre");
       const codeNode = document.createElement("code");
       codeNode.dataset.language = normalizedLanguage;
-      appendHighlightedCode(codeNode, code, normalizedLanguage);
+      if (options.highlightCode === false) {
+        codeNode.textContent = code;
+      } else {
+        appendHighlightedCode(codeNode, code, normalizedLanguage);
+      }
       pre.appendChild(codeNode);
       wrapper.append(header, pre);
       return wrapper;
