@@ -7139,6 +7139,14 @@ export function canLiveStreamChatTurn(body = {}) {
   return Boolean(message) && !detectClientMetadataTask(message);
 }
 
+function liveChatRuntimeMessage(message) {
+  const text = String(message ?? "").trim();
+  if (!text || /(?:^|\s)\/no_think(?:\s|$)/i.test(text)) {
+    return text;
+  }
+  return `${text}\n/no_think`;
+}
+
 export async function streamChatTurn(response, body, config = configFromEnv(), fetchImpl = fetch) {
   const rawMessage = String(body?.message ?? "").trim();
   if (!rawMessage) {
@@ -7169,7 +7177,10 @@ export async function streamChatTurn(response, body, config = configFromEnv(), f
     messages: [
       { role: "system", content: buildChatSystemPrompt(message, body?.voicePersona, body?.skillContext) },
       ...historyMessages,
-      { role: "user", content: message },
+      // Qwen3 workers released before node-agent 0.1.40 do not pass
+      // chat_template_kwargs to vLLM. The soft switch keeps live chat from
+      // spending tens of seconds in hidden reasoning before its first token.
+      { role: "user", content: liveChatRuntimeMessage(message) },
     ],
     temperature: typeof body?.temperature === "number" ? body.temperature : 0.2,
     top_p: typeof body?.topP === "number" ? body.topP : 0.9,
