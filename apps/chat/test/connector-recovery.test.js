@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import vm from "node:vm";
-import { page } from "../src/main.js";
+import { configFromEnv, page } from "../src/main.js";
 
 const source = readFileSync(new URL("../src/main.js", import.meta.url), "utf8");
 const configure = source.slice(source.indexOf("    function configureAgentRecoveryAction("), source.indexOf('    projectAgentUpdateEl?.addEventListener("click"'));
@@ -16,16 +16,16 @@ test("only an older installed version offers an update download", () => {
   const context = vm.createContext({ projectAgentUpdateEl: link, harnessDownloadEl: { href: "https://example.test/setup.exe" } });
   vm.runInContext(compare + configure, context);
   for (const [installed, required, needsUpdate] of [
-    ["0.1.56", "0.1.57", true],
-    ["0.1.57", "0.1.57", false],
-    ["0.1.66", "0.1.57", false],
-    ["0.1.9", "0.1.57", true],
-    ["0.1.100", "0.1.57", false],
-    ["0.2.0", "0.1.57", false],
-    ["1.0.0", "0.1.57", false],
-    ["v0.1.66", "0.1.57", false],
-    ["cli-v0.1.56", "0.1.57", true],
-    ["unknown", "0.1.57", false],
+    ["0.1.56", "0.1.66", true],
+    ["0.1.57", "0.1.66", true],
+    ["0.1.66", "0.1.66", false],
+    ["0.1.9", "0.1.66", true],
+    ["0.1.100", "0.1.66", false],
+    ["0.2.0", "0.1.66", false],
+    ["1.0.0", "0.1.66", false],
+    ["v0.1.66", "0.1.66", false],
+    ["cli-v0.1.56", "0.1.66", true],
+    ["unknown", "0.1.66", false],
   ]) {
     const updateAvailable = !context.releaseVersionAtLeast(installed, required);
     assert.equal(updateAvailable, needsUpdate, installed + " compared to " + required);
@@ -33,6 +33,13 @@ test("only an older installed version offers an update download", () => {
     assert.equal(attributes.has("download"), needsUpdate, installed);
     assert.equal(link.dataset.action, needsUpdate ? "update" : "reconnect", installed);
   }
+});
+
+test("paired offline computers hide the first-install download", () => {
+  const config = configFromEnv({});
+  const html = page(config);
+  assert.match(html, /harnessDownloadEl\.hidden = ready \|\| paired/);
+  assert.match(config.harnessRunnerDownloadUrl, /cli-windows-v0\.1\.66\/MundusX-Setup\.exe$/);
 });
 
 test("Reconnect opens the installed app without downloading; Update still downloads", () => {
