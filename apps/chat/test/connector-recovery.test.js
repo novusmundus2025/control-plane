@@ -39,7 +39,7 @@ test("paired offline computers hide the first-install download", () => {
   const config = configFromEnv({});
   const html = page(config);
   assert.match(html, /harnessDownloadEl\.hidden = ready \|\| paired/);
-  assert.match(config.harnessRunnerDownloadUrl, /cli-windows-v0\.1\.79\/MundusX-Setup\.exe$/);
+  assert.match(config.harnessRunnerDownloadUrl, /cli-windows-v0\.1\.80\/MundusX-Setup\.exe$/);
 });
 
 test("Reconnect opens the installed app without downloading; Update still downloads", () => {
