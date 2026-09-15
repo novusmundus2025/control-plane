@@ -7627,6 +7627,11 @@ export async function relayControlPlaneOpenAiStream(
 }
 
 async function relayProjectContinuationStream(response, body, config, fetchImpl, hooks) {
+  // A long code answer can legitimately need several provider-sized segments.
+  // Keep continuation bounded by the complete accumulated answer instead of a
+  // fixed three-request ceiling, which cut otherwise healthy generations off.
+  const maxSegments = 8;
+  const maxOutputCharacters = 262_144;
   const headers = {
     Accept: "text/event-stream",
     "Content-Type": "application/json",
@@ -7647,6 +7652,7 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
 
   try {
     for (let attempt = 0; ; attempt += 1) {
+      const segmentStartLength = content.length;
       const upstream = await fetchImpl(`${config.controlPlaneUrl}/v1/chat/completions`, {
         signal: controller.signal,
         method: "POST",
@@ -7733,7 +7739,9 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
       reader = null;
       if (!sawDone) throw new Error("control-plane stream ended before [DONE]");
 
-      if (attemptFinishReason !== "length" || attempt >= 2) {
+      const segmentMadeProgress = content.length > segmentStartLength;
+      const reachedContinuationLimit = attempt + 1 >= maxSegments || content.length >= maxOutputCharacters;
+      if (attemptFinishReason !== "length" || !segmentMadeProgress || reachedContinuationLimit) {
         if (attemptFinishReason === "length") {
           response.write(`data: ${JSON.stringify({
             id: completionId,
