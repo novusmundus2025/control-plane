@@ -3965,7 +3965,8 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         if (!handledLocally) await tryLiveChatTurn(pending, chatMessage, conversationId);
         syncNetworkRuntimeStatus(true);
       } catch (error) {
-        failConversationStream(conversationId, pending, message, error);
+        const recovered = await recoverInterruptedConversationStream(conversationId, message, error);
+        if (!recovered) failConversationStream(conversationId, pending, message, error);
       } finally {
         sendEl.disabled = false;
         promptEl.focus();
@@ -4747,6 +4748,57 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
       return true;
     }
 
+    function isRecoverableBrowserStreamError(error) {
+      const message = String(error?.message || error || "");
+      return error instanceof TypeError ||
+        /network\s*error|failed to fetch|load failed|stream ended before completion|terminated|connection.*(?:closed|reset)/i.test(message);
+    }
+
+    async function recoverInterruptedConversationStream(conversationId, message, error) {
+      const state = conversationStreamStates.get(conversationId);
+      if (!state || !state.completionId || !isRecoverableBrowserStreamError(error)) return false;
+      state.status = "reconnecting";
+      state.error = null;
+      renderConversationStreamState(state);
+
+      // Chat keeps generating after a browser/edge disconnect and checkpoints
+      // the same completion row in the conversation store. Re-read that row
+      // instead of submitting the user's prompt again, which could duplicate a
+      // long answer or repeat side effects.
+      for (let attempt = 0; attempt < 80; attempt += 1) {
+        await new Promise((resolve) => window.setTimeout(resolve, 1500));
+        let turns;
+        try {
+          turns = await fetchConversationMessages(conversationId);
+        } catch {
+          continue;
+        }
+        const checkpoint = [...turns].reverse().find((turn) =>
+          turn.role === "assistant" &&
+          (turn.job_id || turn.payload?.job_id) === state.completionId,
+        );
+        if (!checkpoint) continue;
+        const checkpointOutput = String(checkpoint.content || checkpoint.payload?.output || "");
+        if (checkpointOutput.length >= state.output.length) {
+          state.output = checkpointOutput;
+          renderConversationStreamState(state);
+        }
+        if (checkpoint.metadata?.partial !== true && checkpoint.payload?.metadata?.partial !== true) {
+          completeConversationStream(state, {
+            status: "completed",
+            output: state.output,
+            job_id: state.completionId,
+            execution_mode: "single",
+            finish_reason: "stop",
+            stream_mode: "recovered-checkpoint",
+          });
+          return true;
+        }
+      }
+      state.message = message;
+      return false;
+    }
+
     function renderStreamingJob(node, output, completionId) {
       const body = node.querySelector(".message-body");
       body.textContent = "";
@@ -4815,6 +4867,16 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         body.appendChild(meta);
         setStatus("working", "Streaming");
         scrollChatToLatest();
+        return;
+      }
+      if (state.status === "reconnecting") {
+        if (state.output) renderStreamingJob(node, state.output, state.completionId);
+        const body = node.querySelector(".message-body");
+        const meta = document.createElement("div");
+        meta.className = "meta";
+        meta.textContent = "Connection changed · restoring this answer from its saved checkpoint";
+        body.appendChild(meta);
+        setStatus("working", "Reconnecting");
         return;
       }
       if (state.output) {
@@ -7782,9 +7844,21 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
   };
   const controller = new AbortController();
   let reader = null;
+  let clientDisconnected = false;
+  const writeResponse = (value) => {
+    if (clientDisconnected || response.destroyed || response.writableEnded) return false;
+    return response.write(value);
+  };
+  const endResponse = (value) => {
+    if (clientDisconnected || response.destroyed || response.writableEnded) return false;
+    response.end(value);
+    return true;
+  };
   const disconnect = () => {
-    controller.abort();
-    reader?.cancel().catch(() => {});
+    // Keep generation alive after a browser or edge disconnect. The durable
+    // completion checkpoint lets the browser reattach without regenerating
+    // the user's request or losing already-produced code.
+    clientDisconnected = true;
   };
   response.once?.("close", disconnect);
   let content = "";
@@ -7854,13 +7928,13 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
           return;
         }
         if (!data) {
-          response.write(`${eventText}\n\n`);
+          writeResponse(`${eventText}\n\n`);
           return;
         }
         try {
           const chunk = JSON.parse(data);
           if (chunk?.error) {
-            response.write(`${eventText}\n\n`);
+            writeResponse(`${eventText}\n\n`);
             return;
           }
           completionId ||= String(chunk?.id ?? "").trim() || null;
@@ -7891,7 +7965,7 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
           // made the browser finalize an answer that still looked incomplete.
           if (choice?.finish_reason) {
             if (delta) {
-              response.write(`data: ${JSON.stringify({
+              writeResponse(`data: ${JSON.stringify({
                 ...chunk,
                 choices: [{ ...choice, finish_reason: null }],
               })}\n\n`);
@@ -7901,7 +7975,7 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
         } catch {
           // Relay unknown upstream events as-is.
         }
-        response.write(`${eventText}\n\n`);
+        writeResponse(`${eventText}\n\n`);
       };
 
       let streamError = null;
@@ -7967,7 +8041,7 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
           cause: streamError.cause?.code ?? streamError.code ?? streamError.message,
           preservedCharacters: content.length,
         }));
-        response.write(": recovering interrupted upstream stream\n\n");
+        writeResponse(": recovering interrupted upstream stream\n\n");
         hooks.onProgress?.({ content, completionId, finishReason });
         if (content) {
           requestBody = buildContinuationRequestBody(requestBody, body.messages, content);
@@ -8007,7 +8081,7 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
         stalledContinuationAttempts < 2
       ) {
         stalledContinuationAttempts += 1;
-        response.write(": retrying stalled project continuation\n\n");
+        writeResponse(": retrying stalled project continuation\n\n");
         requestBody = buildContinuationRequestBody(
           requestBody,
           body.messages,
@@ -8031,7 +8105,7 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
       }
       if (attemptFinishReason !== "length" || !segmentMadeProgress || reachedContinuationLimit) {
         if (attemptFinishReason === "length") {
-          response.write(`data: ${JSON.stringify({
+          writeResponse(`data: ${JSON.stringify({
             id: completionId,
             object: "chat.completion.chunk",
             created: Math.floor(Date.now() / 1000),
@@ -8039,7 +8113,7 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
             choices: [{ index: 0, delta: {}, finish_reason: "length" }],
           })}\n\n`);
         } else {
-          response.write(`data: ${JSON.stringify({
+          writeResponse(`data: ${JSON.stringify({
             id: completionId,
             object: "chat.completion.chunk",
             created: Math.floor(Date.now() / 1000),
@@ -8047,15 +8121,15 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
             choices: [{ index: 0, delta: {}, finish_reason: attemptFinishReason || "stop" }],
           })}\n\n`);
         }
-        response.write("data: [DONE]\n\n");
+        writeResponse("data: [DONE]\n\n");
         break;
       }
 
       stalledContinuationAttempts = 0;
-      response.write(": continuing project response\n\n");
+      writeResponse(": continuing project response\n\n");
       requestBody = buildContinuationRequestBody(requestBody, body.messages, content);
     }
-    response.end();
+    endResponse();
     await hooks.onComplete?.({ content, completionId, finishReason });
     return { content, completionId, finishReason };
   } catch (error) {
@@ -8066,7 +8140,7 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
       cause: error.cause?.code ?? error.code ?? null, finishReason }));
     if (!response.writableEnded) {
       const payload = { error: { message, type: "mundusx_stream_error" } };
-      response.end(`data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`);
+      endResponse(`data: ${JSON.stringify(payload)}\n\ndata: [DONE]\n\n`);
     }
     return { content, completionId, finishReason: "error", error: error.message ?? "stream failed" };
   } finally {
@@ -8208,7 +8282,9 @@ function normalizeContinuationBoundary(existingContent, candidateContent) {
 }
 
 function writeContinuationContent(response, content, completionId) {
+  if (response.destroyed || response.writableEnded) return;
   for (let offset = 0; offset < content.length; offset += 4096) {
+    if (response.destroyed || response.writableEnded) return;
     response.write(`data: ${JSON.stringify({
       id: completionId,
       object: "chat.completion.chunk",
