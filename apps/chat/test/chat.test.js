@@ -7427,7 +7427,12 @@ test("deleteChatConversation proxies real conversation deletion to the control p
     },
   );
 
-  assert.deepEqual(result, { conversation_id: "conv-1", deleted: true, persisted: true });
+  assert.deepEqual(result, {
+    conversation_id: "conv-1",
+    deleted: true,
+    persisted: true,
+    credits_affected: false,
+  });
   assert.equal(calls.length, 1);
 });
 
@@ -7475,6 +7480,7 @@ test("deleteChatConversation treats missing backend records as shallow local his
   assert.equal(result.conversation_id, "tool-only");
   assert.equal(result.deleted, false);
   assert.equal(result.persisted, false);
+  assert.equal(result.credits_affected, false);
 });
 
 test("deleteChatConversation rejects storage outages so database history cannot be orphaned", async () => {
@@ -7493,7 +7499,9 @@ test("chat deletion restores failed history and explicitly preserves project fol
   const browserDelete = source.match(/async function deleteConversationRecord[\s\S]*?\n    }/)?.[0] ?? "";
   assert.doesNotMatch(browserDelete, /response\.status === 503/);
   assert.match(source, /project_deleted:\s*false/);
+  assert.match(source, /credits_affected:\s*false/);
   assert.doesNotMatch(browserDelete, /projects?\//i);
+  assert.doesNotMatch(browserDelete, /credits?|ledger/i);
 });
 
 test("extracts a location that comes before the word weather", () => {
