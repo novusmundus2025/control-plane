@@ -9848,7 +9848,7 @@ fn main() {
     let supabase = DatabaseMirror::from_env();
     let bind_addr = control_plane_bind_addr().expect("resolve bind address");
     let listener = TcpListener::bind(&bind_addr).expect("bind control plane");
-    let (restored_state, storage_source, sync_status) = match supabase.as_ref() {
+    let (mut restored_state, storage_source, sync_status) = match supabase.as_ref() {
         Some(db) => match db.restore_state() {
             Ok(state) => {
                 println!("restore: {}", db.label());
@@ -9879,6 +9879,7 @@ fn main() {
             )
         }
     };
+    restored_state.ensure_job_totals_from_hot_history();
     let state = Arc::new(Mutex::new(restored_state));
     let live_streams = Arc::new(Mutex::new(chat_gateway::LiveStreamRegistry::default()));
     let chat_admission = Arc::new(chat_gateway::ChatAdmissionController::from_env());

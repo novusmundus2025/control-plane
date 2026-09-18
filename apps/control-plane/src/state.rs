@@ -77,6 +77,12 @@ pub struct ControlPlaneState {
     pub job_events: Vec<JobEventRecord>,
     pub credits_ledger: Vec<CreditsLedgerRecord>,
     #[serde(default)]
+    completed_job_total: usize,
+    #[serde(default)]
+    failed_job_total: usize,
+    #[serde(default)]
+    job_totals_initialized: bool,
+    #[serde(default)]
     pub local_slot_leases: BTreeMap<String, LocalSlotLeaseRecord>,
     #[serde(default)]
     pub harness: crate::harness::HarnessState,
@@ -90,6 +96,29 @@ pub struct MaintenanceResult {
 }
 
 impl ControlPlaneState {
+    pub fn initialize_job_totals(&mut self, completed: usize, failed: usize) {
+        self.completed_job_total = completed;
+        self.failed_job_total = failed;
+        self.job_totals_initialized = true;
+    }
+
+    pub fn ensure_job_totals_from_hot_history(&mut self) {
+        if self.job_totals_initialized {
+            return;
+        }
+        let completed = self
+            .jobs
+            .values()
+            .filter(|job| job.status == JobStatus::Completed)
+            .count();
+        let failed = self
+            .jobs
+            .values()
+            .filter(|job| job.status == JobStatus::Failed)
+            .count();
+        self.initialize_job_totals(completed, failed);
+    }
+
     pub(crate) fn context_demand_for_job(
         job: &JobRecord,
         active_graph_node_id: Option<&str>,
@@ -200,16 +229,26 @@ impl ControlPlaneState {
             .values()
             .filter(|job| job.status == JobStatus::Assigned)
             .count();
-        let completed_job_count = self
+        let recent_completed_job_count = self
             .jobs
             .values()
             .filter(|job| job.status == JobStatus::Completed)
             .count();
-        let failed_job_count = self
+        let recent_failed_job_count = self
             .jobs
             .values()
             .filter(|job| job.status == JobStatus::Failed)
             .count();
+        let completed_job_count = if self.job_totals_initialized {
+            self.completed_job_total
+        } else {
+            recent_completed_job_count
+        };
+        let failed_job_count = if self.job_totals_initialized {
+            self.failed_job_total
+        } else {
+            recent_failed_job_count
+        };
         let (active_parallel_slots, total_parallel_slots, available_parallel_slots) = self
             .nodes
             .values()
@@ -2869,6 +2908,8 @@ impl ControlPlaneState {
         completion: JobCompletion,
         completed_at: String,
     ) -> Option<JobRecord> {
+        self.ensure_job_totals_from_hot_history();
+        let previous_status = self.jobs.get(&completion.job_id)?.status;
         let completion_was_auto_truncated = completion.status == JobStatus::Completed
             && completion
                 .output
@@ -2997,6 +3038,28 @@ impl ControlPlaneState {
                 }
             }
         };
+
+        if previous_status != updated_job.status {
+            match previous_status {
+                JobStatus::Completed => {
+                    self.completed_job_total = self.completed_job_total.saturating_sub(1)
+                }
+                JobStatus::Failed => {
+                    self.failed_job_total = self.failed_job_total.saturating_sub(1)
+                }
+                _ => {}
+            }
+            match updated_job.status {
+                JobStatus::Completed => {
+                    self.completed_job_total = self.completed_job_total.saturating_add(1)
+                }
+                JobStatus::Failed => {
+                    self.failed_job_total = self.failed_job_total.saturating_add(1)
+                }
+                _ => {}
+            }
+        }
+        self.compact_hot_job_history();
 
         let remaining_assignments = self.active_assignment_count_for_node(&completion.node_id);
         if let Some(node) = self.nodes.get_mut(&completion.node_id) {
@@ -14150,6 +14213,16 @@ mod tests {
         assert_eq!(snapshot["completed_job_count"].as_u64(), Some(1));
         assert_eq!(snapshot["assigned_job_count"].as_u64(), Some(0));
         assert_eq!(snapshot["policy_blocked_count"].as_u64(), Some(0));
+    }
+
+    #[test]
+    fn snapshot_uses_durable_job_totals_instead_of_the_hot_window() {
+        let mut state = ControlPlaneState::default();
+        state.initialize_job_totals(12_345, 67);
+
+        let snapshot = state.snapshot("postgres");
+        assert_eq!(snapshot["completed_job_count"].as_u64(), Some(12_345));
+        assert_eq!(snapshot["failed_job_count"].as_u64(), Some(67));
     }
 
     #[test]

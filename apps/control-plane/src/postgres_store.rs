@@ -36,6 +36,11 @@ impl PostgresStore {
 
     pub fn restore_state(&self) -> Result<ControlPlaneState, String> {
         let mut client = self.connect()?;
+        let totals = client
+            .query_one(JOB_TOTALS_SQL, &[])
+            .map_err(|error| format!("postgres job totals restore failed: {error}"))?;
+        let completed_job_total = usize::try_from(totals.get::<_, i64>(0)).unwrap_or(usize::MAX);
+        let failed_job_total = usize::try_from(totals.get::<_, i64>(1)).unwrap_or(usize::MAX);
         let devices: Vec<NodeRecord> = query_json_rows(&mut client, DEVICES_RESTORE_SQL)?;
         let jobs: Vec<JobRecord> = query_json_rows(&mut client, JOBS_RESTORE_SQL)?;
         let job_events: Vec<JobEventRecord> = query_json_rows(&mut client, JOB_EVENTS_RESTORE_SQL)?;
@@ -43,6 +48,7 @@ impl PostgresStore {
             query_json_rows(&mut client, CREDITS_RESTORE_SQL)?;
 
         let mut state = ControlPlaneState::default();
+        state.initialize_job_totals(completed_job_total, failed_job_total);
         for device in devices {
             state.nodes.insert(device.node_id.clone(), device);
         }
@@ -1170,6 +1176,13 @@ where status in ('queued', 'assigned')
 order by submitted_at_epoch asc nulls last, job_id asc
 "#;
 
+const JOB_TOTALS_SQL: &str = r#"
+select
+  count(*) filter (where status = 'completed')::bigint,
+  count(*) filter (where status = 'failed')::bigint
+from public.jobs
+"#;
+
 // The database is the durable history. The process only needs a bounded hot
 // window in memory; restoring every historical event made startup and every
 // snapshot grow without bound as production traffic accumulated.
@@ -1632,6 +1645,7 @@ mod tests {
         DEVICES_UPSERT_SQL, HARNESS_ARTIFACTS_RESTORE_SQL, HARNESS_AUDIT_UPSERT_SQL,
         HARNESS_TASKS_RESTORE_SQL, HARNESS_RESERVATION_UPSERT_SQL, HARNESS_TASK_UPSERT_SQL,
         JOBS_RESTORE_SQL, JOBS_UPSERT_SQL, JOB_EVENTS_RESTORE_SQL, JOB_EVENTS_UPSERT_SQL,
+        JOB_TOTALS_SQL,
     };
 
     #[test]
@@ -1700,6 +1714,8 @@ mod tests {
 
     #[test]
     fn restore_queries_keep_durable_history_out_of_hot_memory() {
+        assert!(JOB_TOTALS_SQL.contains("status = 'completed'"));
+        assert!(JOB_TOTALS_SQL.contains("status = 'failed'"));
         assert!(JOBS_RESTORE_SQL.contains("status in ('queued', 'assigned')"));
         assert!(JOBS_RESTORE_SQL.contains("limit 512"));
         assert!(JOB_EVENTS_RESTORE_SQL.contains("limit 4096"));
