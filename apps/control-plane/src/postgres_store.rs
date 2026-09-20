@@ -9,7 +9,7 @@ use crate::harness::{
 };
 use crate::state::ControlPlaneState;
 use native_tls::TlsConnector;
-use postgres::{Client, Config};
+use postgres::{Client, Config, NoTls};
 use postgres_native_tls::MakeTlsConnector;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -969,10 +969,30 @@ fn postgres_error(error: &postgres::Error) -> String {
     message
 }
 
+fn database_url_uses_no_tls(database_url: &str) -> bool {
+    database_url
+        .split_once('?')
+        .map(|(_, query)| query)
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .any(|part| {
+            let mut kv = part.split('=');
+            let key = kv.next().unwrap_or_default();
+            let value = kv.next().unwrap_or_default();
+            key == "sslmode" && value.eq_ignore_ascii_case("disable")
+        })
+}
+
 fn connect_client(database_url: &str) -> Result<Client, String> {
     let mut config = Config::from_str(database_url)
         .map_err(|error| format!("failed to parse database url: {error}"))?;
     config.connect_timeout(Duration::from_secs(10));
+
+    if database_url_uses_no_tls(database_url) {
+        return config
+            .connect(NoTls)
+            .map_err(|error| format!("failed to connect to database: {error}"));
+    }
 
     let strict_connector =
         postgres_connector(false).map_err(|error| format!("failed to build TLS: {error}"))?;
@@ -1641,10 +1661,11 @@ on conflict (event_id) do nothing
 #[cfg(test)]
 mod tests {
     use super::{
-        PostgresStore, CHAT_MESSAGE_INSERT_SQL, CREDITS_RESTORE_SQL, CREDITS_UPSERT_SQL,
-        DEVICES_UPSERT_SQL, HARNESS_ARTIFACTS_RESTORE_SQL, HARNESS_AUDIT_UPSERT_SQL,
-        HARNESS_TASKS_RESTORE_SQL, HARNESS_RESERVATION_UPSERT_SQL, HARNESS_TASK_UPSERT_SQL,
-        JOBS_RESTORE_SQL, JOBS_UPSERT_SQL, JOB_EVENTS_RESTORE_SQL, JOB_EVENTS_UPSERT_SQL,
+        database_url_uses_no_tls, PostgresStore, CHAT_MESSAGE_INSERT_SQL, CREDITS_RESTORE_SQL,
+        CREDITS_UPSERT_SQL, DEVICES_UPSERT_SQL, HARNESS_ARTIFACTS_RESTORE_SQL,
+        HARNESS_AUDIT_UPSERT_SQL, HARNESS_TASKS_RESTORE_SQL,
+        HARNESS_RESERVATION_UPSERT_SQL, HARNESS_TASK_UPSERT_SQL, JOBS_RESTORE_SQL,
+        JOBS_UPSERT_SQL, JOB_EVENTS_RESTORE_SQL, JOB_EVENTS_UPSERT_SQL,
         JOB_TOTALS_SQL,
     };
 
@@ -1672,6 +1693,16 @@ mod tests {
             store.database_url,
             "postgresql://admin@postgres.example/mundusx"
         );
+    }
+
+    #[test]
+    fn postgres_tls_is_disabled_when_sslmode_is_disable() {
+        assert!(database_url_uses_no_tls(
+            "postgresql://mundusx:mundusx_password@127.0.0.1:5432/mundusx?sslmode=disable"
+        ));
+        assert!(!database_url_uses_no_tls(
+            "postgresql://mundusx:mundusx_password@127.0.0.1:5432/mundusx?sslmode=require"
+        ));
     }
 
     #[test]

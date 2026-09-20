@@ -1,5 +1,5 @@
 use native_tls::TlsConnector;
-use postgres::{Client, Config};
+use postgres::{Client, Config, NoTls};
 use postgres_native_tls::MakeTlsConnector;
 use std::env;
 use std::fs;
@@ -136,10 +136,30 @@ pub fn apply_migrations(database_url: &str) -> Result<Vec<MigrationFile>, String
     Ok(applied_files)
 }
 
+fn database_url_uses_no_tls(database_url: &str) -> bool {
+    database_url
+        .split_once('?')
+        .map(|(_, query)| query)
+        .into_iter()
+        .flat_map(|query| query.split('&'))
+        .any(|part| {
+            let mut kv = part.split('=');
+            let key = kv.next().unwrap_or_default();
+            let value = kv.next().unwrap_or_default();
+            key == "sslmode" && value.eq_ignore_ascii_case("disable")
+        })
+}
+
 fn connect_client(database_url: &str) -> Result<Client, String> {
     let mut config = Config::from_str(database_url)
         .map_err(|error| format!("failed to parse database url: {error}"))?;
     config.connect_timeout(Duration::from_secs(10));
+
+    if database_url_uses_no_tls(database_url) {
+        return config
+            .connect(NoTls)
+            .map_err(|error| format!("failed to connect to database: {error}"));
+    }
 
     let strict_connector =
         postgres_connector(false).map_err(|error| format!("failed to build TLS: {error}"))?;
