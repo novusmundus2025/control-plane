@@ -83,7 +83,7 @@ test("renders a usable chat page", () => {
 
   assert.match(html, /<title>Ehda<\/title>/);
   assert.match(html, /class="brand-ehda">Ehda<\/div>/);
-  assert.match(html, /Powered by Mercedes-Benz Tech Community/);
+  assert.match(html, /Powered by Mercedes-Benz Group AG PT\/TEED AI Accelerator/);
   assert.match(html, /A BETTER TOMORROW/);
   assert.match(html, /id="auth-gate"[^>]*hidden/);
   assert.match(html, /id="auth-google"/);
@@ -337,7 +337,7 @@ test("renders a usable chat page", () => {
   assert.doesNotMatch(html, /<div class="status"><span class="dot"><\/span><span id="runtime-status">Ready<\/span><\/div>/);
   assert.doesNotMatch(html, /Qwen\/Test/);
   assert.doesNotMatch(html, /Honda history draft|Dave Batalla|57 nodes/);
-  assert.match(html, /MundusX may produce inaccurate information/);
+  assert.match(html, /Ehda may produce inaccurate information/);
 });
 
 test("new chat leaves project mode and isolates background runner status", () => {

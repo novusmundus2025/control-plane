@@ -2257,7 +2257,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
         <div class="brand-copy">
           <div class="brand-name">Mercedes-Benz</div>
           <div class="brand-ehda">Ehda</div>
-          <div class="brand-kicker">Powered by Mercedes-Benz Tech Community</div>
+          <div class="brand-kicker">Powered by Mercedes-Benz Group AG PT/TEED AI Accelerator</div>
         </div>
       </div>
       <div class="rail-primary">
@@ -2337,7 +2337,7 @@ button,input,select,textarea { font-family:inherit; } code,pre,kbd,samp { font-f
           </div>
           <button class="send" id="send" type="submit" aria-label="Send">${ICON_ARROW_UP}</button>
         </div>
-        <div class="fine-print">MundusX may produce inaccurate information.</div>
+        <div class="fine-print">Ehda may produce inaccurate information.</div>
       </form>
     </main>
   </div>
