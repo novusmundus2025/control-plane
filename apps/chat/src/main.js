@@ -8065,7 +8065,7 @@ async function relayProjectContinuationStream(response, body, config, fetchImpl,
         const gaps = projectCompletionGaps(content);
         if (gaps.length && segmentMadeProgress && !reachedContinuationLimit && documentationRepairs < 2) {
           documentationRepairs += 1;
-          writeResponse(": completing project documentation\n\n");
+          response.write(": completing project documentation\n\n");
           requestBody = buildContinuationRequestBody(requestBody, body.messages, content);
           requestBody.messages.at(-1).content += `\nComplete these missing deliverables only:\n${gaps.join("\n")}\nIf the assistant tail is inside a Markdown file fence, finish and close it before the Delivery summary. Do not add new features or repeat earlier files.`;
           continue;
